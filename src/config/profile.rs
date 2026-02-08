@@ -31,6 +31,10 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
 
+    /// OAuth grant type (for oauth2). Defaults to client_credentials.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_grant_type: Option<OAuthGrantType>,
+
     /// Path to client certificate (for mTLS).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cert_path: Option<PathBuf>,
@@ -49,6 +53,16 @@ pub enum AuthMethod {
     ApiKey,
     Mtls,
     Saml,
+}
+
+/// OAuth 2.0 grant type for token acquisition.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthGrantType {
+    /// Machine-to-machine: client_id + client_secret only.
+    ClientCredentials,
+    /// User-context: client_id + client_secret + username + password.
+    Password,
 }
 
 impl AppConfig {
@@ -158,6 +172,7 @@ mod tests {
                 auth_method: AuthMethod::Basic,
                 username: Some("admin".to_string()),
                 client_id: None,
+                oauth_grant_type: None,
                 cert_path: None,
                 key_path: None,
             },
@@ -186,6 +201,7 @@ mod tests {
                 auth_method: AuthMethod::Basic,
                 username: None,
                 client_id: None,
+                oauth_grant_type: None,
                 cert_path: None,
                 key_path: None,
             },
@@ -197,6 +213,7 @@ mod tests {
                 auth_method: AuthMethod::Oauth2,
                 username: None,
                 client_id: Some("client123".to_string()),
+                oauth_grant_type: None,
                 cert_path: None,
                 key_path: None,
             },

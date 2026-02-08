@@ -1,4 +1,6 @@
+pub mod api_key;
 pub mod basic;
+pub mod oauth2;
 
 use async_trait::async_trait;
 use http::HeaderMap;
@@ -28,17 +30,17 @@ pub fn create_authenticator(
 ) -> anyhow::Result<Box<dyn Authenticator>> {
     match profile.auth_method {
         AuthMethod::Basic => Ok(Box::new(basic::BasicAuth::new(profile)?)),
-        AuthMethod::Oauth2 => {
-            todo!("OAuth2 authenticator not yet implemented")
-        }
-        AuthMethod::ApiKey => {
-            todo!("API key authenticator not yet implemented")
-        }
+        AuthMethod::Oauth2 => Ok(Box::new(oauth2::OAuth2Auth::new(profile)?)),
+        AuthMethod::ApiKey => Ok(Box::new(api_key::ApiKeyAuth::new(profile)?)),
         AuthMethod::Mtls => {
-            todo!("mTLS authenticator not yet implemented")
+            anyhow::bail!(
+                "mTLS authentication is not yet implemented. See docs/PLAN.md for roadmap."
+            )
         }
         AuthMethod::Saml => {
-            todo!("SAML authenticator not yet implemented")
+            anyhow::bail!(
+                "SAML authentication is not yet implemented. See docs/PLAN.md for roadmap."
+            )
         }
     }
 }

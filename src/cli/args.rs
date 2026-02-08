@@ -82,9 +82,13 @@ pub enum ConfigCommands {
         #[arg(long, value_enum)]
         auth_method: Option<CliAuthMethod>,
 
-        /// Username (for basic auth)
+        /// Username (for basic auth or OAuth2 password grant)
         #[arg(long)]
         username: Option<String>,
+
+        /// OAuth grant type (for oauth2 auth method)
+        #[arg(long, value_enum)]
+        oauth_grant_type: Option<CliOAuthGrantType>,
 
         /// Profile name to create (defaults to "default")
         #[arg(long, default_value = "default")]
@@ -104,13 +108,17 @@ pub enum ConfigCommands {
         #[arg(long, value_enum)]
         auth_method: Option<CliAuthMethod>,
 
-        /// Username (for basic auth)
+        /// Username (for basic auth or OAuth2 password grant)
         #[arg(long)]
         username: Option<String>,
 
         /// OAuth client ID (for oauth2)
         #[arg(long)]
         client_id: Option<String>,
+
+        /// OAuth grant type (for oauth2 auth method)
+        #[arg(long, value_enum)]
+        oauth_grant_type: Option<CliOAuthGrantType>,
 
         /// Path to client certificate (for mTLS)
         #[arg(long)]
@@ -142,6 +150,13 @@ pub enum CliAuthMethod {
     ApiKey,
     Mtls,
     Saml,
+}
+
+/// OAuth 2.0 grant type for CLI argument parsing.
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum CliOAuthGrantType {
+    ClientCredentials,
+    Password,
 }
 
 // --- Auth ---

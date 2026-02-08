@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use crate::cli::args::{CliAuthMethod, ConfigArgs, ConfigCommands, OutputFormat};
-use crate::config::profile::{AppConfig, AuthMethod, Profile};
+use crate::cli::args::{
+    CliAuthMethod, CliOAuthGrantType, ConfigArgs, ConfigCommands, OutputFormat,
+};
+use crate::config::profile::{AppConfig, AuthMethod, OAuthGrantType, Profile};
 
 /// Convert CLI auth method enum to config auth method enum.
 fn to_auth_method(cli: &CliAuthMethod) -> AuthMethod {
@@ -11,6 +13,14 @@ fn to_auth_method(cli: &CliAuthMethod) -> AuthMethod {
         CliAuthMethod::ApiKey => AuthMethod::ApiKey,
         CliAuthMethod::Mtls => AuthMethod::Mtls,
         CliAuthMethod::Saml => AuthMethod::Saml,
+    }
+}
+
+/// Convert CLI OAuth grant type to config OAuth grant type.
+fn to_oauth_grant_type(cli: &CliOAuthGrantType) -> OAuthGrantType {
+    match cli {
+        CliOAuthGrantType::ClientCredentials => OAuthGrantType::ClientCredentials,
+        CliOAuthGrantType::Password => OAuthGrantType::Password,
     }
 }
 
@@ -25,14 +35,26 @@ pub async fn handle(
             instance,
             auth_method,
             username,
+            oauth_grant_type,
             name,
-        } => handle_init(&config_path, instance, auth_method, username, name).await,
+        } => {
+            handle_init(
+                &config_path,
+                instance,
+                auth_method,
+                username,
+                oauth_grant_type,
+                name,
+            )
+            .await
+        }
         ConfigCommands::SetProfile {
             name,
             instance,
             auth_method,
             username,
             client_id,
+            oauth_grant_type,
             cert_path,
             key_path,
         } => {
@@ -43,6 +65,7 @@ pub async fn handle(
                 auth_method,
                 username,
                 client_id,
+                oauth_grant_type,
                 cert_path,
                 key_path,
             )
@@ -64,6 +87,7 @@ async fn handle_init(
     instance: Option<String>,
     auth_method: Option<CliAuthMethod>,
     username: Option<String>,
+    oauth_grant_type: Option<CliOAuthGrantType>,
     name: String,
 ) -> anyhow::Result<()> {
     if config_path.exists() {
@@ -88,6 +112,7 @@ async fn handle_init(
         auth_method: auth,
         username,
         client_id: None,
+        oauth_grant_type: oauth_grant_type.map(|g| to_oauth_grant_type(&g)),
         cert_path: None,
         key_path: None,
     };
@@ -121,6 +146,7 @@ async fn handle_set_profile(
     auth_method: Option<CliAuthMethod>,
     username: Option<String>,
     client_id: Option<String>,
+    oauth_grant_type: Option<CliOAuthGrantType>,
     cert_path: Option<String>,
     key_path: Option<String>,
 ) -> anyhow::Result<()> {
@@ -135,6 +161,10 @@ async fn handle_set_profile(
                 .unwrap_or_else(|| existing.auth_method.clone()),
             username: username.or_else(|| existing.username.clone()),
             client_id: client_id.or_else(|| existing.client_id.clone()),
+            oauth_grant_type: oauth_grant_type
+                .as_ref()
+                .map(to_oauth_grant_type)
+                .or_else(|| existing.oauth_grant_type.clone()),
             cert_path: cert_path
                 .map(PathBuf::from)
                 .or_else(|| existing.cert_path.clone()),
@@ -157,6 +187,7 @@ async fn handle_set_profile(
                 .unwrap_or(AuthMethod::Basic),
             username,
             client_id,
+            oauth_grant_type: oauth_grant_type.map(|g| to_oauth_grant_type(&g)),
             cert_path: cert_path.map(PathBuf::from),
             key_path: key_path.map(PathBuf::from),
         }
@@ -323,6 +354,7 @@ mod tests {
             Some("https://test.service-now.com".to_string()),
             Some(CliAuthMethod::Basic),
             Some("admin".to_string()),
+            None,
             "default".to_string(),
         )
         .await;
@@ -344,6 +376,7 @@ mod tests {
             Some("https://test.service-now.com".to_string()),
             None,
             None,
+            None,
             "default".to_string(),
         )
         .await
@@ -357,7 +390,7 @@ mod tests {
     #[tokio::test]
     async fn test_config_init_fails_without_instance() {
         let (_tmp, config_path) = temp_config_path();
-        let result = handle_init(&config_path, None, None, None, "default".to_string()).await;
+        let result = handle_init(&config_path, None, None, None, None, "default".to_string()).await;
         assert!(result.is_err());
         assert!(
             result
@@ -376,6 +409,7 @@ mod tests {
             Some("https://test.service-now.com".to_string()),
             None,
             None,
+            None,
             "default".to_string(),
         )
         .await
@@ -387,11 +421,32 @@ mod tests {
             Some("https://test2.service-now.com".to_string()),
             None,
             None,
+            None,
             "default".to_string(),
         )
         .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[tokio::test]
+    async fn test_config_init_with_oauth_grant_type() {
+        let (_tmp, config_path) = temp_config_path();
+        handle_init(
+            &config_path,
+            Some("https://test.service-now.com".to_string()),
+            Some(CliAuthMethod::Oauth2),
+            Some("admin".to_string()),
+            Some(CliOAuthGrantType::Password),
+            "default".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let config = AppConfig::load_from(&config_path).unwrap();
+        let profile = config.profiles.get("default").unwrap();
+        assert_eq!(profile.auth_method, AuthMethod::Oauth2);
+        assert_eq!(profile.oauth_grant_type, Some(OAuthGrantType::Password));
     }
 
     #[tokio::test]
@@ -401,6 +456,7 @@ mod tests {
         handle_init(
             &config_path,
             Some("https://dev.service-now.com".to_string()),
+            None,
             None,
             None,
             "dev".to_string(),
@@ -416,6 +472,7 @@ mod tests {
             Some(CliAuthMethod::Oauth2),
             None,
             Some("client123".to_string()),
+            None,
             None,
             None,
         )
@@ -439,6 +496,7 @@ mod tests {
             Some("https://dev.service-now.com".to_string()),
             Some(CliAuthMethod::Basic),
             Some("admin".to_string()),
+            None,
             "dev".to_string(),
         )
         .await
@@ -449,6 +507,7 @@ mod tests {
             &config_path,
             "dev".to_string(),
             Some("https://dev2.service-now.com".to_string()),
+            None,
             None,
             None,
             None,
@@ -475,6 +534,7 @@ mod tests {
             Some("https://dev.service-now.com".to_string()),
             None,
             None,
+            None,
             "dev".to_string(),
         )
         .await
@@ -484,6 +544,7 @@ mod tests {
         let result = handle_set_profile(
             &config_path,
             "prod".to_string(),
+            None,
             None,
             None,
             None,
@@ -502,12 +563,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_config_set_profile_with_oauth_grant_type() {
+        let (_tmp, config_path) = temp_config_path();
+        handle_init(
+            &config_path,
+            Some("https://dev.service-now.com".to_string()),
+            None,
+            None,
+            None,
+            "dev".to_string(),
+        )
+        .await
+        .unwrap();
+
+        handle_set_profile(
+            &config_path,
+            "oauth-prod".to_string(),
+            Some("https://prod.service-now.com".to_string()),
+            Some(CliAuthMethod::Oauth2),
+            Some("svc_account".to_string()),
+            Some("client_abc".to_string()),
+            Some(CliOAuthGrantType::Password),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let config = AppConfig::load_from(&config_path).unwrap();
+        let profile = config.profiles.get("oauth-prod").unwrap();
+        assert_eq!(profile.auth_method, AuthMethod::Oauth2);
+        assert_eq!(profile.oauth_grant_type, Some(OAuthGrantType::Password));
+        assert_eq!(profile.username, Some("svc_account".to_string()));
+        assert_eq!(profile.client_id, Some("client_abc".to_string()));
+    }
+
+    #[tokio::test]
     async fn test_config_use_profile() {
         let (_tmp, config_path) = temp_config_path();
         // Init with dev
         handle_init(
             &config_path,
             Some("https://dev.service-now.com".to_string()),
+            None,
             None,
             None,
             "dev".to_string(),
@@ -520,6 +618,7 @@ mod tests {
             &config_path,
             "prod".to_string(),
             Some("https://prod.service-now.com".to_string()),
+            None,
             None,
             None,
             None,
@@ -546,6 +645,7 @@ mod tests {
             Some("https://dev.service-now.com".to_string()),
             None,
             None,
+            None,
             "dev".to_string(),
         )
         .await
@@ -564,6 +664,7 @@ mod tests {
             Some("https://dev.service-now.com".to_string()),
             Some(CliAuthMethod::Basic),
             Some("admin".to_string()),
+            None,
             "dev".to_string(),
         )
         .await
@@ -582,6 +683,7 @@ mod tests {
             Some("https://dev.service-now.com".to_string()),
             Some(CliAuthMethod::Basic),
             Some("admin".to_string()),
+            None,
             "dev".to_string(),
         )
         .await
@@ -607,6 +709,7 @@ mod tests {
             Some("https://dev.service-now.com".to_string()),
             None,
             None,
+            None,
             "dev".to_string(),
         )
         .await
@@ -616,6 +719,7 @@ mod tests {
             &config_path,
             "prod".to_string(),
             Some("https://prod.service-now.com".to_string()),
+            None,
             None,
             None,
             None,

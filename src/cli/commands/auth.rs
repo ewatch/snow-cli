@@ -1,6 +1,6 @@
 use crate::cli::args::{AuthArgs, AuthCommands};
 use crate::config::credentials;
-use crate::config::profile::AppConfig;
+use crate::config::profile::{AppConfig, OAuthGrantType};
 
 pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
     match args.command {
@@ -20,6 +20,9 @@ pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
 /// Credentials are read from flags (--password, --token, --client-secret)
 /// or from stdin if not provided. The credential type is determined by the
 /// profile's auth_method.
+///
+/// For OAuth2 password grant, both `--client-secret` and `--password` are required
+/// (two separate keychain entries).
 async fn handle_login(
     profile_name: &str,
     password: Option<String>,
@@ -36,30 +39,73 @@ async fn handle_login(
             )
         })?;
 
-    let cred_type = credentials::credential_type_for_auth(&profile.auth_method);
-
-    // Determine the credential value based on auth method and provided flags
-    let value = match &profile.auth_method {
+    match &profile.auth_method {
         crate::config::profile::AuthMethod::Basic => {
-            password.ok_or_else(|| {
+            let pw = password.ok_or_else(|| {
                 anyhow::anyhow!(
                     "Password required for basic auth. Use: snow-cli auth login --password <password>"
                 )
-            })?
+            })?;
+            credentials::store_credential(profile_name, "password", &pw)?;
+
+            let result = serde_json::json!({
+                "status": "authenticated",
+                "profile": profile_name,
+                "auth_method": profile.auth_method,
+                "credential_type": "password",
+            });
+            println!("{}", serde_json::to_string(&result)?);
         }
         crate::config::profile::AuthMethod::ApiKey => {
-            token.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "API token required. Use: snow-cli auth login --token <token>"
-                )
-            })?
+            let tok = token.ok_or_else(|| {
+                anyhow::anyhow!("API token required. Use: snow-cli auth login --token <token>")
+            })?;
+            credentials::store_credential(profile_name, "api_token", &tok)?;
+
+            let result = serde_json::json!({
+                "status": "authenticated",
+                "profile": profile_name,
+                "auth_method": profile.auth_method,
+                "credential_type": "api_token",
+            });
+            println!("{}", serde_json::to_string(&result)?);
         }
         crate::config::profile::AuthMethod::Oauth2 => {
-            client_secret.ok_or_else(|| {
+            let secret = client_secret.ok_or_else(|| {
                 anyhow::anyhow!(
                     "Client secret required for OAuth2. Use: snow-cli auth login --client-secret <secret>"
                 )
-            })?
+            })?;
+            credentials::store_credential(profile_name, "client_secret", &secret)?;
+
+            let grant_type = profile
+                .oauth_grant_type
+                .clone()
+                .unwrap_or(OAuthGrantType::ClientCredentials);
+
+            // For password grant, also store the user's password
+            if grant_type == OAuthGrantType::Password {
+                let pw = password.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Password required for OAuth2 password grant. \
+                         Use: snow-cli auth login --client-secret <secret> --password <password>"
+                    )
+                })?;
+                credentials::store_credential(profile_name, "password", &pw)?;
+            }
+
+            let result = serde_json::json!({
+                "status": "authenticated",
+                "profile": profile_name,
+                "auth_method": profile.auth_method,
+                "oauth_grant_type": grant_type,
+                "credential_types": if grant_type == OAuthGrantType::Password {
+                    vec!["client_secret", "password"]
+                } else {
+                    vec!["client_secret"]
+                },
+            });
+            println!("{}", serde_json::to_string(&result)?);
         }
         other => {
             anyhow::bail!(
@@ -67,32 +113,27 @@ async fn handle_login(
                 other
             );
         }
-    };
-
-    credentials::store_credential(profile_name, cred_type, &value)?;
+    }
 
     tracing::info!("Credentials stored for profile '{}'", profile_name);
-
-    let result = serde_json::json!({
-        "status": "authenticated",
-        "profile": profile_name,
-        "auth_method": profile.auth_method,
-        "credential_type": cred_type,
-    });
-    println!("{}", serde_json::to_string(&result)?);
 
     Ok(())
 }
 
 /// `auth logout` — Remove stored credentials for the active profile.
+///
+/// Removes all credential types associated with the profile's auth method.
 async fn handle_logout(profile_name: &str) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
     let profile = config
         .active_profile(Some(profile_name))
         .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found.", profile_name))?;
 
-    let cred_type = credentials::credential_type_for_auth(&profile.auth_method);
-    credentials::delete_credential(profile_name, cred_type)?;
+    // Delete all credential types for this auth method
+    let cred_types = credential_types_for_auth(profile);
+    for cred_type in &cred_types {
+        credentials::delete_credential(profile_name, cred_type)?;
+    }
 
     tracing::info!("Credentials removed for profile '{}'", profile_name);
 
@@ -112,15 +153,17 @@ async fn handle_status(profile_name: &str) -> anyhow::Result<()> {
         .active_profile(Some(profile_name))
         .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found.", profile_name))?;
 
-    let cred_type = credentials::credential_type_for_auth(&profile.auth_method);
-    let has_cred = credentials::has_credential(profile_name, cred_type);
+    let cred_types = credential_types_for_auth(profile);
+    let authenticated = cred_types
+        .iter()
+        .all(|ct| credentials::has_credential(profile_name, ct));
 
     let result = serde_json::json!({
         "profile": profile_name,
         "instance": profile.instance,
         "auth_method": profile.auth_method,
-        "credential_type": cred_type,
-        "authenticated": has_cred,
+        "credential_types": cred_types,
+        "authenticated": authenticated,
         "username": profile.username,
     });
     println!("{}", serde_json::to_string_pretty(&result)?);
@@ -140,13 +183,14 @@ async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
         .active_profile(Some(profile_name))
         .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found.", profile_name))?;
 
-    let cred_type = credentials::credential_type_for_auth(&profile.auth_method);
-    let credential = credentials::get_credential(profile_name, cred_type)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "No credentials stored for profile '{}'. Run `snow-cli auth login` first.",
-            profile_name
-        )
-    })?;
+    let primary_cred_type = credentials::credential_type_for_auth(&profile.auth_method);
+    let credential =
+        credentials::get_credential(profile_name, primary_cred_type)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No credentials stored for profile '{}'. Run `snow-cli auth login` first.",
+                profile_name
+            )
+        })?;
 
     // For basic auth, output the base64-encoded "user:pass" token
     match &profile.auth_method {
@@ -164,4 +208,28 @@ async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Return the list of credential types needed for the profile's auth method.
+///
+/// OAuth2 password grant requires both `client_secret` and `password`.
+fn credential_types_for_auth(profile: &crate::config::profile::Profile) -> Vec<&'static str> {
+    match &profile.auth_method {
+        crate::config::profile::AuthMethod::Basic => vec!["password"],
+        crate::config::profile::AuthMethod::ApiKey => vec!["api_token"],
+        crate::config::profile::AuthMethod::Oauth2 => {
+            let grant_type = profile
+                .oauth_grant_type
+                .as_ref()
+                .cloned()
+                .unwrap_or(OAuthGrantType::ClientCredentials);
+            if grant_type == OAuthGrantType::Password {
+                vec!["client_secret", "password"]
+            } else {
+                vec!["client_secret"]
+            }
+        }
+        crate::config::profile::AuthMethod::Mtls => vec!["cert_passphrase"],
+        crate::config::profile::AuthMethod::Saml => vec!["saml_token"],
+    }
 }

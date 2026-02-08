@@ -31,10 +31,57 @@ pub trait Authenticator: Send + Sync {
 - No refresh capability.
 
 ### OAuth 2.0
-- Supports client credentials flow (for machine-to-machine).
-- Stores client_id in config, client_secret in keychain.
-- Automatically refreshes expired tokens.
 - Token endpoint: `https://<instance>/oauth_token.do`
+- Automatically caches access tokens in memory with expiry tracking.
+- Automatically refreshes expired tokens using `refresh_token` if available,
+  otherwise re-authenticates with the original grant.
+- Stores `client_id` and `oauth_grant_type` in config.
+
+#### Client Credentials Grant (`grant_type=client_credentials`)
+- For machine-to-machine / service account access.
+- Stores `client_id` in config, `client_secret` in keychain.
+- Token request:
+  ```
+  POST /oauth_token.do
+  Content-Type: application/x-www-form-urlencoded
+
+  grant_type=client_credentials&client_id=<client_id>&client_secret=<client_secret>
+  ```
+
+#### Resource Owner Password Credentials Grant (`grant_type=password`)
+- For user-context access where a human user's identity is required.
+- Stores `client_id` and `username` in config; `client_secret` and `password`
+  in keychain (two separate keychain entries).
+- Token request:
+  ```
+  POST /oauth_token.do
+  Content-Type: application/x-www-form-urlencoded
+
+  grant_type=password&client_id=<client_id>&client_secret=<client_secret>&username=<username>&password=<password>
+  ```
+- Note: ServiceNow requires both `client_id` + `client_secret` even for the
+  password grant (unlike some OAuth2 implementations that make client auth optional).
+
+#### Token Response (both grants)
+```json
+{
+  "access_token": "...",
+  "refresh_token": "...",
+  "scope": "useraccount",
+  "token_type": "Bearer",
+  "expires_in": 1800
+}
+```
+
+#### Config Fields
+- `oauth_grant_type`: `"client_credentials"` or `"password"` (defaults to
+  `"client_credentials"` if not specified, for backwards compatibility).
+- `client_id`: Required for both grants.
+- `username`: Required for password grant, stored in config.
+
+#### Keychain Entries
+- `client_secret`: Required for both grants.
+- `password`: Required only for password grant.
 
 ### API Key / Token
 - Reads token from OS keychain.
