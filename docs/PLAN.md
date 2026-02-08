@@ -1,0 +1,203 @@
+# snow-cli — Project Plan
+
+## Overview
+
+A cross-platform CLI written in **Rust** that serves as the primary gateway for LLMs,
+coding agents, and humans to interact with ServiceNow instances. Compiles to a single
+static binary with no runtime dependencies.
+
+- **Binary:** `snow-cli`
+- **Config:** `~/.servicenow/config.toml`
+- **License:** MIT
+
+## Technology Stack
+
+| Component        | Choice                       | Crate(s)                          |
+|------------------|------------------------------|-----------------------------------|
+| Language         | Rust (latest stable)         | —                                 |
+| CLI framework    | clap v4 + derive macros      | `clap`, `clap_complete`           |
+| HTTP client      | reqwest (async, TLS)         | `reqwest`                         |
+| Async runtime    | tokio (multi-thread)         | `tokio`                           |
+| Serialization    | serde                        | `serde`, `serde_json`, `csv`      |
+| Config file      | TOML                         | `toml`                            |
+| Keychain         | OS-native credential store   | `keyring`                         |
+| Logging          | tracing                      | `tracing`, `tracing-subscriber`   |
+| TLS / mTLS       | rustls + client certs        | `reqwest` with `rustls-tls`       |
+| Testing          | Built-in + HTTP mocking      | `wiremock`, `assert_cmd`, `predicates` |
+
+## Command Structure (Noun-Verb)
+
+```
+snow-cli [GLOBAL FLAGS] <NOUN> <VERB> [OPTIONS]
+```
+
+### Global Flags
+
+| Flag                   | Description                              |
+|------------------------|------------------------------------------|
+| `--profile <name>`    | Use named profile (default: "default")   |
+| `--instance <url>`    | Override instance URL                    |
+| `--output <json|csv>` | Output format (default: json)            |
+| `-v / -vv / -vvv`     | Verbosity level                          |
+| `--version`           | Print version                            |
+| `--help`              | Print help                               |
+
+### Commands
+
+```
+snow-cli config
+  init                            Interactive setup wizard
+  set-profile <name>              Create/update a named profile
+  list-profiles                   List all profiles
+  use-profile <name>              Set the active default profile
+  show                            Show current active config
+
+snow-cli auth
+  login                           Authenticate and store credentials
+  logout                          Clear stored credentials
+  status                          Show current auth state
+  token                           Print current access token (for piping)
+
+snow-cli table
+  list <table_name>               List records (auto-paginated)
+  get <table_name> <sys_id>       Get a single record
+  create <table_name>             Create a record (--data or stdin)
+  update <table_name> <sys_id>    Update a record
+  delete <table_name> <sys_id>    Delete a record
+
+snow-cli incident
+  list                            List incidents
+  get <number>                    Get incident by number
+  create                          Create an incident
+  update <number>                 Update an incident
+  resolve <number>                Resolve an incident
+
+snow-cli attachment
+  list <table> <sys_id>           List attachments for a record
+  download <sys_id>               Download an attachment
+  upload <table> <sys_id>         Upload a file as attachment
+
+snow-cli import-set
+  load <table>                    Load data into staging table
+  transform <sys_id>              Transform staged data
+
+snow-cli api
+  get <path>                      GET a custom REST endpoint
+  post <path>                     POST to a custom REST endpoint
+  put <path>                      PUT to a custom REST endpoint
+  delete <path>                   DELETE a custom REST endpoint
+
+snow-cli completions <shell>      Generate shell completions
+```
+
+## Authentication Methods
+
+All auth methods implement a common `Authenticator` trait:
+
+| Method          | Flow                                                   |
+|-----------------|--------------------------------------------------------|
+| Basic Auth      | Username/password, stored in OS keychain               |
+| OAuth 2.0       | Client credentials or authorization code flow          |
+| API Key / Token | Bearer token stored in keychain                        |
+| mTLS            | Client certificate + key file paths in config          |
+| SSO / SAML      | Browser-based SAML flow, captures token via callback   |
+
+## ServiceNow APIs
+
+| API             | Scope                                                  |
+|-----------------|--------------------------------------------------------|
+| Table API       | CRUD on any ServiceNow table                           |
+| Scripted REST   | Custom REST endpoints defined in ServiceNow            |
+| Import Set API  | Bulk data import via staging tables                    |
+| Attachment API  | Upload/download file attachments                       |
+
+## Output
+
+- **stdout:** Structured data (JSON or CSV)
+- **stderr:** Structured JSON errors + log output
+
+### Error Format
+
+```json
+{
+  "error": {
+    "code": "AUTH_TOKEN_EXPIRED",
+    "message": "OAuth token expired and refresh failed",
+    "status": 401,
+    "detail": "Token refresh returned 403: insufficient scope",
+    "instance": "https://mycompany.service-now.com"
+  }
+}
+```
+
+## Configuration Example
+
+`~/.servicenow/config.toml`:
+
+```toml
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev-company.service-now.com"
+auth_method = "oauth2"
+client_id = "abc123"
+
+[profiles.prod]
+instance = "https://company.service-now.com"
+auth_method = "basic"
+username = "admin"
+
+[profiles.staging]
+instance = "https://staging-company.service-now.com"
+auth_method = "mtls"
+cert_path = "/path/to/client.pem"
+key_path = "/path/to/client-key.pem"
+```
+
+Secrets (passwords, client secrets, tokens) are stored in the OS keychain,
+never in the config file.
+
+## Implementation Phases
+
+### Phase 1 — Foundation
+
+- Initialize Rust project with Cargo
+- Set up clap CLI structure with global flags
+- Implement config module (TOML loading/saving, profile management)
+- Implement credential storage with `keyring` crate
+- Build core HTTP client wrapper with reqwest
+- Implement error types with structured JSON output
+- Set up tracing-based logging with verbosity flags
+- Write tests for config and error handling
+
+### Phase 2 — Authentication
+
+- Define `Authenticator` trait
+- Implement Basic Auth
+- Implement OAuth 2.0 (client credentials flow)
+- Implement API Key/Token auth
+- Implement `auth` commands (login, logout, status)
+- Write tests with wiremock for each auth method
+
+### Phase 3 — Table API + Pagination
+
+- Implement auto-pagination module
+- Implement `table` commands (list, get, create, update, delete)
+- Implement JSON and CSV output formatters
+- Write tests for pagination edge cases
+
+### Phase 4 — Domain Commands and APIs
+
+- Implement `incident` shortcut commands
+- Implement `attachment` commands (upload/download with streaming)
+- Implement `import-set` commands
+- Implement `api` raw endpoint commands
+- Write tests for each command group
+
+### Phase 5 — Polish and Distribution
+
+- Add shell completions generation
+- Implement `config init` interactive wizard
+- Set up CI/CD (GitHub Actions) for cross-compilation
+- Create Homebrew formula
+- Add mTLS and SSO/SAML auth
