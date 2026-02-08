@@ -114,7 +114,8 @@ snow-cli/
 └── tests/
     ├── common/
     │   └── mod.rs             # Shared test helpers
-    └── test_cli.rs            # End-to-end CLI invocation tests
+    ├── test_cli.rs            # End-to-end CLI invocation tests
+    └── test_table.rs          # Table API wiremock integration tests
 ```
 
 ## Key Architectural Decisions
@@ -227,6 +228,6 @@ What's implemented and working:
 - Client builder helper (`build_client`) for config profile → authenticated SnowClient
 - JSON and CSV output for dynamic Record fields (sorted column headers, missing field handling)
 - Stdin reading for create/update when --data not provided
-- 128 tests (98 unit + 30 integration), zero clippy warnings
+- 166 tests (123 unit + 43 integration), zero clippy warnings
 
 Next up: `docs/backlog/phase-4-commands.md` (incident shortcuts, attachment, import set, raw API commands).

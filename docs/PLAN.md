@@ -159,45 +159,45 @@ never in the config file.
 
 ## Implementation Phases
 
-### Phase 1 — Foundation
+### Phase 1 — Foundation ✓
 
-- Initialize Rust project with Cargo
-- Set up clap CLI structure with global flags
-- Implement config module (TOML loading/saving, profile management)
-- Implement credential storage with `keyring` crate
-- Build core HTTP client wrapper with reqwest
-- Implement error types with structured JSON output
-- Set up tracing-based logging with verbosity flags
-- Write tests for config and error handling
+- [x] Initialize Rust project with Cargo
+- [x] Set up clap CLI structure with global flags
+- [x] Implement config module (TOML loading/saving, profile management)
+- [x] Implement credential storage with `keyring` crate
+- [x] Build core HTTP client wrapper with reqwest
+- [x] Implement error types with structured JSON output
+- [x] Set up tracing-based logging with verbosity flags
+- [x] Write tests for config and error handling
 
-### Phase 2 — Authentication
+### Phase 2 — Authentication ✓
 
-- Define `Authenticator` trait
-- Implement Basic Auth
-- Implement OAuth 2.0 (client credentials flow)
-- Implement API Key/Token auth
-- Implement `auth` commands (login, logout, status)
-- Write tests with wiremock for each auth method
+- [x] Define `Authenticator` trait
+- [x] Implement Basic Auth
+- [x] Implement OAuth 2.0 (client credentials flow)
+- [x] Implement API Key/Token auth
+- [x] Implement `auth` commands (login, logout, status)
+- [x] Write tests with wiremock for each auth method
 
-### Phase 3 — Table API + Pagination
+### Phase 3 — Table API + Pagination ✓
 
-- Implement auto-pagination module
-- Implement `table` commands (list, get, create, update, delete)
-- Implement JSON and CSV output formatters
-- Write tests for pagination edge cases
+- [x] Implement auto-pagination module
+- [x] Implement `table` commands (list, get, create, update, delete)
+- [x] Implement JSON and CSV output formatters
+- [x] Write tests for pagination edge cases
 
 ### Phase 4 — Domain Commands and APIs
 
-- Implement `incident` shortcut commands
-- Implement `attachment` commands (upload/download with streaming)
-- Implement `import-set` commands
-- Implement `api` raw endpoint commands
-- Write tests for each command group
+- [ ] Implement `incident` shortcut commands
+- [ ] Implement `attachment` commands (upload/download with streaming)
+- [ ] Implement `import-set` commands
+- [ ] Implement `api` raw endpoint commands
+- [ ] Write tests for each command group
 
 ### Phase 5 — Polish and Distribution
 
-- Add shell completions generation
-- Implement `config init` interactive wizard
-- Set up CI/CD (GitHub Actions) for cross-compilation
-- Create Homebrew formula
-- Add mTLS and SSO/SAML auth
+- [ ] Add shell completions generation
+- [ ] Implement `config init` interactive wizard
+- [ ] Set up CI/CD (GitHub Actions) for cross-compilation
+- [ ] Create Homebrew formula
+- [ ] Add mTLS and SSO/SAML auth
