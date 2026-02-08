@@ -51,8 +51,11 @@ pub enum Commands {
     /// Import set operations
     ImportSet(ImportSetArgs),
 
-    /// Raw REST API calls to scripted endpoints
+    /// Raw REST API calls to any endpoint
     Api(ApiArgs),
+
+    /// Execute background scripts on ServiceNow
+    Script(ScriptArgs),
 
     /// Generate shell completions
     Completions {
@@ -457,6 +460,32 @@ pub enum ApiCommands {
         /// Custom headers (key:value)
         #[arg(long, short = 'H')]
         header: Vec<String>,
+    },
+}
+
+// --- Script ---
+
+#[derive(Args, Debug)]
+pub struct ScriptArgs {
+    #[command(subcommand)]
+    pub command: ScriptCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ScriptCommands {
+    /// Execute a background script on the ServiceNow instance
+    Run {
+        /// Path to a script file to execute
+        #[arg(long, short = 'f', group = "script_source")]
+        file: Option<String>,
+
+        /// Inline script code to execute
+        #[arg(long, short = 'c', group = "script_source")]
+        code: Option<String>,
+
+        /// Scope in which to run the script (e.g., global, x_myapp)
+        #[arg(long, default_value = "global")]
+        scope: String,
     },
 }
 

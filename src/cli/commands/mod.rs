@@ -5,4 +5,5 @@ pub mod completions;
 pub mod config;
 pub mod import_set;
 pub mod incident;
+pub mod script;
 pub mod table;

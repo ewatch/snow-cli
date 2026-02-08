@@ -66,11 +66,12 @@ struct TokenResponse {
 }
 
 impl OAuth2Auth {
-    pub fn new(profile: &Profile) -> anyhow::Result<Self> {
+    pub fn new(profile_name: &str, profile: &Profile) -> anyhow::Result<Self> {
         let client_id = profile.client_id.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "OAuth2 auth requires `client_id` in the profile configuration. \
-                 Use: snow-cli config set-profile <name> --client-id <id>"
+                 Use: snow-cli config set-profile {} --client-id <id>",
+                profile_name
             )
         })?;
 
@@ -82,7 +83,8 @@ impl OAuth2Auth {
         if grant_type == OAuthGrantType::Password && profile.username.is_none() {
             anyhow::bail!(
                 "OAuth2 password grant requires `username` in the profile configuration. \
-                 Use: snow-cli config set-profile <name> --username <user>"
+                 Use: snow-cli config set-profile {} --username <user>",
+                profile_name
             );
         }
 
@@ -92,7 +94,7 @@ impl OAuth2Auth {
             grant_type,
             username: profile.username.clone(),
             credential_source: CredentialSource::Keychain {
-                profile_name: profile.instance.clone(),
+                profile_name: profile_name.to_string(),
             },
             cached_token: Arc::new(RwLock::new(None)),
         })
@@ -174,7 +176,10 @@ impl OAuth2Auth {
             CredentialSource::Keychain { profile_name } => {
                 credentials::get_credential(profile_name, "client_secret")?.ok_or_else(|| {
                     anyhow::anyhow!(
-                        "No client_secret found for profile. Run `snow-cli auth login --client-secret <secret>` first."
+                        "No client_secret found for profile '{}'. \
+                         Run `snow-cli auth login --profile {} --client-secret <secret>` first.",
+                        profile_name,
+                        profile_name
                     )
                 })
             }
@@ -192,11 +197,15 @@ impl OAuth2Auth {
                 None => anyhow::bail!("No password provided for OAuth2 password grant."),
             },
             CredentialSource::Keychain { profile_name } => {
-                let pw = credentials::get_credential(profile_name, "password")?.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "No password found for profile. Run `snow-cli auth login --password <password>` first."
-                    )
-                })?;
+                let pw =
+                    credentials::get_credential(profile_name, "password")?.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "No password found for profile '{}'. \
+                         Run `snow-cli auth login --profile {} --password <password>` first.",
+                            profile_name,
+                            profile_name
+                        )
+                    })?;
                 Ok(Some(pw))
             }
         }
@@ -380,7 +389,7 @@ mod tests {
             cert_path: None,
             key_path: None,
         };
-        let auth = OAuth2Auth::new(&profile).unwrap();
+        let auth = OAuth2Auth::new("test", &profile).unwrap();
         assert_eq!(
             auth.token_url(),
             "https://mycompany.service-now.com/oauth_token.do"
@@ -398,7 +407,7 @@ mod tests {
             cert_path: None,
             key_path: None,
         };
-        let auth = OAuth2Auth::new(&profile).unwrap();
+        let auth = OAuth2Auth::new("test", &profile).unwrap();
         assert_eq!(
             auth.token_url(),
             "https://mycompany.service-now.com/oauth_token.do"
@@ -416,7 +425,7 @@ mod tests {
             cert_path: None,
             key_path: None,
         };
-        let auth = OAuth2Auth::new(&profile).unwrap();
+        let auth = OAuth2Auth::new("test", &profile).unwrap();
         let body = auth.build_token_request_body("my_secret", None);
         assert_eq!(
             body,
@@ -435,7 +444,7 @@ mod tests {
             cert_path: None,
             key_path: None,
         };
-        let auth = OAuth2Auth::new(&profile).unwrap();
+        let auth = OAuth2Auth::new("test", &profile).unwrap();
         let body = auth.build_token_request_body("my_secret", Some("p@ss"));
         assert_eq!(
             body,
@@ -454,7 +463,7 @@ mod tests {
             cert_path: None,
             key_path: None,
         };
-        let auth = OAuth2Auth::new(&profile).unwrap();
+        let auth = OAuth2Auth::new("test", &profile).unwrap();
         let body = auth.build_refresh_request_body("my_client", "my_secret", "refresh_xyz");
         assert_eq!(
             body,
@@ -473,7 +482,7 @@ mod tests {
             cert_path: None,
             key_path: None,
         };
-        let result = OAuth2Auth::new(&profile);
+        let result = OAuth2Auth::new("test", &profile);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("client_id"));
     }
@@ -489,7 +498,7 @@ mod tests {
             cert_path: None,
             key_path: None,
         };
-        let result = OAuth2Auth::new(&profile);
+        let result = OAuth2Auth::new("test", &profile);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("username"));
     }
@@ -505,7 +514,7 @@ mod tests {
             cert_path: None,
             key_path: None,
         };
-        let auth = OAuth2Auth::new(&profile).unwrap();
+        let auth = OAuth2Auth::new("test-profile", &profile).unwrap();
         assert_eq!(auth.grant_type, OAuthGrantType::ClientCredentials);
     }
 

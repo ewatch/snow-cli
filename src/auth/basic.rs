@@ -22,15 +22,19 @@ pub struct BasicAuth {
 }
 
 impl BasicAuth {
-    pub fn new(profile: &Profile) -> anyhow::Result<Self> {
+    pub fn new(profile_name: &str, profile: &Profile) -> anyhow::Result<Self> {
         let username = profile.username.clone().ok_or_else(|| {
-            anyhow::anyhow!("Basic auth requires a username in the profile configuration")
+            anyhow::anyhow!(
+                "Basic auth requires a username in the profile configuration. \
+                 Use: snow-cli config set-profile {} --username <user>",
+                profile_name
+            )
         })?;
 
         Ok(Self {
             username,
             credential_source: CredentialSource::Keychain {
-                profile_name: profile.instance.clone(),
+                profile_name: profile_name.to_string(),
             },
         })
     }
@@ -54,7 +58,9 @@ impl BasicAuth {
             )?
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "No password found in keychain for profile. Run `snow-cli auth login` first."
+                    "No password found for profile '{}'. Run `snow-cli auth login --profile {}` first.",
+                    profile_name,
+                    profile_name
                 )
             }),
         }
@@ -160,7 +166,7 @@ mod tests {
             cert_path: None,
             key_path: None,
         };
-        let result = BasicAuth::new(&profile);
+        let result = BasicAuth::new("test", &profile);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("username"));
     }
@@ -176,7 +182,7 @@ mod tests {
             cert_path: None,
             key_path: None,
         };
-        let result = BasicAuth::new(&profile);
+        let result = BasicAuth::new("test", &profile);
         assert!(result.is_ok());
     }
 

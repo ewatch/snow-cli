@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use crate::cli::args::{AuthArgs, AuthCommands};
 use crate::config::credentials;
 use crate::config::profile::{AppConfig, OAuthGrantType};
@@ -18,8 +20,8 @@ pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
 /// `auth login` — Store credentials for the active profile.
 ///
 /// Credentials are read from flags (--password, --token, --client-secret)
-/// or from stdin if not provided. The credential type is determined by the
-/// profile's auth_method.
+/// or prompted interactively when stdin is a TTY. The credential type is
+/// determined by the profile's auth_method.
 ///
 /// For OAuth2 password grant, both `--client-secret` and `--password` are required
 /// (two separate keychain entries).
@@ -30,21 +32,21 @@ async fn handle_login(
     client_secret: Option<String>,
 ) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
-    let profile = config
-        .active_profile(Some(profile_name))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Profile '{}' not found. Run `snow-cli config init` or `snow-cli config set-profile` first.",
-                profile_name
-            )
-        })?;
+    let profile = config.active_profile(Some(profile_name)).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Profile '{}' not found. Use --profile <name> to specify a profile, \
+                 or run 'snow-cli config init' to create a default profile.",
+            profile_name
+        )
+    })?;
+
+    let is_tty = std::io::stdin().is_terminal();
 
     match &profile.auth_method {
         crate::config::profile::AuthMethod::Basic => {
-            let pw = password.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Password required for basic auth. Use: snow-cli auth login --password <password>"
-                )
+            let pw = resolve_secret(password, "Password: ", is_tty, || {
+                "Password required for basic auth. Use: snow-cli auth login --password <password>"
+                    .to_string()
             })?;
             credentials::store_credential(profile_name, "password", &pw)?;
 
@@ -57,8 +59,8 @@ async fn handle_login(
             println!("{}", serde_json::to_string(&result)?);
         }
         crate::config::profile::AuthMethod::ApiKey => {
-            let tok = token.ok_or_else(|| {
-                anyhow::anyhow!("API token required. Use: snow-cli auth login --token <token>")
+            let tok = resolve_secret(token, "API token: ", is_tty, || {
+                "API token required. Use: snow-cli auth login --token <token>".to_string()
             })?;
             credentials::store_credential(profile_name, "api_token", &tok)?;
 
@@ -71,10 +73,9 @@ async fn handle_login(
             println!("{}", serde_json::to_string(&result)?);
         }
         crate::config::profile::AuthMethod::Oauth2 => {
-            let secret = client_secret.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Client secret required for OAuth2. Use: snow-cli auth login --client-secret <secret>"
-                )
+            let secret = resolve_secret(client_secret, "Client secret: ", is_tty, || {
+                "Client secret required for OAuth2. Use: snow-cli auth login --client-secret <secret>"
+                    .to_string()
             })?;
             credentials::store_credential(profile_name, "client_secret", &secret)?;
 
@@ -85,11 +86,10 @@ async fn handle_login(
 
             // For password grant, also store the user's password
             if grant_type == OAuthGrantType::Password {
-                let pw = password.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Password required for OAuth2 password grant. \
-                         Use: snow-cli auth login --client-secret <secret> --password <password>"
-                    )
+                let pw = resolve_secret(password, "Password: ", is_tty, || {
+                    "Password required for OAuth2 password grant. \
+                     Use: snow-cli auth login --client-secret <secret> --password <password>"
+                        .to_string()
                 })?;
                 credentials::store_credential(profile_name, "password", &pw)?;
             }
@@ -120,14 +120,43 @@ async fn handle_login(
     Ok(())
 }
 
+/// Resolve a secret value: use the provided flag value, prompt interactively
+/// if stdin is a TTY, or return an error with a usage hint.
+fn resolve_secret<F>(
+    flag_value: Option<String>,
+    prompt: &str,
+    is_tty: bool,
+    error_msg: F,
+) -> anyhow::Result<String>
+where
+    F: FnOnce() -> String,
+{
+    if let Some(value) = flag_value {
+        return Ok(value);
+    }
+
+    if is_tty {
+        let value = rpassword::prompt_password(prompt)?;
+        if value.is_empty() {
+            anyhow::bail!("Empty credential provided. Aborting.");
+        }
+        return Ok(value);
+    }
+
+    anyhow::bail!("{}", error_msg());
+}
+
 /// `auth logout` — Remove stored credentials for the active profile.
 ///
 /// Removes all credential types associated with the profile's auth method.
 async fn handle_logout(profile_name: &str) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
-    let profile = config
-        .active_profile(Some(profile_name))
-        .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found.", profile_name))?;
+    let profile = config.active_profile(Some(profile_name)).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Profile '{}' not found. Use --profile <name> to specify a profile.",
+            profile_name
+        )
+    })?;
 
     // Delete all credential types for this auth method
     let cred_types = credential_types_for_auth(profile);
@@ -149,9 +178,12 @@ async fn handle_logout(profile_name: &str) -> anyhow::Result<()> {
 /// `auth status` — Check if credentials are available for the active profile.
 async fn handle_status(profile_name: &str) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
-    let profile = config
-        .active_profile(Some(profile_name))
-        .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found.", profile_name))?;
+    let profile = config.active_profile(Some(profile_name)).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Profile '{}' not found. Use --profile <name> to specify a profile.",
+            profile_name
+        )
+    })?;
 
     let cred_types = credential_types_for_auth(profile);
     let authenticated = cred_types
@@ -179,9 +211,12 @@ async fn handle_status(profile_name: &str) -> anyhow::Result<()> {
 /// ```
 async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
-    let profile = config
-        .active_profile(Some(profile_name))
-        .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found.", profile_name))?;
+    let profile = config.active_profile(Some(profile_name)).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Profile '{}' not found. Use --profile <name> to specify a profile.",
+            profile_name
+        )
+    })?;
 
     let primary_cred_type = credentials::credential_type_for_auth(&profile.auth_method);
     let credential =

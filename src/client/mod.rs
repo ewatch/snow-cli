@@ -17,15 +17,19 @@ pub fn build_client(
     instance_override: Option<&str>,
 ) -> anyhow::Result<SnowClient> {
     let config = crate::config::AppConfig::load()?;
-    let profile = config
-        .active_profile(Some(profile_name))
-        .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found in config", profile_name))?;
+    let profile = config.active_profile(Some(profile_name)).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Profile '{}' not found in config. Use --profile <name> to specify a profile, \
+                 or run 'snow-cli config init' to create a default profile.",
+            profile_name
+        )
+    })?;
 
     let instance_url = instance_override
         .map(|s| s.to_string())
         .unwrap_or_else(|| profile.instance.clone());
 
-    let authenticator = crate::auth::create_authenticator(profile)?;
+    let authenticator = crate::auth::create_authenticator(profile_name, profile)?;
     SnowClient::new(instance_url, authenticator)
 }
 
@@ -149,6 +153,21 @@ impl SnowClient {
         self.request(Method::DELETE, path, None, &[]).await
     }
 
+    /// Send an authenticated request with custom headers.
+    ///
+    /// This is used by the `api` raw command to pass user-specified headers.
+    pub async fn request_with_headers(
+        &mut self,
+        method: Method,
+        path: &str,
+        body: Option<&str>,
+        params: &[(&str, &str)],
+        extra_headers: &[(String, String)],
+    ) -> anyhow::Result<Response> {
+        self.request_inner(method, path, body, params, extra_headers)
+            .await
+    }
+
     /// Send an authenticated request, with auto-retry on 401.
     async fn request(
         &mut self,
@@ -156,6 +175,18 @@ impl SnowClient {
         path: &str,
         body: Option<&str>,
         params: &[(&str, &str)],
+    ) -> anyhow::Result<Response> {
+        self.request_inner(method, path, body, params, &[]).await
+    }
+
+    /// Internal request implementation with optional extra headers.
+    async fn request_inner(
+        &mut self,
+        method: Method,
+        path: &str,
+        body: Option<&str>,
+        params: &[(&str, &str)],
+        extra_headers: &[(String, String)],
     ) -> anyhow::Result<Response> {
         let url = self.url(path);
 
@@ -171,6 +202,11 @@ impl SnowClient {
             // Add auth headers
             for (key, value) in auth_headers.iter() {
                 request = request.header(key, value);
+            }
+
+            // Add custom headers (may override defaults like Content-Type)
+            for (key, value) in extra_headers {
+                request = request.header(key.as_str(), value.as_str());
             }
 
             // Add query parameters

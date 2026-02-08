@@ -26,10 +26,10 @@ pub struct ApiKeyAuth {
 }
 
 impl ApiKeyAuth {
-    pub fn new(profile: &Profile) -> anyhow::Result<Self> {
+    pub fn new(profile_name: &str, _profile: &Profile) -> anyhow::Result<Self> {
         Ok(Self {
             token_source: TokenSource::Keychain {
-                profile_name: profile.instance.clone(),
+                profile_name: profile_name.to_string(),
             },
         })
     }
@@ -49,8 +49,10 @@ impl ApiKeyAuth {
             TokenSource::Keychain { profile_name } => {
                 credentials::get_credential(profile_name, "api_token")?.ok_or_else(|| {
                     anyhow::anyhow!(
-                        "No API token found in keychain for profile. \
-                         Run `snow-cli auth login --token <token>` first."
+                        "No API token found for profile '{}'. \
+                         Run `snow-cli auth login --profile {} --token <token>` first.",
+                        profile_name,
+                        profile_name
                     )
                 })
             }
@@ -132,7 +134,7 @@ mod tests {
             cert_path: None,
             key_path: None,
         };
-        let auth = ApiKeyAuth::new(&profile);
+        let auth = ApiKeyAuth::new("test", &profile);
         assert!(auth.is_ok());
     }
 }
