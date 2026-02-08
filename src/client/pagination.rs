@@ -36,3 +36,46 @@ impl PaginationConfig {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = PaginationConfig::default();
+        assert_eq!(config.page_size, 100);
+        assert!(config.limit.is_none());
+    }
+
+    #[test]
+    fn test_with_limit() {
+        let config = PaginationConfig::default().with_limit(Some(50));
+        assert_eq!(config.limit, Some(50));
+        assert_eq!(config.page_size, 100); // unchanged
+    }
+
+    #[test]
+    fn test_with_limit_none() {
+        let config = PaginationConfig::default()
+            .with_limit(Some(50))
+            .with_limit(None);
+        assert!(config.limit.is_none());
+    }
+
+    #[test]
+    fn test_with_page_size() {
+        let config = PaginationConfig::default().with_page_size(25);
+        assert_eq!(config.page_size, 25);
+        assert!(config.limit.is_none()); // unchanged
+    }
+
+    #[test]
+    fn test_builder_chaining() {
+        let config = PaginationConfig::default()
+            .with_page_size(50)
+            .with_limit(Some(200));
+        assert_eq!(config.page_size, 50);
+        assert_eq!(config.limit, Some(200));
+    }
+}

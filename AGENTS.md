@@ -213,8 +213,9 @@ Key crates and their purposes:
 
 ## Current Status
 
-Phases 1 (Foundation) and 2 (Authentication) are **complete**. The project is
-ready for **Phase 3 — Table API**.
+Phases 1 (Foundation), 2 (Authentication), and 3 (Table API) are **complete**.
+The project is ready for **Phase 4 — Commands** (incident shortcuts, attachment,
+import set, raw API commands).
 
 What's implemented and working:
 - Full CLI structure with clap, config management (init, set-profile, list, use, show)
@@ -222,6 +223,10 @@ What's implemented and working:
 - Basic Auth, OAuth2 (client_credentials + password grant), and API Key authenticators
 - HTTP client with auto-pagination, 401 retry, and error mapping
 - OS keychain credential storage with env var fallback
-- 109 tests (89 unit + 20 integration), zero clippy warnings
+- Table API CRUD: list (auto-paginated), get, create, update (PATCH), delete (with --yes confirmation)
+- Client builder helper (`build_client`) for config profile → authenticated SnowClient
+- JSON and CSV output for dynamic Record fields (sorted column headers, missing field handling)
+- Stdin reading for create/update when --data not provided
+- 128 tests (98 unit + 30 integration), zero clippy warnings
 
-Next up: `docs/backlog/phase-3-table-api.md` (table list/get/create/update/delete commands).
+Next up: `docs/backlog/phase-4-commands.md` (incident shortcuts, attachment, import set, raw API commands).

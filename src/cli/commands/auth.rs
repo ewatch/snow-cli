@@ -233,3 +233,67 @@ fn credential_types_for_auth(profile: &crate::config::profile::Profile) -> Vec<&
         crate::config::profile::AuthMethod::Saml => vec!["saml_token"],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::profile::{AuthMethod, Profile};
+
+    fn make_profile(auth_method: AuthMethod, grant_type: Option<OAuthGrantType>) -> Profile {
+        Profile {
+            instance: "https://test.service-now.com".to_string(),
+            auth_method,
+            username: Some("admin".to_string()),
+            client_id: Some("client123".to_string()),
+            oauth_grant_type: grant_type,
+            cert_path: None,
+            key_path: None,
+        }
+    }
+
+    #[test]
+    fn test_credential_types_basic() {
+        let profile = make_profile(AuthMethod::Basic, None);
+        assert_eq!(credential_types_for_auth(&profile), vec!["password"]);
+    }
+
+    #[test]
+    fn test_credential_types_api_key() {
+        let profile = make_profile(AuthMethod::ApiKey, None);
+        assert_eq!(credential_types_for_auth(&profile), vec!["api_token"]);
+    }
+
+    #[test]
+    fn test_credential_types_oauth2_client_credentials() {
+        let profile = make_profile(AuthMethod::Oauth2, Some(OAuthGrantType::ClientCredentials));
+        assert_eq!(credential_types_for_auth(&profile), vec!["client_secret"]);
+    }
+
+    #[test]
+    fn test_credential_types_oauth2_password() {
+        let profile = make_profile(AuthMethod::Oauth2, Some(OAuthGrantType::Password));
+        assert_eq!(
+            credential_types_for_auth(&profile),
+            vec!["client_secret", "password"]
+        );
+    }
+
+    #[test]
+    fn test_credential_types_oauth2_default_grant() {
+        // No grant type set — should default to client_credentials
+        let profile = make_profile(AuthMethod::Oauth2, None);
+        assert_eq!(credential_types_for_auth(&profile), vec!["client_secret"]);
+    }
+
+    #[test]
+    fn test_credential_types_mtls() {
+        let profile = make_profile(AuthMethod::Mtls, None);
+        assert_eq!(credential_types_for_auth(&profile), vec!["cert_passphrase"]);
+    }
+
+    #[test]
+    fn test_credential_types_saml() {
+        let profile = make_profile(AuthMethod::Saml, None);
+        assert_eq!(credential_types_for_auth(&profile), vec!["saml_token"]);
+    }
+}

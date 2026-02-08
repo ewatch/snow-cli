@@ -7,6 +7,28 @@ use reqwest::{Client, Method, Response};
 
 use crate::client::error::ApiError;
 
+/// Build an authenticated [`SnowClient`] from the user's configuration.
+///
+/// Loads the config, resolves the active profile, creates the appropriate
+/// authenticator, and constructs the client. An optional `instance_override`
+/// (from `--instance` CLI flag) replaces the profile's instance URL.
+pub fn build_client(
+    profile_name: &str,
+    instance_override: Option<&str>,
+) -> anyhow::Result<SnowClient> {
+    let config = crate::config::AppConfig::load()?;
+    let profile = config
+        .active_profile(Some(profile_name))
+        .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found in config", profile_name))?;
+
+    let instance_url = instance_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| profile.instance.clone());
+
+    let authenticator = crate::auth::create_authenticator(profile)?;
+    SnowClient::new(instance_url, authenticator)
+}
+
 /// Default request timeout in seconds.
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
@@ -243,6 +265,19 @@ impl SnowClient {
         body: &str,
     ) -> anyhow::Result<T> {
         let response = self.post(path, body).await?;
+        let resp_body = response.text().await?;
+        tracing::debug!(body_len = resp_body.len(), "Parsing JSON response");
+        let value: T = serde_json::from_str(&resp_body)?;
+        Ok(value)
+    }
+
+    /// Send a PATCH request and deserialize the JSON response body.
+    pub async fn patch_json<T: serde::de::DeserializeOwned>(
+        &mut self,
+        path: &str,
+        body: &str,
+    ) -> anyhow::Result<T> {
+        let response = self.patch(path, body).await?;
         let resp_body = response.text().await?;
         tracing::debug!(body_len = resp_body.len(), "Parsing JSON response");
         let value: T = serde_json::from_str(&resp_body)?;
@@ -885,5 +920,74 @@ mod tests {
         let api_err = result.unwrap_err().downcast::<ApiError>().unwrap();
         assert_eq!(api_err.code, "FORBIDDEN");
         assert_eq!(api_err.status, 403);
+    }
+
+    #[tokio::test]
+    async fn test_patch_json_deserializes_response() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PATCH"))
+            .and(path("/api/now/table/incident/abc123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {"sys_id": "abc123", "state": "2", "number": "INC001"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let response: crate::models::record::SingleRecordResponse = client
+            .patch_json("/api/now/table/incident/abc123", r#"{"state":"2"}"#)
+            .await
+            .unwrap();
+
+        assert_eq!(response.result.sys_id(), Some("abc123"));
+        assert_eq!(response.result.get_str("state"), Some("2"));
+    }
+
+    #[tokio::test]
+    async fn test_get_single_record_with_fields() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident/abc123"))
+            .and(query_param("sysparm_fields", "sys_id,number"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {"sys_id": "abc123", "number": "INC001"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let response: crate::models::record::SingleRecordResponse = client
+            .get_json_with_params(
+                "/api/now/table/incident/abc123",
+                &[("sysparm_fields", "sys_id,number")],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.result.sys_id(), Some("abc123"));
+        assert_eq!(response.result.get_str("number"), Some("INC001"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_returns_204_no_content() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/api/now/table/incident/del123"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let response = client
+            .delete("/api/now/table/incident/del123")
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 204);
     }
 }

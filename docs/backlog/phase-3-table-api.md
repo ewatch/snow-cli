@@ -4,35 +4,35 @@ Implement core Table API operations with auto-pagination.
 
 ## Work Items
 
-- [ ] Implement auto-pagination
-  - [ ] Parse `X-Total-Count` and `Link` response headers
-  - [ ] Async stream of records across pages
-  - [ ] Configurable page size (default: 100)
-  - [ ] `--limit` flag to cap total records
-  - [ ] Tests for single page, multi-page, empty results, and limit
-- [ ] Implement `table list <table_name>`
-  - [ ] Query parameters: `--query`, `--fields`, `--limit`, `--order-by`
-  - [ ] Auto-paginated output
-  - [ ] JSON and CSV output formatting
-- [ ] Implement `table get <table_name> <sys_id>`
-  - [ ] Single record fetch
-  - [ ] `--fields` to select specific fields
-- [ ] Implement `table create <table_name>`
-  - [ ] Accept `--data` flag (inline JSON) or stdin
-  - [ ] Return created record
-- [ ] Implement `table update <table_name> <sys_id>`
-  - [ ] Accept `--data` flag (inline JSON) or stdin
-  - [ ] PATCH semantics (partial update)
-  - [ ] Return updated record
-- [ ] Implement `table delete <table_name> <sys_id>`
-  - [ ] Confirmation prompt (bypass with `--yes`)
-  - [ ] Return success/failure
-- [ ] Implement output formatters
-  - [ ] JSON formatter (pretty-print with `--pretty`, compact by default)
-  - [ ] CSV formatter with header row
-  - [ ] `--output` flag to select format
-- [ ] Write tests
-  - [ ] Pagination with wiremock (multi-page responses)
-  - [ ] Each CRUD operation
-  - [ ] Output format tests
-  - [ ] Error cases (404, 403, invalid table)
+- [x] Implement auto-pagination
+  - [x] Parse `X-Total-Count` and `Link` response headers
+  - [x] Async stream of records across pages
+  - [x] Configurable page size (default: 100)
+  - [x] `--limit` flag to cap total records
+  - [x] Tests for single page, multi-page, empty results, and limit
+- [x] Implement `table list <table_name>`
+  - [x] Query parameters: `--query`, `--fields`, `--limit`, `--order-by`
+  - [x] Auto-paginated output
+  - [x] JSON and CSV output formatting
+- [x] Implement `table get <table_name> <sys_id>`
+  - [x] Single record fetch
+  - [x] `--fields` to select specific fields
+- [x] Implement `table create <table_name>`
+  - [x] Accept `--data` flag (inline JSON) or stdin
+  - [x] Return created record
+- [x] Implement `table update <table_name> <sys_id>`
+  - [x] Accept `--data` flag (inline JSON) or stdin
+  - [x] PATCH semantics (partial update)
+  - [x] Return updated record
+- [x] Implement `table delete <table_name> <sys_id>`
+  - [x] Confirmation prompt (bypass with `--yes`)
+  - [x] Return success/failure
+- [x] Implement output formatters
+  - [x] JSON formatter (pretty-print with `--pretty`, compact by default)
+  - [x] CSV formatter with header row
+  - [x] `--output` flag to select format
+- [x] Write tests
+  - [x] Pagination with wiremock (multi-page responses)
+  - [x] Each CRUD operation
+  - [x] Output format tests
+  - [x] Error cases (404, 403, invalid table)
