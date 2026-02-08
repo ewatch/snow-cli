@@ -73,12 +73,52 @@ pub struct ConfigArgs {
 #[derive(Subcommand, Debug)]
 pub enum ConfigCommands {
     /// Interactive first-time setup
-    Init,
+    Init {
+        /// Instance URL (e.g., https://mycompany.service-now.com)
+        #[arg(long)]
+        instance: Option<String>,
+
+        /// Authentication method
+        #[arg(long, value_enum)]
+        auth_method: Option<CliAuthMethod>,
+
+        /// Username (for basic auth)
+        #[arg(long)]
+        username: Option<String>,
+
+        /// Profile name to create (defaults to "default")
+        #[arg(long, default_value = "default")]
+        name: String,
+    },
 
     /// Create or update a named profile
     SetProfile {
         /// Profile name
         name: String,
+
+        /// Instance URL (e.g., https://mycompany.service-now.com)
+        #[arg(long)]
+        instance: Option<String>,
+
+        /// Authentication method
+        #[arg(long, value_enum)]
+        auth_method: Option<CliAuthMethod>,
+
+        /// Username (for basic auth)
+        #[arg(long)]
+        username: Option<String>,
+
+        /// OAuth client ID (for oauth2)
+        #[arg(long)]
+        client_id: Option<String>,
+
+        /// Path to client certificate (for mTLS)
+        #[arg(long)]
+        cert_path: Option<String>,
+
+        /// Path to client key (for mTLS)
+        #[arg(long)]
+        key_path: Option<String>,
     },
 
     /// List all configured profiles
@@ -94,6 +134,16 @@ pub enum ConfigCommands {
     Show,
 }
 
+/// Authentication method for CLI argument parsing.
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum CliAuthMethod {
+    Basic,
+    Oauth2,
+    ApiKey,
+    Mtls,
+    Saml,
+}
+
 // --- Auth ---
 
 #[derive(Args, Debug)]
@@ -104,16 +154,28 @@ pub struct AuthArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum AuthCommands {
-    /// Authenticate and store credentials
-    Login,
+    /// Authenticate and store credentials in the OS keychain
+    Login {
+        /// Password for basic auth (reads from stdin if not provided)
+        #[arg(long)]
+        password: Option<String>,
 
-    /// Clear stored credentials
+        /// API token (for api_key auth)
+        #[arg(long)]
+        token: Option<String>,
+
+        /// OAuth client secret (for oauth2 auth)
+        #[arg(long)]
+        client_secret: Option<String>,
+    },
+
+    /// Clear stored credentials for the active profile
     Logout,
 
     /// Show current authentication status
     Status,
 
-    /// Print the current access token to stdout
+    /// Print the current access token to stdout (for piping to other tools)
     Token,
 }
 

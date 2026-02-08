@@ -32,8 +32,10 @@ async fn main() -> anyhow::Result<()> {
     tracing::debug!("snow-cli starting with verbosity level {}", cli.verbose);
 
     match cli.command {
-        cli::args::Commands::Config(args) => cli::commands::config::handle(args).await,
-        cli::args::Commands::Auth(args) => cli::commands::auth::handle(args).await,
+        cli::args::Commands::Config(args) => {
+            cli::commands::config::handle(args, &cli.profile, &cli.output).await
+        }
+        cli::args::Commands::Auth(args) => cli::commands::auth::handle(args, &cli.profile).await,
         cli::args::Commands::Table(args) => cli::commands::table::handle(args).await,
         cli::args::Commands::Incident(args) => cli::commands::incident::handle(args).await,
         cli::args::Commands::Attachment(args) => cli::commands::attachment::handle(args).await,

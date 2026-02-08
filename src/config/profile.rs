@@ -53,34 +53,53 @@ pub enum AuthMethod {
 
 impl AppConfig {
     /// Returns the path to the config file.
+    ///
+    /// Respects the `SNOW_CLI_CONFIG` environment variable if set,
+    /// otherwise defaults to `~/.servicenow/config.toml`.
     pub fn config_path() -> PathBuf {
+        if let Ok(path) = std::env::var("SNOW_CLI_CONFIG") {
+            return PathBuf::from(path);
+        }
         dirs_config_path().join("config.toml")
     }
 
     /// Returns the path to the config directory.
     pub fn config_dir() -> PathBuf {
+        if let Ok(path) = std::env::var("SNOW_CLI_CONFIG") {
+            if let Some(parent) = PathBuf::from(path).parent() {
+                return parent.to_path_buf();
+            }
+        }
         dirs_config_path()
     }
 
     /// Load config from the default path. Returns default config if file does not exist.
     pub fn load() -> anyhow::Result<Self> {
-        let path = Self::config_path();
+        Self::load_from(&Self::config_path())
+    }
+
+    /// Load config from a specific path. Returns default config if file does not exist.
+    pub fn load_from(path: &std::path::Path) -> anyhow::Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let content = std::fs::read_to_string(&path)?;
+        let content = std::fs::read_to_string(path)?;
         let config: AppConfig = toml::from_str(&content)?;
         Ok(config)
     }
 
     /// Save config to the default path.
     pub fn save(&self) -> anyhow::Result<()> {
-        let path = Self::config_path();
+        self.save_to(&Self::config_path())
+    }
+
+    /// Save config to a specific path.
+    pub fn save_to(&self, path: &std::path::Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(&path, content)?;
+        std::fs::write(path, content)?;
         Ok(())
     }
 
