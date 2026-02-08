@@ -213,8 +213,15 @@ Key crates and their purposes:
 
 ## Current Status
 
-The project is in **Phase 1 — Foundation**. The CLI structure, module stubs,
-and argument parsing are in place. Command handlers currently contain `todo!()`
-stubs that need to be implemented.
+Phases 1 (Foundation) and 2 (Authentication) are **complete**. The project is
+ready for **Phase 3 — Table API**.
 
-See `docs/backlog/phase-1-foundation.md` for the detailed work item list.
+What's implemented and working:
+- Full CLI structure with clap, config management (init, set-profile, list, use, show)
+- All auth commands (login, logout, status, token)
+- Basic Auth, OAuth2 (client_credentials + password grant), and API Key authenticators
+- HTTP client with auto-pagination, 401 retry, and error mapping
+- OS keychain credential storage with env var fallback
+- 109 tests (89 unit + 20 integration), zero clippy warnings
+
+Next up: `docs/backlog/phase-3-table-api.md` (table list/get/create/update/delete commands).
