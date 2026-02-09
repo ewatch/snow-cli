@@ -137,10 +137,7 @@ impl AppConfig {
             if self.profiles.contains_key(name) {
                 return Ok(name.to_string());
             }
-            anyhow::bail!(
-                "Profile '{}' not found. Use `snow-cli config list-profiles` to see available profiles.",
-                name
-            );
+            anyhow::bail!("{}", self.profile_not_found_message(name));
         }
 
         if self.default_profile.is_empty() {
@@ -149,15 +146,122 @@ impl AppConfig {
             );
         }
 
-        if !self.profiles.contains_key(&self.default_profile) {
+        if self.profiles.is_empty() {
             anyhow::bail!(
-                "Default profile '{}' not found. Run `snow-cli config use-profile <name>` to choose an existing profile.",
-                self.default_profile
+                "No profiles are configured yet. Run `snow-cli config init --instance <url> --auth-method <method>` first."
+            );
+        }
+
+        if !self.profiles.contains_key(&self.default_profile) {
+            let available_profiles = self.available_profiles_for_message();
+            anyhow::bail!(
+                "Default profile '{}' not found. Available profiles: {}. \
+                 Run `snow-cli config use-profile <name>` to choose one.",
+                self.default_profile,
+                available_profiles
             );
         }
 
         Ok(self.default_profile.clone())
     }
+
+    /// Build a user-facing profile-not-found message with suggestions.
+    pub fn profile_not_found_message(&self, requested: &str) -> String {
+        if self.profiles.is_empty() {
+            return format!(
+                "Profile '{}' not found. No profiles are configured yet. \
+                 Run `snow-cli config init --instance <url> --auth-method <method>` first.",
+                requested
+            );
+        }
+
+        if let Some(suggested) = self.suggest_profile_name(requested) {
+            return format!(
+                "Profile '{}' not found. Maybe you meant '{}'. \
+                 Run `snow-cli config list-profiles` to see available profiles.",
+                requested, suggested
+            );
+        }
+
+        format!(
+            "Profile '{}' not found. Available profiles: {}. \
+             Run `snow-cli config list-profiles` to see details.",
+            requested,
+            self.available_profiles_for_message()
+        )
+    }
+
+    fn available_profiles_for_message(&self) -> String {
+        let mut names: Vec<&str> = self.profiles.keys().map(String::as_str).collect();
+        names.sort_unstable();
+
+        if names.is_empty() {
+            return "(none)".to_string();
+        }
+
+        if names.len() <= 5 {
+            return names.join(", ");
+        }
+
+        format!("{}, ...", names[..5].join(", "))
+    }
+
+    fn suggest_profile_name(&self, requested: &str) -> Option<&str> {
+        let requested_lower = requested.to_ascii_lowercase();
+        let mut best: Option<(&str, usize)> = None;
+
+        for candidate in self.profiles.keys().map(String::as_str) {
+            let candidate_lower = candidate.to_ascii_lowercase();
+            let score = profile_similarity_score(&requested_lower, &candidate_lower);
+            if score == 0 {
+                continue;
+            }
+
+            match best {
+                Some((_, best_score)) if score <= best_score => {}
+                _ => best = Some((candidate, score)),
+            }
+        }
+
+        best.map(|(name, _)| name)
+    }
+}
+
+fn profile_similarity_score(requested: &str, candidate: &str) -> usize {
+    if requested == candidate {
+        return 1000;
+    }
+    if candidate.starts_with(requested) || requested.starts_with(candidate) {
+        return 800;
+    }
+    if candidate.contains(requested) || requested.contains(candidate) {
+        return 600;
+    }
+
+    let shared_prefix = requested
+        .chars()
+        .zip(candidate.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    if shared_prefix >= 2 {
+        return shared_prefix;
+    }
+
+    if requested.chars().count() > 2 && candidate.chars().count() > 2 {
+        let requested_without_last: String = requested
+            .chars()
+            .take(requested.chars().count() - 1)
+            .collect();
+        let candidate_without_last: String = candidate
+            .chars()
+            .take(candidate.chars().count() - 1)
+            .collect();
+        if requested_without_last == candidate_without_last {
+            return 500;
+        }
+    }
+
+    0
 }
 
 fn dirs_config_path() -> PathBuf {
@@ -325,5 +429,36 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("Profile 'prod' not found"));
+    }
+
+    #[test]
+    fn test_profile_not_found_message_includes_suggestion() {
+        let mut config = AppConfig {
+            default_profile: "dev".to_string(),
+            profiles: HashMap::new(),
+        };
+        config.profiles.insert(
+            "dev".to_string(),
+            Profile {
+                instance: "https://dev.service-now.com".to_string(),
+                auth_method: AuthMethod::Basic,
+                username: None,
+                client_id: None,
+                oauth_grant_type: None,
+                cert_path: None,
+                key_path: None,
+            },
+        );
+
+        let message = config.profile_not_found_message("de");
+        assert!(message.contains("Maybe you meant 'dev'"));
+    }
+
+    #[test]
+    fn test_profile_not_found_message_for_empty_config() {
+        let config = AppConfig::default();
+        let message = config.profile_not_found_message("dev");
+        assert!(message.contains("No profiles are configured yet"));
+        assert!(message.contains("config init"));
     }
 }

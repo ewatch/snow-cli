@@ -9,7 +9,8 @@ fn test_help_flag() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("ServiceNow"));
+        .stdout(predicate::str::contains("ServiceNow"))
+        .stdout(predicate::str::contains("Common workflows"));
 }
 
 #[test]
@@ -35,7 +36,17 @@ fn test_config_show_help() {
         .args(["config", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Manage configuration"));
+        .stdout(predicate::str::contains("Manage configuration"))
+        .stdout(predicate::str::contains("Examples:"));
+}
+
+#[test]
+fn test_config_init_help_mentions_non_interactive() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["config", "init", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("non-interactive by default"));
 }
 
 #[test]
@@ -334,6 +345,30 @@ auth_method = "basic"
 }
 
 #[test]
+fn test_config_use_profile_nonexistent_suggests_similar_name() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+
+[profiles.prod]
+instance = "https://prod.service-now.com"
+auth_method = "basic"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args(["config", "use-profile", "de"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Maybe you meant 'dev'"));
+}
+
+#[test]
 fn test_config_delete_profile() {
     let (_dir, config_path) = common::create_temp_config(
         r#"
@@ -463,7 +498,8 @@ fn test_table_list_missing_profile() {
         .args(["table", "list", "incident"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("not found"));
+        .stderr(predicate::str::contains("No profiles are configured yet"))
+        .stderr(predicate::str::contains("config init"));
 }
 
 #[test]
@@ -537,4 +573,24 @@ auth_method = "api_key"
         .assert()
         .failure()
         .stderr(predicate::str::contains("--yes"));
+}
+
+#[test]
+fn test_attachment_commands_fail_gracefully_not_panic() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "default"
+
+[profiles.default]
+instance = "https://test.service-now.com"
+auth_method = "api_key"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args(["attachment", "list", "incident", "abc123"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not implemented yet"));
 }

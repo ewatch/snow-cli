@@ -1,9 +1,33 @@
 use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
 
+const TOP_LEVEL_AFTER_HELP: &str = "Common workflows:\n  1) First-time setup\n     snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli auth login --password '<password>'\n\n  3) List recent incidents\n     snow-cli table list incident --query 'active=true' --limit 20\n\n  4) Create and update records\n     snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n     snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n\n  5) Call a custom API\n     snow-cli api get /api/x_myapp/status";
+
+const CONFIG_AFTER_HELP: &str = "Examples:\n  snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli config set-profile prod --instance https://prod.service-now.com --auth-method oauth2 --client-id abc123\n  snow-cli config list-profiles\n  snow-cli config use-profile prod\n  snow-cli config show";
+
+const CONFIG_INIT_AFTER_HELP: &str = "Notes:\n  - This command is non-interactive by default (safe for agents and CI).\n  - Pass required values as flags.\n\nExamples:\n  snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli config init --name prod --instance https://prod.service-now.com --auth-method oauth2 --oauth-grant-type client-credentials";
+
+const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth status\n  snow-cli auth token\n  snow-cli auth logout";
+
+const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --token '<api-token>'\n  snow-cli auth login --client-secret '<oauth-secret>'\n\nTip:\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.";
+
+const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended";
+
+const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name";
+
+const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incident --data '{\"short_description\":\"VPN down\"}'\n  echo '{\"short_description\":\"From stdin\"}' | snow-cli table create incident";
+
+const API_AFTER_HELP: &str = "Examples:\n  snow-cli api get /api/now/table/incident?sysparm_limit=1\n  snow-cli api post /api/x_myapp/action --data '{\"dry_run\":true}'\n  snow-cli api get /api/x_myapp/status -H 'X-Trace-Id:abc123'";
+
 /// snow-cli — ServiceNow CLI for humans and coding agents
 #[derive(Parser, Debug)]
-#[command(name = "snow-cli", version, about, long_about = None)]
+#[command(
+    name = "snow-cli",
+    version,
+    about,
+    long_about = None,
+    after_help = TOP_LEVEL_AFTER_HELP
+)]
 pub struct Cli {
     /// ServiceNow profile to use
     #[arg(long, global = true)]
@@ -68,6 +92,7 @@ pub enum Commands {
 // --- Config ---
 
 #[derive(Args, Debug)]
+#[command(after_help = CONFIG_AFTER_HELP)]
 pub struct ConfigArgs {
     #[command(subcommand)]
     pub command: ConfigCommands,
@@ -75,7 +100,8 @@ pub struct ConfigArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ConfigCommands {
-    /// Interactive first-time setup
+    /// First-time setup (non-interactive by default)
+    #[command(after_help = CONFIG_INIT_AFTER_HELP)]
     Init {
         /// Instance URL (e.g., https://mycompany.service-now.com)
         #[arg(long)]
@@ -179,6 +205,7 @@ pub enum CliOAuthGrantType {
 // --- Auth ---
 
 #[derive(Args, Debug)]
+#[command(after_help = AUTH_AFTER_HELP)]
 pub struct AuthArgs {
     #[command(subcommand)]
     pub command: AuthCommands,
@@ -187,6 +214,7 @@ pub struct AuthArgs {
 #[derive(Subcommand, Debug)]
 pub enum AuthCommands {
     /// Authenticate and store credentials in the OS keychain
+    #[command(after_help = AUTH_LOGIN_AFTER_HELP)]
     Login {
         /// Password for basic auth (reads from stdin if not provided)
         #[arg(long)]
@@ -214,6 +242,7 @@ pub enum AuthCommands {
 // --- Table ---
 
 #[derive(Args, Debug)]
+#[command(after_help = TABLE_AFTER_HELP)]
 pub struct TableArgs {
     #[command(subcommand)]
     pub command: TableCommands,
@@ -222,6 +251,7 @@ pub struct TableArgs {
 #[derive(Subcommand, Debug)]
 pub enum TableCommands {
     /// List records from a table (auto-paginated)
+    #[command(after_help = TABLE_LIST_AFTER_HELP)]
     List {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
         table: String,
@@ -257,6 +287,7 @@ pub enum TableCommands {
     },
 
     /// Create a new record
+    #[command(after_help = TABLE_CREATE_AFTER_HELP)]
     Create {
         /// Table name
         table: String,
@@ -380,6 +411,7 @@ pub enum ImportSetCommands {
 // --- API (raw) ---
 
 #[derive(Args, Debug)]
+#[command(after_help = API_AFTER_HELP)]
 pub struct ApiArgs {
     #[command(subcommand)]
     pub command: ApiCommands,

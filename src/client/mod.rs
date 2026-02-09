@@ -17,13 +17,9 @@ pub fn build_client(
     instance_override: Option<&str>,
 ) -> anyhow::Result<SnowClient> {
     let config = crate::config::AppConfig::load()?;
-    let profile = config.active_profile(Some(profile_name)).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Profile '{}' not found in config. Use --profile <name> to specify a profile, \
-                 or run 'snow-cli config init' to create a default profile.",
-            profile_name
-        )
-    })?;
+    let profile = config
+        .active_profile(Some(profile_name))
+        .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
     let instance_url = instance_override
         .map(|s| s.to_string())

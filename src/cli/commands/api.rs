@@ -96,7 +96,10 @@ fn parse_headers(headers: &[String]) -> anyhow::Result<Vec<(String, String)>> {
         .iter()
         .map(|h| {
             let (key, value) = h.split_once(':').ok_or_else(|| {
-                anyhow::anyhow!("Invalid header format '{}'. Use 'Key:Value'.", h)
+                anyhow::anyhow!(
+                    "Invalid header format '{}'. Use 'Key: Value', for example: -H 'X-Trace-Id: abc123'.",
+                    h
+                )
             })?;
             Ok((key.trim().to_string(), value.trim().to_string()))
         })
@@ -119,14 +122,21 @@ fn read_data_from<R: std::io::Read>(
     }
 
     if is_tty {
-        anyhow::bail!("No data provided. Use --data '<json>' or pipe data to stdin.");
+        anyhow::bail!(
+            "No data provided. Use --data or pipe a request body. Examples: \
+             snow-cli api post /api/x_myapp/action --data '{{\"dry_run\":true}}' \
+             | echo '{{\"dry_run\":true}}' | snow-cli api post /api/x_myapp/action"
+        );
     }
 
     let mut buf = String::new();
     reader.read_to_string(&mut buf)?;
 
     if buf.trim().is_empty() {
-        anyhow::bail!("No data received from stdin.");
+        anyhow::bail!(
+            "No data received from stdin. Pipe a non-empty body, for example: \
+             echo '{{\"dry_run\":true}}' | snow-cli api post /api/x_myapp/action"
+        );
     }
 
     Ok(buf)

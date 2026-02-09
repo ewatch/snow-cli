@@ -108,7 +108,8 @@ pub async fn handle(
                 let stdin = std::io::stdin();
                 if !stdin.is_terminal() {
                     anyhow::bail!(
-                        "Delete requires confirmation. Use --yes to skip, or run interactively."
+                        "Delete requires confirmation. Re-run with --yes for non-interactive use: \
+                         snow-cli table delete {table} {sys_id} --yes"
                     );
                 }
 
@@ -320,14 +321,21 @@ fn read_data_from<R: std::io::Read>(
     }
 
     if is_tty {
-        anyhow::bail!("No data provided. Use --data '<json>' or pipe JSON to stdin.");
+        anyhow::bail!(
+            "No data provided. Use --data or pipe JSON. Examples: \
+             snow-cli table create incident --data '{{\"short_description\":\"Disk alert\"}}' \
+             | echo '{{\"short_description\":\"Disk alert\"}}' | snow-cli table create incident"
+        );
     }
 
     let mut buf = String::new();
     reader.read_to_string(&mut buf)?;
 
     if buf.trim().is_empty() {
-        anyhow::bail!("No data received from stdin.");
+        anyhow::bail!(
+            "No data received from stdin. Pipe valid JSON, for example: \
+             echo '{{\"short_description\":\"Disk alert\"}}' | snow-cli table create incident"
+        );
     }
 
     Ok(buf)

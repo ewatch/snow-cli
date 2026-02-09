@@ -273,12 +273,7 @@ async fn handle_use_profile(config_path: &Path, name: String) -> anyhow::Result<
     let mut config = AppConfig::load_from(config_path)?;
 
     if !config.profiles.contains_key(&name) {
-        let available: Vec<&String> = config.profiles.keys().collect();
-        anyhow::bail!(
-            "Profile '{}' not found. Available profiles: {:?}",
-            name,
-            available
-        );
+        anyhow::bail!("{}", config.profile_not_found_message(&name));
     }
 
     config.default_profile = name.clone();
@@ -350,7 +345,7 @@ async fn handle_delete_profile(
     let mut config = AppConfig::load_from(config_path)?;
 
     if !config.profiles.contains_key(&name) {
-        anyhow::bail!("Profile '{}' not found.", name);
+        anyhow::bail!("{}", config.profile_not_found_message(&name));
     }
 
     let is_default = config.default_profile == name;

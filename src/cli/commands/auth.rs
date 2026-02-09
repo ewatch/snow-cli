@@ -32,13 +32,9 @@ async fn handle_login(
     client_secret: Option<String>,
 ) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
-    let profile = config.active_profile(Some(profile_name)).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Profile '{}' not found. Use --profile <name> to specify a profile, \
-                 or run 'snow-cli config init' to create a default profile.",
-            profile_name
-        )
-    })?;
+    let profile = config
+        .active_profile(Some(profile_name))
+        .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
     let is_tty = std::io::stdin().is_terminal();
 
@@ -151,12 +147,9 @@ where
 /// Removes all credential types associated with the profile's auth method.
 async fn handle_logout(profile_name: &str) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
-    let profile = config.active_profile(Some(profile_name)).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Profile '{}' not found. Use --profile <name> to specify a profile.",
-            profile_name
-        )
-    })?;
+    let profile = config
+        .active_profile(Some(profile_name))
+        .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
     // Delete all credential types for this auth method
     let cred_types = credential_types_for_auth(profile);
@@ -178,12 +171,9 @@ async fn handle_logout(profile_name: &str) -> anyhow::Result<()> {
 /// `auth status` — Check if credentials are available for the active profile.
 async fn handle_status(profile_name: &str) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
-    let profile = config.active_profile(Some(profile_name)).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Profile '{}' not found. Use --profile <name> to specify a profile.",
-            profile_name
-        )
-    })?;
+    let profile = config
+        .active_profile(Some(profile_name))
+        .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
     let cred_types = credential_types_for_auth(profile);
     let authenticated = cred_types
@@ -211,12 +201,9 @@ async fn handle_status(profile_name: &str) -> anyhow::Result<()> {
 /// ```
 async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
-    let profile = config.active_profile(Some(profile_name)).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Profile '{}' not found. Use --profile <name> to specify a profile.",
-            profile_name
-        )
-    })?;
+    let profile = config
+        .active_profile(Some(profile_name))
+        .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
     let primary_cred_type = credentials::credential_type_for_auth(&profile.auth_method);
     let credential =
