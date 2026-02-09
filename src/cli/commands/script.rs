@@ -10,6 +10,12 @@ pub async fn handle(
 ) -> anyhow::Result<()> {
     match args.command {
         ScriptCommands::Run { file, code, scope } => {
+            eprintln!(
+                "WARNING: The `script run` command is a work in progress. It targets a \
+                 hypothetical /api/now/script/run endpoint that does not exist by default \
+                 on ServiceNow instances. You must deploy a Scripted REST API on your \
+                 instance to handle this endpoint. See ServiceNow docs for details."
+            );
             handle_run(profile, format, instance, file, code, &scope).await
         }
     }

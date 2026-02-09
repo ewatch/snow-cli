@@ -57,6 +57,9 @@ pub enum Commands {
     /// Execute background scripts on ServiceNow
     Script(ScriptArgs),
 
+    /// Search code across ServiceNow instance (scripts, business rules, etc.)
+    Codesearch(CodesearchArgs),
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -277,6 +280,20 @@ pub enum TableCommands {
         #[arg(long)]
         yes: bool,
     },
+
+    /// Show table schema (columns, types, labels) from sys_dictionary
+    Schema {
+        /// Table name (e.g., incident, sys_user, cmdb_ci)
+        table: String,
+
+        /// Show extended field metadata (required, read-only, max length, default, reference table)
+        #[arg(long)]
+        extended: bool,
+
+        /// Include fields inherited from parent tables (e.g., incident inherits from task)
+        #[arg(long)]
+        include_inherited: bool,
+    },
 }
 
 // --- Incident ---
@@ -473,7 +490,7 @@ pub struct ScriptArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ScriptCommands {
-    /// Execute a background script on the ServiceNow instance
+    /// Execute a background script on the ServiceNow instance [WIP: requires a Scripted REST endpoint on the target instance]
     Run {
         /// Path to a script file to execute
         #[arg(long, short = 'f', group = "script_source")]
@@ -486,6 +503,40 @@ pub enum ScriptCommands {
         /// Scope in which to run the script (e.g., global, x_myapp)
         #[arg(long, default_value = "global")]
         scope: String,
+    },
+}
+
+// --- Codesearch ---
+
+#[derive(Args, Debug)]
+pub struct CodesearchArgs {
+    #[command(subcommand)]
+    pub command: CodesearchCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CodesearchCommands {
+    /// Search code across the ServiceNow instance
+    Search {
+        /// Search term
+        #[arg(long, short)]
+        term: String,
+
+        /// Limit to a specific table (e.g., sys_script_include, sys_script, sysevent_script_action)
+        #[arg(long)]
+        table: Option<String>,
+
+        /// Maximum number of results to return (default: 100)
+        #[arg(long, default_value = "100")]
+        limit: usize,
+
+        /// Search across all application scopes
+        #[arg(long, default_value = "true")]
+        search_all_scopes: bool,
+
+        /// Search group to use (default: sn_devstudio.Studio Search Group)
+        #[arg(long, default_value = "sn_devstudio.Studio Search Group")]
+        search_group: String,
     },
 }
 

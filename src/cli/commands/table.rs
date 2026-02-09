@@ -129,7 +129,172 @@ pub async fn handle(
             output::print_status(&format!("Record {sys_id} deleted from {table}"), format)?;
             Ok(())
         }
+
+        TableCommands::Schema {
+            table,
+            extended,
+            include_inherited,
+        } => {
+            handle_schema(
+                profile,
+                format,
+                instance,
+                &table,
+                extended,
+                include_inherited,
+            )
+            .await
+        }
     }
+}
+
+/// `table schema` — Fetch column metadata from sys_dictionary.
+///
+/// Queries sys_dictionary for the given table to retrieve column names, types,
+/// and labels. With `--extended`, also shows required, read-only, max_length,
+/// default_value, and reference table. With `--include-inherited`, queries
+/// parent tables as well (e.g., `incident` extends `task`).
+async fn handle_schema(
+    profile: &str,
+    format: &OutputFormat,
+    instance: Option<&str>,
+    table: &str,
+    extended: bool,
+    include_inherited: bool,
+) -> anyhow::Result<()> {
+    tracing::info!("Fetching schema for table: {}", table);
+
+    let mut client = crate::client::build_client(profile, instance)?;
+
+    // Build the base query: get columns for this table (exclude table-level metadata rows)
+    let query = if include_inherited {
+        // Use INSTANCEOF to get the table and all parent tables
+        format!("nameINSTANCEOF{table}^elementISNOTEMPTY^element!=sys_tags")
+    } else {
+        format!("name={table}^elementISNOTEMPTY^element!=sys_tags")
+    };
+
+    // Select fields based on compact vs extended mode
+    let fields = if extended {
+        "element,internal_type,column_label,mandatory,read_only,display,max_length,default_value,reference,name"
+    } else {
+        "element,internal_type,column_label,name"
+    };
+
+    let pagination = crate::client::pagination::PaginationConfig::default()
+        .with_page_size(500)
+        .with_limit(None);
+
+    let records = client
+        .get_table_records(
+            "sys_dictionary",
+            Some(&query),
+            Some(fields),
+            &pagination,
+            Some("name,element"),
+        )
+        .await?;
+
+    if records.is_empty() {
+        output::print_status(
+            &format!("No columns found for table '{table}'. Verify the table name."),
+            format,
+        )?;
+        return Ok(());
+    }
+
+    // Build schema entries from the dictionary records
+    let entries: Vec<SchemaEntry> = records
+        .iter()
+        .map(|r| SchemaEntry {
+            column: r.get_str("element").unwrap_or("").to_string(),
+            r#type: r.get_str("internal_type").unwrap_or("").to_string(),
+            label: r.get_str("column_label").unwrap_or("").to_string(),
+            table: if include_inherited {
+                Some(r.get_str("name").unwrap_or("").to_string())
+            } else {
+                None
+            },
+            required: if extended {
+                Some(r.get_str("mandatory").unwrap_or("false") == "true")
+            } else {
+                None
+            },
+            read_only: if extended {
+                Some(r.get_str("read_only").unwrap_or("false") == "true")
+            } else {
+                None
+            },
+            display: if extended {
+                Some(r.get_str("display").unwrap_or("false") == "true")
+            } else {
+                None
+            },
+            max_length: if extended {
+                r.get_str("max_length").map(|s| s.to_string())
+            } else {
+                None
+            },
+            default_value: if extended {
+                r.get_str("default_value").map(|s| s.to_string())
+            } else {
+                None
+            },
+            reference: if extended {
+                let val = r.get_str("reference").unwrap_or("");
+                if val.is_empty() {
+                    None
+                } else {
+                    Some(val.to_string())
+                }
+            } else {
+                None
+            },
+        })
+        .collect();
+
+    print_schema(&entries, format)?;
+    Ok(())
+}
+
+/// A single column's schema metadata.
+#[derive(Debug, serde::Serialize)]
+struct SchemaEntry {
+    column: String,
+    r#type: String,
+    label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    table: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    required: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    read_only: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_length: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reference: Option<String>,
+}
+
+/// Print schema entries in the requested format.
+fn print_schema(entries: &[SchemaEntry], format: &OutputFormat) -> anyhow::Result<()> {
+    match format {
+        OutputFormat::Json => {
+            let json = serde_json::to_string(entries)?;
+            println!("{json}");
+        }
+        OutputFormat::Csv => {
+            let mut writer = csv::Writer::from_writer(std::io::stdout());
+            for entry in entries {
+                writer.serialize(entry)?;
+            }
+            writer.flush()?;
+        }
+    }
+    Ok(())
 }
 
 /// Read JSON data from `--data` flag or stdin.

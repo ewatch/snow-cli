@@ -51,6 +51,15 @@ async fn main() -> anyhow::Result<()> {
             cli::commands::script::handle(args, &cli.profile, &cli.output, cli.instance.as_deref())
                 .await
         }
+        cli::args::Commands::Codesearch(args) => {
+            cli::commands::codesearch::handle(
+                args,
+                &cli.profile,
+                &cli.output,
+                cli.instance.as_deref(),
+            )
+            .await
+        }
         cli::args::Commands::Completions { shell } => cli::commands::completions::handle(shell),
     }
 }

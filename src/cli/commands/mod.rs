@@ -1,6 +1,7 @@
 pub mod api;
 pub mod attachment;
 pub mod auth;
+pub mod codesearch;
 pub mod completions;
 pub mod config;
 pub mod import_set;
