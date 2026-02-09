@@ -64,28 +64,24 @@ snow-cli table
   create <table_name>             Create a record (--data or stdin)
   update <table_name> <sys_id>    Update a record
   delete <table_name> <sys_id>    Delete a record
+  schema <table_name>             Show table schema (columns, types, labels)
 
-snow-cli incident
-  list                            List incidents
-  get <number>                    Get incident by number
-  create                          Create an incident
-  update <number>                 Update an incident
-  resolve <number>                Resolve an incident
+snow-cli codesearch
+  search --term <term>            Search code across the instance
 
 snow-cli attachment
   list <table> <sys_id>           List attachments for a record
   download <sys_id>               Download an attachment
   upload <table> <sys_id>         Upload a file as attachment
 
-snow-cli import-set
-  load <table>                    Load data into staging table
-  transform <sys_id>              Transform staged data
-
 snow-cli api
   get <path>                      GET a custom REST endpoint
   post <path>                     POST to a custom REST endpoint
   put <path>                      PUT to a custom REST endpoint
   delete <path>                   DELETE a custom REST endpoint
+
+snow-cli script
+  run                             Run a background script [WIP]
 
 snow-cli completions <shell>      Generate shell completions
 ```
@@ -186,18 +182,21 @@ never in the config file.
 - [x] Implement JSON and CSV output formatters
 - [x] Write tests for pagination edge cases
 
-### Phase 4 — Domain Commands and APIs
+### Phase 4 — Domain Commands and APIs (in progress)
 
-- [ ] Implement `incident` shortcut commands
+- [x] Implement `api` raw endpoint commands (get, post, put, delete with --header)
+- [x] Implement `table schema` command (compact, extended, include-inherited)
+- [x] Implement `codesearch` command (search via Code Search API)
+- [x] Implement `script run` command (WIP — no default REST API on ServiceNow)
 - [ ] Implement `attachment` commands (upload/download with streaming)
-- [ ] Implement `import-set` commands
-- [ ] Implement `api` raw endpoint commands
-- [ ] Write tests for each command group
+- [x] Write tests for each command group
+- ~~Implement `incident` shortcut commands~~ (removed — achievable via `table` commands)
+- ~~Implement `import-set` commands~~ (delayed for later)
 
 ### Phase 5 — Polish and Distribution
 
-- [ ] Add shell completions generation
-- [ ] Implement `config init` interactive wizard
+- [x] Add shell completions generation
+- [x] Implement `config init` interactive wizard
 - [ ] Set up CI/CD (GitHub Actions) for cross-compilation
 - [ ] Create Homebrew formula
 - [ ] Add mTLS and SSO/SAML auth

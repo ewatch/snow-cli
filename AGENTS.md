@@ -89,11 +89,10 @@ snow-cli/
 │   │       ├── mod.rs
 │   │       ├── config.rs      # config subcommands
 │   │       ├── auth.rs        # auth subcommands
-│   │       ├── table.rs       # table API commands
-│   │       ├── incident.rs    # incident shortcuts
-│   │       ├── attachment.rs  # attachment commands
-│   │       ├── import_set.rs  # import set commands
+│   │       ├── table.rs       # table API commands + schema
 │   │       ├── api.rs         # raw REST API commands
+│   │       ├── script.rs      # background script execution (WIP)
+│   │       ├── codesearch.rs   # code search commands
 │   │       └── completions.rs # shell completions generation
 │   ├── auth/
 │   │   ├── mod.rs             # Authenticator trait + factory
@@ -115,7 +114,9 @@ snow-cli/
     ├── common/
     │   └── mod.rs             # Shared test helpers
     ├── test_cli.rs            # End-to-end CLI invocation tests
-    └── test_table.rs          # Table API wiremock integration tests
+    ├── test_table.rs          # Table API + schema wiremock integration tests
+    ├── test_api_script.rs     # API + script integration tests
+    └── test_codesearch.rs     # Code search integration tests
 ```
 
 ## Key Architectural Decisions
@@ -215,8 +216,7 @@ Key crates and their purposes:
 ## Current Status
 
 Phases 1 (Foundation), 2 (Authentication), and 3 (Table API) are **complete**.
-The project is ready for **Phase 4 — Commands** (incident shortcuts, attachment,
-import set, raw API commands).
+Phase 4 (Commands) is **in progress** — most commands are done, `attachment` remains.
 
 What's implemented and working:
 - Full CLI structure with clap, config management (init, set-profile, list, use, show)
@@ -225,9 +225,14 @@ What's implemented and working:
 - HTTP client with auto-pagination, 401 retry, and error mapping
 - OS keychain credential storage with env var fallback
 - Table API CRUD: list (auto-paginated), get, create, update (PATCH), delete (with --yes confirmation)
+- Table schema command: query sys_dictionary for column metadata (compact/extended/inherited)
+- Code search command: search via /api/sn_codesearch/code_search/search endpoint
+- Raw API commands: get, post, put, delete with custom headers
+- Script run command (WIP — no default REST API on ServiceNow)
 - Client builder helper (`build_client`) for config profile → authenticated SnowClient
 - JSON and CSV output for dynamic Record fields (sorted column headers, missing field handling)
 - Stdin reading for create/update when --data not provided
-- 166 tests (123 unit + 43 integration), zero clippy warnings
+- Shell completions generation (bash, zsh, fish, powershell, elvish)
+- 210 tests (141 unit + 69 integration), zero clippy warnings
 
-Next up: `docs/backlog/phase-4-commands.md` (incident shortcuts, attachment, import set, raw API commands).
+Next up: `attachment` commands (Phase 4), then Phase 5 (polish and distribution).
