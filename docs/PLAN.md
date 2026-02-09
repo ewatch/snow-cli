@@ -35,7 +35,7 @@ snow-cli [GLOBAL FLAGS] <NOUN> <VERB> [OPTIONS]
 
 | Flag                   | Description                              |
 |------------------------|------------------------------------------|
-| `--profile <name>`    | Use named profile (default: "default")   |
+| `--profile <name>`    | Use named profile (otherwise use configured default profile) |
 | `--instance <url>`    | Override instance URL                    |
 | `--output <json|csv>` | Output format (default: json)            |
 | `-v / -vv / -vvv`     | Verbosity level                          |
@@ -46,8 +46,9 @@ snow-cli [GLOBAL FLAGS] <NOUN> <VERB> [OPTIONS]
 
 ```
 snow-cli config
-  init                            Interactive setup wizard
+  init                            First-time bootstrap (flag-based)
   set-profile <name>              Create/update a named profile
+  delete-profile <name>           Delete a named profile
   list-profiles                   List all profiles
   use-profile <name>              Set the active default profile
   show                            Show current active config
@@ -67,7 +68,7 @@ snow-cli table
   schema <table_name>             Show table schema (columns, types, labels)
 
 snow-cli codesearch
-  search --term <term>            Search code across the instance
+  search <query>                  Search code across the instance
 
 snow-cli attachment
   list <table> <sys_id>           List attachments for a record
@@ -196,7 +197,7 @@ never in the config file.
 ### Phase 5 — Polish and Distribution
 
 - [x] Add shell completions generation
-- [x] Implement `config init` interactive wizard
+- [x] Implement `config init` first-time bootstrap
 - [ ] Set up CI/CD (GitHub Actions) for cross-compilation
 - [ ] Create Homebrew formula
 - [ ] Add mTLS and SSO/SAML auth

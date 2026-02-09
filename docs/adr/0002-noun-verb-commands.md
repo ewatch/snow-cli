@@ -16,7 +16,7 @@ via `--help`.
 Use a **noun-verb** pattern: `snow-cli <noun> <verb> [options]`.
 
 Examples:
-- `snow-cli incident list --limit 10`
+- `snow-cli table list incident --limit 10`
 - `snow-cli table get sys_user abc123`
 - `snow-cli attachment upload incident INC0010001 --file report.pdf`
 - `snow-cli config set-profile dev`
@@ -25,8 +25,8 @@ Examples:
 
 | Pattern        | Example                              | Assessment                          |
 |----------------|--------------------------------------|-------------------------------------|
-| Noun-verb      | `snow-cli incident list`             | Natural English, discoverable       |
-| Resource-verb  | `snow-cli table list incident`       | Groups by API, less intuitive       |
+| Noun-verb      | `snow-cli table list incident`       | Natural English, discoverable       |
+| Resource-verb  | `snow-cli list table incident`       | Verb-first, less discoverable       |
 | Flat           | `snow-cli list-incidents`            | No hierarchy, poor discoverability  |
 
 ## Consequences

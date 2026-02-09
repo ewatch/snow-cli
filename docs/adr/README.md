@@ -45,3 +45,4 @@ What becomes easier or harder as a result of this decision?
 | 0003 | OS keychain for credential storage | Accepted |
 | 0004 | TOML for configuration format  | Accepted |
 | 0005 | Structured JSON error output   | Accepted |
+| 0006 | Profile resolution and command UX simplification | Accepted |

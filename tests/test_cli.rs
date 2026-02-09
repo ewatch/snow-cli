@@ -48,15 +48,6 @@ fn test_table_list_help() {
 }
 
 #[test]
-fn test_incident_help() {
-    cargo_bin_cmd!("snow-cli")
-        .args(["incident", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Incident"));
-}
-
-#[test]
 fn test_completions_bash() {
     cargo_bin_cmd!("snow-cli")
         .args(["completions", "bash"])
@@ -340,6 +331,58 @@ auth_method = "basic"
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_config_delete_profile() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+
+[profiles.prod]
+instance = "https://prod.service-now.com"
+auth_method = "api_key"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args(["config", "delete-profile", "prod"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\":\"deleted\""));
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(!content.contains("[profiles.prod]"));
+    assert!(content.contains("default_profile = \"dev\""));
+}
+
+#[test]
+fn test_config_delete_default_profile_requires_yes() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+
+[profiles.prod]
+instance = "https://prod.service-now.com"
+auth_method = "api_key"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args(["config", "delete-profile", "dev"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("current default"));
 }
 
 #[test]

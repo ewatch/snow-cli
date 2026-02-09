@@ -60,7 +60,6 @@ async fn test_codesearch_basic() {
             &server.uri(),
             "codesearch",
             "search",
-            "--term",
             "GlideRecord",
         ])
         .assert()
@@ -100,9 +99,8 @@ async fn test_codesearch_with_table_filter() {
             &server.uri(),
             "codesearch",
             "search",
-            "--term",
             "incident",
-            "--table",
+            "--source-table",
             "sys_script_include",
         ])
         .assert()
@@ -139,7 +137,6 @@ async fn test_codesearch_with_custom_limit() {
             &server.uri(),
             "codesearch",
             "search",
-            "--term",
             "myfunction",
             "--limit",
             "500",
@@ -171,7 +168,6 @@ async fn test_codesearch_empty_result() {
             &server.uri(),
             "codesearch",
             "search",
-            "--term",
             "nonexistent_xyz",
         ])
         .assert()
@@ -206,7 +202,6 @@ async fn test_codesearch_csv_output() {
             &server.uri(),
             "codesearch",
             "search",
-            "--term",
             "test",
         ])
         .assert()
@@ -230,14 +225,7 @@ async fn test_codesearch_server_error() {
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
-        .args([
-            "--instance",
-            &server.uri(),
-            "codesearch",
-            "search",
-            "--term",
-            "test",
-        ])
+        .args(["--instance", &server.uri(), "codesearch", "search", "test"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("SERVER_ERROR"));
@@ -262,14 +250,7 @@ async fn test_codesearch_non_standard_response() {
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
-        .args([
-            "--instance",
-            &server.uri(),
-            "codesearch",
-            "search",
-            "--term",
-            "test",
-        ])
+        .args(["--instance", &server.uri(), "codesearch", "search", "test"])
         .assert()
         .success()
         .stdout(predicate::str::contains("matches"))

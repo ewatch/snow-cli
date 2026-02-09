@@ -126,7 +126,7 @@ Read `docs/adr/` for full context. Summary:
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Language | Rust | Single binary, no runtime dependency, strong types |
-| Command pattern | Noun-verb (`snow-cli incident list`) | Discoverable, natural for humans and agents |
+| Command pattern | Noun-verb (`snow-cli table list incident`) | Discoverable, natural for humans and agents |
 | Config format | TOML (`~/.servicenow/config.toml`) | Human-readable, comments, Rust-native |
 | Credentials | OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager) | Secure, no plaintext secrets |
 | Error output | Structured JSON on stderr | Machine-parseable for agents |
@@ -219,7 +219,7 @@ Phases 1 (Foundation), 2 (Authentication), and 3 (Table API) are **complete**.
 Phase 4 (Commands) is **in progress** — most commands are done, `attachment` remains.
 
 What's implemented and working:
-- Full CLI structure with clap, config management (init, set-profile, list, use, show)
+- Full CLI structure with clap, config management (init, set-profile, delete-profile, list, use, show)
 - All auth commands (login, logout, status, token)
 - Basic Auth, OAuth2 (client_credentials + password grant), and API Key authenticators
 - HTTP client with auto-pagination, 401 retry, and error mapping

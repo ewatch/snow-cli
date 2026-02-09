@@ -9,27 +9,28 @@ pub async fn handle(
 ) -> anyhow::Result<()> {
     match args.command {
         CodesearchCommands::Search {
-            term,
-            table,
+            query,
+            source_table,
             limit,
-            search_all_scopes,
+            current_scope,
             search_group,
         } => {
-            tracing::info!(term = %term, "Searching code");
+            tracing::info!(query = %query, "Searching code");
 
             let mut client = crate::client::build_client(profile, instance)?;
 
             let limit_str = limit.to_string();
+            let search_all_scopes = !current_scope;
             let search_all_scopes_str = search_all_scopes.to_string();
 
             let mut params: Vec<(&str, &str)> = vec![
-                ("term", &term),
+                ("term", &query),
                 ("limit", &limit_str),
                 ("search_all_scopes", &search_all_scopes_str),
                 ("search_group", &search_group),
             ];
 
-            if let Some(ref t) = table {
+            if let Some(ref t) = source_table {
                 params.push(("table", t.as_str()));
             }
 
@@ -69,25 +70,25 @@ mod tests {
     fn test_codesearch_args_construction() {
         let args = CodesearchArgs {
             command: CodesearchCommands::Search {
-                term: "GlideRecord".to_string(),
-                table: Some("sys_script_include".to_string()),
+                query: "GlideRecord".to_string(),
+                source_table: Some("sys_script_include".to_string()),
                 limit: 500,
-                search_all_scopes: true,
+                current_scope: false,
                 search_group: "sn_devstudio.Studio Search Group".to_string(),
             },
         };
         match args.command {
             CodesearchCommands::Search {
-                term,
-                table,
+                query,
+                source_table,
                 limit,
-                search_all_scopes,
+                current_scope,
                 search_group,
             } => {
-                assert_eq!(term, "GlideRecord");
-                assert_eq!(table, Some("sys_script_include".to_string()));
+                assert_eq!(query, "GlideRecord");
+                assert_eq!(source_table, Some("sys_script_include".to_string()));
                 assert_eq!(limit, 500);
-                assert!(search_all_scopes);
+                assert!(!current_scope);
                 assert_eq!(search_group, "sn_devstudio.Studio Search Group");
             }
         }

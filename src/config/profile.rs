@@ -127,6 +127,37 @@ impl AppConfig {
         let name = override_name.unwrap_or(&self.default_profile);
         self.get_profile(name)
     }
+
+    /// Resolve the effective active profile name.
+    pub fn resolve_active_profile_name(
+        &self,
+        override_name: Option<&str>,
+    ) -> anyhow::Result<String> {
+        if let Some(name) = override_name {
+            if self.profiles.contains_key(name) {
+                return Ok(name.to_string());
+            }
+            anyhow::bail!(
+                "Profile '{}' not found. Use `snow-cli config list-profiles` to see available profiles.",
+                name
+            );
+        }
+
+        if self.default_profile.is_empty() {
+            anyhow::bail!(
+                "No default profile configured. Run `snow-cli config init --instance <url> --auth-method <method>` first."
+            );
+        }
+
+        if !self.profiles.contains_key(&self.default_profile) {
+            anyhow::bail!(
+                "Default profile '{}' not found. Run `snow-cli config use-profile <name>` to choose an existing profile.",
+                self.default_profile
+            );
+        }
+
+        Ok(self.default_profile.clone())
+    }
 }
 
 fn dirs_config_path() -> PathBuf {
@@ -245,5 +276,54 @@ mod tests {
         let profile = config.profiles.get("test").unwrap();
         assert_eq!(profile.auth_method, AuthMethod::Oauth2);
         assert_eq!(profile.client_id, Some("abc".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_active_profile_name_uses_default() {
+        let mut config = AppConfig {
+            default_profile: "dev".to_string(),
+            profiles: HashMap::new(),
+        };
+        config.profiles.insert(
+            "dev".to_string(),
+            Profile {
+                instance: "https://dev.service-now.com".to_string(),
+                auth_method: AuthMethod::Basic,
+                username: None,
+                client_id: None,
+                oauth_grant_type: None,
+                cert_path: None,
+                key_path: None,
+            },
+        );
+
+        let resolved = config.resolve_active_profile_name(None).unwrap();
+        assert_eq!(resolved, "dev");
+    }
+
+    #[test]
+    fn test_resolve_active_profile_name_fails_for_unknown_override() {
+        let mut config = AppConfig {
+            default_profile: "dev".to_string(),
+            profiles: HashMap::new(),
+        };
+        config.profiles.insert(
+            "dev".to_string(),
+            Profile {
+                instance: "https://dev.service-now.com".to_string(),
+                auth_method: AuthMethod::Basic,
+                username: None,
+                client_id: None,
+                oauth_grant_type: None,
+                cert_path: None,
+                key_path: None,
+            },
+        );
+
+        let err = config
+            .resolve_active_profile_name(Some("prod"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Profile 'prod' not found"));
     }
 }

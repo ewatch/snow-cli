@@ -26,10 +26,17 @@ Higher-level commands and remaining API integrations.
   - [x] JSON and CSV output support
   - [x] Tests for compact, extended, inherited, CSV, and empty result
 - [x] Implement `codesearch` command
-  - [x] `codesearch search --term <term>` — search code via Code Search API
-  - [x] `--table`, `--limit`, `--search-all-scopes`, `--search-group` options
+  - [x] `codesearch search <query>` — search code via Code Search API
+  - [x] `--source-table` (alias `--table`), `--limit`, `--current-scope`, `--search-group` options
   - [x] Flexible response parsing (TableResponse, generic JSON, raw text)
   - [x] Tests for basic, table filter, custom limit, CSV, server error, non-standard response
 - [x] Implement `script run` command (WIP)
   - [x] Basic command structure with --code, --file, --scope options
   - [x] Runtime warning: no default REST API for background scripts on ServiceNow
+
+## UX/Config Improvements (Post-Review)
+
+- [x] Resolve active profile from config default when `--profile` is omitted
+- [x] Add profile execution hint on stderr for interactive terminals (`SNOW_CLI_PROFILE_HINT=0` to disable)
+- [x] Add `config delete-profile <name>` with default-profile safety checks
+- [x] Remove `incident` subcommand wiring and stale placeholder handler

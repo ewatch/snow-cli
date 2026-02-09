@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::cli::args::{
     CliAuthMethod, CliOAuthGrantType, ConfigArgs, ConfigCommands, OutputFormat,
 };
+use crate::config::credentials;
 use crate::config::profile::{AppConfig, AuthMethod, OAuthGrantType, Profile};
 
 /// Convert CLI auth method enum to config auth method enum.
@@ -74,6 +75,11 @@ pub async fn handle(
         ConfigCommands::ListProfiles => handle_list_profiles(&config_path, output_format).await,
         ConfigCommands::UseProfile { name } => handle_use_profile(&config_path, name).await,
         ConfigCommands::Show => handle_show(&config_path, active_profile, output_format).await,
+        ConfigCommands::DeleteProfile {
+            name,
+            yes,
+            new_default,
+        } => handle_delete_profile(&config_path, name, yes, new_default).await,
     }
 }
 
@@ -330,6 +336,72 @@ async fn handle_show(
             writer.flush()?;
         }
     }
+
+    Ok(())
+}
+
+/// `config delete-profile <name>` — Delete a named profile.
+async fn handle_delete_profile(
+    config_path: &Path,
+    name: String,
+    yes: bool,
+    new_default: Option<String>,
+) -> anyhow::Result<()> {
+    let mut config = AppConfig::load_from(config_path)?;
+
+    if !config.profiles.contains_key(&name) {
+        anyhow::bail!("Profile '{}' not found.", name);
+    }
+
+    let is_default = config.default_profile == name;
+    if is_default && !yes {
+        anyhow::bail!(
+            "Profile '{}' is the current default. Re-run with --yes and --new-default <name>.",
+            name
+        );
+    }
+
+    if is_default {
+        let replacement = new_default.ok_or_else(|| {
+            anyhow::anyhow!("Deleting the current default profile requires --new-default <name>.")
+        })?;
+
+        if replacement == name {
+            anyhow::bail!("--new-default must be different from the profile being deleted.");
+        }
+
+        if !config.profiles.contains_key(&replacement) {
+            anyhow::bail!("New default profile '{}' does not exist.", replacement);
+        }
+
+        config.default_profile = replacement;
+    }
+
+    config.profiles.remove(&name);
+
+    if config.profiles.is_empty() {
+        config.default_profile.clear();
+    }
+
+    config.save_to(config_path)?;
+
+    // Best-effort credential cleanup for all supported types.
+    for credential_type in [
+        "password",
+        "api_token",
+        "client_secret",
+        "cert_passphrase",
+        "saml_token",
+    ] {
+        let _ = credentials::delete_credential(&name, credential_type);
+    }
+
+    let result = serde_json::json!({
+        "status": "deleted",
+        "profile": name,
+        "default_profile": config.default_profile,
+    });
+    println!("{}", serde_json::to_string(&result)?);
 
     Ok(())
 }
@@ -732,5 +804,61 @@ mod tests {
         // Should not error
         let result = handle_list_profiles(&config_path, &OutputFormat::Json).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_config_delete_profile_non_default() {
+        let (_tmp, config_path) = temp_config_path();
+        handle_init(
+            &config_path,
+            Some("https://dev.service-now.com".to_string()),
+            None,
+            None,
+            None,
+            "dev".to_string(),
+        )
+        .await
+        .unwrap();
+
+        handle_set_profile(
+            &config_path,
+            "prod".to_string(),
+            Some("https://prod.service-now.com".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        handle_delete_profile(&config_path, "prod".to_string(), false, None)
+            .await
+            .unwrap();
+
+        let config = AppConfig::load_from(&config_path).unwrap();
+        assert!(!config.profiles.contains_key("prod"));
+        assert_eq!(config.default_profile, "dev");
+    }
+
+    #[tokio::test]
+    async fn test_config_delete_default_requires_confirmation() {
+        let (_tmp, config_path) = temp_config_path();
+        handle_init(
+            &config_path,
+            Some("https://dev.service-now.com".to_string()),
+            None,
+            None,
+            None,
+            "dev".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let result = handle_delete_profile(&config_path, "dev".to_string(), false, None).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("current default"));
     }
 }

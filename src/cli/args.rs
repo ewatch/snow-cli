@@ -6,8 +6,8 @@ use clap_complete::Shell;
 #[command(name = "snow-cli", version, about, long_about = None)]
 pub struct Cli {
     /// ServiceNow profile to use
-    #[arg(long, global = true, default_value = "default")]
-    pub profile: String,
+    #[arg(long, global = true)]
+    pub profile: Option<String>,
 
     /// Override the ServiceNow instance URL
     #[arg(long, global = true)]
@@ -41,9 +41,6 @@ pub enum Commands {
 
     /// Table API operations (CRUD on any ServiceNow table)
     Table(TableArgs),
-
-    /// Incident management shortcuts
-    Incident(IncidentArgs),
 
     /// Attachment operations
     Attachment(AttachmentArgs),
@@ -146,6 +143,20 @@ pub enum ConfigCommands {
 
     /// Show the current active configuration
     Show,
+
+    /// Delete a named profile
+    DeleteProfile {
+        /// Profile name to delete
+        name: String,
+
+        /// Confirm deleting the current default profile
+        #[arg(long)]
+        yes: bool,
+
+        /// New default profile to set when deleting the current default profile
+        #[arg(long)]
+        new_default: Option<String>,
+    },
 }
 
 /// Authentication method for CLI argument parsing.
@@ -293,61 +304,6 @@ pub enum TableCommands {
         /// Include fields inherited from parent tables (e.g., incident inherits from task)
         #[arg(long)]
         include_inherited: bool,
-    },
-}
-
-// --- Incident ---
-
-#[derive(Args, Debug)]
-pub struct IncidentArgs {
-    #[command(subcommand)]
-    pub command: IncidentCommands,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum IncidentCommands {
-    /// List incidents
-    List {
-        /// Encoded query string
-        #[arg(long)]
-        query: Option<String>,
-
-        /// Maximum number of records to return
-        #[arg(long)]
-        limit: Option<usize>,
-    },
-
-    /// Get an incident by number
-    Get {
-        /// Incident number (e.g., INC0010001)
-        number: String,
-    },
-
-    /// Create a new incident
-    Create {
-        /// JSON data for the incident
-        #[arg(long)]
-        data: Option<String>,
-    },
-
-    /// Update an incident by number
-    Update {
-        /// Incident number
-        number: String,
-
-        /// JSON data for the update
-        #[arg(long)]
-        data: Option<String>,
-    },
-
-    /// Resolve an incident
-    Resolve {
-        /// Incident number
-        number: String,
-
-        /// Resolution notes
-        #[arg(long)]
-        notes: Option<String>,
     },
 }
 
@@ -518,23 +474,22 @@ pub struct CodesearchArgs {
 pub enum CodesearchCommands {
     /// Search code across the ServiceNow instance
     Search {
-        /// Search term
-        #[arg(long, short)]
-        term: String,
+        /// Search query text
+        query: String,
 
         /// Limit to a specific table (e.g., sys_script_include, sys_script, sysevent_script_action)
-        #[arg(long)]
-        table: Option<String>,
+        #[arg(long = "source-table", alias = "table")]
+        source_table: Option<String>,
 
         /// Maximum number of results to return (default: 100)
         #[arg(long, default_value = "100")]
         limit: usize,
 
-        /// Search across all application scopes
-        #[arg(long, default_value = "true")]
-        search_all_scopes: bool,
+        /// Restrict search to the current scope only
+        #[arg(long)]
+        current_scope: bool,
 
-        /// Search group to use (default: sn_devstudio.Studio Search Group)
+        /// Search group to use (advanced)
         #[arg(long, default_value = "sn_devstudio.Studio Search Group")]
         search_group: String,
     },
@@ -559,13 +514,13 @@ mod tests {
     #[test]
     fn test_parse_profile_flag() {
         let cli = Cli::parse_from(["snow-cli", "--profile", "prod", "config", "show"]);
-        assert_eq!(cli.profile, "prod");
+        assert_eq!(cli.profile, Some("prod".to_string()));
     }
 
     #[test]
-    fn test_parse_default_profile() {
+    fn test_parse_profile_is_optional() {
         let cli = Cli::parse_from(["snow-cli", "config", "show"]);
-        assert_eq!(cli.profile, "default");
+        assert_eq!(cli.profile, None);
     }
 
     #[test]
