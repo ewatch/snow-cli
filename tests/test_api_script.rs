@@ -278,13 +278,29 @@ fn test_api_help() {
 async fn test_script_run_with_inline_code() {
     let server = MockServer::start().await;
 
-    Mock::given(method("POST"))
-        .and(path("/api/now/script/run"))
-        .and(body_string_contains("gs.info"))
-        .and(body_string_contains("global"))
+    Mock::given(method("GET"))
+        .and(path("/sys.scripts.modern.do"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({"result": "script output here"})),
+                .insert_header("Set-Cookie", "JSESSIONID=inline-session; Path=/; HttpOnly")
+                .set_body_string("<script>window.g_ck = 'inline-gck';</script>"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/sys.scripts.do"))
+        .and(header("Cookie", "JSESSIONID=inline-session"))
+        .and(header("X-UserToken", "inline-gck"))
+        .and(body_string_contains("gs.info"))
+        .and(body_string_contains("sys_scope=global"))
+        .and(body_string_contains("runscript=Run+script"))
+        .and(body_string_contains("sysparm_ck=inline-gck"))
+        .and(body_string_contains("record_for_rollback=on"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("<HTML><BODY>script output here</BODY></HTML>"),
         )
         .expect(1)
         .mount(&server)
@@ -312,11 +328,25 @@ async fn test_script_run_with_inline_code() {
 async fn test_script_run_with_custom_scope() {
     let server = MockServer::start().await;
 
-    Mock::given(method("POST"))
-        .and(path("/api/now/script/run"))
-        .and(body_string_contains("x_myapp"))
+    Mock::given(method("GET"))
+        .and(path("/sys.scripts.modern.do"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": "scoped"})),
+            ResponseTemplate::new(200)
+                .insert_header("Set-Cookie", "JSESSIONID=scope-session; Path=/; HttpOnly")
+                .set_body_string("<script>window.g_ck = 'scope-gck';</script>"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/sys.scripts.do"))
+        .and(header("Cookie", "JSESSIONID=scope-session"))
+        .and(header("X-UserToken", "scope-gck"))
+        .and(body_string_contains("sys_scope=x_myapp"))
+        .and(body_string_contains("sysparm_ck=scope-gck"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string("<HTML><BODY>scoped</BODY></HTML>"),
         )
         .expect(1)
         .mount(&server)
@@ -343,15 +373,62 @@ async fn test_script_run_with_custom_scope() {
 }
 
 #[tokio::test]
-async fn test_script_run_from_file() {
+async fn test_script_run_with_custom_endpoint_json_payload() {
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
-        .and(path("/api/now/script/run"))
-        .and(body_string_contains("from_file_script"))
+        .and(path("/api/x_myapp/script/run"))
+        .and(header("Content-Type", "application/json"))
+        .and(body_string_contains("gs.info('custom endpoint')"))
+        .and(body_string_contains("\"scope\":\"global\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": "ok"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "script",
+            "run",
+            "--code",
+            "gs.info('custom endpoint')",
+            "--endpoint",
+            "/api/x_myapp/script/run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok"));
+}
+
+#[tokio::test]
+async fn test_script_run_from_file() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/sys.scripts.modern.do"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({"result": "file executed"})),
+                .insert_header("Set-Cookie", "JSESSIONID=file-session; Path=/; HttpOnly")
+                .set_body_string("<script>window.g_ck = 'file-gck';</script>"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/sys.scripts.do"))
+        .and(header("Cookie", "JSESSIONID=file-session"))
+        .and(header("X-UserToken", "file-gck"))
+        .and(body_string_contains("from_file_script"))
+        .and(body_string_contains("sysparm_ck=file-gck"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string("<HTML><BODY>file executed</BODY></HTML>"),
         )
         .expect(1)
         .mount(&server)
@@ -384,12 +461,25 @@ async fn test_script_run_from_file() {
 async fn test_script_run_from_stdin() {
     let server = MockServer::start().await;
 
-    Mock::given(method("POST"))
-        .and(path("/api/now/script/run"))
-        .and(body_string_contains("stdin_script"))
+    Mock::given(method("GET"))
+        .and(path("/sys.scripts.modern.do"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({"result": "stdin executed"})),
+                .insert_header("Set-Cookie", "JSESSIONID=stdin-session; Path=/; HttpOnly")
+                .set_body_string("<script>window.g_ck = 'stdin-gck';</script>"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/sys.scripts.do"))
+        .and(header("Cookie", "JSESSIONID=stdin-session"))
+        .and(header("X-UserToken", "stdin-gck"))
+        .and(body_string_contains("stdin_script"))
+        .and(body_string_contains("sysparm_ck=stdin-gck"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string("<HTML><BODY>stdin executed</BODY></HTML>"),
         )
         .expect(1)
         .mount(&server)
@@ -405,6 +495,42 @@ async fn test_script_run_from_stdin() {
         .assert()
         .success()
         .stdout(predicate::str::contains("stdin executed"));
+}
+
+#[tokio::test]
+async fn test_script_run_fails_when_bootstrap_has_no_g_ck() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/sys.scripts.modern.do"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header(
+                    "Set-Cookie",
+                    "JSESSIONID=missing-gck-session; Path=/; HttpOnly",
+                )
+                .set_body_string("<html><body>No token present</body></html>"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "script",
+            "run",
+            "--code",
+            "gs.info('missing gck')",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Could not extract g_ck token"));
 }
 
 #[test]
@@ -425,5 +551,6 @@ fn test_script_run_help() {
         .success()
         .stdout(predicate::str::contains("--file"))
         .stdout(predicate::str::contains("--code"))
-        .stdout(predicate::str::contains("--scope"));
+        .stdout(predicate::str::contains("--scope"))
+        .stdout(predicate::str::contains("--endpoint"));
 }

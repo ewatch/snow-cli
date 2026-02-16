@@ -20,6 +20,6 @@ Complete items in order unless dependencies dictate otherwise.
 |--------------------------------------------|-----------------------------------|-------------|
 | [phase-1-foundation.md](phase-1-foundation.md) | Core scaffolding and config       | Done        |
 | [phase-2-auth.md](phase-2-auth.md)             | Authentication mechanisms         | Done        |
-| [phase-3-table-api.md](phase-3-table-api.md)   | Table API and pagination          | Not Started |
-| [phase-4-commands.md](phase-4-commands.md)      | Domain commands and APIs          | Not Started |
+| [phase-3-table-api.md](phase-3-table-api.md)   | Table API and pagination          | Done        |
+| [phase-4-commands.md](phase-4-commands.md)      | Domain commands and APIs          | In Progress |
 | [phase-5-distribution.md](phase-5-distribution.md) | Polish, CI/CD, Homebrew       | Not Started |

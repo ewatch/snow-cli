@@ -363,8 +363,8 @@ pub enum AttachmentCommands {
         sys_id: String,
 
         /// Output file path (defaults to original filename)
-        #[arg(long, short)]
-        output: Option<String>,
+        #[arg(long = "out", short = 'o')]
+        out_path: Option<String>,
     },
 
     /// Upload a file as an attachment
@@ -478,7 +478,7 @@ pub struct ScriptArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ScriptCommands {
-    /// Execute a background script on the ServiceNow instance [WIP: requires a Scripted REST endpoint on the target instance]
+    /// Execute a background script on the ServiceNow instance
     Run {
         /// Path to a script file to execute
         #[arg(long, short = 'f', group = "script_source")]
@@ -491,6 +491,10 @@ pub enum ScriptCommands {
         /// Scope in which to run the script (e.g., global, x_myapp)
         #[arg(long, default_value = "global")]
         scope: String,
+
+        /// Endpoint to execute script against (defaults to /sys.scripts.do)
+        #[arg(long, default_value = "/sys.scripts.do")]
+        endpoint: String,
     },
 }
 

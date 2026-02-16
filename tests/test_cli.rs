@@ -592,5 +592,5 @@ auth_method = "api_key"
         .args(["attachment", "list", "incident", "abc123"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("not implemented yet"));
+        .stderr(predicate::str::contains("No API token found"));
 }

@@ -242,6 +242,15 @@ impl OAuth2Auth {
             .send()
             .await?;
 
+        if let Some(jsessionid) = crate::client::extract_jsessionid_from_headers(response.headers())
+        {
+            tracing::debug!(
+                url = %url,
+                jsessionid = %jsessionid,
+                "Captured JSESSIONID from OAuth2 token response"
+            );
+        }
+
         let status = response.status();
         if !status.is_success() {
             let error_body = response.text().await.unwrap_or_default();

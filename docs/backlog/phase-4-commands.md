@@ -5,12 +5,12 @@ Higher-level commands and remaining API integrations.
 ## Work Items
 
 - ~~Implement `incident` commands~~ (removed — achievable via `table` commands)
-- [ ] Implement `attachment` commands
-  - [ ] `attachment list <table> <sys_id>` — list attachments for a record
-  - [ ] `attachment download <sys_id>` — download to file (streaming)
-  - [ ] `attachment upload <table> <sys_id> --file <path>` — upload file
-  - [ ] Progress indicator for large files
-  - [ ] Tests with wiremock (multipart upload, binary download)
+- [x] Implement `attachment` commands
+  - [x] `attachment list <table> <sys_id>` — list attachments for a record
+  - [x] `attachment download <sys_id>` — download to file (streaming)
+  - [x] `attachment upload <table> <sys_id> --file <path>` — upload file
+  - [x] Progress indicator for large files
+  - [x] Tests with wiremock (upload, binary download)
 - ~~Implement `import-set` commands~~ (delayed for later)
 - [x] Implement `api` raw commands
   - [x] `api get <path>` — GET arbitrary endpoint
