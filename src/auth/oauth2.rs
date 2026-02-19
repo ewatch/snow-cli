@@ -235,12 +235,15 @@ impl OAuth2Auth {
 
         tracing::debug!(url = %url, "Requesting OAuth2 token");
 
-        let response = http_client
+        let request = http_client
             .post(&url)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(body.to_string())
-            .send()
-            .await?;
+            .build()?;
+
+        crate::client::log_raw_http_request(&request);
+
+        let response = http_client.execute(request).await?;
 
         if let Some(jsessionid) = crate::client::extract_jsessionid_from_headers(response.headers())
         {
@@ -252,6 +255,7 @@ impl OAuth2Auth {
         }
 
         let status = response.status();
+        crate::client::log_raw_http_response(&url, status, response.headers());
         if !status.is_success() {
             let error_body = response.text().await.unwrap_or_default();
             tracing::error!(

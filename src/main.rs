@@ -39,12 +39,19 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Initialize tracing based on verbosity level
-    let filter = match cli.verbose {
+    let base_filter = match cli.verbose {
         0 => "warn",
         1 => "info",
         2 => "debug",
         _ => "trace",
     };
+
+    let filter = if client::is_http_debug_enabled() {
+        format!("{base_filter},snow_cli::http=debug")
+    } else {
+        base_filter.to_string()
+    };
+
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)

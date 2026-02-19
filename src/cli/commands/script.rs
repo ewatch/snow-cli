@@ -102,7 +102,7 @@ async fn handle_run(
             "Sending request"
         );
 
-        client
+        let request = client
             .http()
             .post(&url)
             .header("Accept", "text/html,application/xhtml+xml")
@@ -116,8 +116,11 @@ async fn handle_run(
                 ("record_for_rollback", "on"),
                 ("quota_managed_transaction", "on"),
             ])
-            .send()
-            .await?
+            .build()?;
+
+        crate::client::log_raw_http_request(&request);
+
+        client.http().execute(request).await?
     } else {
         let auth_headers = client.authenticator().authenticate().await?;
         let request_headers = sanitized_request_headers(
@@ -144,19 +147,25 @@ async fn handle_run(
             "scope": scope,
         });
 
-        client
+        let request = client
             .http()
             .post(&url)
             .headers(auth_headers.clone())
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")
             .body(serde_json::to_string(&body)?)
-            .send()
-            .await?
+            .build()?;
+
+        crate::client::log_raw_http_request(&request);
+
+        client.http().execute(request).await?
     };
 
     let status = response.status();
     let final_url = response.url().to_string();
+    let response_headers = response.headers().clone();
+
+    crate::client::log_raw_http_response(&final_url, status, response.headers());
 
     tracing::debug!(
         status = status.as_u16(),
@@ -173,10 +182,19 @@ async fn handle_run(
         );
     }
 
+    let server_timing = response_headers
+        .get("server-timing")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+
     let mut response_body = response.text().await?;
     if requires_form_session {
-        response_body =
-            validate_background_script_response(&response_body, status.as_u16(), &final_url)?;
+        response_body = validate_background_script_response(
+            &response_body,
+            status.as_u16(),
+            &final_url,
+            server_timing.as_deref(),
+        )?;
     }
 
     tracing::debug!(body_len = response_body.len(), "Script execution response");
@@ -265,6 +283,7 @@ fn validate_background_script_response(
     raw: &str,
     status_code: u16,
     final_url: &str,
+    server_timing: Option<&str>,
 ) -> anyhow::Result<String> {
     let normalized = raw.to_ascii_lowercase();
     if normalized.contains("user not authenticated")
@@ -283,6 +302,21 @@ fn validate_background_script_response(
 
     let cleaned = sanitize_background_script_response(raw);
     if cleaned.is_empty() {
+        let no_script_execution = server_timing
+            .map(|header| header.to_ascii_lowercase().contains("scripting;dur=0"))
+            .unwrap_or(false);
+
+        if no_script_execution {
+            anyhow::bail!(
+                "Background script returned an empty response (status {}, URL {}). \
+                 ServiceNow reported scripting;dur=0, which usually means script execution \
+                 was not triggered. Ensure the request includes runscript and sys_scope \
+                 form fields, plus matching sysparm_ck and X-UserToken values.",
+                status_code,
+                final_url
+            );
+        }
+
         anyhow::bail!(
             "Background script returned an empty response (status {}, URL {}). \
              This can happen when no output is produced. Use gs.print('...') to emit output, \
@@ -372,9 +406,23 @@ mod tests {
             "",
             200,
             "https://dev.service-now.com/sys.scripts.do",
+            None,
         )
         .unwrap_err();
         assert!(err.to_string().contains("empty response"));
+    }
+
+    #[test]
+    fn test_validate_background_script_response_rejects_empty_with_execution_hint() {
+        let err = validate_background_script_response(
+            "",
+            200,
+            "https://dev.service-now.com/sys.scripts.do",
+            Some("wall;dur=12, scripting;dur=0"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("runscript"));
+        assert!(err.to_string().contains("sys_scope"));
     }
 
     #[test]
@@ -383,6 +431,7 @@ mod tests {
             "<html><body>User Not Authenticated</body></html>",
             200,
             "https://dev.service-now.com/login.do",
+            None,
         )
         .unwrap_err();
         assert!(err.to_string().contains("not authorized"));

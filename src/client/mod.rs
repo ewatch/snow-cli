@@ -3,6 +3,7 @@ pub mod pagination;
 
 use std::time::Duration;
 
+use http::HeaderMap;
 use reqwest::{Client, Method, Response};
 
 use crate::client::error::ApiError;
@@ -34,6 +35,142 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 /// Maximum number of retry attempts on 401 (after token refresh).
 const MAX_AUTH_RETRIES: u32 = 1;
+
+const HTTP_DEBUG_ENV_VAR: &str = "SNOW_CLI_DEBUG_HTTP";
+
+const HTTP_DEBUG_INCLUDE_SENSITIVE_ENV_VAR: &str = "SNOW_CLI_DEBUG_HTTP_INCLUDE_SENSITIVE";
+
+const HTTP_DEBUG_BODY_PREVIEW_LIMIT: usize = 2048;
+
+fn parse_http_debug_env_value(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    !(normalized.is_empty() || matches!(normalized.as_str(), "0" | "false" | "off" | "no"))
+}
+
+pub(crate) fn is_http_debug_enabled() -> bool {
+    std::env::var(HTTP_DEBUG_ENV_VAR)
+        .map(|value| parse_http_debug_env_value(&value))
+        .unwrap_or(false)
+}
+
+pub(crate) fn is_http_debug_sensitive_enabled() -> bool {
+    std::env::var(HTTP_DEBUG_INCLUDE_SENSITIVE_ENV_VAR)
+        .map(|value| parse_http_debug_env_value(&value))
+        .unwrap_or(false)
+}
+
+fn is_sensitive_header_name(name: &str) -> bool {
+    matches!(
+        name,
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "set-cookie"
+            | "x-user-token"
+            | "x-usertoken"
+            | "x-auth-token"
+    )
+}
+
+fn format_header_value_for_http_debug(
+    name: &str,
+    value: &http::HeaderValue,
+    include_sensitive: bool,
+) -> String {
+    if is_sensitive_header_name(name) && !include_sensitive {
+        return "<redacted>".to_string();
+    }
+
+    match value.to_str() {
+        Ok(text) => text.to_string(),
+        Err(_) => format!("<{} bytes binary>", value.as_bytes().len()),
+    }
+}
+
+fn format_headers_for_http_debug(headers: &http::HeaderMap, include_sensitive: bool) -> String {
+    let mut lines = headers
+        .iter()
+        .map(|(name, value)| {
+            let name = name.as_str().to_ascii_lowercase();
+            let value = format_header_value_for_http_debug(&name, value, include_sensitive);
+            format!("{name}: {value}")
+        })
+        .collect::<Vec<_>>();
+
+    lines.sort();
+
+    if lines.is_empty() {
+        "<none>".to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn format_request_body_for_http_debug(request: &reqwest::Request) -> String {
+    let body = match request.body() {
+        Some(body) => body,
+        None => return "<none>".to_string(),
+    };
+
+    let bytes = match body.as_bytes() {
+        Some(bytes) => bytes,
+        None => return "<streaming body>".to_string(),
+    };
+
+    if bytes.is_empty() {
+        return "<empty>".to_string();
+    }
+
+    let preview_len = bytes.len().min(HTTP_DEBUG_BODY_PREVIEW_LIMIT);
+    let preview_bytes = &bytes[..preview_len];
+
+    match std::str::from_utf8(preview_bytes) {
+        Ok(text) if preview_len < bytes.len() => {
+            format!("{text}... <truncated, {} bytes total>", bytes.len())
+        }
+        Ok(text) => text.to_string(),
+        Err(_) => format!("<{} bytes binary>", bytes.len()),
+    }
+}
+
+pub(crate) fn log_raw_http_request(request: &reqwest::Request) {
+    if !is_http_debug_enabled() {
+        return;
+    }
+
+    let headers =
+        format_headers_for_http_debug(request.headers(), is_http_debug_sensitive_enabled());
+    let body = format_request_body_for_http_debug(request);
+
+    tracing::debug!(
+        target: "snow_cli::http",
+        method = %request.method(),
+        url = %request.url(),
+        headers = %headers,
+        body = %body,
+        "Raw HTTP request"
+    );
+}
+
+pub(crate) fn log_raw_http_response(
+    url: &str,
+    status: reqwest::StatusCode,
+    headers: &http::HeaderMap,
+) {
+    if !is_http_debug_enabled() {
+        return;
+    }
+
+    let headers = format_headers_for_http_debug(headers, is_http_debug_sensitive_enabled());
+
+    tracing::debug!(
+        target: "snow_cli::http",
+        url = %url,
+        status = status.as_u16(),
+        headers = %headers,
+        "Raw HTTP response"
+    );
+}
 
 pub(crate) fn extract_jsessionid_from_headers(headers: &http::HeaderMap) -> Option<String> {
     for header in headers.get_all(reqwest::header::SET_COOKIE) {
@@ -111,6 +248,39 @@ fn upsert_cookie_in_header(cookie_header: &str, cookie_name: &str, cookie_value:
     }
 
     cookies.join("; ")
+}
+
+fn read_cookie_value(cookie_header: &str, cookie_name: &str) -> Option<String> {
+    cookie_header.split(';').find_map(|cookie| {
+        let (name, value) = cookie.trim().split_once('=')?;
+        if name.trim().eq_ignore_ascii_case(cookie_name) {
+            Some(value.trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn parse_basic_credentials(auth_headers: &HeaderMap) -> Option<(String, String)> {
+    let auth_value = auth_headers
+        .get(http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    let encoded = auth_value.strip_prefix("Basic ")?;
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    let (username, password) = decoded.split_once(':')?;
+    Some((username.to_string(), password.to_string()))
+}
+
+fn logged_in_header_value(headers: &HeaderMap) -> Option<bool> {
+    headers
+        .get("x-is-logged-in")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.eq_ignore_ascii_case("true"))
 }
 
 pub(crate) fn extract_g_ck_from_body(body: &str) -> Option<String> {
@@ -294,15 +464,19 @@ impl SnowClient {
 
         tracing::debug!(url = %url, "Bootstrapping form session context");
 
-        let response = self
+        let request = self
             .http
             .get(&url)
-            .headers(auth_headers)
+            .headers(auth_headers.clone())
             .header("Accept", "text/html,application/xhtml+xml")
-            .send()
-            .await?;
+            .build()?;
+
+        log_raw_http_request(&request);
+
+        let response = self.http.execute(request).await?;
 
         let status = response.status();
+        log_raw_http_response(&url, status, response.headers());
         let response_headers = response.headers().clone();
         let body = response.text().await.unwrap_or_default();
 
@@ -312,6 +486,23 @@ impl SnowClient {
                 status.as_u16(),
                 url,
                 body
+            );
+        }
+
+        if matches!(logged_in_header_value(&response_headers), Some(false)) {
+            if let Some((username, password)) = parse_basic_credentials(&auth_headers) {
+                tracing::info!(url = %url, "Form bootstrap returned x-is-logged-in=false; attempting explicit login.do form login");
+
+                let cookie_header = self.form_login_cookie_header(&username, &password).await?;
+                return self
+                    .ensure_form_session_with_cookie(bootstrap_path, &cookie_header)
+                    .await;
+            }
+
+            anyhow::bail!(
+                "Bootstrap at {} returned x-is-logged-in=false. \
+                 The current auth method did not establish a UI form session.",
+                url
             );
         }
 
@@ -342,6 +533,158 @@ impl SnowClient {
         };
         self.session.form_session = Some(session.clone());
 
+        Ok(session)
+    }
+
+    async fn form_login_cookie_header(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> anyhow::Result<String> {
+        let mut login_url = reqwest::Url::parse(&self.url("/login.do"))?;
+        login_url
+            .query_pairs_mut()
+            .append_pair("user_name", username)
+            .append_pair("sys_action", "sysverb_login")
+            .append_pair("user_password", password);
+
+        tracing::debug!(url = %login_url, "Performing login.do form login");
+
+        let no_redirect_client = reqwest::Client::builder()
+            .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
+            .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+
+        let mut current_url = login_url;
+        let mut cookie_header = String::new();
+
+        for _ in 0..5 {
+            let mut request_builder = no_redirect_client
+                .get(current_url.clone())
+                .header("Accept", "text/html,application/xhtml+xml");
+
+            if !cookie_header.is_empty() {
+                request_builder = request_builder.header("Cookie", cookie_header.clone());
+            }
+
+            let request = request_builder.build()?;
+            let request_url = request.url().to_string();
+            log_raw_http_request(&request);
+
+            let response = no_redirect_client.execute(request).await?;
+            let status = response.status();
+            log_raw_http_response(&request_url, status, response.headers());
+
+            if let Some(from_response) = extract_cookie_header_from_headers(response.headers()) {
+                if cookie_header.is_empty() {
+                    cookie_header = from_response;
+                } else {
+                    for cookie in from_response.split(';') {
+                        if let Some((name, value)) = cookie.trim().split_once('=') {
+                            cookie_header =
+                                upsert_cookie_in_header(&cookie_header, name.trim(), value.trim());
+                        }
+                    }
+                }
+            }
+
+            if status.is_redirection() {
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| anyhow::anyhow!("login.do redirect missing Location header"))?;
+                current_url = current_url.join(location)?;
+                continue;
+            }
+
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                anyhow::bail!(
+                    "login.do form login failed with status {} at {}: {}",
+                    status.as_u16(),
+                    request_url,
+                    body
+                );
+            }
+
+            break;
+        }
+
+        if cookie_header.is_empty() {
+            anyhow::bail!(
+                "login.do form login returned no Set-Cookie headers; cannot establish form session."
+            );
+        }
+
+        Ok(cookie_header)
+    }
+
+    async fn ensure_form_session_with_cookie(
+        &mut self,
+        bootstrap_path: &str,
+        login_cookie_header: &str,
+    ) -> anyhow::Result<FormSession> {
+        let url = self.url(bootstrap_path);
+        let request = self
+            .http
+            .get(&url)
+            .header("Accept", "text/html,application/xhtml+xml")
+            .header("Cookie", login_cookie_header)
+            .build()?;
+
+        log_raw_http_request(&request);
+        let response = self.http.execute(request).await?;
+        let status = response.status();
+        log_raw_http_response(&url, status, response.headers());
+        let response_headers = response.headers().clone();
+        let body = response.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            anyhow::bail!(
+                "Failed to bootstrap form session with login cookies (status {}) via {}: {}",
+                status.as_u16(),
+                url,
+                body
+            );
+        }
+
+        if matches!(logged_in_header_value(&response_headers), Some(false)) {
+            anyhow::bail!(
+                "Bootstrap at {} still returned x-is-logged-in=false after login.do.",
+                url
+            );
+        }
+
+        let g_ck = extract_g_ck_from_body(&body).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Could not extract g_ck token from {} response. Verify the profile user can access Script Background UI.",
+                url
+            )
+        })?;
+
+        let mut cookie_header = login_cookie_header.to_string();
+        if let Some(from_bootstrap) = extract_cookie_header_from_headers(&response_headers) {
+            for cookie in from_bootstrap.split(';') {
+                if let Some((name, value)) = cookie.trim().split_once('=') {
+                    cookie_header =
+                        upsert_cookie_in_header(&cookie_header, name.trim(), value.trim());
+                }
+            }
+        }
+
+        let jsessionid = read_cookie_value(&cookie_header, "JSESSIONID").ok_or_else(|| {
+            anyhow::anyhow!("Could not determine JSESSIONID from login/bootstrap cookies.")
+        })?;
+
+        self.session.jsessionid = Some(jsessionid.clone());
+        let session = FormSession {
+            jsessionid,
+            g_ck,
+            cookie_header,
+        };
+        self.session.form_session = Some(session.clone());
         Ok(session)
     }
 
@@ -466,7 +809,10 @@ impl SnowClient {
                 "Sending request"
             );
 
-            let response = request.send().await?;
+            let request = request.build()?;
+            log_raw_http_request(&request);
+
+            let response = self.http.execute(request).await?;
 
             if let Some(jsessionid) = extract_jsessionid_from_headers(response.headers()) {
                 self.session.jsessionid = Some(jsessionid.clone());
@@ -486,6 +832,7 @@ impl SnowClient {
             }
 
             let status = response.status();
+            log_raw_http_response(&url, status, response.headers());
             tracing::debug!(
                 status = status.as_u16(),
                 url = %url,
@@ -757,6 +1104,71 @@ mod tests {
     fn test_default_client_config() {
         let config = ClientConfig::default();
         assert_eq!(config.timeout_secs, DEFAULT_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn test_parse_http_debug_env_value() {
+        assert!(parse_http_debug_env_value("1"));
+        assert!(parse_http_debug_env_value("true"));
+        assert!(parse_http_debug_env_value("yes"));
+        assert!(!parse_http_debug_env_value("0"));
+        assert!(!parse_http_debug_env_value("false"));
+        assert!(!parse_http_debug_env_value("off"));
+        assert!(!parse_http_debug_env_value(""));
+    }
+
+    #[test]
+    fn test_format_headers_for_http_debug_redacts_sensitive_headers() {
+        let request = reqwest::Client::new()
+            .post("https://example.com/api")
+            .header("Authorization", "Bearer very-secret")
+            .header("Cookie", "JSESSIONID=abc123")
+            .header("X-Trace-Id", "trace-42")
+            .build()
+            .unwrap();
+
+        let headers = format_headers_for_http_debug(request.headers(), false);
+        assert!(headers.contains("authorization: <redacted>"));
+        assert!(headers.contains("cookie: <redacted>"));
+        assert!(headers.contains("x-trace-id: trace-42"));
+    }
+
+    #[test]
+    fn test_format_headers_for_http_debug_includes_sensitive_headers_when_enabled() {
+        let request = reqwest::Client::new()
+            .post("https://example.com/api")
+            .header("Authorization", "Bearer very-secret")
+            .header("Cookie", "JSESSIONID=abc123")
+            .header("X-Trace-Id", "trace-42")
+            .build()
+            .unwrap();
+
+        let headers = format_headers_for_http_debug(request.headers(), true);
+        assert!(headers.contains("authorization: Bearer very-secret"));
+        assert!(headers.contains("cookie: JSESSIONID=abc123"));
+        assert!(headers.contains("x-trace-id: trace-42"));
+    }
+
+    #[test]
+    fn test_format_request_body_for_http_debug_handles_missing_and_truncated_body() {
+        let no_body_request = reqwest::Client::new()
+            .get("https://example.com/api")
+            .build()
+            .unwrap();
+        assert_eq!(
+            format_request_body_for_http_debug(&no_body_request),
+            "<none>"
+        );
+
+        let long_body = "x".repeat(HTTP_DEBUG_BODY_PREVIEW_LIMIT + 16);
+        let long_body_request = reqwest::Client::new()
+            .post("https://example.com/api")
+            .body(long_body)
+            .build()
+            .unwrap();
+
+        let body_preview = format_request_body_for_http_debug(&long_body_request);
+        assert!(body_preview.contains("<truncated, "));
     }
 
     #[test]
