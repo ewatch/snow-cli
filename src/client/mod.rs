@@ -17,6 +17,14 @@ pub fn build_client(
     profile_name: &str,
     instance_override: Option<&str>,
 ) -> anyhow::Result<SnowClient> {
+    build_client_with_timeout(profile_name, instance_override, None)
+}
+
+pub fn build_client_with_timeout(
+    profile_name: &str,
+    instance_override: Option<&str>,
+    timeout_secs: Option<u64>,
+) -> anyhow::Result<SnowClient> {
     let config = crate::config::AppConfig::load()?;
     let profile = config
         .active_profile(Some(profile_name))
@@ -27,11 +35,17 @@ pub fn build_client(
         .unwrap_or_else(|| profile.instance.clone());
 
     let authenticator = crate::auth::create_authenticator(profile_name, profile)?;
-    SnowClient::new(instance_url, authenticator)
+    SnowClient::with_config(
+        instance_url,
+        authenticator,
+        ClientConfig {
+            timeout_secs: timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+        },
+    )
 }
 
 /// Default request timeout in seconds.
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_TIMEOUT_SECS: u64 = 90;
 
 /// Maximum number of retry attempts on 401 (after token refresh).
 const MAX_AUTH_RETRIES: u32 = 1;

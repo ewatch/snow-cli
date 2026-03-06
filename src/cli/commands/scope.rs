@@ -217,13 +217,14 @@ pub async fn handle(
     profile: &str,
     format: &OutputFormat,
     instance: Option<&str>,
+    timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
         ScopeCommands::Inspect { scope, details } => {
-            handle_inspect(profile, format, instance, &scope, details).await
+            handle_inspect(profile, format, instance, timeout_secs, &scope, details).await
         }
         ScopeCommands::Inventory { scope } => {
-            handle_inventory(profile, format, instance, &scope).await
+            handle_inventory(profile, format, instance, timeout_secs, &scope).await
         }
     }
 }
@@ -232,10 +233,11 @@ async fn handle_inspect(
     profile: &str,
     format: &OutputFormat,
     instance: Option<&str>,
+    timeout_secs: Option<u64>,
     scope_input: &str,
     details: ScopeDetailLevel,
 ) -> anyhow::Result<()> {
-    let collected = collect_scope_data(profile, instance, scope_input).await?;
+    let collected = collect_scope_data(profile, instance, timeout_secs, scope_input).await?;
     let rows = collected.to_inventory_rows();
 
     let payload = ScopeInspectOutput {
@@ -268,9 +270,10 @@ async fn handle_inventory(
     profile: &str,
     format: &OutputFormat,
     instance: Option<&str>,
+    timeout_secs: Option<u64>,
     scope_input: &str,
 ) -> anyhow::Result<()> {
-    let collected = collect_scope_data(profile, instance, scope_input).await?;
+    let collected = collect_scope_data(profile, instance, timeout_secs, scope_input).await?;
     let rows = collected.to_inventory_rows();
 
     match format {
@@ -290,9 +293,10 @@ async fn handle_inventory(
 async fn collect_scope_data(
     profile: &str,
     instance: Option<&str>,
+    timeout_secs: Option<u64>,
     scope_input: &str,
 ) -> anyhow::Result<CollectedScopeData> {
-    let mut client = crate::client::build_client(profile, instance)?;
+    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
     let pagination = PaginationConfig::default();
 
     let scope_query = format!("scope={scope_input}^ORsys_id={scope_input}");

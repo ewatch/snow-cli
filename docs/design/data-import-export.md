@@ -35,8 +35,9 @@ safe ingestion path available on the target instance.
 
 ```text
 snow-cli data export <table>
+snow-cli data export-package --file <spec> --out-dir <dir>
 snow-cli data validate --file <dataset>
-snow-cli data import --file <dataset>
+snow-cli data import --file <dataset> [--dry-run]
 
 snow-cli seed plan --file <spec>
 snow-cli seed apply --file <spec>
@@ -66,6 +67,7 @@ Required behavior:
 - Check writable and required fields.
 - Warn on unsupported or system-managed fields.
 - Return a structured validation report without mutating data.
+- Support both flat `table-export` files and multi-table `dataset` manifests.
 
 ### `data import`
 
@@ -77,6 +79,22 @@ Required behavior:
 - Fall back to direct Table API writes only when needed.
 - Support create-only in v1.
 - Return per-run counts for created, failed, and skipped records.
+- Support `--dry-run` preview output for both flat imports and dataset packages.
+
+### `data export-package`
+
+Exports a multi-table dataset package from a manifest-like export spec.
+
+Required behavior:
+
+- Read a JSON export spec describing the tables, fields, limits, dependencies,
+  and references to include.
+- Write a `manifest.json` file plus one per-table data file to the output
+  directory.
+- Preserve cross-table relationships by exporting reference placeholders based
+  on stable source key values instead of source `sys_id` values.
+- Emit a JSON summary that includes the output directory, manifest path, and
+  per-table counts.
 
 ### `seed plan`
 
@@ -196,7 +214,7 @@ Design notes:
 
 ### Multi-Table Dataset Manifest
 
-This is a later-phase extension for portable related data.
+This now represents the portable related-data package format.
 
 Example:
 
@@ -204,22 +222,30 @@ Example:
 {
   "version": 1,
   "kind": "dataset",
-  "exported_at": "2026-03-06T00:00:00Z",
+  "command": "data export-package",
+  "instance": "https://dev12345.service-now.com",
+  "exported_at_unix_s": 1772780000,
   "tables": [
     {
       "name": "cmn_location",
       "file": "cmn_location.json",
-      "depends_on": []
+      "fields": ["name"],
+      "record_count": 2,
+      "depends_on": [],
+      "references": []
     },
     {
       "name": "incident",
       "file": "incident.json",
+      "fields": ["number", "short_description", "location"],
+      "record_count": 5,
       "depends_on": ["cmn_location"],
       "references": [
         {
           "field": "location",
           "target_table": "cmn_location",
-          "match_key": "name"
+          "source_key": "name",
+          "target_key": "name"
         }
       ]
     }
@@ -230,8 +256,73 @@ Example:
 Design notes:
 
 - The manifest defines import order and remapping rules.
-- Each table file contains records plus source keys used for remapping.
+- Each table file contains records plus source identity information used for remapping.
 - The format must be stable enough for agents to generate and consume.
+
+### Dataset Export Spec
+
+The export-package command accepts a spec that tells the CLI which tables to
+export and how to preserve references.
+
+Example:
+
+```json
+{
+  "version": 1,
+  "kind": "dataset-export-spec",
+  "tables": [
+    {
+      "name": "cmn_location",
+      "fields": ["name"]
+    },
+    {
+      "name": "incident",
+      "query": "locationISNOTEMPTY",
+      "fields": ["number", "short_description", "location"],
+      "depends_on": ["cmn_location"],
+      "references": [
+        {
+          "field": "location",
+          "target_table": "cmn_location",
+          "source_key": "name",
+          "target_key": "name"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Dataset Table File
+
+Each per-table file stores the record payload plus source identity metadata.
+
+Example:
+
+```json
+{
+  "version": 1,
+  "kind": "dataset-table",
+  "table": "incident",
+  "records": [
+    {
+      "source_sys_id": "46d44a09a9fe19810012d100cca80666",
+      "data": {
+        "number": "INC0010001",
+        "short_description": "Email outage",
+        "location": {
+          "__reference": {
+            "target_table": "cmn_location",
+            "source_key": "name",
+            "target_key": "name",
+            "source_value": "Berlin Lab"
+          }
+        }
+      }
+    }
+  ]
+}
+```
 
 ### Seed Specification Format
 

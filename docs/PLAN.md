@@ -69,8 +69,10 @@ snow-cli table
 
 snow-cli data
   export <table_name>             Export table records as a portable dataset
+  export-package --file <spec>    Export a multi-table dataset package from a spec
   validate --file <dataset>       Validate dataset compatibility before import
   import --file <dataset>         Import a dataset through the preferred load path
+                                   (supports `--dry-run` preview)
 
 snow-cli seed
   plan --file <spec>              Validate a seed spec and show execution plan
@@ -213,7 +215,7 @@ never in the config file.
 - [x] Add shell completions generation
 - [x] Implement `config init` first-time bootstrap
 - [ ] Implement `data export` MVP and command model for `data` / `seed`
-- [ ] Implement dataset validation, import, and seed workflows
+- [ ] Implement dataset packages, reference remapping, and seed workflows
 - [ ] Set up CI/CD (GitHub Actions) for cross-compilation
 - [ ] Create Homebrew formula
 - [ ] Add mTLS and SSO/SAML auth

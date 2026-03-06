@@ -7,13 +7,15 @@ pub async fn handle(
     profile: &str,
     format: &OutputFormat,
     instance: Option<&str>,
+    timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
         ApiCommands::Get { path, header } => {
             tracing::info!("API GET {}", path);
 
             let extra_headers = parse_headers(&header)?;
-            let mut client = crate::client::build_client(profile, instance)?;
+            let mut client =
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
             let response = if extra_headers.is_empty() {
                 client.get(&path).await?
@@ -30,7 +32,8 @@ pub async fn handle(
 
             let body = read_data(data)?;
             let extra_headers = parse_headers(&header)?;
-            let mut client = crate::client::build_client(profile, instance)?;
+            let mut client =
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
             let response = if extra_headers.is_empty() {
                 client.post(&path, &body).await?
@@ -53,7 +56,8 @@ pub async fn handle(
 
             let body = read_data(data)?;
             let extra_headers = parse_headers(&header)?;
-            let mut client = crate::client::build_client(profile, instance)?;
+            let mut client =
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
             let response = if extra_headers.is_empty() {
                 client.put(&path, &body).await?
@@ -75,7 +79,8 @@ pub async fn handle(
             tracing::info!("API DELETE {}", path);
 
             let extra_headers = parse_headers(&header)?;
-            let mut client = crate::client::build_client(profile, instance)?;
+            let mut client =
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
             let response = if extra_headers.is_empty() {
                 client.delete(&path).await?

@@ -20,6 +20,7 @@ pub async fn handle(
     profile: &str,
     format: &OutputFormat,
     instance: Option<&str>,
+    timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
         ScriptCommands::Run {
@@ -40,7 +41,16 @@ pub async fn handle(
                 scriptlet,
                 quota_managed_transaction,
             };
-            handle_run(profile, format, instance, file, code, &options).await
+            handle_run(
+                profile,
+                format,
+                instance,
+                timeout_secs,
+                file,
+                code,
+                &options,
+            )
+            .await
         }
     }
 }
@@ -55,6 +65,7 @@ async fn handle_run(
     profile: &str,
     format: &OutputFormat,
     instance: Option<&str>,
+    timeout_secs: Option<u64>,
     file: Option<String>,
     code: Option<String>,
     options: &ScriptRunOptions,
@@ -69,7 +80,7 @@ async fn handle_run(
         "Executing background script"
     );
 
-    let mut client = crate::client::build_client(profile, instance)?;
+    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
     let requires_form_session = endpoint_requires_form_session(&options.endpoint);
     let form_session = if requires_form_session {
         Some(

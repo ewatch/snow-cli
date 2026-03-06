@@ -13,9 +13,11 @@ const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password
 
 const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended";
 
-const DATA_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export sys_user --fields sys_id,user_name,email --out users.json\n  snow-cli data validate --file export.json\n  snow-cli data import --file export.json";
+const DATA_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export sys_user --fields sys_id,user_name,email --out users.json\n  snow-cli data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli data validate --file export.json\n  snow-cli data import --file export.json";
 
 const DATA_EXPORT_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export incident --fields sys_id,number,short_description --limit 50\n  snow-cli --output csv data export sys_user --fields sys_id,user_name,email --out users.csv";
+
+const DATA_EXPORT_PACKAGE_AFTER_HELP: &str = "Examples:\n  snow-cli data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli data validate --file exported-dataset/manifest.json\n  snow-cli data import --file exported-dataset/manifest.json";
 
 const SEED_AFTER_HELP: &str = "Examples:\n  snow-cli seed plan --file qa-fixture.json\n  snow-cli seed apply --file qa-fixture.json\n  snow-cli seed cleanup <run-id> --dry-run";
 
@@ -48,6 +50,10 @@ pub struct Cli {
     /// Output format
     #[arg(long, global = true, default_value = "json")]
     pub output: OutputFormat,
+
+    /// Override the HTTP request timeout in seconds
+    #[arg(long, global = true)]
+    pub timeout_secs: Option<u64>,
 
     /// Increase verbosity (-v info, -vv debug, -vvv trace)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
@@ -393,6 +399,18 @@ pub enum DataCommands {
         out_path: Option<String>,
     },
 
+    /// Export a multi-table dataset package from a manifest spec
+    #[command(after_help = DATA_EXPORT_PACKAGE_AFTER_HELP)]
+    ExportPackage {
+        /// Dataset export spec file
+        #[arg(long, short = 'f')]
+        file: String,
+
+        /// Output directory for manifest and table files
+        #[arg(long)]
+        out_dir: String,
+    },
+
     /// Validate a dataset file against the target instance
     Validate {
         /// Dataset file to validate
@@ -405,6 +423,10 @@ pub enum DataCommands {
         /// Dataset file to import
         #[arg(long, short = 'f')]
         file: String,
+
+        /// Preview the import plan without creating records
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -838,6 +860,33 @@ mod tests {
                     assert_eq!(out_path, Some("incident.json".to_string()));
                 }
                 _ => panic!("Expected Data Export command"),
+            },
+            _ => panic!("Expected Data command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_data_export_package() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "--timeout-secs",
+            "180",
+            "data",
+            "export-package",
+            "--file",
+            "dataset-spec.json",
+            "--out-dir",
+            "exported-dataset",
+        ]);
+        assert_eq!(cli.timeout_secs, Some(180));
+
+        match cli.command {
+            Commands::Data(args) => match args.command {
+                DataCommands::ExportPackage { file, out_dir } => {
+                    assert_eq!(file, "dataset-spec.json");
+                    assert_eq!(out_dir, "exported-dataset");
+                }
+                _ => panic!("Expected Data ExportPackage command"),
             },
             _ => panic!("Expected Data command"),
         }

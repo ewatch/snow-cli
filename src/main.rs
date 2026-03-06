@@ -74,16 +74,29 @@ async fn main() -> anyhow::Result<()> {
                 &active_profile,
                 &cli.output,
                 cli.instance.as_deref(),
+                cli.timeout_secs,
             )
             .await
         }
         cli::args::Commands::Data(args) => {
-            cli::commands::data::handle(args, &active_profile, &cli.output, cli.instance.as_deref())
-                .await
+            cli::commands::data::handle(
+                args,
+                &active_profile,
+                &cli.output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
         }
         cli::args::Commands::Seed(args) => {
-            cli::commands::seed::handle(args, &active_profile, &cli.output, cli.instance.as_deref())
-                .await
+            cli::commands::seed::handle(
+                args,
+                &active_profile,
+                &cli.output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
         }
         cli::args::Commands::Scope(args) => {
             cli::commands::scope::handle(
@@ -91,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
                 &active_profile,
                 &cli.output,
                 cli.instance.as_deref(),
+                cli.timeout_secs,
             )
             .await
         }
@@ -100,13 +114,20 @@ async fn main() -> anyhow::Result<()> {
                 &active_profile,
                 &cli.output,
                 cli.instance.as_deref(),
+                cli.timeout_secs,
             )
             .await
         }
         cli::args::Commands::ImportSet(args) => cli::commands::import_set::handle(args).await,
         cli::args::Commands::Api(args) => {
-            cli::commands::api::handle(args, &active_profile, &cli.output, cli.instance.as_deref())
-                .await
+            cli::commands::api::handle(
+                args,
+                &active_profile,
+                &cli.output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
         }
         cli::args::Commands::Script(args) => {
             cli::commands::script::handle(
@@ -114,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
                 &active_profile,
                 &cli.output,
                 cli.instance.as_deref(),
+                cli.timeout_secs,
             )
             .await
         }
@@ -123,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
                 &active_profile,
                 &cli.output,
                 cli.instance.as_deref(),
+                cli.timeout_secs,
             )
             .await
         }

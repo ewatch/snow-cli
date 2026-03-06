@@ -5,6 +5,7 @@ pub async fn handle(
     _profile: &str,
     _format: &OutputFormat,
     _instance: Option<&str>,
+    _timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
         SeedCommands::Plan { .. } => {

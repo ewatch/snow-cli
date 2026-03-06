@@ -2,7 +2,7 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
-use wiremock::matchers::{header, method, path, query_param};
+use wiremock::matchers::{body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -541,4 +541,429 @@ async fn test_data_validate_accepts_inherited_fields() {
         .success()
         .stdout(predicate::str::contains("\"ready\":true"))
         .stdout(predicate::str::contains("\"field_count\":3"));
+}
+
+#[tokio::test]
+async fn test_data_export_package_writes_manifest_and_reference_placeholders() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/u_parent"))
+        .and(query_param("sysparm_fields", "name,sys_id"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"sys_id": "parent-source-1", "name": "Parent A"}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/u_child"))
+        .and(query_param("sysparm_fields", "name,parent_ref,sys_id"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "sys_id": "child-source-1",
+                    "name": "Child A",
+                    "parent_ref": {"value": "parent-source-1"}
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let spec_path = write_dataset_file(
+        &temp_dir,
+        serde_json::json!({
+            "version": 1,
+            "kind": "dataset-export-spec",
+            "tables": [
+                {
+                    "name": "u_parent",
+                    "fields": ["name"]
+                },
+                {
+                    "name": "u_child",
+                    "fields": ["name", "parent_ref"],
+                    "depends_on": ["u_parent"],
+                    "references": [
+                        {
+                            "field": "parent_ref",
+                            "target_table": "u_parent",
+                            "source_key": "name",
+                            "target_key": "name"
+                        }
+                    ]
+                }
+            ]
+        }),
+    );
+    let out_dir = temp_dir.path().join("dataset");
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "data",
+            "export-package",
+            "--file",
+            spec_path.to_str().unwrap(),
+            "--out-dir",
+            out_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"kind\":\"dataset-export-result\"",
+        ))
+        .stdout(predicate::str::contains("\"table_count\":2"));
+
+    let manifest = std::fs::read_to_string(out_dir.join("manifest.json")).unwrap();
+    let child = std::fs::read_to_string(out_dir.join("u_child.json")).unwrap();
+    assert!(manifest.contains("\"kind\":\"dataset\""));
+    assert!(manifest.contains("\"name\":\"u_parent\""));
+    assert!(manifest.contains("\"name\":\"u_child\""));
+    assert!(child.contains("__reference"));
+    assert!(child.contains("\"source_value\":\"Parent A\""));
+}
+
+#[tokio::test]
+async fn test_data_import_package_remaps_references() {
+    let server = MockServer::start().await;
+
+    for table in ["u_parent", "u_child"] {
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/sys_dictionary"))
+            .and(query_param(
+                "sysparm_query",
+                &format!("name={}^elementISNOTEMPTY^element!=sys_tags", table),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": if table == "u_parent" {
+                    vec![serde_json::json!({
+                        "element": "name",
+                        "internal_type": "string",
+                        "mandatory": "true",
+                        "read_only": "false",
+                        "default_value": ""
+                    })]
+                } else {
+                    vec![
+                        serde_json::json!({
+                            "element": "name",
+                            "internal_type": "string",
+                            "mandatory": "true",
+                            "read_only": "false",
+                            "default_value": ""
+                        }),
+                        serde_json::json!({
+                            "element": "parent_ref",
+                            "internal_type": "reference",
+                            "mandatory": "false",
+                            "read_only": "false",
+                            "default_value": ""
+                        })
+                    ]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_db_object"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/now/table/u_parent"))
+        .and(body_string_contains("Parent A"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "result": {"sys_id": "parent-target-1", "name": "Parent A"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/now/table/u_child"))
+        .and(body_string_contains("parent-target-1"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "result": {"sys_id": "child-target-1", "name": "Child A"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let dataset_dir = temp_dir.path().join("dataset");
+    std::fs::create_dir_all(&dataset_dir).unwrap();
+
+    std::fs::write(
+        dataset_dir.join("manifest.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "kind": "dataset",
+            "command": "data export-package",
+            "instance": "https://dev.service-now.com",
+            "exported_at_unix_s": 1,
+            "tables": [
+                {
+                    "name": "u_parent",
+                    "file": "u_parent.json",
+                    "fields": ["name"],
+                    "record_count": 1,
+                    "depends_on": [],
+                    "references": []
+                },
+                {
+                    "name": "u_child",
+                    "file": "u_child.json",
+                    "fields": ["name", "parent_ref"],
+                    "record_count": 1,
+                    "depends_on": ["u_parent"],
+                    "references": [
+                        {
+                            "field": "parent_ref",
+                            "target_table": "u_parent",
+                            "source_key": "name",
+                            "target_key": "name"
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    std::fs::write(
+        dataset_dir.join("u_parent.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "kind": "dataset-table",
+            "table": "u_parent",
+            "source_key_fields": ["name"],
+            "records": [
+                {
+                    "source_sys_id": "parent-source-1",
+                    "data": {"name": "Parent A"}
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    std::fs::write(
+        dataset_dir.join("u_child.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "kind": "dataset-table",
+            "table": "u_child",
+            "source_key_fields": [],
+            "records": [
+                {
+                    "source_sys_id": "child-source-1",
+                    "data": {
+                        "name": "Child A",
+                        "parent_ref": {
+                            "__reference": {
+                                "target_table": "u_parent",
+                                "source_key": "name",
+                                "target_key": "name",
+                                "source_value": "Parent A"
+                            }
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "data",
+            "import",
+            "--file",
+            dataset_dir.join("manifest.json").to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"kind\":\"dataset-import-result\"",
+        ))
+        .stdout(predicate::str::contains("\"created\":2"))
+        .stdout(predicate::str::contains("\"table\":\"u_child\""));
+}
+
+#[tokio::test]
+async fn test_data_import_package_dry_run_reports_plan_without_writes() {
+    let server = MockServer::start().await;
+
+    for table in ["u_parent", "u_child"] {
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/sys_dictionary"))
+            .and(query_param(
+                "sysparm_query",
+                &format!("name={}^elementISNOTEMPTY^element!=sys_tags", table),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": if table == "u_parent" {
+                    vec![serde_json::json!({
+                        "element": "name",
+                        "internal_type": "string",
+                        "mandatory": "true",
+                        "read_only": "false",
+                        "default_value": ""
+                    })]
+                } else {
+                    vec![
+                        serde_json::json!({
+                            "element": "name",
+                            "internal_type": "string",
+                            "mandatory": "true",
+                            "read_only": "false",
+                            "default_value": ""
+                        }),
+                        serde_json::json!({
+                            "element": "parent_ref",
+                            "internal_type": "reference",
+                            "mandatory": "false",
+                            "read_only": "false",
+                            "default_value": ""
+                        })
+                    ]
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_db_object"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let dataset_dir = temp_dir.path().join("dataset");
+    std::fs::create_dir_all(&dataset_dir).unwrap();
+
+    std::fs::write(
+        dataset_dir.join("manifest.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "kind": "dataset",
+            "command": "data export-package",
+            "instance": "https://dev.service-now.com",
+            "exported_at_unix_s": 1,
+            "tables": [
+                {
+                    "name": "u_parent",
+                    "file": "u_parent.json",
+                    "fields": ["name"],
+                    "record_count": 1,
+                    "depends_on": [],
+                    "references": []
+                },
+                {
+                    "name": "u_child",
+                    "file": "u_child.json",
+                    "fields": ["name", "parent_ref"],
+                    "record_count": 1,
+                    "depends_on": ["u_parent"],
+                    "references": [
+                        {
+                            "field": "parent_ref",
+                            "target_table": "u_parent",
+                            "source_key": "name",
+                            "target_key": "name"
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    std::fs::write(
+        dataset_dir.join("u_parent.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "kind": "dataset-table",
+            "table": "u_parent",
+            "source_key_fields": ["name"],
+            "records": [{"source_sys_id": "parent-source-1", "data": {"name": "Parent A"}}]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    std::fs::write(
+        dataset_dir.join("u_child.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "kind": "dataset-table",
+            "table": "u_child",
+            "source_key_fields": [],
+            "records": [{
+                "source_sys_id": "child-source-1",
+                "data": {
+                    "name": "Child A",
+                    "parent_ref": {
+                        "__reference": {
+                            "target_table": "u_parent",
+                            "source_key": "name",
+                            "target_key": "name",
+                            "source_value": "Parent A"
+                        }
+                    }
+                }
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "data",
+            "import",
+            "--file",
+            dataset_dir.join("manifest.json").to_str().unwrap(),
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"kind\":\"dataset-import-dry-run\"",
+        ))
+        .stdout(predicate::str::contains("\"created\":0"))
+        .stdout(predicate::str::contains("\"skipped\":2"));
 }

@@ -6,6 +6,7 @@ pub async fn handle(
     profile: &str,
     format: &OutputFormat,
     instance: Option<&str>,
+    timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
         CodesearchCommands::Search {
@@ -17,7 +18,8 @@ pub async fn handle(
         } => {
             tracing::info!(query = %query, "Searching code");
 
-            let mut client = crate::client::build_client(profile, instance)?;
+            let mut client =
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
             let limit_str = limit.to_string();
             let search_all_scopes = !current_scope;
