@@ -297,7 +297,6 @@ async fn test_script_run_with_inline_code() {
         .and(body_string_contains("sys_scope=global"))
         .and(body_string_contains("runscript=Run+script"))
         .and(body_string_contains("sysparm_ck=inline-gck"))
-        .and(body_string_contains("record_for_rollback=on"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_string("<HTML><BODY>script output here</BODY></HTML>"),
@@ -370,6 +369,58 @@ async fn test_script_run_with_custom_scope() {
         .assert()
         .success()
         .stdout(predicate::str::contains("scoped"));
+}
+
+#[tokio::test]
+async fn test_script_run_with_form_execution_flags() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/sys.scripts.modern.do"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Set-Cookie", "JSESSIONID=flags-session; Path=/; HttpOnly")
+                .set_body_string("<script>window.g_ck = 'flags-gck';</script>"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/sys.scripts.do"))
+        .and(header("Cookie", "JSESSIONID=flags-session"))
+        .and(header("X-UserToken", "flags-gck"))
+        .and(body_string_contains("record_for_rollback=on"))
+        .and(body_string_contains("sandbox=on"))
+        .and(body_string_contains("scriptlet=on"))
+        .and(body_string_contains("quota_managed_transaction=on"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string("<HTML><BODY>flags ok</BODY></HTML>"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "script",
+            "run",
+            "--code",
+            "gs.info('flags')",
+            "--rollback",
+            "--sandbox",
+            "--scriptlet",
+            "--quota-managed-transaction",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("flags ok"));
 }
 
 #[tokio::test]
@@ -552,5 +603,9 @@ fn test_script_run_help() {
         .stdout(predicate::str::contains("--file"))
         .stdout(predicate::str::contains("--code"))
         .stdout(predicate::str::contains("--scope"))
-        .stdout(predicate::str::contains("--endpoint"));
+        .stdout(predicate::str::contains("--endpoint"))
+        .stdout(predicate::str::contains("--rollback"))
+        .stdout(predicate::str::contains("--sandbox"))
+        .stdout(predicate::str::contains("--scriptlet"))
+        .stdout(predicate::str::contains("--quota-managed-transaction"));
 }

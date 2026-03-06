@@ -6,6 +6,15 @@ use http::HeaderMap;
 const FORM_SCRIPT_ENDPOINT: &str = "/sys.scripts.do";
 const FORM_SCRIPT_BOOTSTRAP_PATH: &str = "/sys.scripts.modern.do";
 
+struct ScriptRunOptions {
+    scope: String,
+    endpoint: String,
+    rollback: bool,
+    sandbox: bool,
+    scriptlet: bool,
+    quota_managed_transaction: bool,
+}
+
 pub async fn handle(
     args: ScriptArgs,
     profile: &str,
@@ -18,7 +27,21 @@ pub async fn handle(
             code,
             scope,
             endpoint,
-        } => handle_run(profile, format, instance, file, code, &scope, &endpoint).await,
+            rollback,
+            sandbox,
+            scriptlet,
+            quota_managed_transaction,
+        } => {
+            let options = ScriptRunOptions {
+                scope,
+                endpoint,
+                rollback,
+                sandbox,
+                scriptlet,
+                quota_managed_transaction,
+            };
+            handle_run(profile, format, instance, file, code, &options).await
+        }
     }
 }
 
@@ -34,21 +57,20 @@ async fn handle_run(
     instance: Option<&str>,
     file: Option<String>,
     code: Option<String>,
-    scope: &str,
-    endpoint: &str,
+    options: &ScriptRunOptions,
 ) -> anyhow::Result<()> {
     let script = resolve_script(file, code)?;
     let script_len = script.len();
 
     tracing::info!(
-        endpoint = endpoint,
-        scope = scope,
+        endpoint = options.endpoint,
+        scope = options.scope,
         script_len = script_len,
         "Executing background script"
     );
 
     let mut client = crate::client::build_client(profile, instance)?;
-    let requires_form_session = endpoint_requires_form_session(endpoint);
+    let requires_form_session = endpoint_requires_form_session(&options.endpoint);
     let form_session = if requires_form_session {
         Some(
             client
@@ -59,10 +81,11 @@ async fn handle_run(
         None
     };
 
-    let url = if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
-        endpoint.to_string()
+    let url = if options.endpoint.starts_with("http://") || options.endpoint.starts_with("https://")
+    {
+        options.endpoint.to_string()
     } else {
-        format!("{}{}", client.base_url(), endpoint)
+        format!("{}{}", client.base_url(), options.endpoint)
     };
 
     let response = if requires_form_session {
@@ -81,26 +104,52 @@ async fn handle_run(
 
         eprintln!(
             "Using ServiceNow background script endpoint: {} (scope={})",
-            endpoint, scope
+            options.endpoint, options.scope
         );
+
+        let mut form_field_names = vec!["script", "runscript", "sysparm_ck", "sys_scope"];
+        if options.rollback {
+            form_field_names.push("record_for_rollback");
+        }
+        if options.sandbox {
+            form_field_names.push("sandbox");
+        }
+        if options.scriptlet {
+            form_field_names.push("scriptlet");
+        }
+        if options.quota_managed_transaction {
+            form_field_names.push("quota_managed_transaction");
+        }
 
         tracing::debug!(
             method = "POST",
             url = %url,
-            endpoint = endpoint,
+            endpoint = options.endpoint,
             headers = ?request_headers,
             script_len = script_len,
             body_encoding = "application/x-www-form-urlencoded",
-            form_fields = ?[
-                "script",
-                "runscript",
-                "sysparm_ck",
-                "sys_scope",
-                "record_for_rollback",
-                "quota_managed_transaction"
-            ],
+            form_fields = ?form_field_names,
             "Sending request"
         );
+
+        let mut form_fields = vec![
+            ("script", script.as_str()),
+            ("runscript", "Run script"),
+            ("sysparm_ck", form_session.g_ck.as_str()),
+            ("sys_scope", options.scope.as_str()),
+        ];
+        if options.rollback {
+            form_fields.push(("record_for_rollback", "on"));
+        }
+        if options.sandbox {
+            form_fields.push(("sandbox", "on"));
+        }
+        if options.scriptlet {
+            form_fields.push(("scriptlet", "on"));
+        }
+        if options.quota_managed_transaction {
+            form_fields.push(("quota_managed_transaction", "on"));
+        }
 
         let request = client
             .http()
@@ -108,14 +157,7 @@ async fn handle_run(
             .header("Accept", "text/html,application/xhtml+xml")
             .header("Cookie", cookie_header)
             .header("X-UserToken", form_session.g_ck.as_str())
-            .form(&[
-                ("script", script.as_str()),
-                ("runscript", "Run script"),
-                ("sysparm_ck", form_session.g_ck.as_str()),
-                ("sys_scope", scope),
-                ("record_for_rollback", "on"),
-                ("quota_managed_transaction", "on"),
-            ])
+            .form(&form_fields)
             .build()?;
 
         crate::client::log_raw_http_request(&request);
@@ -134,7 +176,7 @@ async fn handle_run(
         tracing::debug!(
             method = "POST",
             url = %url,
-            endpoint = endpoint,
+            endpoint = options.endpoint,
             headers = ?request_headers,
             script_len = script_len,
             body_encoding = "application/json",
@@ -144,7 +186,7 @@ async fn handle_run(
 
         let body = serde_json::json!({
             "script": script,
-            "scope": scope,
+            "scope": options.scope,
         });
 
         let request = client

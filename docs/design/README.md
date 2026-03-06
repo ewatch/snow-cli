@@ -8,6 +8,7 @@ technical design of major components in snow-cli.
 | Document                          | Description                                |
 |-----------------------------------|--------------------------------------------|
 | [authentication.md](authentication.md) | Authentication architecture and trait design |
+| [data-import-export.md](data-import-export.md) | Data export, import, and test-data seeding plan |
 | [http-client.md](http-client.md)       | HTTP client, pagination, and error handling  |
 
 ## Guidelines

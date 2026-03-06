@@ -13,6 +13,14 @@ const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password
 
 const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended";
 
+const DATA_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export sys_user --fields sys_id,user_name,email --out users.json\n  snow-cli data validate --file export.json\n  snow-cli data import --file export.json";
+
+const DATA_EXPORT_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export incident --fields sys_id,number,short_description --limit 50\n  snow-cli --output csv data export sys_user --fields sys_id,user_name,email --out users.csv";
+
+const SEED_AFTER_HELP: &str = "Examples:\n  snow-cli seed plan --file qa-fixture.json\n  snow-cli seed apply --file qa-fixture.json\n  snow-cli seed cleanup <run-id> --dry-run";
+
+const SCOPE_AFTER_HELP: &str = "Examples:\n  snow-cli scope inspect x_my_app\n  snow-cli scope inspect 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --details full";
+
 const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name";
 
 const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incident --data '{\"short_description\":\"VPN down\"}'\n  echo '{\"short_description\":\"From stdin\"}' | snow-cli table create incident";
@@ -65,6 +73,15 @@ pub enum Commands {
 
     /// Table API operations (CRUD on any ServiceNow table)
     Table(TableArgs),
+
+    /// Portable data export, validation, and import workflows
+    Data(DataArgs),
+
+    /// Declarative test-data planning, apply, and cleanup workflows
+    Seed(SeedArgs),
+
+    /// Analyze application scope metadata
+    Scope(ScopeArgs),
 
     /// Attachment operations
     Attachment(AttachmentArgs),
@@ -338,6 +355,133 @@ pub enum TableCommands {
     },
 }
 
+// --- Scope ---
+
+#[derive(Args, Debug)]
+#[command(after_help = DATA_AFTER_HELP)]
+pub struct DataArgs {
+    #[command(subcommand)]
+    pub command: DataCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DataCommands {
+    /// Export records from a single table
+    #[command(after_help = DATA_EXPORT_AFTER_HELP)]
+    Export {
+        /// Table name (e.g., incident, sys_user, cmdb_ci)
+        table: String,
+
+        /// Encoded query string
+        #[arg(long)]
+        query: Option<String>,
+
+        /// Comma-separated list of fields to return
+        #[arg(long)]
+        fields: Option<String>,
+
+        /// Maximum number of records to return
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Field to order results by
+        #[arg(long)]
+        order_by: Option<String>,
+
+        /// Write the exported artifact to a file instead of stdout
+        #[arg(long = "out", short = 'o')]
+        out_path: Option<String>,
+    },
+
+    /// Validate a dataset file against the target instance
+    Validate {
+        /// Dataset file to validate
+        #[arg(long, short = 'f')]
+        file: String,
+    },
+
+    /// Import a dataset file into the target instance
+    Import {
+        /// Dataset file to import
+        #[arg(long, short = 'f')]
+        file: String,
+    },
+}
+
+// --- Seed ---
+
+#[derive(Args, Debug)]
+#[command(after_help = SEED_AFTER_HELP)]
+pub struct SeedArgs {
+    #[command(subcommand)]
+    pub command: SeedCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SeedCommands {
+    /// Validate a seed spec and show the execution plan
+    Plan {
+        /// Seed specification file
+        #[arg(long, short = 'f')]
+        file: String,
+    },
+
+    /// Create test data from a seed spec
+    Apply {
+        /// Seed specification file
+        #[arg(long, short = 'f')]
+        file: String,
+    },
+
+    /// Remove data created by a prior seed run
+    Cleanup {
+        /// Seed run identifier
+        run_id: String,
+
+        /// Preview what would be deleted without mutating data
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Delete tracked records without prompting
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+// --- Scope ---
+
+#[derive(Args, Debug)]
+#[command(after_help = SCOPE_AFTER_HELP)]
+pub struct ScopeArgs {
+    #[command(subcommand)]
+    pub command: ScopeCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ScopeCommands {
+    /// Inspect scope metadata and artifact counts
+    Inspect {
+        /// Scope name (e.g., x_my_app) or scope sys_id
+        scope: String,
+
+        /// Detail level for output payload
+        #[arg(long, value_enum, default_value = "basic")]
+        details: ScopeDetailLevel,
+    },
+
+    /// Export normalized scope artifacts for analysis
+    Inventory {
+        /// Scope name (e.g., x_my_app) or scope sys_id
+        scope: String,
+    },
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum ScopeDetailLevel {
+    Basic,
+    Full,
+}
+
 // --- Attachment ---
 
 #[derive(Args, Debug)]
@@ -495,6 +639,22 @@ pub enum ScriptCommands {
         /// Endpoint to execute script against (defaults to /sys.scripts.do)
         #[arg(long, default_value = "/sys.scripts.do")]
         endpoint: String,
+
+        /// Record rollback context for database changes
+        #[arg(long)]
+        rollback: bool,
+
+        /// Run in sandbox mode to prevent database writes
+        #[arg(long)]
+        sandbox: bool,
+
+        /// Run as scriptlet with access to global server-side objects
+        #[arg(long)]
+        scriptlet: bool,
+
+        /// Use managed transaction limits (up to 4 hours)
+        #[arg(long = "quota-managed-transaction", alias = "limit-transaction")]
+        quota_managed_transaction: bool,
     },
 }
 
@@ -592,6 +752,148 @@ mod tests {
                 _ => panic!("Expected Table List command"),
             },
             _ => panic!("Expected Table command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_scope_inspect_defaults_to_basic_details() {
+        let cli = Cli::parse_from(["snow-cli", "scope", "inspect", "x_my_app"]);
+
+        match cli.command {
+            Commands::Scope(args) => match args.command {
+                ScopeCommands::Inspect { scope, details } => {
+                    assert_eq!(scope, "x_my_app");
+                    assert!(matches!(details, ScopeDetailLevel::Basic));
+                }
+                _ => panic!("Expected Scope Inspect command"),
+            },
+            _ => panic!("Expected Scope command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_scope_inspect_full_details() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "scope",
+            "inspect",
+            "x_my_app",
+            "--details",
+            "full",
+        ]);
+
+        match cli.command {
+            Commands::Scope(args) => match args.command {
+                ScopeCommands::Inspect { details, .. } => {
+                    assert!(matches!(details, ScopeDetailLevel::Full));
+                }
+                _ => panic!("Expected Scope Inspect command"),
+            },
+            _ => panic!("Expected Scope command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_scope_inventory() {
+        let cli = Cli::parse_from(["snow-cli", "scope", "inventory", "x_my_app"]);
+
+        match cli.command {
+            Commands::Scope(args) => match args.command {
+                ScopeCommands::Inventory { scope } => {
+                    assert_eq!(scope, "x_my_app");
+                }
+                _ => panic!("Expected Scope Inventory command"),
+            },
+            _ => panic!("Expected Scope command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_data_export_with_output_path() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "data",
+            "export",
+            "incident",
+            "--query",
+            "active=true",
+            "--fields",
+            "sys_id,number",
+            "--out",
+            "incident.json",
+        ]);
+
+        match cli.command {
+            Commands::Data(args) => match args.command {
+                DataCommands::Export {
+                    table,
+                    query,
+                    fields,
+                    out_path,
+                    ..
+                } => {
+                    assert_eq!(table, "incident");
+                    assert_eq!(query, Some("active=true".to_string()));
+                    assert_eq!(fields, Some("sys_id,number".to_string()));
+                    assert_eq!(out_path, Some("incident.json".to_string()));
+                }
+                _ => panic!("Expected Data Export command"),
+            },
+            _ => panic!("Expected Data command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_seed_cleanup_dry_run() {
+        let cli = Cli::parse_from(["snow-cli", "seed", "cleanup", "run-123", "--dry-run"]);
+
+        match cli.command {
+            Commands::Seed(args) => match args.command {
+                SeedCommands::Cleanup {
+                    run_id,
+                    dry_run,
+                    yes,
+                } => {
+                    assert_eq!(run_id, "run-123");
+                    assert!(dry_run);
+                    assert!(!yes);
+                }
+                _ => panic!("Expected Seed Cleanup command"),
+            },
+            _ => panic!("Expected Seed command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_script_run_flags() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "script",
+            "run",
+            "--code",
+            "gs.info('x')",
+            "--rollback",
+            "--sandbox",
+            "--scriptlet",
+            "--quota-managed-transaction",
+        ]);
+
+        match cli.command {
+            Commands::Script(args) => match args.command {
+                ScriptCommands::Run {
+                    rollback,
+                    sandbox,
+                    scriptlet,
+                    quota_managed_transaction,
+                    ..
+                } => {
+                    assert!(rollback);
+                    assert!(sandbox);
+                    assert!(scriptlet);
+                    assert!(quota_managed_transaction);
+                }
+            },
+            _ => panic!("Expected Script command"),
         }
     }
 }

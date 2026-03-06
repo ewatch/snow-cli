@@ -77,6 +77,23 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
+        cli::args::Commands::Data(args) => {
+            cli::commands::data::handle(args, &active_profile, &cli.output, cli.instance.as_deref())
+                .await
+        }
+        cli::args::Commands::Seed(args) => {
+            cli::commands::seed::handle(args, &active_profile, &cli.output, cli.instance.as_deref())
+                .await
+        }
+        cli::args::Commands::Scope(args) => {
+            cli::commands::scope::handle(
+                args,
+                &active_profile,
+                &cli.output,
+                cli.instance.as_deref(),
+            )
+            .await
+        }
         cli::args::Commands::Attachment(args) => {
             cli::commands::attachment::handle(
                 args,

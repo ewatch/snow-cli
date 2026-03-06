@@ -78,7 +78,10 @@ pub fn print_records(records: &[Record], format: &OutputFormat) -> anyhow::Resul
 /// Uses a BTreeSet to produce deterministic, sorted column headers.
 /// Values are stringified from their JSON representation (strings unquoted,
 /// others as JSON).
-fn write_records_csv<W: Write>(records: &[Record], writer: &mut W) -> anyhow::Result<()> {
+pub(crate) fn write_records_csv<W: Write>(
+    records: &[Record],
+    writer: &mut W,
+) -> anyhow::Result<()> {
     if records.is_empty() {
         return Ok(());
     }

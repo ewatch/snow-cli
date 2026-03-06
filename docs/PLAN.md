@@ -67,6 +67,20 @@ snow-cli table
   delete <table_name> <sys_id>    Delete a record
   schema <table_name>             Show table schema (columns, types, labels)
 
+snow-cli data
+  export <table_name>             Export table records as a portable dataset
+  validate --file <dataset>       Validate dataset compatibility before import
+  import --file <dataset>         Import a dataset through the preferred load path
+
+snow-cli seed
+  plan --file <spec>              Validate a seed spec and show execution plan
+  apply --file <spec>             Create multi-table test data from a seed spec
+  cleanup <run_id>                Remove records created by a prior seed run
+
+snow-cli scope
+  inspect <scope>                 Inspect scope metadata and artifact counts
+  inventory <scope>               Export normalized scope artifacts
+
 snow-cli codesearch
   search <query>                  Search code across the instance
 
@@ -198,6 +212,8 @@ never in the config file.
 
 - [x] Add shell completions generation
 - [x] Implement `config init` first-time bootstrap
+- [ ] Implement `data export` MVP and command model for `data` / `seed`
+- [ ] Implement dataset validation, import, and seed workflows
 - [ ] Set up CI/CD (GitHub Actions) for cross-compilation
 - [ ] Create Homebrew formula
 - [ ] Add mTLS and SSO/SAML auth

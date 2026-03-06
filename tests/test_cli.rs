@@ -59,6 +59,49 @@ fn test_table_list_help() {
 }
 
 #[test]
+fn test_scope_inspect_help() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["scope", "inspect", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Inspect scope metadata"))
+        .stdout(predicate::str::contains("--details"));
+}
+
+#[test]
+fn test_scope_inventory_help() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["scope", "inventory", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Export normalized scope artifacts",
+        ));
+}
+
+#[test]
+fn test_data_export_help() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["data", "export", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Export records from a single table",
+        ))
+        .stdout(predicate::str::contains("--out"));
+}
+
+#[test]
+fn test_seed_help() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["seed", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Declarative test-data"))
+        .stdout(predicate::str::contains("seed cleanup"));
+}
+
+#[test]
 fn test_completions_bash() {
     cargo_bin_cmd!("snow-cli")
         .args(["completions", "bash"])
