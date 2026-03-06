@@ -70,6 +70,50 @@ async fn mount_scope_inventory_mocks(server: &MockServer) {
     }
 }
 
+async fn mount_scope_list_search_mocks(server: &MockServer, search: &str) {
+    let scope_query =
+        format!("scope={search}^ORsys_id={search}^ORscopeLIKE{search}^ORnameLIKE{search}");
+    let plugin_query = format!("id={search}^ORidLIKE{search}^ORnameLIKE{search}");
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_scope"))
+        .and(query_param("sysparm_query", &scope_query))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"sys_id": "scope-global", "scope": "global", "name": "Global", "version": ""},
+                {"sys_id": "scope-platform", "scope": "sn_ot_incident_mgmt", "name": "OT Incident Management", "version": "1.0.0"},
+                {"sys_id": "scope-custom", "scope": "x_acme_incident_tools", "name": "Acme Incident Tools", "version": "2.3.0"}
+            ]
+        })))
+        .expect(1)
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_store_app"))
+        .and(query_param("sysparm_query", &scope_query))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"sys_id": "store-1", "scope": "sn_ot_incident_mgmt", "name": "OT Incident Management", "version": "1.0.0"}
+            ]
+        })))
+        .expect(1)
+        .mount(server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/v_plugin"))
+        .and(query_param("sysparm_query", &plugin_query))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"sys_id": "plugin-1", "id": "com.snc.incident", "name": "Incident Management Plugin", "active": "true"}
+            ]
+        })))
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
 #[tokio::test]
 async fn test_scope_inspect_basic_json() {
     let server = MockServer::start().await;
@@ -86,6 +130,134 @@ async fn test_scope_inspect_basic_json() {
         .stdout(predicate::str::contains("\"scope\":\"x_my_app\""))
         .stdout(predicate::str::contains("\"artifact_counts\""))
         .stdout(predicate::str::contains("\"total_artifacts\":8"));
+}
+
+#[tokio::test]
+async fn test_scope_list_classifies_results_for_partial_search() {
+    let server = MockServer::start().await;
+    mount_scope_list_search_mocks(&server, "incident").await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args(["--instance", &server.uri(), "scope", "list", "incident"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"search\":\"incident\""))
+        .stdout(predicate::str::contains("\"kind\":\"store_app\""))
+        .stdout(predicate::str::contains("\"kind\":\"custom_app\""))
+        .stdout(predicate::str::contains("\"kind\":\"plugin\""))
+        .stdout(predicate::str::contains(
+            "\"scope\":\"sn_ot_incident_mgmt\"",
+        ));
+}
+
+#[tokio::test]
+async fn test_scope_list_matches_exact_global_scope() {
+    let server = MockServer::start().await;
+    mount_scope_list_search_mocks(&server, "global").await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args(["--instance", &server.uri(), "scope", "list", "global"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"scope\":\"global\""))
+        .stdout(predicate::str::contains("\"kind\":\"platform\""));
+}
+
+#[tokio::test]
+async fn test_scope_list_filters_by_kind() {
+    let server = MockServer::start().await;
+    mount_scope_list_search_mocks(&server, "incident").await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "scope",
+            "list",
+            "incident",
+            "--kind",
+            "plugin",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"kind\":\"plugin\""))
+        .stdout(predicate::str::contains("com.snc.incident"))
+        .stdout(predicate::str::contains("\"kind\":\"store_app\"").not())
+        .stdout(predicate::str::contains("\"kind\":\"custom_app\"").not());
+}
+
+#[tokio::test]
+async fn test_scope_list_text_output_groups_rows() {
+    let server = MockServer::start().await;
+    mount_scope_list_search_mocks(&server, "incident").await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "text",
+            "--instance",
+            &server.uri(),
+            "scope",
+            "list",
+            "incident",
+            "--kind",
+            "store-app",
+            "--kind",
+            "plugin",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Search: incident"))
+        .stdout(predicate::str::contains("Kinds: store_app, plugin"))
+        .stdout(predicate::str::contains("STORE_APP"))
+        .stdout(predicate::str::contains("PLUGIN"))
+        .stdout(predicate::str::contains("OT Incident Management"))
+        .stdout(predicate::str::contains("com.snc.incident"));
+}
+
+#[tokio::test]
+async fn test_scope_list_text_output_includes_optional_columns() {
+    let server = MockServer::start().await;
+    mount_scope_list_search_mocks(&server, "incident").await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "text",
+            "--instance",
+            &server.uri(),
+            "scope",
+            "list",
+            "incident",
+            "--show-source-table",
+            "--show-sys-id",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("sys_scope"))
+        .stdout(predicate::str::contains("v_plugin"))
+        .stdout(predicate::str::contains("scope-platform"))
+        .stdout(predicate::str::contains("plugin-1"));
 }
 
 #[tokio::test]

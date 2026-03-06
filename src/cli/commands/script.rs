@@ -260,6 +260,10 @@ async fn handle_run(
         OutputFormat::Csv => {
             println!("{}", response_body);
         }
+        OutputFormat::Text => match serde_json::from_str::<serde_json::Value>(&response_body) {
+            Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
+            Err(_) => println!("{}", response_body),
+        },
     }
 
     Ok(())

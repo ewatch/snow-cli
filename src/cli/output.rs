@@ -16,6 +16,10 @@ pub fn print_output<T: Serialize>(value: &T, format: &OutputFormat) -> anyhow::R
             writer.serialize(value)?;
             writer.flush()?;
         }
+        OutputFormat::Text => {
+            let json = serde_json::to_string_pretty(value)?;
+            println!("{json}");
+        }
     }
     Ok(())
 }
@@ -33,6 +37,10 @@ pub fn print_list<T: Serialize>(values: &[T], format: &OutputFormat) -> anyhow::
                 writer.serialize(value)?;
             }
             writer.flush()?;
+        }
+        OutputFormat::Text => {
+            let json = serde_json::to_string_pretty(values)?;
+            println!("{json}");
         }
     }
     Ok(())
@@ -52,6 +60,10 @@ pub fn print_record(record: &Record, format: &OutputFormat) -> anyhow::Result<()
         OutputFormat::Csv => {
             write_records_csv(std::slice::from_ref(record), &mut std::io::stdout())?;
         }
+        OutputFormat::Text => {
+            let json = serde_json::to_string_pretty(record)?;
+            println!("{json}");
+        }
     }
     Ok(())
 }
@@ -68,6 +80,10 @@ pub fn print_records(records: &[Record], format: &OutputFormat) -> anyhow::Resul
         }
         OutputFormat::Csv => {
             write_records_csv(records, &mut std::io::stdout())?;
+        }
+        OutputFormat::Text => {
+            let json = serde_json::to_string_pretty(records)?;
+            println!("{json}");
         }
     }
     Ok(())
@@ -126,6 +142,9 @@ pub fn print_status(message: &str, format: &OutputFormat) -> anyhow::Result<()> 
         }
         OutputFormat::Csv => {
             // For non-tabular status messages, just print plaintext
+            println!("{message}");
+        }
+        OutputFormat::Text => {
             println!("{message}");
         }
     }

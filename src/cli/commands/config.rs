@@ -263,6 +263,21 @@ async fn handle_list_profiles(
             }
             writer.flush()?;
         }
+        OutputFormat::Text => {
+            let profiles: Vec<serde_json::Value> = config
+                .profiles
+                .iter()
+                .map(|(name, profile)| {
+                    serde_json::json!({
+                        "name": name,
+                        "instance": profile.instance,
+                        "auth_method": profile.auth_method,
+                        "default": name == &config.default_profile,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&profiles)?);
+        }
     }
 
     Ok(())
@@ -329,6 +344,16 @@ async fn handle_show(
                 writer.write_record(["profile_status", "not_found"])?;
             }
             writer.flush()?;
+        }
+        OutputFormat::Text => {
+            let output = serde_json::json!({
+                "config_path": config_path.display().to_string(),
+                "default_profile": config.default_profile,
+                "active_profile": active_profile,
+                "profile": profile,
+                "total_profiles": config.profiles.len(),
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
         }
     }
 

@@ -21,7 +21,7 @@ const DATA_EXPORT_PACKAGE_AFTER_HELP: &str = "Examples:\n  snow-cli data export-
 
 const SEED_AFTER_HELP: &str = "Examples:\n  snow-cli seed plan --file qa-fixture.json\n  snow-cli seed apply --file qa-fixture.json\n  snow-cli seed cleanup <run-id> --dry-run";
 
-const SCOPE_AFTER_HELP: &str = "Examples:\n  snow-cli scope inspect x_my_app\n  snow-cli scope inspect 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --details full";
+const SCOPE_AFTER_HELP: &str = "Examples:\n  snow-cli scope list\n  snow-cli scope list incident\n  snow-cli scope list sn_ot_incident_mgmt\n  snow-cli scope inspect x_my_app\n  snow-cli scope inspect 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --details full";
 
 const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name";
 
@@ -67,6 +67,7 @@ pub struct Cli {
 pub enum OutputFormat {
     Json,
     Csv,
+    Text,
 }
 
 #[derive(Subcommand, Debug)]
@@ -481,6 +482,24 @@ pub struct ScopeArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ScopeCommands {
+    /// List scopes and classify them by origin
+    List {
+        /// Optional search term for partial name matches or exact scope names
+        search: Option<String>,
+
+        /// Restrict results to one or more scope kinds
+        #[arg(long, value_enum)]
+        kind: Vec<ScopeListKind>,
+
+        /// Include the source table column in text output
+        #[arg(long)]
+        show_source_table: bool,
+
+        /// Include the sys_id column in text output
+        #[arg(long)]
+        show_sys_id: bool,
+    },
+
     /// Inspect scope metadata and artifact counts
     Inspect {
         /// Scope name (e.g., x_my_app) or scope sys_id
@@ -502,6 +521,27 @@ pub enum ScopeCommands {
 pub enum ScopeDetailLevel {
     Basic,
     Full,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
+pub enum ScopeListKind {
+    StoreApp,
+    Plugin,
+    CustomApp,
+    Platform,
+    PlatformApp,
+}
+
+impl ScopeListKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::StoreApp => "store_app",
+            Self::Plugin => "plugin",
+            Self::CustomApp => "custom_app",
+            Self::Platform => "platform",
+            Self::PlatformApp => "platform_app",
+        }
+    }
 }
 
 // --- Attachment ---
@@ -788,6 +828,67 @@ mod tests {
                     assert!(matches!(details, ScopeDetailLevel::Basic));
                 }
                 _ => panic!("Expected Scope Inspect command"),
+            },
+            _ => panic!("Expected Scope command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_scope_list_with_search() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "scope",
+            "list",
+            "global",
+            "--kind",
+            "plugin",
+            "--kind",
+            "store-app",
+        ]);
+
+        match cli.command {
+            Commands::Scope(args) => match args.command {
+                ScopeCommands::List {
+                    search,
+                    kind,
+                    show_source_table,
+                    show_sys_id,
+                } => {
+                    assert_eq!(search, Some("global".to_string()));
+                    assert_eq!(kind, vec![ScopeListKind::Plugin, ScopeListKind::StoreApp]);
+                    assert!(!show_source_table);
+                    assert!(!show_sys_id);
+                }
+                _ => panic!("Expected Scope List command"),
+            },
+            _ => panic!("Expected Scope command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_scope_list_text_column_flags() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "scope",
+            "list",
+            "incident",
+            "--show-source-table",
+            "--show-sys-id",
+        ]);
+
+        match cli.command {
+            Commands::Scope(args) => match args.command {
+                ScopeCommands::List {
+                    search,
+                    show_source_table,
+                    show_sys_id,
+                    ..
+                } => {
+                    assert_eq!(search, Some("incident".to_string()));
+                    assert!(show_source_table);
+                    assert!(show_sys_id);
+                }
+                _ => panic!("Expected Scope List command"),
             },
             _ => panic!("Expected Scope command"),
         }

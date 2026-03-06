@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
+use std::fmt::Write as _;
 
-use crate::cli::args::{OutputFormat, ScopeArgs, ScopeCommands, ScopeDetailLevel};
+use crate::cli::args::{OutputFormat, ScopeArgs, ScopeCommands, ScopeDetailLevel, ScopeListKind};
 use crate::cli::output;
 use crate::client::pagination::PaginationConfig;
 use crate::models::record::Record;
@@ -220,12 +221,50 @@ pub async fn handle(
     timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
+        ScopeCommands::List {
+            search,
+            kind,
+            show_source_table,
+            show_sys_id,
+        } => {
+            handle_list(
+                profile,
+                format,
+                instance,
+                timeout_secs,
+                search.as_deref(),
+                &kind,
+                ScopeListTextOptions {
+                    show_source_table,
+                    show_sys_id,
+                },
+            )
+            .await
+        }
         ScopeCommands::Inspect { scope, details } => {
             handle_inspect(profile, format, instance, timeout_secs, &scope, details).await
         }
         ScopeCommands::Inventory { scope } => {
             handle_inventory(profile, format, instance, timeout_secs, &scope).await
         }
+    }
+}
+
+async fn handle_list(
+    profile: &str,
+    format: &OutputFormat,
+    instance: Option<&str>,
+    timeout_secs: Option<u64>,
+    search: Option<&str>,
+    kinds: &[ScopeListKind],
+    text_options: ScopeListTextOptions,
+) -> anyhow::Result<()> {
+    let payload = list_scopes(profile, instance, timeout_secs, search, kinds).await?;
+
+    match format {
+        OutputFormat::Json => output::print_output(&payload, format),
+        OutputFormat::Csv => output::print_list(&payload.rows, format),
+        OutputFormat::Text => print_scope_list_text(&payload, text_options),
     }
 }
 
@@ -263,6 +302,7 @@ async fn handle_inspect(
                 .to_csv_rows(&payload.scope.scope, &payload.scope.sys_id);
             output::print_list(&csv_rows, format)
         }
+        OutputFormat::Text => output::print_output(&payload, format),
     }
 }
 
@@ -287,6 +327,15 @@ async fn handle_inventory(
             output::print_output(&payload, format)
         }
         OutputFormat::Csv => output::print_list(&rows, format),
+        OutputFormat::Text => {
+            let payload = ScopeInventoryOutput {
+                scope: collected.scope,
+                summary: collected.summary,
+                rows,
+                warnings: collected.warnings,
+            };
+            output::print_output(&payload, format)
+        }
     }
 }
 
@@ -598,6 +647,340 @@ fn value_as_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+async fn list_scopes(
+    profile: &str,
+    instance: Option<&str>,
+    timeout_secs: Option<u64>,
+    search: Option<&str>,
+    kinds: &[ScopeListKind],
+) -> anyhow::Result<ScopeListOutput> {
+    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+    let pagination = PaginationConfig::default();
+    let scope_query = build_scope_search_query(search);
+    let plugin_query = build_plugin_search_query(search);
+
+    let scopes = client
+        .get_table_records(
+            "sys_scope",
+            scope_query.as_deref(),
+            Some("sys_id,scope,name,version"),
+            &pagination,
+            None,
+        )
+        .await?;
+
+    let mut warnings = Vec::new();
+    let store_apps = query_optional_table(
+        &mut client,
+        "sys_store_app",
+        scope_query.as_deref(),
+        "sys_id,scope,name,version,vendor",
+        &mut warnings,
+    )
+    .await;
+    let plugins = query_optional_table(
+        &mut client,
+        "v_plugin",
+        plugin_query.as_deref(),
+        "sys_id,id,name,active",
+        &mut warnings,
+    )
+    .await;
+
+    let rows = filter_scope_list_rows(build_scope_list_rows(scopes, store_apps, plugins), kinds);
+    let counts = ScopeListCounts::from_rows(&rows);
+
+    Ok(ScopeListOutput {
+        search: search.map(ToString::to_string),
+        kind_filter: kinds.iter().map(|kind| kind.as_str().to_string()).collect(),
+        counts,
+        rows,
+        warnings,
+    })
+}
+
+fn filter_scope_list_rows(rows: Vec<ScopeListRow>, kinds: &[ScopeListKind]) -> Vec<ScopeListRow> {
+    if kinds.is_empty() {
+        return rows;
+    }
+
+    let allowed = kinds
+        .iter()
+        .map(ScopeListKind::as_str)
+        .collect::<HashSet<_>>();
+    rows.into_iter()
+        .filter(|row| allowed.contains(row.kind.as_str()))
+        .collect()
+}
+
+async fn query_optional_table(
+    client: &mut crate::client::SnowClient,
+    table: &str,
+    query: Option<&str>,
+    fields: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<Record> {
+    let pagination = PaginationConfig::default();
+    match client
+        .get_table_records(table, query, Some(fields), &pagination, None)
+        .await
+    {
+        Ok(records) => records,
+        Err(err) => {
+            warnings.push(format!("Failed to query {table}: {err}"));
+            Vec::new()
+        }
+    }
+}
+
+fn build_scope_search_query(search: Option<&str>) -> Option<String> {
+    search.map(|search| {
+        format!("scope={search}^ORsys_id={search}^ORscopeLIKE{search}^ORnameLIKE{search}")
+    })
+}
+
+fn build_plugin_search_query(search: Option<&str>) -> Option<String> {
+    search.map(|search| format!("id={search}^ORidLIKE{search}^ORnameLIKE{search}"))
+}
+
+fn build_scope_list_rows(
+    scopes: Vec<Record>,
+    store_apps: Vec<Record>,
+    plugins: Vec<Record>,
+) -> Vec<ScopeListRow> {
+    let store_scope_names = store_apps
+        .iter()
+        .map(|record| field_text(record, "scope"))
+        .filter(|scope| !scope.is_empty())
+        .collect::<HashSet<_>>();
+    let seen_scope_names = scopes
+        .iter()
+        .map(|record| field_text(record, "scope"))
+        .filter(|scope| !scope.is_empty())
+        .collect::<HashSet<_>>();
+
+    let mut rows = scopes
+        .into_iter()
+        .map(|record| {
+            let scope = field_text(&record, "scope");
+            let kind = classify_scope_kind(&scope, store_scope_names.contains(&scope));
+            ScopeListRow {
+                kind: kind.to_string(),
+                scope,
+                name: field_text(&record, "name"),
+                version: field_text(&record, "version"),
+                identifier: String::new(),
+                source_table: "sys_scope".to_string(),
+                sys_id: field_text(&record, "sys_id"),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    rows.extend(
+        store_apps
+            .into_iter()
+            .filter(|record| {
+                let scope = field_text(record, "scope");
+                scope.is_empty() || !seen_scope_names.contains(&scope)
+            })
+            .map(|record| ScopeListRow {
+                kind: "store_app".to_string(),
+                scope: field_text(&record, "scope"),
+                name: field_text(&record, "name"),
+                version: field_text(&record, "version"),
+                identifier: String::new(),
+                source_table: "sys_store_app".to_string(),
+                sys_id: field_text(&record, "sys_id"),
+            }),
+    );
+
+    rows.extend(plugins.into_iter().map(|record| ScopeListRow {
+        kind: "plugin".to_string(),
+        scope: String::new(),
+        name: field_text(&record, "name"),
+        version: String::new(),
+        identifier: field_text(&record, "id"),
+        source_table: "v_plugin".to_string(),
+        sys_id: field_text(&record, "sys_id"),
+    }));
+
+    rows.sort_by(|left, right| {
+        (
+            left.kind.as_str(),
+            left.scope.as_str(),
+            left.name.as_str(),
+            left.identifier.as_str(),
+            left.sys_id.as_str(),
+        )
+            .cmp(&(
+                right.kind.as_str(),
+                right.scope.as_str(),
+                right.name.as_str(),
+                right.identifier.as_str(),
+                right.sys_id.as_str(),
+            ))
+    });
+    rows
+}
+
+fn classify_scope_kind(scope: &str, is_store_app: bool) -> &'static str {
+    if is_store_app {
+        "store_app"
+    } else if scope == "global" {
+        "platform"
+    } else if scope.starts_with("x_") {
+        "custom_app"
+    } else {
+        "platform_app"
+    }
+}
+
+fn print_scope_list_text(
+    payload: &ScopeListOutput,
+    options: ScopeListTextOptions,
+) -> anyhow::Result<()> {
+    let mut out = String::new();
+
+    if let Some(search) = &payload.search {
+        writeln!(&mut out, "Search: {search}")?;
+    }
+    if !payload.kind_filter.is_empty() {
+        writeln!(&mut out, "Kinds: {}", payload.kind_filter.join(", "))?;
+    }
+    writeln!(&mut out, "Total: {}", payload.counts.total)?;
+
+    if !payload.counts.by_kind.is_empty() {
+        let counts = payload
+            .counts
+            .by_kind
+            .iter()
+            .map(|(kind, count)| format!("{kind}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(&mut out, "By kind: {counts}")?;
+    }
+
+    if payload.rows.is_empty() {
+        writeln!(&mut out)?;
+        writeln!(&mut out, "No matching scopes found.")?;
+    } else {
+        for (kind, rows) in group_scope_rows_by_kind(&payload.rows) {
+            writeln!(&mut out)?;
+            writeln!(&mut out, "{}", kind.to_ascii_uppercase())?;
+
+            let name_width = rows
+                .iter()
+                .map(|row| row.name.len())
+                .max()
+                .unwrap_or(0)
+                .max(4);
+            let key_width = rows
+                .iter()
+                .map(|row| scope_row_key(row).len())
+                .max()
+                .unwrap_or(0)
+                .max(5);
+            let source_table_width = rows
+                .iter()
+                .map(|row| row.source_table.len())
+                .max()
+                .unwrap_or(0)
+                .max("source_table".len());
+            let sys_id_width = rows
+                .iter()
+                .map(|row| row.sys_id.len())
+                .max()
+                .unwrap_or(0)
+                .max("sys_id".len());
+
+            for row in rows {
+                let key = scope_row_key(row);
+                let version = if row.version.is_empty() {
+                    "-"
+                } else {
+                    row.version.as_str()
+                };
+                write!(
+                    &mut out,
+                    "- {:name_width$}  {:key_width$}  {}",
+                    row.name,
+                    key,
+                    version,
+                    name_width = name_width,
+                    key_width = key_width,
+                )?;
+                if options.show_source_table {
+                    write!(
+                        &mut out,
+                        "  {:source_table_width$}",
+                        row.source_table,
+                        source_table_width = source_table_width,
+                    )?;
+                }
+                if options.show_sys_id {
+                    write!(
+                        &mut out,
+                        "  {:sys_id_width$}",
+                        row.sys_id,
+                        sys_id_width = sys_id_width,
+                    )?;
+                }
+                writeln!(&mut out)?;
+            }
+        }
+    }
+
+    if !payload.warnings.is_empty() {
+        writeln!(&mut out)?;
+        writeln!(&mut out, "Warnings:")?;
+        for warning in &payload.warnings {
+            writeln!(&mut out, "- {warning}")?;
+        }
+    }
+
+    print!("{out}");
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScopeListTextOptions {
+    show_source_table: bool,
+    show_sys_id: bool,
+}
+
+fn group_scope_rows_by_kind(rows: &[ScopeListRow]) -> Vec<(&str, Vec<&ScopeListRow>)> {
+    let ordered_kinds = [
+        "store_app",
+        "custom_app",
+        "plugin",
+        "platform",
+        "platform_app",
+    ];
+
+    ordered_kinds
+        .iter()
+        .filter_map(|kind| {
+            let matches = rows
+                .iter()
+                .filter(|row| row.kind == *kind)
+                .collect::<Vec<_>>();
+            if matches.is_empty() {
+                None
+            } else {
+                Some((*kind, matches))
+            }
+        })
+        .collect()
+}
+
+fn scope_row_key(row: &ScopeListRow) -> &str {
+    if row.scope.is_empty() {
+        row.identifier.as_str()
+    } else {
+        row.scope.as_str()
+    }
+}
+
 #[derive(Debug, serde::Serialize)]
 struct ScopeInspectOutput {
     scope: ScopeInfo,
@@ -615,6 +998,49 @@ struct ScopeInfo {
     scope: String,
     name: String,
     version: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ScopeListOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    kind_filter: Vec<String>,
+    counts: ScopeListCounts,
+    rows: Vec<ScopeListRow>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ScopeListCounts {
+    total: usize,
+    by_kind: BTreeMap<String, usize>,
+}
+
+impl ScopeListCounts {
+    fn from_rows(rows: &[ScopeListRow]) -> Self {
+        let mut by_kind = BTreeMap::new();
+        for row in rows {
+            *by_kind.entry(row.kind.clone()).or_insert(0) += 1;
+        }
+
+        Self {
+            total: rows.len(),
+            by_kind,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ScopeListRow {
+    kind: String,
+    scope: String,
+    name: String,
+    version: String,
+    identifier: String,
+    source_table: String,
+    sys_id: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -751,6 +1177,147 @@ mod tests {
             query,
             "nameINx_app_table,x_app_second^elementISNOTEMPTY^element!=sys_tags"
         );
+    }
+
+    #[test]
+    fn test_build_scope_search_query() {
+        assert_eq!(
+            build_scope_search_query(Some("global")),
+            Some("scope=global^ORsys_id=global^ORscopeLIKEglobal^ORnameLIKEglobal".to_string())
+        );
+        assert_eq!(build_scope_search_query(None), None);
+    }
+
+    #[test]
+    fn test_build_scope_list_rows_classifies_scope_origins() {
+        let scopes = vec![
+            record(&[
+                ("sys_id", "scope-store"),
+                ("scope", "sn_store_app"),
+                ("name", "Store App"),
+                ("version", "1.0.0"),
+            ]),
+            record(&[
+                ("sys_id", "scope-custom"),
+                ("scope", "x_acme_ops"),
+                ("name", "Acme Ops"),
+                ("version", "1.0.0"),
+            ]),
+            record(&[
+                ("sys_id", "scope-platform"),
+                ("scope", "global"),
+                ("name", "Global"),
+                ("version", ""),
+            ]),
+            record(&[
+                ("sys_id", "scope-oob"),
+                ("scope", "sn_ot_incident_mgmt"),
+                ("name", "OT Incident Management"),
+                ("version", "2.0.0"),
+            ]),
+        ];
+        let store_apps = vec![record(&[
+            ("sys_id", "store-1"),
+            ("scope", "sn_store_app"),
+            ("name", "Store App"),
+            ("version", "1.0.0"),
+        ])];
+        let plugins = vec![record(&[
+            ("sys_id", "plugin-1"),
+            ("id", "com.snc.example"),
+            ("name", "Example Plugin"),
+        ])];
+
+        let rows = build_scope_list_rows(scopes, store_apps, plugins);
+
+        assert!(
+            rows.iter()
+                .any(|row| row.scope == "sn_store_app" && row.kind == "store_app")
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.scope == "x_acme_ops" && row.kind == "custom_app")
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.scope == "global" && row.kind == "platform")
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.scope == "sn_ot_incident_mgmt" && row.kind == "platform_app")
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.identifier == "com.snc.example" && row.kind == "plugin")
+        );
+    }
+
+    #[test]
+    fn test_filter_scope_list_rows_by_kind() {
+        let rows = vec![
+            ScopeListRow {
+                kind: "store_app".to_string(),
+                scope: "sn_store_app".to_string(),
+                name: "Store App".to_string(),
+                version: "1.0.0".to_string(),
+                identifier: String::new(),
+                source_table: "sys_scope".to_string(),
+                sys_id: "1".to_string(),
+            },
+            ScopeListRow {
+                kind: "plugin".to_string(),
+                scope: String::new(),
+                name: "Plugin".to_string(),
+                version: String::new(),
+                identifier: "com.snc.example".to_string(),
+                source_table: "v_plugin".to_string(),
+                sys_id: "2".to_string(),
+            },
+        ];
+
+        let filtered = filter_scope_list_rows(rows, &[ScopeListKind::Plugin]);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].kind, "plugin");
+    }
+
+    #[test]
+    fn test_group_scope_rows_by_kind_preserves_display_order() {
+        let rows = vec![
+            ScopeListRow {
+                kind: "plugin".to_string(),
+                scope: String::new(),
+                name: "Plugin".to_string(),
+                version: String::new(),
+                identifier: "com.snc.example".to_string(),
+                source_table: "v_plugin".to_string(),
+                sys_id: "2".to_string(),
+            },
+            ScopeListRow {
+                kind: "custom_app".to_string(),
+                scope: "x_acme_app".to_string(),
+                name: "Acme App".to_string(),
+                version: "1.0.0".to_string(),
+                identifier: String::new(),
+                source_table: "sys_scope".to_string(),
+                sys_id: "1".to_string(),
+            },
+        ];
+
+        let grouped = group_scope_rows_by_kind(&rows);
+
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].0, "custom_app");
+        assert_eq!(grouped[1].0, "plugin");
+    }
+
+    fn record(fields: &[(&str, &str)]) -> Record {
+        Record {
+            fields: fields
+                .iter()
+                .map(|(key, value)| (key.to_string(), serde_json::json!(value)))
+                .collect(),
+        }
     }
 
     #[test]

@@ -80,6 +80,20 @@ fn test_scope_inventory_help() {
 }
 
 #[test]
+fn test_scope_list_help() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["scope", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "List scopes and classify them by origin",
+        ))
+        .stdout(predicate::str::contains("--kind"))
+        .stdout(predicate::str::contains("--show-source-table"))
+        .stdout(predicate::str::contains("--show-sys-id"));
+}
+
+#[test]
 fn test_data_export_help() {
     cargo_bin_cmd!("snow-cli")
         .args(["data", "export", "--help"])

@@ -357,6 +357,7 @@ async fn handle_export(
     match format {
         OutputFormat::Json => output::print_output(&artifact, format),
         OutputFormat::Csv => output::print_records(&artifact.records, format),
+        OutputFormat::Text => output::print_output(&artifact, format),
     }
 }
 
@@ -1665,6 +1666,10 @@ fn write_export_file(
             file.write_all(b"\n")?;
         }
         OutputFormat::Csv => output::write_records_csv(&artifact.records, &mut file)?,
+        OutputFormat::Text => {
+            serde_json::to_writer_pretty(&mut file, artifact)?;
+            file.write_all(b"\n")?;
+        }
     }
 
     Ok(())
@@ -1696,6 +1701,7 @@ fn output_format_name(format: &OutputFormat) -> &'static str {
     match format {
         OutputFormat::Json => "json",
         OutputFormat::Csv => "csv",
+        OutputFormat::Text => "json",
     }
 }
 
