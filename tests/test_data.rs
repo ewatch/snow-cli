@@ -17,6 +17,12 @@ auth_method = "api_key"
     )
 }
 
+fn write_dataset_file(dir: &tempfile::TempDir, body: serde_json::Value) -> std::path::PathBuf {
+    let path = dir.path().join("dataset.json");
+    std::fs::write(&path, serde_json::to_vec(&body).unwrap()).unwrap();
+    path
+}
+
 #[tokio::test]
 async fn test_data_export_json_output() {
     let server = MockServer::start().await;
@@ -170,4 +176,369 @@ async fn test_data_export_404_error() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("NOT_FOUND"));
+}
+
+#[tokio::test]
+async fn test_data_validate_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "element": "short_description",
+                    "internal_type": "string",
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "default_value": ""
+                },
+                {
+                    "element": "priority",
+                    "internal_type": "integer",
+                    "mandatory": "false",
+                    "read_only": "false",
+                    "default_value": ""
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let dataset_dir = tempfile::tempdir().unwrap();
+    let dataset_path = write_dataset_file(
+        &dataset_dir,
+        serde_json::json!({
+            "version": 1,
+            "kind": "table-export",
+            "command": "data export",
+            "instance": "https://dev.service-now.com",
+            "table": "incident",
+            "record_count": 1,
+            "records": [
+                {"short_description": "VPN issue", "priority": "2"}
+            ]
+        }),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "data",
+            "validate",
+            "--file",
+            dataset_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"kind\":\"validation-report\""))
+        .stdout(predicate::str::contains("\"ready\":true"))
+        .stdout(predicate::str::contains("\"field_count\":2"));
+}
+
+#[tokio::test]
+async fn test_data_validate_reports_read_only_and_missing_required_fields() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "element": "short_description",
+                    "internal_type": "string",
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "default_value": ""
+                },
+                {
+                    "element": "sys_id",
+                    "internal_type": "string",
+                    "mandatory": "false",
+                    "read_only": "true",
+                    "default_value": ""
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let dataset_dir = tempfile::tempdir().unwrap();
+    let dataset_path = write_dataset_file(
+        &dataset_dir,
+        serde_json::json!({
+            "version": 1,
+            "kind": "table-export",
+            "command": "data export",
+            "instance": "https://dev.service-now.com",
+            "table": "incident",
+            "record_count": 1,
+            "records": [
+                {"sys_id": "abc123"}
+            ]
+        }),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "data",
+            "validate",
+            "--file",
+            dataset_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"ready\":false"))
+        .stdout(predicate::str::contains("field_not_writable"))
+        .stdout(predicate::str::contains("missing_required_field"));
+}
+
+#[tokio::test]
+async fn test_data_import_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "element": "short_description",
+                    "internal_type": "string",
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "default_value": ""
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/now/table/incident"))
+        .and(header("Content-Type", "application/json"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "result": {"sys_id": "new123", "short_description": "VPN issue"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let dataset_dir = tempfile::tempdir().unwrap();
+    let dataset_path = write_dataset_file(
+        &dataset_dir,
+        serde_json::json!({
+            "version": 1,
+            "kind": "table-export",
+            "command": "data export",
+            "instance": "https://dev.service-now.com",
+            "table": "incident",
+            "record_count": 1,
+            "records": [
+                {"short_description": "VPN issue"}
+            ]
+        }),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "data",
+            "import",
+            "--file",
+            dataset_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"kind\":\"import-result\""))
+        .stdout(predicate::str::contains("\"strategy\":\"table_api\""))
+        .stdout(predicate::str::contains("\"created\":1"))
+        .stdout(predicate::str::contains("\"failed\":0"));
+}
+
+#[tokio::test]
+async fn test_data_import_partial_failure_reports_summary() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "element": "short_description",
+                    "internal_type": "string",
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "default_value": ""
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/now/table/incident"))
+        .respond_with(
+            ResponseTemplate::new(500).set_body_string("insert failed for incident record"),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let dataset_dir = tempfile::tempdir().unwrap();
+    let dataset_path = write_dataset_file(
+        &dataset_dir,
+        serde_json::json!({
+            "version": 1,
+            "kind": "table-export",
+            "command": "data export",
+            "instance": "https://dev.service-now.com",
+            "table": "incident",
+            "record_count": 2,
+            "records": [
+                {"short_description": "VPN issue 1"},
+                {"short_description": "VPN issue 2"}
+            ]
+        }),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "data",
+            "import",
+            "--file",
+            dataset_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("\"failed\":2"))
+        .stdout(predicate::str::contains("SERVER_ERROR"));
+}
+
+#[tokio::test]
+async fn test_data_validate_accepts_inherited_fields() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_db_object"))
+        .and(query_param("sysparm_query", "name=incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "name": "incident",
+                    "super_class": {"value": "task-sys-id"}
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_db_object"))
+        .and(query_param("sysparm_query", "sys_id=task-sys-id"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "name": "task",
+                    "super_class": ""
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .and(query_param(
+            "sysparm_query",
+            "nameINincident,task^elementISNOTEMPTY^element!=sys_tags",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "element": "short_description",
+                    "internal_type": {"value": "string"},
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "default_value": ""
+                },
+                {
+                    "element": "priority",
+                    "internal_type": {"value": "integer"},
+                    "mandatory": "false",
+                    "read_only": "false",
+                    "default_value": ""
+                },
+                {
+                    "element": "number",
+                    "internal_type": {"value": "string"},
+                    "mandatory": "false",
+                    "read_only": "false",
+                    "default_value": ""
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let dataset_dir = tempfile::tempdir().unwrap();
+    let dataset_path = write_dataset_file(
+        &dataset_dir,
+        serde_json::json!({
+            "version": 1,
+            "kind": "table-export",
+            "command": "data export",
+            "instance": "https://dev.service-now.com",
+            "table": "incident",
+            "record_count": 1,
+            "records": [
+                {
+                    "number": "INC0010001",
+                    "short_description": "Email outage",
+                    "priority": "3"
+                }
+            ]
+        }),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "data",
+            "validate",
+            "--file",
+            dataset_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"ready\":true"))
+        .stdout(predicate::str::contains("\"field_count\":3"));
 }
