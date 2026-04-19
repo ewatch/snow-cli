@@ -1,6 +1,8 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
+use reqwest::multipart::{Form, Part};
+
 use crate::cli::args::{AttachmentArgs, AttachmentCommands, OutputFormat};
 use crate::cli::output;
 
@@ -118,6 +120,13 @@ pub async fn handle(
             let auth_headers = client.authenticator().authenticate().await?;
             let url = format!("{}/api/now/attachment/upload", client.base_url());
 
+            let file_part = Part::bytes(file_bytes).file_name(file_name.clone());
+            let form = Form::new()
+                .text("table_name", table.clone())
+                .text("table_sys_id", sys_id.clone())
+                .text("file_name", file_name.clone())
+                .part("file", file_part);
+
             let response = client
                 .http()
                 .post(&url)
@@ -127,9 +136,8 @@ pub async fn handle(
                     ("file_name", file_name.as_str()),
                 ])
                 .header("Accept", "application/json")
-                .header("Content-Type", "application/octet-stream")
                 .headers(auth_headers)
-                .body(file_bytes)
+                .multipart(form)
                 .send()
                 .await?;
 

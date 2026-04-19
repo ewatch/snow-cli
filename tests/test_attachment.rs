@@ -4,7 +4,7 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
-use wiremock::matchers::{body_string_contains, header, method, path, query_param};
+use wiremock::matchers::{body_string_contains, header, header_regex, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -127,6 +127,17 @@ async fn test_attachment_upload() {
         .and(query_param("table_sys_id", "abc123"))
         .and(query_param("file_name", "upload.txt"))
         .and(header("Authorization", "Bearer test-api-token"))
+        .and(header_regex(
+            "Content-Type",
+            r"^multipart/form-data; boundary=.+$",
+        ))
+        .and(body_string_contains("name=\"table_name\""))
+        .and(body_string_contains("incident"))
+        .and(body_string_contains("name=\"table_sys_id\""))
+        .and(body_string_contains("abc123"))
+        .and(body_string_contains("name=\"file_name\""))
+        .and(body_string_contains("name=\"file\""))
+        .and(body_string_contains("filename=\"upload.txt\""))
         .and(body_string_contains("upload body"))
         .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
             "result": {
