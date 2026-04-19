@@ -98,7 +98,7 @@ snow-cli api
   delete <path>                   DELETE a custom REST endpoint
 
 snow-cli script
-  run                             Run a background script [WIP]
+  run                             Run a background script
 
 snow-cli completions <shell>      Generate shell completions
 ```
@@ -204,7 +204,7 @@ never in the config file.
 - [x] Implement `api` raw endpoint commands (get, post, put, delete with --header)
 - [x] Implement `table schema` command (compact, extended, include-inherited)
 - [x] Implement `codesearch` command (search via Code Search API)
-- [x] Implement `script run` command (WIP — no default REST API on ServiceNow)
+- [x] Implement `script run` command
 - [ ] Implement `attachment` commands (upload/download with streaming)
 - [x] Write tests for each command group
 - ~~Implement `incident` shortcut commands~~ (removed — achievable via `table` commands)

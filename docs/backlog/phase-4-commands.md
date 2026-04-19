@@ -30,7 +30,7 @@ Higher-level commands and remaining API integrations.
   - [x] `--source-table` (alias `--table`), `--limit`, `--current-scope`, `--search-group` options
   - [x] Flexible response parsing (TableResponse, generic JSON, raw text)
   - [x] Tests for basic, table filter, custom limit, CSV, server error, non-standard response
-- [x] Implement `script run` command (WIP)
+- [x] Implement `script run` command
   - [x] Basic command structure with --code, --file, --scope options
   - [x] Runtime warning: no default REST API for background scripts on ServiceNow
 

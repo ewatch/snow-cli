@@ -91,7 +91,7 @@ snow-cli/
 │   │       ├── auth.rs        # auth subcommands
 │   │       ├── table.rs       # table API commands + schema
 │   │       ├── api.rs         # raw REST API commands
-│   │       ├── script.rs      # background script execution (WIP)
+│   │       ├── script.rs      # background script execution
 │   │       ├── codesearch.rs   # code search commands
 │   │       └── completions.rs # shell completions generation
 │   ├── auth/
@@ -228,7 +228,7 @@ What's implemented and working:
 - Table schema command: query sys_dictionary for column metadata (compact/extended/inherited)
 - Code search command: search via /api/sn_codesearch/code_search/search endpoint
 - Raw API commands: get, post, put, delete with custom headers
-- Script run command (WIP — no default REST API on ServiceNow)
+- Script run command
 - Client builder helper (`build_client`) for config profile → authenticated SnowClient
 - JSON and CSV output for dynamic Record fields (sorted column headers, missing field handling)
 - Stdin reading for create/update when --data not provided
