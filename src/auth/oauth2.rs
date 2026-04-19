@@ -309,15 +309,15 @@ impl Authenticator for OAuth2Auth {
         // Check cached token
         {
             let cached = self.cached_token.read().await;
-            if let Some(ref token) = *cached {
-                if !token.is_expired() {
-                    let mut headers = HeaderMap::new();
-                    headers.insert(
-                        http::header::AUTHORIZATION,
-                        format!("Bearer {}", token.access_token).parse()?,
-                    );
-                    return Ok(headers);
-                }
+            if let Some(ref token) = *cached
+                && !token.is_expired()
+            {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    http::header::AUTHORIZATION,
+                    format!("Bearer {}", token.access_token).parse()?,
+                );
+                return Ok(headers);
             }
         }
 

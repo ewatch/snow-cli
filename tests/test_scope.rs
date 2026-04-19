@@ -2,7 +2,7 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -344,5 +344,171 @@ async fn test_scope_inspect_unknown_scope_fails() {
         .failure()
         .stderr(predicate::str::contains(
             "Scope 'does_not_exist' was not found",
+        ));
+}
+
+#[tokio::test]
+async fn test_scope_move_file_dry_run_returns_preview() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/sys.scripts.modern.do"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header(
+                    "Set-Cookie",
+                    "JSESSIONID=move-file-session; Path=/; HttpOnly",
+                )
+                .set_body_string("<script>window.g_ck = 'move-file-gck';</script>"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/sys.scripts.do"))
+        .and(header("Cookie", "JSESSIONID=move-file-session"))
+        .and(header("X-UserToken", "move-file-gck"))
+        .and(body_string_contains("sys_script_include"))
+        .and(body_string_contains("abc123"))
+        .and(body_string_contains("x_target_app"))
+        .and(body_string_contains("%22dryRun%22%3Atrue"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<HTML><BODY>{"ok":true,"dry_run":true,"table":"sys_script_include","sys_id":"abc123","changed_fields":["sys_scope","sys_package","sys_name","sys_update_name","api_name","path"],"warnings":["Field script contains source scope identifiers and was not rewritten automatically."],"requires_confirmation":true,"before":{"sys_scope":"scope-old","sys_package":"scope-old","sys_name":"x_source_app_demo","sys_update_name":"x_source_app_demo","api_name":"x_source_app.Demo","path":"/x_source_app/demo"},"after":{"sys_scope":"scope-new","sys_package":"scope-new","sys_name":"x_target_app_demo","sys_update_name":"x_target_app_demo","api_name":"x_target_app.Demo","path":"/x_target_app/demo"},"source_scope":{"sys_id":"scope-old","scope":"x_source_app","name":"Source App","version":"1.0.0"},"target_scope":{"sys_id":"scope-new","scope":"x_target_app","name":"Target App","version":"1.0.0"}}</BODY></HTML>"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "scope",
+            "move-file",
+            "sys_script_include",
+            "abc123",
+            "--target-scope",
+            "x_target_app",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"dry_run\":true"))
+        .stdout(predicate::str::contains("x_target_app_demo"))
+        .stdout(predicate::str::contains("requires_confirmation"));
+}
+
+#[tokio::test]
+async fn test_scope_move_file_dry_run_parses_real_script_wrapper() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/sys.scripts.modern.do"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Set-Cookie", "JSESSIONID=wrapped-session; Path=/; HttpOnly")
+                .set_body_string("<script>window.g_ck = 'wrapped-gck';</script>"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/sys.scripts.do"))
+        .and(header("Cookie", "JSESSIONID=wrapped-session"))
+        .and(header("X-UserToken", "wrapped-gck"))
+        .and(body_string_contains("sys_script_include"))
+        .and(body_string_contains("abc123"))
+        .and(body_string_contains("x_target_app"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<HTML><BODY>[0:00:00.013] Script completed in scope global: script
+*** Script: {"ok":true,"dry_run":true,"table":"sys_script_include","sys_id":"abc123","changed_fields":["sys_scope"],"warnings":[],"requires_confirmation":false,"before":{"sys_scope":"scope-old"},"after":{"sys_scope":"scope-new"},"source_scope":{"sys_id":"scope-old","scope":"x_source_app","name":"Source App","version":"1.0.0"},"target_scope":{"sys_id":"scope-new","scope":"x_target_app","name":"Target App","version":"1.0.0"}}
+</BODY></HTML>"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "scope",
+            "move-file",
+            "sys_script_include",
+            "abc123",
+            "--target-scope",
+            "x_target_app",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"dry_run\":true"))
+        .stdout(predicate::str::contains(
+            "\"changed_fields\":[\"sys_scope\"]",
+        ))
+        .stdout(predicate::str::contains("\"requires_confirmation\":false"));
+}
+
+#[tokio::test]
+async fn test_scope_move_file_requires_yes_for_risky_records() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/sys.scripts.modern.do"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Set-Cookie", "JSESSIONID=warn-session; Path=/; HttpOnly")
+                .set_body_string("<script>window.g_ck = 'warn-gck';</script>"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/sys.scripts.do"))
+        .and(header("Cookie", "JSESSIONID=warn-session"))
+        .and(header("X-UserToken", "warn-gck"))
+        .and(body_string_contains("sys_script_include"))
+        .and(body_string_contains("abc123"))
+        .and(body_string_contains("x_target_app"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<HTML><BODY>{"ok":false,"dry_run":false,"table":"sys_script_include","sys_id":"abc123","warnings":["Field script contains source scope identifiers and was not rewritten automatically."],"requires_confirmation":true,"error":"Risky record contains additional scope-coupled values. Re-run with --yes after reviewing warnings."}</BODY></HTML>"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "scope",
+            "move-file",
+            "sys_script_include",
+            "abc123",
+            "--target-scope",
+            "x_target_app",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Risky record contains additional scope-coupled values",
+        ))
+        .stderr(predicate::str::contains(
+            "Field script contains source scope identifiers",
         ));
 }

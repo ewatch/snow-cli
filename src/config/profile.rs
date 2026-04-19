@@ -79,10 +79,10 @@ impl AppConfig {
 
     /// Returns the path to the config directory.
     pub fn config_dir() -> PathBuf {
-        if let Ok(path) = std::env::var("SNOW_CLI_CONFIG") {
-            if let Some(parent) = PathBuf::from(path).parent() {
-                return parent.to_path_buf();
-            }
+        if let Ok(path) = std::env::var("SNOW_CLI_CONFIG")
+            && let Some(parent) = PathBuf::from(path).parent()
+        {
+            return parent.to_path_buf();
         }
         dirs_config_path()
     }

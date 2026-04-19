@@ -2,6 +2,7 @@ use std::io::IsTerminal;
 
 use crate::cli::args::{AuthArgs, AuthCommands};
 use crate::config::credentials;
+use crate::config::now_sdk;
 use crate::config::profile::{AppConfig, OAuthGrantType};
 
 pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
@@ -10,7 +11,21 @@ pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
             password,
             token,
             client_secret,
-        } => handle_login(profile_name, password, token, client_secret).await,
+            also_now_sdk,
+            now_sdk_alias,
+            set_now_sdk_default,
+        } => {
+            handle_login(
+                profile_name,
+                password,
+                token,
+                client_secret,
+                also_now_sdk,
+                now_sdk_alias,
+                set_now_sdk_default,
+            )
+            .await
+        }
         AuthCommands::Logout => handle_logout(profile_name).await,
         AuthCommands::Status => handle_status(profile_name).await,
         AuthCommands::Token => handle_token(profile_name).await,
@@ -30,11 +45,24 @@ async fn handle_login(
     password: Option<String>,
     token: Option<String>,
     client_secret: Option<String>,
+    also_now_sdk: bool,
+    now_sdk_alias: Option<String>,
+    set_now_sdk_default: bool,
 ) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
     let profile = config
         .active_profile(Some(profile_name))
         .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
+
+    if set_now_sdk_default && !also_now_sdk {
+        anyhow::bail!("`--set-now-sdk-default` requires `--also-now-sdk`.");
+    }
+
+    if also_now_sdk && profile.auth_method != crate::config::profile::AuthMethod::Basic {
+        anyhow::bail!(
+            "`--also-now-sdk` is only supported for basic auth profiles in this release."
+        );
+    }
 
     let is_tty = std::io::stdin().is_terminal();
 
@@ -44,14 +72,29 @@ async fn handle_login(
                 "Password required for basic auth. Use: snow-cli auth login --password <password>"
                     .to_string()
             })?;
-            credentials::store_credential(profile_name, "password", &pw)?;
+            store_basic_login(
+                profile_name,
+                profile.instance.as_str(),
+                profile.username.as_deref(),
+                &pw,
+                also_now_sdk,
+                now_sdk_alias.as_deref(),
+                set_now_sdk_default,
+            )?;
 
-            let result = serde_json::json!({
+            let mut result = serde_json::json!({
                 "status": "authenticated",
                 "profile": profile_name,
                 "auth_method": profile.auth_method,
                 "credential_type": "password",
             });
+            if also_now_sdk {
+                let alias_name = now_sdk_alias.unwrap_or_else(|| profile_name.to_string());
+                result["now_sdk"] = serde_json::json!({
+                    "alias": alias_name,
+                    "set_default": set_now_sdk_default,
+                });
+            }
             println!("{}", serde_json::to_string(&result)?);
         }
         crate::config::profile::AuthMethod::ApiKey => {
@@ -114,6 +157,66 @@ async fn handle_login(
     tracing::info!("Credentials stored for profile '{}'", profile_name);
 
     Ok(())
+}
+
+fn store_basic_login(
+    profile_name: &str,
+    instance: &str,
+    username: Option<&str>,
+    password: &str,
+    also_now_sdk: bool,
+    now_sdk_alias: Option<&str>,
+    set_now_sdk_default: bool,
+) -> anyhow::Result<()> {
+    let username = username.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Basic auth profile '{}' is missing a username. Use `snow-cli config set-profile {} --username <user>` first.",
+            profile_name,
+            profile_name,
+        )
+    })?;
+
+    let existing_password = credentials::snapshot_stored_credential(profile_name, "password")?;
+    let now_sdk_snapshot = if also_now_sdk {
+        Some(now_sdk::snapshot_raw_store()?)
+    } else {
+        None
+    };
+
+    let write_result = (|| -> anyhow::Result<()> {
+        credentials::store_credential(profile_name, "password", password)?;
+
+        if also_now_sdk {
+            let alias_name = now_sdk_alias.unwrap_or(profile_name);
+            let mut store = now_sdk::load_store()?;
+            now_sdk::upsert_basic_alias(
+                &mut store,
+                alias_name,
+                instance,
+                username,
+                password,
+                set_now_sdk_default,
+            );
+            now_sdk::save_store(&store)?;
+        }
+
+        Ok(())
+    })();
+
+    match write_result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            credentials::restore_stored_credential(
+                profile_name,
+                "password",
+                existing_password.as_deref(),
+            )?;
+            if let Some(snapshot) = now_sdk_snapshot.as_ref() {
+                now_sdk::restore_raw_store(snapshot.as_deref())?;
+            }
+            Err(error)
+        }
+    }
 }
 
 /// Resolve a secret value: use the provided flag value, prompt interactively

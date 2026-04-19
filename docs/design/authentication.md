@@ -88,6 +88,73 @@ pub trait Authenticator: Send + Sync {
 - Constructs `Authorization: Bearer <token>` header.
 - No refresh capability (user must manually rotate tokens).
 
+## now-sdk Profile Interoperability
+
+`snow-cli` can explicitly copy or sync basic authentication profiles with the
+official ServiceNow `now-sdk` CLI.
+
+### Scope
+- Copy/sync only. `snow-cli` does not resolve `now-sdk` aliases during normal
+  command execution.
+- v1 supports `basic` aliases only.
+- `oauth` aliases are listed as unsupported and cannot be imported or exported.
+
+### now-sdk Storage Model
+- `now-sdk` stores aliases in the OS keychain under:
+  - service: `ServiceNow`
+  - account: `now-sdk`
+- The keychain value is a single JSON object keyed by alias.
+- Each alias entry includes:
+  - `alias`
+  - `isDefault`
+  - `creds`
+
+For basic auth, the `creds` payload contains:
+
+```json
+{
+  "type": "basic",
+  "instanceUrl": "https://dev.service-now.com",
+  "username": "admin",
+  "password": "secret"
+}
+```
+
+### `snow-cli` Commands
+- `snow-cli config list-now-sdk-profiles`
+- `snow-cli config import-now-sdk --alias <name>`
+- `snow-cli config import-now-sdk --all`
+- `snow-cli config export-now-sdk <profile> [--alias <name>]`
+- `snow-cli auth login --also-now-sdk [--now-sdk-alias <name>]`
+
+### Import Behavior
+- Import creates or overwrites a `snow-cli` profile with:
+  - `instance`
+  - `auth_method = "basic"`
+  - `username`
+- The imported password is written to the `snow-cli` keychain entry for that
+  profile.
+- `--set-default` updates the `snow-cli` default profile only for single-alias
+  imports.
+
+### Export / Sync Behavior
+- Export and `auth login --also-now-sdk` create or overwrite exactly one
+  `now-sdk` alias.
+- Unrelated `now-sdk` aliases are preserved.
+- `--set-default` / `--set-now-sdk-default` marks the destination alias as the
+  `now-sdk` default.
+
+### Collision Rules
+- Import collisions overwrite the target `snow-cli` profile metadata and stored
+  password atomically.
+- Export and login-sync collisions overwrite the target `now-sdk` alias payload
+  atomically.
+
+### Failure Handling
+- Unsupported auth types fail before any destination writes occur.
+- Import and dual-write login paths snapshot the destination state and restore it
+  on failure so partial writes are not left behind.
+
 ### Mutual TLS (mTLS)
 - Reads certificate and key file paths from config.
 - Configures reqwest client with client certificate.

@@ -3,13 +3,13 @@ use clap_complete::Shell;
 
 const TOP_LEVEL_AFTER_HELP: &str = "Common workflows:\n  1) First-time setup\n     snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli auth login --password '<password>'\n\n  3) List recent incidents\n     snow-cli table list incident --query 'active=true' --limit 20\n\n  4) Create and update records\n     snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n     snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n\n  5) Call a custom API\n     snow-cli api get /api/x_myapp/status";
 
-const CONFIG_AFTER_HELP: &str = "Examples:\n  snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli config set-profile prod --instance https://prod.service-now.com --auth-method oauth2 --client-id abc123\n  snow-cli config list-profiles\n  snow-cli config use-profile prod\n  snow-cli config show";
+const CONFIG_AFTER_HELP: &str = "Examples:\n  snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli config set-profile prod --instance https://prod.service-now.com --auth-method oauth2 --client-id abc123\n  snow-cli config list-profiles\n  snow-cli config list-now-sdk-profiles\n  snow-cli config import-now-sdk --alias dev\n  snow-cli config export-now-sdk prod --alias prod-sdk\n  snow-cli config use-profile prod\n  snow-cli config show";
 
 const CONFIG_INIT_AFTER_HELP: &str = "Notes:\n  - This command is non-interactive by default (safe for agents and CI).\n  - Pass required values as flags.\n\nExamples:\n  snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli config init --name prod --instance https://prod.service-now.com --auth-method oauth2 --oauth-grant-type client-credentials";
 
-const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth status\n  snow-cli auth token\n  snow-cli auth logout";
+const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --password '<password>' --also-now-sdk --now-sdk-alias dev\n  snow-cli auth status\n  snow-cli auth token\n  snow-cli auth logout";
 
-const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --token '<api-token>'\n  snow-cli auth login --client-secret '<oauth-secret>'\n\nTip:\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.";
+const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --password '<password>' --also-now-sdk --now-sdk-alias dev\n  snow-cli auth login --token '<api-token>'\n  snow-cli auth login --client-secret '<oauth-secret>'\n\nTip:\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.";
 
 const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended";
 
@@ -21,7 +21,7 @@ const DATA_EXPORT_PACKAGE_AFTER_HELP: &str = "Examples:\n  snow-cli data export-
 
 const SEED_AFTER_HELP: &str = "Examples:\n  snow-cli seed plan --file qa-fixture.json\n  snow-cli seed apply --file qa-fixture.json\n  snow-cli seed cleanup <run-id> --dry-run";
 
-const SCOPE_AFTER_HELP: &str = "Examples:\n  snow-cli scope list\n  snow-cli scope list incident\n  snow-cli scope list sn_ot_incident_mgmt\n  snow-cli scope inspect x_my_app\n  snow-cli scope inspect 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --details full";
+const SCOPE_AFTER_HELP: &str = "Examples:\n  snow-cli scope list\n  snow-cli scope list incident\n  snow-cli scope list sn_ot_incident_mgmt\n  snow-cli scope inspect x_my_app\n  snow-cli scope inspect 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --details full\n  snow-cli scope move-file sys_script_include 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --target-scope x_target_app --dry-run\n  snow-cli scope move-file sys_script_include 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --target-scope x_target_app --yes";
 
 const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name";
 
@@ -185,6 +185,38 @@ pub enum ConfigCommands {
     /// List all configured profiles
     ListProfiles,
 
+    /// List saved now-sdk authentication aliases
+    ListNowSdkProfiles,
+
+    /// Import saved now-sdk aliases into snow-cli profiles
+    ImportNowSdk {
+        /// Import a single now-sdk alias
+        #[arg(long)]
+        alias: Option<String>,
+
+        /// Import all saved now-sdk aliases
+        #[arg(long)]
+        all: bool,
+
+        /// Set the imported profile as the snow-cli default
+        #[arg(long)]
+        set_default: bool,
+    },
+
+    /// Export a basic snow-cli profile into the now-sdk alias store
+    ExportNowSdk {
+        /// snow-cli profile name to export
+        profile: String,
+
+        /// Override the destination now-sdk alias name
+        #[arg(long)]
+        alias: Option<String>,
+
+        /// Set the exported alias as the now-sdk default
+        #[arg(long)]
+        set_default: bool,
+    },
+
     /// Set the active default profile
     UseProfile {
         /// Profile name to activate
@@ -251,6 +283,18 @@ pub enum AuthCommands {
         /// OAuth client secret (for oauth2 auth)
         #[arg(long)]
         client_secret: Option<String>,
+
+        /// Also write the successful basic login into now-sdk
+        #[arg(long)]
+        also_now_sdk: bool,
+
+        /// Destination alias name for now-sdk
+        #[arg(long, requires = "also_now_sdk")]
+        now_sdk_alias: Option<String>,
+
+        /// Mark the now-sdk alias as default
+        #[arg(long, requires = "also_now_sdk")]
+        set_now_sdk_default: bool,
     },
 
     /// Clear stored credentials for the active profile
@@ -514,6 +558,27 @@ pub enum ScopeCommands {
     Inventory {
         /// Scope name (e.g., x_my_app) or scope sys_id
         scope: String,
+    },
+
+    /// Move one application file to a different custom scope without changing sys_id
+    MoveFile {
+        /// Source table name for the application file
+        table: String,
+
+        /// Source record sys_id
+        sys_id: String,
+
+        /// Target scope name (e.g., x_my_app) or scope sys_id
+        #[arg(long = "target-scope")]
+        target_scope: String,
+
+        /// Validate and preview the move without persisting changes
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Confirm execution when warnings are reported
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -926,6 +991,41 @@ mod tests {
                     assert_eq!(scope, "x_my_app");
                 }
                 _ => panic!("Expected Scope Inventory command"),
+            },
+            _ => panic!("Expected Scope command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_scope_move_file() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "scope",
+            "move-file",
+            "sys_script_include",
+            "abc123",
+            "--target-scope",
+            "x_target_app",
+            "--dry-run",
+            "--yes",
+        ]);
+
+        match cli.command {
+            Commands::Scope(args) => match args.command {
+                ScopeCommands::MoveFile {
+                    table,
+                    sys_id,
+                    target_scope,
+                    dry_run,
+                    yes,
+                } => {
+                    assert_eq!(table, "sys_script_include");
+                    assert_eq!(sys_id, "abc123");
+                    assert_eq!(target_scope, "x_target_app");
+                    assert!(dry_run);
+                    assert!(yes);
+                }
+                _ => panic!("Expected Scope MoveFile command"),
             },
             _ => panic!("Expected Scope command"),
         }

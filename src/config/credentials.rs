@@ -17,7 +17,16 @@
 //!
 //! The keychain is tried first; env vars are used as fallback.
 
-const SERVICE_NAME: &str = "snow-cli";
+use crate::config::keychain;
+
+pub(crate) const SERVICE_NAME: &str = "snow-cli";
+pub const ALL_CREDENTIAL_TYPES: &[&str] = &[
+    "password",
+    "api_token",
+    "client_secret",
+    "cert_passphrase",
+    "saml_token",
+];
 
 /// Map credential type to its environment variable name.
 fn env_var_for(credential_type: &str) -> Option<&'static str> {
@@ -32,8 +41,7 @@ fn env_var_for(credential_type: &str) -> Option<&'static str> {
 /// Store a credential in the OS keychain.
 pub fn store_credential(profile: &str, credential_type: &str, value: &str) -> anyhow::Result<()> {
     let key = format!("{profile}:{credential_type}");
-    let entry = keyring::Entry::new(SERVICE_NAME, &key)?;
-    match entry.set_password(value) {
+    match keychain::set_password(SERVICE_NAME, &key, value) {
         Ok(()) => {
             tracing::debug!("Stored credential {key} in keychain");
             Ok(())
@@ -43,7 +51,7 @@ pub fn store_credential(profile: &str, credential_type: &str, value: &str) -> an
                 "Failed to store credential in keychain: {e}. \
                  In headless environments, use environment variables instead."
             );
-            Err(e.into())
+            Err(e)
         }
     }
 }
@@ -51,13 +59,12 @@ pub fn store_credential(profile: &str, credential_type: &str, value: &str) -> an
 /// Retrieve a credential from the OS keychain, falling back to environment variables.
 pub fn get_credential(profile: &str, credential_type: &str) -> anyhow::Result<Option<String>> {
     let key = format!("{profile}:{credential_type}");
-    let entry = keyring::Entry::new(SERVICE_NAME, &key)?;
-    match entry.get_password() {
-        Ok(password) => {
+    match keychain::get_password(SERVICE_NAME, &key) {
+        Ok(Some(password)) => {
             tracing::debug!("Retrieved credential {key} from keychain");
             return Ok(Some(password));
         }
-        Err(keyring::Error::NoEntry) => {
+        Ok(None) => {
             tracing::debug!("No credential found for {key} in keychain");
         }
         Err(e) => {
@@ -66,32 +73,49 @@ pub fn get_credential(profile: &str, credential_type: &str) -> anyhow::Result<Op
     }
 
     // Fallback: check environment variable
-    if let Some(env_var) = env_var_for(credential_type) {
-        if let Ok(value) = std::env::var(env_var) {
-            tracing::debug!("Retrieved credential from env var {env_var}");
-            return Ok(Some(value));
-        }
+    if let Some(env_var) = env_var_for(credential_type)
+        && let Ok(value) = std::env::var(env_var)
+    {
+        tracing::debug!("Retrieved credential from env var {env_var}");
+        return Ok(Some(value));
     }
 
     Ok(None)
 }
 
+/// Retrieve a credential directly from the backing keychain store without env fallback.
+pub fn snapshot_stored_credential(
+    profile: &str,
+    credential_type: &str,
+) -> anyhow::Result<Option<String>> {
+    let key = format!("{profile}:{credential_type}");
+    keychain::get_password(SERVICE_NAME, &key)
+}
+
+/// Restore a raw keychain-backed credential value without consulting env vars.
+pub fn restore_stored_credential(
+    profile: &str,
+    credential_type: &str,
+    value: Option<&str>,
+) -> anyhow::Result<()> {
+    let key = format!("{profile}:{credential_type}");
+    match value {
+        Some(secret) => keychain::set_password(SERVICE_NAME, &key, secret),
+        None => keychain::delete_password(SERVICE_NAME, &key),
+    }
+}
+
 /// Delete a credential from the OS keychain.
 pub fn delete_credential(profile: &str, credential_type: &str) -> anyhow::Result<()> {
     let key = format!("{profile}:{credential_type}");
-    let entry = keyring::Entry::new(SERVICE_NAME, &key)?;
-    match entry.delete_credential() {
+    match keychain::delete_password(SERVICE_NAME, &key) {
         Ok(()) => {
             tracing::debug!("Deleted credential {key} from keychain");
             Ok(())
         }
-        Err(keyring::Error::NoEntry) => {
-            tracing::debug!("No credential to delete for {key}");
-            Ok(())
-        }
         Err(e) => {
             tracing::warn!("Failed to delete credential from keychain: {e}");
-            Err(e.into())
+            Err(e)
         }
     }
 }

@@ -15,6 +15,26 @@ struct ScriptRunOptions {
     quota_managed_transaction: bool,
 }
 
+pub async fn run_background_script(
+    profile: &str,
+    instance: Option<&str>,
+    timeout_secs: Option<u64>,
+    script: &str,
+    scope: &str,
+    endpoint: Option<&str>,
+) -> anyhow::Result<String> {
+    let options = ScriptRunOptions {
+        scope: scope.to_string(),
+        endpoint: endpoint.unwrap_or(FORM_SCRIPT_ENDPOINT).to_string(),
+        rollback: false,
+        sandbox: false,
+        scriptlet: false,
+        quota_managed_transaction: false,
+    };
+
+    execute_background_script(profile, instance, timeout_secs, script, &options).await
+}
+
 pub async fn handle(
     args: ScriptArgs,
     profile: &str,
@@ -61,16 +81,13 @@ pub async fn handle(
 /// The script can be provided inline via `--code` or read from a file via `--file`.
 /// If neither flag is provided, reads from stdin.
 ///
-async fn handle_run(
+async fn execute_background_script(
     profile: &str,
-    format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    file: Option<String>,
-    code: Option<String>,
+    script: &str,
     options: &ScriptRunOptions,
-) -> anyhow::Result<()> {
-    let script = resolve_script(file, code)?;
+) -> anyhow::Result<String> {
     let script_len = script.len();
 
     tracing::info!(
@@ -144,7 +161,7 @@ async fn handle_run(
         );
 
         let mut form_fields = vec![
-            ("script", script.as_str()),
+            ("script", script),
             ("runscript", "Run script"),
             ("sysparm_ck", form_session.g_ck.as_str()),
             ("sys_scope", options.scope.as_str()),
@@ -252,6 +269,22 @@ async fn handle_run(
 
     tracing::debug!(body_len = response_body.len(), "Script execution response");
 
+    Ok(response_body)
+}
+
+async fn handle_run(
+    profile: &str,
+    format: &OutputFormat,
+    instance: Option<&str>,
+    timeout_secs: Option<u64>,
+    file: Option<String>,
+    code: Option<String>,
+    options: &ScriptRunOptions,
+) -> anyhow::Result<()> {
+    let script = resolve_script(file, code)?;
+    let response_body =
+        execute_background_script(profile, instance, timeout_secs, &script, options).await?;
+
     match format {
         OutputFormat::Json => match serde_json::from_str::<serde_json::Value>(&response_body) {
             Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
@@ -328,12 +361,101 @@ fn is_sensitive_header(name: &str) -> bool {
         || name.contains("auth")
 }
 
+fn decode_basic_html_entities(text: &str) -> String {
+    text.replace("&quot;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("&nbsp;", " ")
+}
+
 fn sanitize_background_script_response(raw: &str) -> String {
-    raw.replace("<HTML><BODY>", "")
+    let with_breaks = raw
+        .replace("<HTML><BODY>", "")
         .replace("</BODY><HTML>", "")
         .replace("</BODY></HTML>", "")
-        .trim()
-        .to_string()
+        .replace("<br />", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br>", "\n")
+        .replace("<BR />", "\n")
+        .replace("<BR/>", "\n")
+        .replace("<BR>", "\n")
+        .replace("<hr />", "\n")
+        .replace("<hr/>", "\n")
+        .replace("<hr>", "\n")
+        .replace("<HR />", "\n")
+        .replace("<HR/>", "\n")
+        .replace("<HR>", "\n")
+        .replace("<pre>", "\n")
+        .replace("</pre>", "\n")
+        .replace("<PRE>", "\n")
+        .replace("</PRE>", "\n");
+
+    decode_basic_html_entities(&with_breaks).trim().to_string()
+}
+
+fn extract_balanced_json_snippet(text: &str) -> Option<&str> {
+    let start = text
+        .char_indices()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(index, _)| index)?;
+
+    let opening = text[start..].chars().next()?;
+    let closing = match opening {
+        '{' => '}',
+        '[' => ']',
+        _ => return None,
+    };
+
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in text[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            c if c == opening => depth += 1,
+            c if c == closing => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let end = start + offset + ch.len_utf8();
+                    return Some(&text[start..end]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn extract_json_from_script_marker(cleaned: &str) -> Option<String> {
+    const SCRIPT_MARKER: &str = "*** Script:";
+
+    let marker_index = cleaned.rfind(SCRIPT_MARKER)?;
+    let after_marker = cleaned[marker_index + SCRIPT_MARKER.len()..].trim_start();
+    let json_snippet = extract_balanced_json_snippet(after_marker)?;
+
+    serde_json::from_str::<serde_json::Value>(json_snippet)
+        .ok()
+        .map(|_| json_snippet.to_string())
 }
 
 fn validate_background_script_response(
@@ -381,6 +503,14 @@ fn validate_background_script_response(
             status_code,
             final_url
         );
+    }
+
+    if serde_json::from_str::<serde_json::Value>(&cleaned).is_ok() {
+        return Ok(cleaned);
+    }
+
+    if let Some(json_payload) = extract_json_from_script_marker(&cleaned) {
+        return Ok(json_payload);
     }
 
     Ok(cleaned)
@@ -492,6 +622,75 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("not authorized"));
+    }
+
+    #[test]
+    fn test_validate_background_script_response_extracts_json_from_script_marker() {
+        let raw = r#"<HTML><BODY>[0:00:00.013] Script completed in scope global: script
+*** Script: {"ok":true,"dry_run":true,"warnings":[],"requires_confirmation":false}
+</BODY></HTML>"#;
+
+        let clean = validate_background_script_response(
+            raw,
+            200,
+            "https://dev.service-now.com/sys.scripts.do",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            clean,
+            r#"{"ok":true,"dry_run":true,"warnings":[],"requires_confirmation":false}"#
+        );
+    }
+
+    #[test]
+    fn test_validate_background_script_response_extracts_json_from_html_encoded_wrapper() {
+        let raw = r#"<HTML><BODY>[0:00:00.018] Script completed in scope global: script<HR/><PRE>*** Script: {&quot;ok&quot;:true,&quot;dry_run&quot;:true,&quot;warnings&quot;:[],&quot;requires_confirmation&quot;:false}<BR/></PRE><HR/></BODY></HTML>"#;
+
+        let clean = validate_background_script_response(
+            raw,
+            200,
+            "https://dev.service-now.com/sys.scripts.do",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            clean,
+            r#"{"ok":true,"dry_run":true,"warnings":[],"requires_confirmation":false}"#
+        );
+    }
+
+    #[test]
+    fn test_validate_background_script_response_preserves_plain_text_when_no_json_marker_exists() {
+        let raw = r#"<HTML><BODY>[0:00:00.013] Script completed in scope global: script
+*** Script: moved record preview
+</BODY></HTML>"#;
+
+        let clean = validate_background_script_response(
+            raw,
+            200,
+            "https://dev.service-now.com/sys.scripts.do",
+            None,
+        )
+        .unwrap();
+
+        assert!(clean.contains("*** Script: moved record preview"));
+    }
+
+    #[test]
+    fn test_sanitize_background_script_response_preserves_xml_like_output() {
+        let raw = "<HTML><BODY>&lt;foo&gt;bar&lt;/foo&gt;</BODY></HTML>";
+        let clean = sanitize_background_script_response(raw);
+        assert_eq!(clean, "<foo>bar</foo>");
+    }
+
+    #[test]
+    fn test_sanitize_background_script_response_preserves_angle_bracket_text() {
+        let raw = "<HTML><BODY>a &lt; b</BODY></HTML>";
+        let clean = sanitize_background_script_response(raw);
+        assert_eq!(clean, "a < b");
     }
 
     #[test]

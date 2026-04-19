@@ -246,11 +246,11 @@ fn upsert_cookie_in_header(cookie_header: &str, cookie_name: &str, cookie_value:
             }
         })
         .map(|cookie| {
-            if let Some((name, _)) = cookie.split_once('=') {
-                if name.trim().eq_ignore_ascii_case(cookie_name) {
-                    found = true;
-                    return format!("{cookie_name}={cookie_value}");
-                }
+            if let Some((name, _)) = cookie.split_once('=')
+                && name.trim().eq_ignore_ascii_case(cookie_name)
+            {
+                found = true;
+                return format!("{cookie_name}={cookie_value}");
             }
 
             cookie
@@ -364,10 +364,10 @@ pub(crate) fn extract_g_ck_from_body(body: &str) -> Option<String> {
             )
         };
 
-        if let Some(value) = value {
-            if !value.is_empty() {
-                return Some(value);
-            }
+        if let Some(value) = value
+            && !value.is_empty()
+        {
+            return Some(value);
         }
 
         start = token_start;
@@ -991,11 +991,11 @@ impl SnowClient {
             all_records.extend(response.result);
 
             // Check if we've reached the configured limit
-            if let Some(lim) = limit {
-                if all_records.len() >= lim {
-                    all_records.truncate(lim);
-                    break;
-                }
+            if let Some(lim) = limit
+                && all_records.len() >= lim
+            {
+                all_records.truncate(lim);
+                break;
             }
 
             // If we got fewer records than the page size, we've fetched everything

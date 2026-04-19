@@ -2,6 +2,7 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
+use serde_json::json;
 
 #[test]
 fn test_help_flag() {
@@ -38,6 +39,15 @@ fn test_config_show_help() {
         .success()
         .stdout(predicate::str::contains("Manage configuration"))
         .stdout(predicate::str::contains("Examples:"));
+}
+
+#[test]
+fn test_config_list_now_sdk_profiles_help() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["config", "list-now-sdk-profiles", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("now-sdk"));
 }
 
 #[test]
@@ -91,6 +101,20 @@ fn test_scope_list_help() {
         .stdout(predicate::str::contains("--kind"))
         .stdout(predicate::str::contains("--show-source-table"))
         .stdout(predicate::str::contains("--show-sys-id"));
+}
+
+#[test]
+fn test_scope_move_file_help() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["scope", "move-file", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Move one application file to a different custom scope without changing sys_id",
+        ))
+        .stdout(predicate::str::contains("--target-scope"))
+        .stdout(predicate::str::contains("--dry-run"))
+        .stdout(predicate::str::contains("--yes"));
 }
 
 #[test]
@@ -502,6 +526,349 @@ client_id = "abc"
         .assert()
         .success()
         .stdout(predicate::str::contains("prod.service-now.com"));
+}
+
+#[test]
+fn test_config_list_now_sdk_profiles() {
+    let (_dir, keychain_store) = common::create_temp_keychain_store();
+    let now_sdk_blob = json!({
+        "dev": {
+            "alias": "dev",
+            "isDefault": true,
+            "creds": {
+                "type": "basic",
+                "instanceUrl": "https://dev.service-now.com",
+                "username": "admin",
+                "password": "secret"
+            }
+        },
+        "prod": {
+            "alias": "prod",
+            "isDefault": false,
+            "creds": {
+                "type": "oauth",
+                "instanceUrl": "https://prod.service-now.com",
+                "access_token": "token",
+                "token_type": "Bearer",
+                "refresh_token": "refresh",
+                "expires_at": 1700000000
+            }
+        }
+    });
+    common::write_test_keychain_entry(
+        &keychain_store,
+        "ServiceNow",
+        "now-sdk",
+        &now_sdk_blob.to_string(),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .args(["config", "list-now-sdk-profiles"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"alias\":\"dev\""))
+        .stdout(predicate::str::contains("\"supported\":true"))
+        .stdout(predicate::str::contains("\"alias\":\"prod\""))
+        .stdout(predicate::str::contains("\"supported\":false"));
+}
+
+#[test]
+fn test_config_import_now_sdk_alias_creates_profile_and_password() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+    let now_sdk_blob = json!({
+        "dev": {
+            "alias": "dev",
+            "isDefault": true,
+            "creds": {
+                "type": "basic",
+                "instanceUrl": "https://dev.service-now.com",
+                "username": "admin",
+                "password": "secret"
+            }
+        }
+    });
+    common::write_test_keychain_entry(
+        &keychain_store,
+        "ServiceNow",
+        "now-sdk",
+        &now_sdk_blob.to_string(),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .args([
+            "config",
+            "import-now-sdk",
+            "--alias",
+            "dev",
+            "--set-default",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"imported_count\":1"))
+        .stdout(predicate::str::contains("\"default_profile\":\"dev\""));
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(content.contains("default_profile = \"dev\""));
+    assert!(content.contains("instance = \"https://dev.service-now.com\""));
+    assert!(content.contains("username = \"admin\""));
+
+    let stored_password =
+        common::read_test_keychain_entry(&keychain_store, "snow-cli", "dev:password").unwrap();
+    assert_eq!(stored_password, "secret");
+}
+
+#[test]
+fn test_config_import_now_sdk_overwrites_existing_profile() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://old.service-now.com"
+auth_method = "basic"
+username = "olduser"
+"#,
+    );
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+    common::write_test_keychain_entry(&keychain_store, "snow-cli", "dev:password", "old-secret");
+    let now_sdk_blob = json!({
+        "dev": {
+            "alias": "dev",
+            "isDefault": false,
+            "creds": {
+                "type": "basic",
+                "instanceUrl": "https://new.service-now.com",
+                "username": "newuser",
+                "password": "new-secret"
+            }
+        }
+    });
+    common::write_test_keychain_entry(
+        &keychain_store,
+        "ServiceNow",
+        "now-sdk",
+        &now_sdk_blob.to_string(),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .args(["config", "import-now-sdk", "--alias", "dev"])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(content.contains("https://new.service-now.com"));
+    assert!(content.contains("newuser"));
+    assert_eq!(
+        common::read_test_keychain_entry(&keychain_store, "snow-cli", "dev:password").unwrap(),
+        "new-secret"
+    );
+}
+
+#[test]
+fn test_config_import_now_sdk_all_fails_when_oauth_present() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+    let now_sdk_blob = json!({
+        "dev": {
+            "alias": "dev",
+            "isDefault": true,
+            "creds": {
+                "type": "basic",
+                "instanceUrl": "https://dev.service-now.com",
+                "username": "admin",
+                "password": "secret"
+            }
+        },
+        "prod": {
+            "alias": "prod",
+            "isDefault": false,
+            "creds": {
+                "type": "oauth",
+                "instanceUrl": "https://prod.service-now.com",
+                "access_token": "token",
+                "token_type": "Bearer",
+                "refresh_token": "refresh",
+                "expires_at": 1700000000
+            }
+        }
+    });
+    common::write_test_keychain_entry(
+        &keychain_store,
+        "ServiceNow",
+        "now-sdk",
+        &now_sdk_blob.to_string(),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .args(["config", "import-now-sdk", "--all"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unsupported auth type 'oauth'"));
+
+    assert!(!config_path.exists());
+    assert!(
+        common::read_test_keychain_entry(&keychain_store, "snow-cli", "dev:password").is_none()
+    );
+}
+
+#[test]
+fn test_config_import_now_sdk_all_preserves_now_sdk_default_alias() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+    let now_sdk_blob = json!({
+        "dev": {
+            "alias": "dev",
+            "isDefault": false,
+            "creds": {
+                "type": "basic",
+                "instanceUrl": "https://dev.service-now.com",
+                "username": "admin",
+                "password": "secret"
+            }
+        },
+        "prod": {
+            "alias": "prod",
+            "isDefault": true,
+            "creds": {
+                "type": "basic",
+                "instanceUrl": "https://prod.service-now.com",
+                "username": "admin",
+                "password": "secret"
+            }
+        }
+    });
+    common::write_test_keychain_entry(
+        &keychain_store,
+        "ServiceNow",
+        "now-sdk",
+        &now_sdk_blob.to_string(),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .args(["config", "import-now-sdk", "--all"])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(content.contains("default_profile = \"prod\""));
+}
+
+#[test]
+fn test_config_export_now_sdk_writes_alias() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+username = "admin"
+"#,
+    );
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+    common::write_test_keychain_entry(&keychain_store, "snow-cli", "dev:password", "secret");
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .args([
+            "config",
+            "export-now-sdk",
+            "dev",
+            "--alias",
+            "sdk-dev",
+            "--set-default",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"alias\":\"sdk-dev\""));
+
+    let raw = common::read_test_keychain_entry(&keychain_store, "ServiceNow", "now-sdk").unwrap();
+    let blob: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(blob["sdk-dev"]["creds"]["type"], "basic");
+    assert_eq!(blob["sdk-dev"]["creds"]["username"], "admin");
+    assert_eq!(blob["sdk-dev"]["creds"]["password"], "secret");
+    assert_eq!(blob["sdk-dev"]["isDefault"], true);
+}
+
+#[test]
+fn test_auth_login_also_now_sdk_dual_writes_basic_password() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+username = "admin"
+"#,
+    );
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .args([
+            "auth",
+            "login",
+            "--password",
+            "secret",
+            "--also-now-sdk",
+            "--now-sdk-alias",
+            "sdk-dev",
+            "--set-now-sdk-default",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"profile\":\"dev\""))
+        .stdout(predicate::str::contains("\"alias\":\"sdk-dev\""));
+
+    assert_eq!(
+        common::read_test_keychain_entry(&keychain_store, "snow-cli", "dev:password").unwrap(),
+        "secret"
+    );
+
+    let raw = common::read_test_keychain_entry(&keychain_store, "ServiceNow", "now-sdk").unwrap();
+    let blob: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(blob["sdk-dev"]["creds"]["password"], "secret");
+    assert_eq!(blob["sdk-dev"]["isDefault"], true);
+}
+
+#[test]
+fn test_auth_login_also_now_sdk_rejects_non_basic_profiles() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "default"
+
+[profiles.default]
+instance = "https://dev.service-now.com"
+auth_method = "api_key"
+"#,
+    );
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .args(["auth", "login", "--token", "abc123", "--also-now-sdk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "only supported for basic auth profiles",
+        ));
 }
 
 // --- Table command integration tests ---
