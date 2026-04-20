@@ -42,6 +42,10 @@ pub struct Profile {
     /// Path to client key (for mTLS).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_path: Option<PathBuf>,
+
+    /// Optional browser entry point for SSO/SAML login.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sso_login_url: Option<String>,
 }
 
 /// Supported authentication methods.
@@ -310,6 +314,7 @@ mod tests {
                 oauth_grant_type: None,
                 cert_path: None,
                 key_path: None,
+                sso_login_url: None,
             },
         );
 
@@ -339,6 +344,7 @@ mod tests {
                 oauth_grant_type: None,
                 cert_path: None,
                 key_path: None,
+                sso_login_url: None,
             },
         );
         config.profiles.insert(
@@ -351,6 +357,7 @@ mod tests {
                 oauth_grant_type: None,
                 cert_path: None,
                 key_path: None,
+                sso_login_url: None,
             },
         );
 
@@ -398,6 +405,7 @@ mod tests {
                 oauth_grant_type: None,
                 cert_path: None,
                 key_path: None,
+                sso_login_url: None,
             },
         );
 
@@ -421,6 +429,7 @@ mod tests {
                 oauth_grant_type: None,
                 cert_path: None,
                 key_path: None,
+                sso_login_url: None,
             },
         );
 
@@ -447,6 +456,7 @@ mod tests {
                 oauth_grant_type: None,
                 cert_path: None,
                 key_path: None,
+                sso_login_url: None,
             },
         );
 

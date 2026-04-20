@@ -49,6 +49,7 @@ http = "1"
 # Base64 encoding (for Basic auth)
 base64 = "0.22"
 rpassword = "7.4.0"
+open = "5.3.4"
 
 [dev-dependencies]
 # HTTP mocking

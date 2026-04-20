@@ -133,6 +133,7 @@ mod tests {
             oauth_grant_type: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = ApiKeyAuth::new("test", &profile);
         assert!(auth.is_ok());

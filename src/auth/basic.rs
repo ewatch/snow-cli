@@ -165,6 +165,7 @@ mod tests {
             oauth_grant_type: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let result = BasicAuth::new("test", &profile);
         assert!(result.is_err());
@@ -181,6 +182,7 @@ mod tests {
             oauth_grant_type: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let result = BasicAuth::new("test", &profile);
         assert!(result.is_ok());

@@ -378,6 +378,34 @@ username = "olduser"
 }
 
 #[test]
+fn test_config_set_profile_stores_sso_login_url() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "saml"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args([
+            "config",
+            "set-profile",
+            "dev",
+            "--sso-login-url",
+            "https://dev.service-now.com/login_with_sso.do",
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(content.contains("sso_login_url = \"https://dev.service-now.com/login_with_sso.do\""));
+}
+
+#[test]
 fn test_config_use_profile() {
     let (_dir, config_path) = common::create_temp_config(
         r#"
@@ -868,6 +896,80 @@ auth_method = "api_key"
         .failure()
         .stderr(predicate::str::contains(
             "only supported for basic auth profiles",
+        ));
+}
+
+#[test]
+fn test_auth_login_saml_stores_session_cookie() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "default"
+
+[profiles.default]
+instance = "https://dev.service-now.com"
+auth_method = "saml"
+"#,
+    );
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .args([
+            "auth",
+            "login",
+            "--session-cookie",
+            "JSESSIONID=session123; glide_user_route=route456",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"credential_type\":\"session_cookie\"",
+        ));
+
+    assert_eq!(
+        common::read_test_keychain_entry(&keychain_store, "snow-cli", "default:session_cookie")
+            .unwrap(),
+        "JSESSIONID=session123; glide_user_route=route456"
+    );
+}
+
+#[test]
+fn test_auth_login_saml_rejects_cookie_without_jsessionid() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "default"
+
+[profiles.default]
+instance = "https://dev.service-now.com"
+auth_method = "saml"
+"#,
+    );
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .args([
+            "auth",
+            "login",
+            "--session-cookie",
+            "glide_user_route=route456",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("JSESSIONID"));
+}
+
+#[test]
+fn test_auth_login_help_mentions_managed_browser_for_saml() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["auth", "login", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("managed browser session"))
+        .stdout(predicate::str::contains(
+            "capture the ServiceNow session automatically",
         ));
 }
 

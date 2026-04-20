@@ -26,6 +26,7 @@ pub const ALL_CREDENTIAL_TYPES: &[&str] = &[
     "client_secret",
     "cert_passphrase",
     "saml_token",
+    "session_cookie",
 ];
 
 /// Map credential type to its environment variable name.
@@ -34,6 +35,7 @@ fn env_var_for(credential_type: &str) -> Option<&'static str> {
         "password" => Some("SNOW_CLI_PASSWORD"),
         "api_token" => Some("SNOW_CLI_API_TOKEN"),
         "client_secret" => Some("SNOW_CLI_CLIENT_SECRET"),
+        "session_cookie" => Some("SNOW_CLI_SESSION_COOKIE"),
         _ => None,
     }
 }
@@ -132,7 +134,7 @@ pub fn credential_type_for_auth(auth_method: &crate::config::profile::AuthMethod
         crate::config::profile::AuthMethod::Oauth2 => "client_secret",
         crate::config::profile::AuthMethod::ApiKey => "api_token",
         crate::config::profile::AuthMethod::Mtls => "cert_passphrase",
-        crate::config::profile::AuthMethod::Saml => "saml_token",
+        crate::config::profile::AuthMethod::Saml => "session_cookie",
     }
 }
 
@@ -145,6 +147,10 @@ mod tests {
         assert_eq!(env_var_for("password"), Some("SNOW_CLI_PASSWORD"));
         assert_eq!(env_var_for("api_token"), Some("SNOW_CLI_API_TOKEN"));
         assert_eq!(env_var_for("client_secret"), Some("SNOW_CLI_CLIENT_SECRET"));
+        assert_eq!(
+            env_var_for("session_cookie"),
+            Some("SNOW_CLI_SESSION_COOKIE")
+        );
         assert_eq!(env_var_for("unknown"), None);
     }
 

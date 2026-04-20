@@ -60,6 +60,7 @@ pub async fn handle(
             oauth_grant_type,
             cert_path,
             key_path,
+            sso_login_url,
         } => {
             handle_set_profile(
                 &config_path,
@@ -71,6 +72,7 @@ pub async fn handle(
                 oauth_grant_type,
                 cert_path,
                 key_path,
+                sso_login_url,
             )
             .await
         }
@@ -167,6 +169,7 @@ async fn handle_init(
         oauth_grant_type: oauth_grant_type.map(|g| to_oauth_grant_type(&g)),
         cert_path: None,
         key_path: None,
+        sso_login_url: None,
     };
 
     let mut config = AppConfig {
@@ -201,6 +204,7 @@ async fn handle_set_profile(
     oauth_grant_type: Option<CliOAuthGrantType>,
     cert_path: Option<String>,
     key_path: Option<String>,
+    sso_login_url: Option<String>,
 ) -> anyhow::Result<()> {
     let mut config = AppConfig::load_from(config_path)?;
 
@@ -223,6 +227,7 @@ async fn handle_set_profile(
             key_path: key_path
                 .map(PathBuf::from)
                 .or_else(|| existing.key_path.clone()),
+            sso_login_url: sso_login_url.or_else(|| existing.sso_login_url.clone()),
         }
     } else {
         // New profile — instance is required
@@ -242,6 +247,7 @@ async fn handle_set_profile(
             oauth_grant_type: oauth_grant_type.map(|g| to_oauth_grant_type(&g)),
             cert_path: cert_path.map(PathBuf::from),
             key_path: key_path.map(PathBuf::from),
+            sso_login_url,
         }
     };
 
@@ -393,6 +399,7 @@ async fn handle_import_now_sdk(
                     oauth_grant_type: None,
                     cert_path: None,
                     key_path: None,
+                    sso_login_url: None,
                 },
             );
             credentials::store_credential(&imported.alias, "password", &imported.password)?;
@@ -878,6 +885,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -910,6 +918,7 @@ mod tests {
             &config_path,
             "dev".to_string(),
             Some("https://dev2.service-now.com".to_string()),
+            None,
             None,
             None,
             None,
@@ -954,6 +963,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
         assert!(result.is_err());
@@ -989,6 +999,7 @@ mod tests {
             Some(CliOAuthGrantType::Password),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1021,6 +1032,7 @@ mod tests {
             &config_path,
             "prod".to_string(),
             Some("https://prod.service-now.com".to_string()),
+            None,
             None,
             None,
             None,
@@ -1128,6 +1140,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1155,6 +1168,7 @@ mod tests {
             &config_path,
             "prod".to_string(),
             Some("https://prod.service-now.com".to_string()),
+            None,
             None,
             None,
             None,

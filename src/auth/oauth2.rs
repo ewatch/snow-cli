@@ -401,6 +401,7 @@ mod tests {
             oauth_grant_type: Some(OAuthGrantType::ClientCredentials),
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test", &profile).unwrap();
         assert_eq!(
@@ -419,6 +420,7 @@ mod tests {
             oauth_grant_type: Some(OAuthGrantType::ClientCredentials),
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test", &profile).unwrap();
         assert_eq!(
@@ -437,6 +439,7 @@ mod tests {
             oauth_grant_type: Some(OAuthGrantType::ClientCredentials),
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test", &profile).unwrap();
         let body = auth.build_token_request_body("my_secret", None);
@@ -456,6 +459,7 @@ mod tests {
             oauth_grant_type: Some(OAuthGrantType::Password),
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test", &profile).unwrap();
         let body = auth.build_token_request_body("my_secret", Some("p@ss"));
@@ -475,6 +479,7 @@ mod tests {
             oauth_grant_type: Some(OAuthGrantType::ClientCredentials),
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test", &profile).unwrap();
         let body = auth.build_refresh_request_body("my_client", "my_secret", "refresh_xyz");
@@ -494,6 +499,7 @@ mod tests {
             oauth_grant_type: Some(OAuthGrantType::ClientCredentials),
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let result = OAuth2Auth::new("test", &profile);
         assert!(result.is_err());
@@ -510,6 +516,7 @@ mod tests {
             oauth_grant_type: Some(OAuthGrantType::Password),
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let result = OAuth2Auth::new("test", &profile);
         assert!(result.is_err());
@@ -526,6 +533,7 @@ mod tests {
             oauth_grant_type: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test-profile", &profile).unwrap();
         assert_eq!(auth.grant_type, OAuthGrantType::ClientCredentials);
