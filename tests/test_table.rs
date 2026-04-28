@@ -578,6 +578,62 @@ async fn test_table_schema_include_inherited() {
 }
 
 #[tokio::test]
+async fn test_table_schema_handles_link_object_internal_type() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .and(query_param(
+            "sysparm_query",
+            "name=incident^elementISNOTEMPTY^element!=sys_tags",
+        ))
+        .and(query_param(
+            "sysparm_fields",
+            "element,internal_type,column_label,name",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "element": "caller_id",
+                    "internal_type": {
+                        "link": "https://example.service-now.com/api/now/table/sys_glide_object?name=reference",
+                        "value": "reference"
+                    },
+                    "column_label": "Caller",
+                    "name": "incident"
+                },
+                {
+                    "element": "number",
+                    "internal_type": {
+                        "link": "https://example.service-now.com/api/now/table/sys_glide_object?name=string",
+                        "value": "string"
+                    },
+                    "column_label": "Number",
+                    "name": "incident"
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args(["--instance", &server.uri(), "table", "schema", "incident"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"column\":\"caller_id\",\"type\":\"reference\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"column\":\"number\",\"type\":\"string\"",
+        ));
+}
+
+#[tokio::test]
 async fn test_table_schema_csv_output() {
     let server = MockServer::start().await;
 

@@ -1,13 +1,20 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use base64::Engine;
 use http::HeaderMap;
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
 use crate::auth::Authenticator;
 use crate::config::credentials;
 use crate::config::profile::{AuthMethod, OAuthGrantType, Profile};
+
+pub const DEFAULT_OAUTH_REDIRECT_HOST: &str = "127.0.0.1";
+pub const DEFAULT_OAUTH_REDIRECT_PORT: u16 = 8080;
+pub const DEFAULT_OAUTH_REDIRECT_PATH: &str = "/oauth/callback";
+pub const DEFAULT_OAUTH_SCOPE: &str = "useraccount";
 
 /// Cached OAuth2 token with expiry tracking.
 #[derive(Debug, Clone)]
@@ -24,6 +31,34 @@ impl CachedToken {
     }
 }
 
+/// OAuth token persisted in the keychain for authorization-code profiles.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct StoredOAuthToken {
+    pub access_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+impl StoredOAuthToken {
+    pub fn is_expired(&self) -> bool {
+        self.expires_at
+            .map(|expires_at| now_epoch_secs().saturating_add(30) >= expires_at)
+            .unwrap_or(false)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TokenSet {
+    cached: CachedToken,
+    stored: StoredOAuthToken,
+}
+
 /// Source of credentials — either keychain/env lookup or directly injected (for testing).
 #[derive(Debug, Clone)]
 enum CredentialSource {
@@ -33,10 +68,12 @@ enum CredentialSource {
     Direct {
         client_secret: String,
         password: Option<String>,
+        oauth_token: Option<StoredOAuthToken>,
     },
 }
 
-/// OAuth 2.0 authenticator supporting client_credentials and password grant types.
+/// OAuth 2.0 authenticator supporting client_credentials, password, and
+/// authorization-code grant types.
 ///
 /// Tokens are cached in memory and automatically refreshed when expired.
 #[derive(Debug)]
@@ -45,11 +82,11 @@ pub struct OAuth2Auth {
     instance: String,
     /// OAuth client ID from config
     client_id: String,
-    /// Grant type (client_credentials or password)
+    /// Grant type (client_credentials, password, or authorization_code)
     grant_type: OAuthGrantType,
     /// Username (required for password grant, from config)
     username: Option<String>,
-    /// Where to get client_secret and password from
+    /// Where to get client_secret, password, and persisted tokens from
     credential_source: CredentialSource,
     /// Cached token (shared across authenticate/refresh calls)
     cached_token: Arc<RwLock<Option<CachedToken>>>,
@@ -60,9 +97,9 @@ pub struct OAuth2Auth {
 struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
-    #[allow(dead_code)]
     token_type: Option<String>,
     expires_in: u64,
+    scope: Option<String>,
 }
 
 impl OAuth2Auth {
@@ -120,6 +157,29 @@ impl OAuth2Auth {
             credential_source: CredentialSource::Direct {
                 client_secret,
                 password,
+                oauth_token: None,
+            },
+            cached_token: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Create an authorization-code authenticator with a directly injected token (for testing).
+    #[cfg(test)]
+    pub fn new_with_stored_token(
+        instance: String,
+        client_id: String,
+        client_secret: String,
+        oauth_token: StoredOAuthToken,
+    ) -> Self {
+        Self {
+            instance,
+            client_id,
+            grant_type: OAuthGrantType::AuthorizationCode,
+            username: None,
+            credential_source: CredentialSource::Direct {
+                client_secret,
+                password: None,
+                oauth_token: Some(oauth_token),
             },
             cached_token: Arc::new(RwLock::new(None)),
         }
@@ -127,7 +187,7 @@ impl OAuth2Auth {
 
     /// Token endpoint URL for ServiceNow.
     fn token_url(&self) -> String {
-        format!("{}/oauth_token.do", self.instance.trim_end_matches('/'))
+        token_url_for_instance(&self.instance)
     }
 
     /// Build the form body for the initial token request.
@@ -151,6 +211,7 @@ impl OAuth2Auth {
                     urlencoded(pw),
                 )
             }
+            OAuthGrantType::AuthorizationCode => String::new(),
         }
     }
 
@@ -211,17 +272,49 @@ impl OAuth2Auth {
         }
     }
 
+    /// Retrieve the persisted authorization-code OAuth token.
+    fn get_stored_oauth_token(&self) -> anyhow::Result<Option<StoredOAuthToken>> {
+        match &self.credential_source {
+            CredentialSource::Direct { oauth_token, .. } => Ok(oauth_token.clone()),
+            CredentialSource::Keychain { profile_name } => {
+                let Some(raw) = credentials::get_credential(profile_name, "oauth_token")? else {
+                    return Ok(None);
+                };
+                let token = serde_json::from_str(&raw)?;
+                Ok(Some(token))
+            }
+        }
+    }
+
+    /// Persist an authorization-code OAuth token after refresh.
+    fn store_oauth_token(&self, token: &StoredOAuthToken) -> anyhow::Result<()> {
+        if let CredentialSource::Keychain { profile_name } = &self.credential_source {
+            credentials::store_credential(
+                profile_name,
+                "oauth_token",
+                &serde_json::to_string(token)?,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Exchange credentials for an access token via the token endpoint.
     async fn fetch_token(&self) -> anyhow::Result<CachedToken> {
+        if self.grant_type == OAuthGrantType::AuthorizationCode {
+            anyhow::bail!(
+                "No OAuth access token is stored for this profile. Run `snow-cli auth login --profile <profile>` to complete the authorization-code browser flow."
+            );
+        }
+
         let client_secret = self.get_client_secret()?;
         let password = self.get_password()?;
 
         let body = self.build_token_request_body(&client_secret, password.as_deref());
-        self.send_token_request(&body).await
+        Ok(self.send_token_request(&body).await?.cached)
     }
 
     /// Attempt to refresh using the stored refresh token.
-    async fn refresh_token(&self, refresh_tok: &str) -> anyhow::Result<CachedToken> {
+    async fn refresh_token(&self, refresh_tok: &str) -> anyhow::Result<TokenSet> {
         let client_secret = self.get_client_secret()?;
 
         let body = self.build_refresh_request_body(&self.client_id, &client_secret, refresh_tok);
@@ -229,65 +322,263 @@ impl OAuth2Auth {
     }
 
     /// Send a token request to the ServiceNow OAuth endpoint.
-    async fn send_token_request(&self, body: &str) -> anyhow::Result<CachedToken> {
-        let http_client = reqwest::Client::new();
-        let url = self.token_url();
+    async fn send_token_request(&self, body: &str) -> anyhow::Result<TokenSet> {
+        send_oauth_token_request(&self.token_url(), body).await
+    }
 
-        tracing::debug!(url = %url, "Requesting OAuth2 token");
-
-        let request = http_client
-            .post(&url)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(body.to_string())
-            .build()?;
-
-        crate::client::log_raw_http_request(&request);
-
-        let response = http_client.execute(request).await?;
-
-        if let Some(jsessionid) = crate::client::extract_jsessionid_from_headers(response.headers())
-        {
-            tracing::debug!(
-                url = %url,
-                jsessionid = %jsessionid,
-                "Captured JSESSIONID from OAuth2 token response"
-            );
+    async fn authenticate_authorization_code(&self) -> anyhow::Result<HeaderMap> {
+        if let Some(token) = self.valid_cached_token().await? {
+            return Ok(token);
         }
 
-        let status = response.status();
-        crate::client::log_raw_http_response(&url, status, response.headers());
-        if !status.is_success() {
-            let error_body = response.text().await.unwrap_or_default();
-            tracing::error!(
-                status = status.as_u16(),
-                body = %error_body,
-                "OAuth2 token request failed"
-            );
+        let Some(stored_token) = self.get_stored_oauth_token()? else {
             anyhow::bail!(
-                "OAuth2 token request failed with status {}: {}",
-                status.as_u16(),
-                error_body
+                "No OAuth token found for this profile. Run `snow-cli auth login --profile <profile>` to complete the authorization-code browser flow."
             );
+        };
+
+        let token = if !stored_token.is_expired() {
+            stored_to_cached(&stored_token)
+        } else if let Some(refresh_token) = stored_token.refresh_token.as_deref() {
+            tracing::debug!("Stored OAuth2 access token expired; refreshing with refresh_token");
+            let refreshed = self.refresh_token(refresh_token).await?;
+            self.store_oauth_token(&refreshed.stored)?;
+            refreshed.cached
+        } else {
+            anyhow::bail!(
+                "Stored OAuth token is expired and no refresh_token is available. Run `snow-cli auth login --profile <profile>` again."
+            );
+        };
+
+        let headers = bearer_headers(&token.access_token)?;
+        let mut cached = self.cached_token.write().await;
+        *cached = Some(token);
+        Ok(headers)
+    }
+
+    async fn valid_cached_token(&self) -> anyhow::Result<Option<HeaderMap>> {
+        let cached = self.cached_token.read().await;
+        if let Some(ref token) = *cached
+            && !token.is_expired()
+        {
+            return Ok(Some(bearer_headers(&token.access_token)?));
         }
-
-        let token_response: TokenResponse = response.json().await?;
-
-        tracing::debug!(
-            expires_in = token_response.expires_in,
-            has_refresh = token_response.refresh_token.is_some(),
-            "OAuth2 token acquired"
-        );
-
-        Ok(CachedToken {
-            access_token: token_response.access_token,
-            refresh_token: token_response.refresh_token,
-            expires_at: Instant::now() + Duration::from_secs(token_response.expires_in),
-        })
+        Ok(None)
     }
 }
 
+pub fn token_url_for_instance(instance: &str) -> String {
+    format!("{}/oauth_token.do", instance.trim_end_matches('/'))
+}
+
+pub fn authorization_url(
+    profile: &Profile,
+    redirect_uri: &str,
+    state: &str,
+    code_challenge: &str,
+) -> anyhow::Result<String> {
+    let client_id = profile.client_id.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "OAuth2 authorization-code login requires `client_id` in the profile configuration."
+        )
+    })?;
+    let scope = profile
+        .oauth_scope
+        .as_deref()
+        .unwrap_or(DEFAULT_OAUTH_SCOPE)
+        .trim();
+
+    let mut url = format!(
+        "{}/oauth_auth.do?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256",
+        profile.instance.trim_end_matches('/'),
+        urlencoded(client_id),
+        urlencoded(redirect_uri),
+        urlencoded(state),
+        urlencoded(code_challenge),
+    );
+
+    if !scope.is_empty() {
+        url.push_str("&scope=");
+        url.push_str(&urlencoded(scope));
+    }
+
+    Ok(url)
+}
+
+pub fn oauth_redirect_host(profile: &Profile) -> &str {
+    profile
+        .oauth_redirect_host
+        .as_deref()
+        .unwrap_or(DEFAULT_OAUTH_REDIRECT_HOST)
+}
+
+pub fn oauth_redirect_port(profile: &Profile) -> u16 {
+    profile
+        .oauth_redirect_port
+        .unwrap_or(DEFAULT_OAUTH_REDIRECT_PORT)
+}
+
+pub fn oauth_redirect_path(profile: &Profile) -> String {
+    normalize_redirect_path(
+        profile
+            .oauth_redirect_path
+            .as_deref()
+            .unwrap_or(DEFAULT_OAUTH_REDIRECT_PATH),
+    )
+}
+
+pub async fn exchange_authorization_code(
+    profile: &Profile,
+    code: &str,
+    redirect_uri: &str,
+    client_secret: &str,
+    code_verifier: &str,
+) -> anyhow::Result<StoredOAuthToken> {
+    let client_id = profile.client_id.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "OAuth2 authorization-code login requires `client_id` in the profile configuration."
+        )
+    })?;
+    let body = format!(
+        "grant_type=authorization_code&client_id={}&client_secret={}&code={}&redirect_uri={}&code_verifier={}",
+        urlencoded(client_id),
+        urlencoded(client_secret),
+        urlencoded(code),
+        urlencoded(redirect_uri),
+        urlencoded(code_verifier),
+    );
+    let token_set =
+        send_oauth_token_request(&token_url_for_instance(&profile.instance), &body).await?;
+    Ok(token_set.stored)
+}
+
+async fn send_oauth_token_request(url: &str, body: &str) -> anyhow::Result<TokenSet> {
+    let http_client = reqwest::Client::new();
+
+    tracing::debug!(url = %url, "Requesting OAuth2 token");
+
+    let request = http_client
+        .post(url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body.to_string())
+        .build()?;
+
+    crate::client::log_raw_http_request(&request);
+
+    let response = http_client.execute(request).await?;
+
+    if let Some(jsessionid) = crate::client::extract_jsessionid_from_headers(response.headers()) {
+        tracing::debug!(
+            url = %url,
+            jsessionid = %jsessionid,
+            "Captured JSESSIONID from OAuth2 token response"
+        );
+    }
+
+    let status = response.status();
+    crate::client::log_raw_http_response(url, status, response.headers());
+    if !status.is_success() {
+        let error_body = response.text().await.unwrap_or_default();
+        tracing::error!(
+            status = status.as_u16(),
+            body = %error_body,
+            "OAuth2 token request failed"
+        );
+        anyhow::bail!(
+            "OAuth2 token request failed with status {}: {}",
+            status.as_u16(),
+            error_body
+        );
+    }
+
+    let token_response: TokenResponse = response.json().await?;
+
+    tracing::debug!(
+        expires_in = token_response.expires_in,
+        has_refresh = token_response.refresh_token.is_some(),
+        "OAuth2 token acquired"
+    );
+
+    Ok(token_response.into_token_set())
+}
+
+impl TokenResponse {
+    fn into_token_set(self) -> TokenSet {
+        let expires_at = now_epoch_secs().saturating_add(self.expires_in);
+        let refresh_token = self.refresh_token;
+        let access_token = self.access_token;
+        TokenSet {
+            cached: CachedToken {
+                access_token: access_token.clone(),
+                refresh_token: refresh_token.clone(),
+                expires_at: Instant::now() + Duration::from_secs(self.expires_in),
+            },
+            stored: StoredOAuthToken {
+                access_token,
+                refresh_token,
+                token_type: self.token_type,
+                expires_at: Some(expires_at),
+                scope: self.scope,
+            },
+        }
+    }
+}
+
+fn stored_to_cached(stored: &StoredOAuthToken) -> CachedToken {
+    let expires_at = stored
+        .expires_at
+        .map(|expires_at| {
+            let now = now_epoch_secs();
+            if expires_at > now {
+                Instant::now() + Duration::from_secs(expires_at - now)
+            } else {
+                Instant::now() - Duration::from_secs(1)
+            }
+        })
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
+
+    CachedToken {
+        access_token: stored.access_token.clone(),
+        refresh_token: stored.refresh_token.clone(),
+        expires_at,
+    }
+}
+
+fn bearer_headers(access_token: &str) -> anyhow::Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        http::header::AUTHORIZATION,
+        format!("Bearer {access_token}").parse()?,
+    );
+    Ok(headers)
+}
+
+fn normalize_redirect_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return DEFAULT_OAUTH_REDIRECT_PATH.to_string();
+    }
+    if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
+fn now_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub fn pkce_code_challenge_s256(code_verifier: &str) -> String {
+    let digest = Sha256::digest(code_verifier.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+}
+
 /// Simple URL encoding for form values.
-fn urlencoded(s: &str) -> String {
+pub fn urlencoded(s: &str) -> String {
     // Encode characters that are not unreserved per RFC 3986
     let mut result = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -306,29 +597,17 @@ fn urlencoded(s: &str) -> String {
 #[async_trait]
 impl Authenticator for OAuth2Auth {
     async fn authenticate(&self) -> anyhow::Result<HeaderMap> {
-        // Check cached token
-        {
-            let cached = self.cached_token.read().await;
-            if let Some(ref token) = *cached
-                && !token.is_expired()
-            {
-                let mut headers = HeaderMap::new();
-                headers.insert(
-                    http::header::AUTHORIZATION,
-                    format!("Bearer {}", token.access_token).parse()?,
-                );
-                return Ok(headers);
-            }
+        if self.grant_type == OAuthGrantType::AuthorizationCode {
+            return self.authenticate_authorization_code().await;
+        }
+
+        if let Some(headers) = self.valid_cached_token().await? {
+            return Ok(headers);
         }
 
         // Token missing or expired — fetch a new one
         let token = self.fetch_token().await?;
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            http::header::AUTHORIZATION,
-            format!("Bearer {}", token.access_token).parse()?,
-        );
+        let headers = bearer_headers(&token.access_token)?;
 
         // Cache the token
         {
@@ -344,17 +623,37 @@ impl Authenticator for OAuth2Auth {
         let refresh_tok = {
             let cached = self.cached_token.read().await;
             cached.as_ref().and_then(|t| t.refresh_token.clone())
-        };
+        }
+        .or_else(|| {
+            if self.grant_type == OAuthGrantType::AuthorizationCode {
+                self.get_stored_oauth_token()
+                    .ok()
+                    .flatten()
+                    .and_then(|token| token.refresh_token)
+            } else {
+                None
+            }
+        });
 
         let new_token = if let Some(ref rt) = refresh_tok {
             tracing::debug!("Attempting OAuth2 token refresh");
             match self.refresh_token(rt).await {
-                Ok(t) => t,
-                Err(e) => {
+                Ok(token_set) => {
+                    if self.grant_type == OAuthGrantType::AuthorizationCode {
+                        self.store_oauth_token(&token_set.stored)?;
+                    }
+                    token_set.cached
+                }
+                Err(e) if self.grant_type != OAuthGrantType::AuthorizationCode => {
                     tracing::debug!(error = %e, "Refresh token failed, falling back to full auth");
                     self.fetch_token().await?
                 }
+                Err(e) => return Err(e),
             }
+        } else if self.grant_type == OAuthGrantType::AuthorizationCode {
+            anyhow::bail!(
+                "No OAuth refresh_token is available. Run `snow-cli auth login --profile <profile>` again."
+            );
         } else {
             tracing::debug!("No refresh token available, re-authenticating");
             self.fetch_token().await?
@@ -392,6 +691,89 @@ mod tests {
     }
 
     #[test]
+    fn test_authorization_url_uses_scope_state_and_redirect_uri() {
+        let profile = Profile {
+            instance: "https://mycompany.service-now.com/".to_string(),
+            auth_method: AuthMethod::Oauth2,
+            username: None,
+            client_id: Some("client 123".to_string()),
+            oauth_grant_type: Some(OAuthGrantType::AuthorizationCode),
+            oauth_scope: Some("useraccount email".to_string()),
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
+            cert_path: None,
+            key_path: None,
+            sso_login_url: None,
+        };
+
+        let url = authorization_url(
+            &profile,
+            "http://127.0.0.1:8080/oauth/callback",
+            "state-123",
+            "pkce-challenge-123",
+        )
+        .unwrap();
+
+        assert!(url.starts_with("https://mycompany.service-now.com/oauth_auth.do?"));
+        assert!(url.contains("response_type=code"));
+        assert!(url.contains("client_id=client%20123"));
+        assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Foauth%2Fcallback"));
+        assert!(url.contains("state=state-123"));
+        assert!(url.contains("code_challenge=pkce-challenge-123"));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains("scope=useraccount%20email"));
+    }
+
+    #[test]
+    fn test_pkce_code_challenge_s256_matches_rfc_vector() {
+        assert_eq!(
+            pkce_code_challenge_s256("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn test_oauth_redirect_defaults_and_normalization() {
+        let profile = Profile {
+            instance: "https://test.service-now.com".to_string(),
+            auth_method: AuthMethod::Oauth2,
+            username: None,
+            client_id: Some("client123".to_string()),
+            oauth_grant_type: Some(OAuthGrantType::AuthorizationCode),
+            oauth_scope: None,
+            oauth_redirect_host: Some("localhost".to_string()),
+            oauth_redirect_port: Some(8484),
+            oauth_redirect_path: Some("callback".to_string()),
+            cert_path: None,
+            key_path: None,
+            sso_login_url: None,
+        };
+
+        assert_eq!(oauth_redirect_host(&profile), "localhost");
+        assert_eq!(oauth_redirect_port(&profile), 8484);
+        assert_eq!(oauth_redirect_path(&profile), "/callback");
+    }
+
+    #[test]
+    fn test_stored_oauth_token_expiry_buffer() {
+        let valid = StoredOAuthToken {
+            access_token: "access".to_string(),
+            refresh_token: None,
+            token_type: Some("Bearer".to_string()),
+            expires_at: Some(now_epoch_secs() + 3600),
+            scope: None,
+        };
+        assert!(!valid.is_expired());
+
+        let almost_expired = StoredOAuthToken {
+            expires_at: Some(now_epoch_secs() + 10),
+            ..valid
+        };
+        assert!(almost_expired.is_expired());
+    }
+
+    #[test]
     fn test_token_url() {
         let profile = Profile {
             instance: "https://mycompany.service-now.com".to_string(),
@@ -399,8 +781,13 @@ mod tests {
             username: None,
             client_id: Some("client123".to_string()),
             oauth_grant_type: Some(OAuthGrantType::ClientCredentials),
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test", &profile).unwrap();
         assert_eq!(
@@ -417,8 +804,13 @@ mod tests {
             username: None,
             client_id: Some("client123".to_string()),
             oauth_grant_type: Some(OAuthGrantType::ClientCredentials),
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test", &profile).unwrap();
         assert_eq!(
@@ -435,8 +827,13 @@ mod tests {
             username: None,
             client_id: Some("my_client".to_string()),
             oauth_grant_type: Some(OAuthGrantType::ClientCredentials),
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test", &profile).unwrap();
         let body = auth.build_token_request_body("my_secret", None);
@@ -454,8 +851,13 @@ mod tests {
             username: Some("admin".to_string()),
             client_id: Some("my_client".to_string()),
             oauth_grant_type: Some(OAuthGrantType::Password),
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test", &profile).unwrap();
         let body = auth.build_token_request_body("my_secret", Some("p@ss"));
@@ -473,8 +875,13 @@ mod tests {
             username: None,
             client_id: Some("my_client".to_string()),
             oauth_grant_type: Some(OAuthGrantType::ClientCredentials),
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test", &profile).unwrap();
         let body = auth.build_refresh_request_body("my_client", "my_secret", "refresh_xyz");
@@ -492,8 +899,13 @@ mod tests {
             username: None,
             client_id: None,
             oauth_grant_type: Some(OAuthGrantType::ClientCredentials),
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let result = OAuth2Auth::new("test", &profile);
         assert!(result.is_err());
@@ -508,8 +920,13 @@ mod tests {
             username: None,
             client_id: Some("client123".to_string()),
             oauth_grant_type: Some(OAuthGrantType::Password),
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let result = OAuth2Auth::new("test", &profile);
         assert!(result.is_err());
@@ -524,8 +941,13 @@ mod tests {
             username: None,
             client_id: Some("client123".to_string()),
             oauth_grant_type: None,
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test-profile", &profile).unwrap();
         assert_eq!(auth.grant_type, OAuthGrantType::ClientCredentials);
@@ -595,6 +1017,119 @@ mod tests {
             "token_type": "Bearer",
             "expires_in": expires_in
         })
+    }
+
+    #[tokio::test]
+    async fn test_authorization_code_exchange() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/oauth_token.do"))
+            .and(body_string_contains("grant_type=authorization_code"))
+            .and(body_string_contains("client_id=test_client_id"))
+            .and(body_string_contains("client_secret=test_client_secret"))
+            .and(body_string_contains("code=auth_code_123"))
+            .and(body_string_contains(
+                "redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Foauth%2Fcallback",
+            ))
+            .and(body_string_contains("code_verifier=verifier_123"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(token_response_with_refresh(
+                    "auth_code_access",
+                    "refresh_auth_code",
+                    3600,
+                )),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let profile = Profile {
+            instance: server.uri(),
+            auth_method: AuthMethod::Oauth2,
+            username: None,
+            client_id: Some("test_client_id".to_string()),
+            oauth_grant_type: Some(OAuthGrantType::AuthorizationCode),
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
+            cert_path: None,
+            key_path: None,
+            sso_login_url: None,
+        };
+
+        let token = exchange_authorization_code(
+            &profile,
+            "auth_code_123",
+            "http://127.0.0.1:8080/oauth/callback",
+            "test_client_secret",
+            "verifier_123",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(token.access_token, "auth_code_access");
+        assert_eq!(token.refresh_token, Some("refresh_auth_code".to_string()));
+        assert!(!token.is_expired());
+    }
+
+    #[tokio::test]
+    async fn test_authorization_code_authenticate_uses_stored_token() {
+        let auth = OAuth2Auth::new_with_stored_token(
+            "https://test.service-now.com".to_string(),
+            "test_client_id".to_string(),
+            "test_client_secret".to_string(),
+            StoredOAuthToken {
+                access_token: "stored_access".to_string(),
+                refresh_token: Some("stored_refresh".to_string()),
+                token_type: Some("Bearer".to_string()),
+                expires_at: Some(now_epoch_secs() + 3600),
+                scope: Some("useraccount".to_string()),
+            },
+        );
+
+        let headers = auth.authenticate().await.unwrap();
+        assert_eq!(
+            headers.get("authorization").unwrap().to_str().unwrap(),
+            "Bearer stored_access"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_authorization_code_expired_token_refreshes() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/oauth_token.do"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .and(body_string_contains("refresh_token=stored_refresh"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(token_response_json("refreshed_access", 3600)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let auth = OAuth2Auth::new_with_stored_token(
+            server.uri(),
+            "test_client_id".to_string(),
+            "test_client_secret".to_string(),
+            StoredOAuthToken {
+                access_token: "expired_access".to_string(),
+                refresh_token: Some("stored_refresh".to_string()),
+                token_type: Some("Bearer".to_string()),
+                expires_at: Some(now_epoch_secs().saturating_sub(60)),
+                scope: Some("useraccount".to_string()),
+            },
+        );
+
+        let headers = auth.authenticate().await.unwrap();
+        assert_eq!(
+            headers.get("authorization").unwrap().to_str().unwrap(),
+            "Bearer refreshed_access"
+        );
     }
 
     #[tokio::test]

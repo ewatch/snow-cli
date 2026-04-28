@@ -118,7 +118,16 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
-        cli::args::Commands::ImportSet(args) => cli::commands::import_set::handle(args).await,
+        cli::args::Commands::ImportSet(args) => {
+            cli::commands::import_set::handle(
+                args,
+                &active_profile,
+                &cli.output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
+        }
         cli::args::Commands::Api(args) => {
             cli::commands::api::handle(
                 args,

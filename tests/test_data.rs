@@ -437,6 +437,232 @@ async fn test_data_import_partial_failure_reports_summary() {
 }
 
 #[tokio::test]
+async fn test_data_import_flat_uses_import_set_when_selected() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "element": "user_name",
+                    "internal_type": "string",
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "default_value": ""
+                },
+                {
+                    "element": "email",
+                    "internal_type": "string",
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "default_value": ""
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/now/import/imp_user"))
+        .and(header("Content-Type", "application/json"))
+        .and(body_string_contains("import-user@example.com"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "result": [{"status": "inserted", "sys_id": "user123"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let dataset_dir = tempfile::tempdir().unwrap();
+    let dataset_path = write_dataset_file(
+        &dataset_dir,
+        serde_json::json!({
+            "version": 1,
+            "kind": "table-export",
+            "command": "data export",
+            "instance": "https://dev.service-now.com",
+            "table": "sys_user",
+            "record_count": 1,
+            "records": [
+                {"user_name": "import-user", "email": "import-user@example.com"}
+            ]
+        }),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "data",
+            "import",
+            "--file",
+            dataset_path.to_str().unwrap(),
+            "--import-set-table",
+            "imp_user",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"strategy\":\"import_set\""))
+        .stdout(predicate::str::contains("\"created\":1"))
+        .stdout(predicate::str::contains("selected staging table"));
+}
+
+#[tokio::test]
+async fn test_data_import_flat_import_set_reports_row_errors() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "element": "user_name",
+                    "internal_type": "string",
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "default_value": ""
+                },
+                {
+                    "element": "email",
+                    "internal_type": "string",
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "default_value": ""
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/now/import/imp_user"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"status": "error", "error_message": "coalesce failed"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let dataset_dir = tempfile::tempdir().unwrap();
+    let dataset_path = write_dataset_file(
+        &dataset_dir,
+        serde_json::json!({
+            "version": 1,
+            "kind": "table-export",
+            "command": "data export",
+            "instance": "https://dev.service-now.com",
+            "table": "sys_user",
+            "record_count": 1,
+            "records": [
+                {"user_name": "import-user", "email": "import-user@example.com"}
+            ]
+        }),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "data",
+            "import",
+            "--file",
+            dataset_path.to_str().unwrap(),
+            "--import-set-table",
+            "imp_user",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("\"strategy\":\"import_set\""))
+        .stdout(predicate::str::contains("\"failed\":1"))
+        .stdout(predicate::str::contains("coalesce failed"));
+}
+
+#[tokio::test]
+async fn test_data_import_flat_import_set_fail_on_error_returns_explicit_error() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "element": "user_name",
+                    "internal_type": "string",
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "default_value": ""
+                },
+                {
+                    "element": "email",
+                    "internal_type": "string",
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "default_value": ""
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/api/now/import/imp_user"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"status": "error", "error_message": "coalesce failed"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let dataset_dir = tempfile::tempdir().unwrap();
+    let dataset_path = write_dataset_file(
+        &dataset_dir,
+        serde_json::json!({
+            "version": 1,
+            "kind": "table-export",
+            "command": "data export",
+            "instance": "https://dev.service-now.com",
+            "table": "sys_user",
+            "record_count": 1,
+            "records": [
+                {"user_name": "import-user", "email": "import-user@example.com"}
+            ]
+        }),
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "data",
+            "import",
+            "--file",
+            dataset_path.to_str().unwrap(),
+            "--import-set-table",
+            "imp_user",
+            "--fail-on-error",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("\"strategy\":\"import_set\""))
+        .stderr(predicate::str::contains(
+            "Import Set-backed data import completed with 1 failed record",
+        ));
+}
+
+#[tokio::test]
 async fn test_data_validate_accepts_inherited_fields() {
     let server = MockServer::start().await;
 
@@ -643,7 +869,7 @@ async fn test_data_import_package_remaps_references() {
             .and(path("/api/now/table/sys_dictionary"))
             .and(query_param(
                 "sysparm_query",
-                &format!("name={}^elementISNOTEMPTY^element!=sys_tags", table),
+                format!("name={}^elementISNOTEMPTY^element!=sys_tags", table),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": if table == "u_parent" {
@@ -823,7 +1049,7 @@ async fn test_data_import_package_dry_run_reports_plan_without_writes() {
             .and(path("/api/now/table/sys_dictionary"))
             .and(query_param(
                 "sysparm_query",
-                &format!("name={}^elementISNOTEMPTY^element!=sys_tags", table),
+                format!("name={}^elementISNOTEMPTY^element!=sys_tags", table),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": if table == "u_parent" {

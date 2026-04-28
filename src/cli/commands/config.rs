@@ -24,6 +24,7 @@ fn to_oauth_grant_type(cli: &CliOAuthGrantType) -> OAuthGrantType {
     match cli {
         CliOAuthGrantType::ClientCredentials => OAuthGrantType::ClientCredentials,
         CliOAuthGrantType::Password => OAuthGrantType::Password,
+        CliOAuthGrantType::AuthorizationCode => OAuthGrantType::AuthorizationCode,
     }
 }
 
@@ -38,15 +39,25 @@ pub async fn handle(
             instance,
             auth_method,
             username,
+            client_id,
             oauth_grant_type,
+            oauth_scope,
+            oauth_redirect_host,
+            oauth_redirect_port,
+            oauth_redirect_path,
             name,
         } => {
-            handle_init(
+            handle_init_with_oauth_options(
                 &config_path,
                 instance,
                 auth_method,
                 username,
+                client_id,
                 oauth_grant_type,
+                oauth_scope,
+                oauth_redirect_host,
+                oauth_redirect_port,
+                oauth_redirect_path,
                 name,
             )
             .await
@@ -58,10 +69,15 @@ pub async fn handle(
             username,
             client_id,
             oauth_grant_type,
+            oauth_scope,
+            oauth_redirect_host,
+            oauth_redirect_port,
+            oauth_redirect_path,
             cert_path,
             key_path,
+            sso_login_url,
         } => {
-            handle_set_profile(
+            handle_set_profile_with_oauth_options(
                 &config_path,
                 name,
                 instance,
@@ -69,8 +85,13 @@ pub async fn handle(
                 username,
                 client_id,
                 oauth_grant_type,
+                oauth_scope,
+                oauth_redirect_host,
+                oauth_redirect_port,
+                oauth_redirect_path,
                 cert_path,
                 key_path,
+                sso_login_url,
             )
             .await
         }
@@ -134,12 +155,43 @@ struct ExportNowSdkResult {
 /// If flags are provided (--instance, --auth-method, etc.), runs non-interactively.
 /// Otherwise, returns an error with guidance on required flags (no interactive
 /// prompts since this CLI is designed for both humans and coding agents).
+#[cfg(test)]
 async fn handle_init(
     config_path: &Path,
     instance: Option<String>,
     auth_method: Option<CliAuthMethod>,
     username: Option<String>,
     oauth_grant_type: Option<CliOAuthGrantType>,
+    name: String,
+) -> anyhow::Result<()> {
+    handle_init_with_oauth_options(
+        config_path,
+        instance,
+        auth_method,
+        username,
+        None,
+        oauth_grant_type,
+        None,
+        None,
+        None,
+        None,
+        name,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_init_with_oauth_options(
+    config_path: &Path,
+    instance: Option<String>,
+    auth_method: Option<CliAuthMethod>,
+    username: Option<String>,
+    client_id: Option<String>,
+    oauth_grant_type: Option<CliOAuthGrantType>,
+    oauth_scope: Option<String>,
+    oauth_redirect_host: Option<String>,
+    oauth_redirect_port: Option<u16>,
+    oauth_redirect_path: Option<String>,
     name: String,
 ) -> anyhow::Result<()> {
     if config_path.exists() {
@@ -163,10 +215,15 @@ async fn handle_init(
         instance: instance.clone(),
         auth_method: auth,
         username,
-        client_id: None,
+        client_id,
         oauth_grant_type: oauth_grant_type.map(|g| to_oauth_grant_type(&g)),
+        oauth_scope,
+        oauth_redirect_host,
+        oauth_redirect_port,
+        oauth_redirect_path,
         cert_path: None,
         key_path: None,
+        sso_login_url: None,
     };
 
     let mut config = AppConfig {
@@ -191,6 +248,7 @@ async fn handle_init(
 
 /// `config set-profile <name>` — Create or update a named profile.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 async fn handle_set_profile(
     config_path: &Path,
     name: String,
@@ -201,6 +259,43 @@ async fn handle_set_profile(
     oauth_grant_type: Option<CliOAuthGrantType>,
     cert_path: Option<String>,
     key_path: Option<String>,
+    sso_login_url: Option<String>,
+) -> anyhow::Result<()> {
+    handle_set_profile_with_oauth_options(
+        config_path,
+        name,
+        instance,
+        auth_method,
+        username,
+        client_id,
+        oauth_grant_type,
+        None,
+        None,
+        None,
+        None,
+        cert_path,
+        key_path,
+        sso_login_url,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_set_profile_with_oauth_options(
+    config_path: &Path,
+    name: String,
+    instance: Option<String>,
+    auth_method: Option<CliAuthMethod>,
+    username: Option<String>,
+    client_id: Option<String>,
+    oauth_grant_type: Option<CliOAuthGrantType>,
+    oauth_scope: Option<String>,
+    oauth_redirect_host: Option<String>,
+    oauth_redirect_port: Option<u16>,
+    oauth_redirect_path: Option<String>,
+    cert_path: Option<String>,
+    key_path: Option<String>,
+    sso_login_url: Option<String>,
 ) -> anyhow::Result<()> {
     let mut config = AppConfig::load_from(config_path)?;
 
@@ -217,12 +312,19 @@ async fn handle_set_profile(
                 .as_ref()
                 .map(to_oauth_grant_type)
                 .or_else(|| existing.oauth_grant_type.clone()),
+            oauth_scope: oauth_scope.or_else(|| existing.oauth_scope.clone()),
+            oauth_redirect_host: oauth_redirect_host
+                .or_else(|| existing.oauth_redirect_host.clone()),
+            oauth_redirect_port: oauth_redirect_port.or(existing.oauth_redirect_port),
+            oauth_redirect_path: oauth_redirect_path
+                .or_else(|| existing.oauth_redirect_path.clone()),
             cert_path: cert_path
                 .map(PathBuf::from)
                 .or_else(|| existing.cert_path.clone()),
             key_path: key_path
                 .map(PathBuf::from)
                 .or_else(|| existing.key_path.clone()),
+            sso_login_url: sso_login_url.or_else(|| existing.sso_login_url.clone()),
         }
     } else {
         // New profile — instance is required
@@ -240,8 +342,13 @@ async fn handle_set_profile(
             username,
             client_id,
             oauth_grant_type: oauth_grant_type.map(|g| to_oauth_grant_type(&g)),
+            oauth_scope,
+            oauth_redirect_host,
+            oauth_redirect_port,
+            oauth_redirect_path,
             cert_path: cert_path.map(PathBuf::from),
             key_path: key_path.map(PathBuf::from),
+            sso_login_url,
         }
     };
 
@@ -391,8 +498,13 @@ async fn handle_import_now_sdk(
                     username: Some(imported.username.clone()),
                     client_id: None,
                     oauth_grant_type: None,
+                    oauth_scope: None,
+                    oauth_redirect_host: None,
+                    oauth_redirect_port: None,
+                    oauth_redirect_path: None,
                     cert_path: None,
                     key_path: None,
+                    sso_login_url: None,
                 },
             );
             credentials::store_credential(&imported.alias, "password", &imported.password)?;
@@ -878,6 +990,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -910,6 +1023,7 @@ mod tests {
             &config_path,
             "dev".to_string(),
             Some("https://dev2.service-now.com".to_string()),
+            None,
             None,
             None,
             None,
@@ -954,6 +1068,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await;
         assert!(result.is_err());
@@ -989,6 +1104,7 @@ mod tests {
             Some(CliOAuthGrantType::Password),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1021,6 +1137,7 @@ mod tests {
             &config_path,
             "prod".to_string(),
             Some("https://prod.service-now.com".to_string()),
+            None,
             None,
             None,
             None,
@@ -1128,6 +1245,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1155,6 +1273,7 @@ mod tests {
             &config_path,
             "prod".to_string(),
             Some("https://prod.service-now.com".to_string()),
+            None,
             None,
             None,
             None,

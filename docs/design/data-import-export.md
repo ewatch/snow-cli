@@ -451,6 +451,8 @@ Coverage should include:
 - single-table export JSON and CSV output
 - validation success and blocking validation failures
 - import strategy reporting and fallback behavior
+- flat import opt-in through Import Set API when a staging table is provided
+- optional fail-on-error mode for Import Set-backed flat imports in CI/agent workflows
 - partial import failures with machine-readable summaries
 - multi-table ordering and reference remapping
 - deterministic seed planning and apply output

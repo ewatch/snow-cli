@@ -108,3 +108,21 @@ async fn test_table_list() {
    verify the same logical outcome.
 3. **No network calls** — all HTTP interactions are mocked with wiremock.
 4. **No filesystem side effects** — use `tempfile` for any config file tests.
+
+## Optional Live Validation
+
+Use live-instance checks sparingly after wiremock coverage is in place.
+
+Known working import-set example from live validation on profile `sprint`:
+
+```bash
+cargo run -- --profile sprint import-set load imp_user --data '{"user_name":"snow-cli-live-test","first_name":"Snow","last_name":"CLI","email":"snow-cli-live-test@example.com"}'
+```
+
+Notes:
+
+- `imp_user` is a valid staging table on the validated `sprint` instance.
+- The payload needed `email` because the active transform map coalesces on that field.
+- The live response showed that `POST /api/now/import/imp_user` performed the load and transform in one step.
+- Use `--fail-on-error` when transform-map row failures should fail CI or agent automation even if the HTTP request itself succeeded.
+- Do not rely on arbitrary table names like `sys_user_import`; the import API requires a table that extends `sys_import_set_row`.

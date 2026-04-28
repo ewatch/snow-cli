@@ -131,8 +131,13 @@ mod tests {
             username: None,
             client_id: None,
             oauth_grant_type: None,
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
             cert_path: None,
             key_path: None,
+            sso_login_url: None,
         };
         let auth = ApiKeyAuth::new("test", &profile);
         assert!(auth.is_ok());

@@ -1,6 +1,7 @@
 pub mod api_key;
 pub mod basic;
 pub mod oauth2;
+pub mod saml;
 
 use async_trait::async_trait;
 use http::HeaderMap;
@@ -41,10 +42,6 @@ pub fn create_authenticator(
                 "mTLS authentication is not yet implemented. See docs/PLAN.md for roadmap."
             )
         }
-        AuthMethod::Saml => {
-            anyhow::bail!(
-                "SAML authentication is not yet implemented. See docs/PLAN.md for roadmap."
-            )
-        }
+        AuthMethod::Saml => Ok(Box::new(saml::SamlAuth::new(profile_name, profile)?)),
     }
 }

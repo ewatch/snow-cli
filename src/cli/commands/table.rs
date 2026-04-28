@@ -217,7 +217,7 @@ async fn handle_schema(
         .iter()
         .map(|r| SchemaEntry {
             column: r.get_str("element").unwrap_or("").to_string(),
-            r#type: r.get_str("internal_type").unwrap_or("").to_string(),
+            r#type: field_value_as_text(r, "internal_type").unwrap_or_default(),
             label: r.get_str("column_label").unwrap_or("").to_string(),
             table: if include_inherited {
                 Some(r.get_str("name").unwrap_or("").to_string())
@@ -250,12 +250,8 @@ async fn handle_schema(
                 None
             },
             reference: if extended {
-                let val = r.get_str("reference").unwrap_or("");
-                if val.is_empty() {
-                    None
-                } else {
-                    Some(val.to_string())
-                }
+                let val = field_value_as_text(r, "reference").unwrap_or_default();
+                if val.is_empty() { None } else { Some(val) }
             } else {
                 None
             },
@@ -308,6 +304,17 @@ fn print_schema(entries: &[SchemaEntry], format: &OutputFormat) -> anyhow::Resul
         }
     }
     Ok(())
+}
+
+fn field_value_as_text(record: &crate::models::record::Record, field: &str) -> Option<String> {
+    match record.fields.get(field) {
+        Some(serde_json::Value::String(text)) => Some(text.clone()),
+        Some(serde_json::Value::Object(map)) => map
+            .get("value")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned),
+        _ => None,
+    }
 }
 
 /// Read JSON data from `--data` flag or stdin.
@@ -424,5 +431,33 @@ mod tests {
         let input = "{\n  \"key\": \"value\"\n}";
         let data = read_data_from(None, Cursor::new(input.as_bytes()), false).unwrap();
         assert_eq!(data, input);
+    }
+
+    #[test]
+    fn test_field_value_as_text_supports_string_and_link_object() {
+        let string_record = crate::models::record::Record {
+            fields: std::collections::HashMap::from([(
+                "internal_type".to_string(),
+                serde_json::json!("string"),
+            )]),
+        };
+        assert_eq!(
+            field_value_as_text(&string_record, "internal_type"),
+            Some("string".to_string())
+        );
+
+        let object_record = crate::models::record::Record {
+            fields: std::collections::HashMap::from([(
+                "internal_type".to_string(),
+                serde_json::json!({
+                    "link": "https://example.com/api/now/table/sys_glide_object?name=reference",
+                    "value": "reference"
+                }),
+            )]),
+        };
+        assert_eq!(
+            field_value_as_text(&object_record, "internal_type"),
+            Some("reference".to_string())
+        );
     }
 }

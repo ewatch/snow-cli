@@ -1,6 +1,6 @@
 [package]
 name = "snow-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "CLI gateway for LLMs and coding agents to access ServiceNow instances"
 license = "MIT"
@@ -49,6 +49,9 @@ http = "1"
 # Base64 encoding (for Basic auth)
 base64 = "0.22"
 rpassword = "7.4.0"
+open = "5.3.4"
+rand = "0.8"
+sha2 = "0.10"
 
 [dev-dependencies]
 # HTTP mocking

@@ -47,9 +47,26 @@ pub async fn handle(
             ensure_json_output(format, "data validate")?;
             handle_validate(profile, format, instance, timeout_secs, &file).await
         }
-        DataCommands::Import { file, dry_run } => {
+        DataCommands::Import {
+            file,
+            dry_run,
+            import_set_table,
+            fail_on_error,
+        } => {
             ensure_json_output(format, "data import")?;
-            handle_import(profile, format, instance, timeout_secs, &file, dry_run).await
+            handle_import(
+                profile,
+                format,
+                instance,
+                timeout_secs,
+                &file,
+                ImportExecutionOptions {
+                    dry_run,
+                    import_set_table: import_set_table.as_deref(),
+                    fail_on_error,
+                },
+            )
+            .await
         }
     }
 }
@@ -120,6 +137,29 @@ struct ImportReport {
     skipped: usize,
     validation: ImportValidationSummary,
     failures: Vec<ImportFailure>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportSetApiResponse {
+    #[serde(default)]
+    result: Vec<ImportSetApiResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportSetApiResult {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    error_message: Option<String>,
+    #[serde(default)]
+    status_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ImportExecutionOptions<'a> {
+    dry_run: bool,
+    import_set_table: Option<&'a str>,
+    fail_on_error: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -507,13 +547,19 @@ async fn handle_import(
     instance: Option<&str>,
     timeout_secs: Option<u64>,
     file: &str,
-    dry_run: bool,
+    options: ImportExecutionOptions<'_>,
 ) -> anyhow::Result<()> {
     match read_dataset_input(file)? {
         DatasetInput::Flat(artifact) => {
-            handle_import_flat(profile, format, instance, timeout_secs, &artifact, dry_run).await
+            handle_import_flat(profile, format, instance, timeout_secs, &artifact, options).await
         }
         DatasetInput::Package(manifest) => {
+            if options.import_set_table.is_some() {
+                anyhow::bail!(
+                    "--import-set-table is currently only supported for flat table-export artifacts, not dataset package imports"
+                );
+            }
+
             handle_import_package(
                 profile,
                 format,
@@ -521,7 +567,7 @@ async fn handle_import(
                 Some(long_running_timeout_secs(timeout_secs)),
                 file,
                 &manifest,
-                dry_run,
+                options.dry_run,
             )
             .await
         }
@@ -662,7 +708,7 @@ async fn handle_import_flat(
     instance: Option<&str>,
     timeout_secs: Option<u64>,
     artifact: &TableExportArtifact,
-    dry_run: bool,
+    options: ImportExecutionOptions<'_>,
 ) -> anyhow::Result<()> {
     let report = build_flat_validation_report(profile, instance, timeout_secs, artifact).await?;
 
@@ -674,12 +720,24 @@ async fn handle_import_flat(
         );
     }
 
-    if dry_run {
+    if options.dry_run {
+        let (strategy, strategy_reason) = if options.import_set_table.is_some() {
+            (
+                "import_set",
+                "Dry run preview for create-only Import Set API loading into the selected staging table",
+            )
+        } else {
+            (
+                "table_api",
+                "Dry run preview for create-only Table API import",
+            )
+        };
+
         let import_report = ImportReport {
             kind: "import-dry-run",
             command: "data import",
-            strategy: "table_api",
-            strategy_reason: "Dry run preview for create-only Table API import",
+            strategy,
+            strategy_reason,
             table: artifact.table.clone(),
             record_count: artifact.record_count,
             created: 0,
@@ -697,26 +755,80 @@ async fn handle_import_flat(
     }
 
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
-    let path = format!("/api/now/table/{}", artifact.table);
+    let use_import_set = options.import_set_table.is_some();
+    let path = if let Some(staging_table) = options.import_set_table {
+        format!("/api/now/import/{staging_table}")
+    } else {
+        format!("/api/now/table/{}", artifact.table)
+    };
     let mut created = 0usize;
     let mut failures = Vec::new();
 
     for (record_index, record) in artifact.records.iter().enumerate() {
         let body = serde_json::to_string(record)?;
-        match client.post_json::<SingleRecordResponse>(&path, &body).await {
-            Ok(_) => created += 1,
-            Err(error) => failures.push(ImportFailure {
-                record_index,
-                message: error.to_string(),
-            }),
+        if use_import_set {
+            match client.post_json::<ImportSetApiResponse>(&path, &body).await {
+                Ok(response) => {
+                    let error_message = response.result.iter().find_map(|result| {
+                        match result
+                            .status
+                            .as_deref()
+                            .map(str::to_ascii_lowercase)
+                            .as_deref()
+                        {
+                            Some("error") => result
+                                .error_message
+                                .clone()
+                                .or_else(|| result.status_message.clone())
+                                .or_else(|| {
+                                    Some("Import Set API returned an error row".to_string())
+                                }),
+                            _ => None,
+                        }
+                    });
+
+                    if let Some(message) = error_message {
+                        failures.push(ImportFailure {
+                            record_index,
+                            message,
+                        });
+                    } else {
+                        created += 1;
+                    }
+                }
+                Err(error) => failures.push(ImportFailure {
+                    record_index,
+                    message: error.to_string(),
+                }),
+            }
+        } else {
+            match client.post_json::<SingleRecordResponse>(&path, &body).await {
+                Ok(_) => created += 1,
+                Err(error) => failures.push(ImportFailure {
+                    record_index,
+                    message: error.to_string(),
+                }),
+            }
         }
     }
+
+    let (strategy, strategy_reason) = if options.import_set_table.is_some() {
+        (
+            "import_set",
+            "Used the Import Set API with the selected staging table for flat create-only import",
+        )
+    } else {
+        (
+            "table_api",
+            "Import Set API bulk loading was not selected, so the CLI used direct Table API create requests",
+        )
+    };
 
     let import_report = ImportReport {
         kind: "import-result",
         command: "data import",
-        strategy: "table_api",
-        strategy_reason: "Import Set API bulk loading is not implemented yet, so the CLI used direct Table API create requests",
+        strategy,
+        strategy_reason,
         table: artifact.table.clone(),
         record_count: artifact.record_count,
         created,
@@ -731,6 +843,13 @@ async fn handle_import_flat(
     };
 
     output::print_output(&import_report, format)?;
+
+    if use_import_set && options.fail_on_error && import_report.failed > 0 {
+        anyhow::bail!(
+            "Import Set-backed data import completed with {} failed record(s). Re-run without --fail-on-error to inspect the structured response without failing the command.",
+            import_report.failed
+        );
+    }
 
     if import_report.failed > 0 {
         anyhow::bail!(

@@ -35,6 +35,23 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oauth_grant_type: Option<OAuthGrantType>,
 
+    /// OAuth scopes requested during authorization-code login.
+    /// ServiceNow commonly uses the `useraccount` scope for user-bound tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_scope: Option<String>,
+
+    /// Host used in the OAuth authorization-code local redirect URI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_redirect_host: Option<String>,
+
+    /// Port used in the OAuth authorization-code local redirect URI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_redirect_port: Option<u16>,
+
+    /// Path used in the OAuth authorization-code local redirect URI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_redirect_path: Option<String>,
+
     /// Path to client certificate (for mTLS).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cert_path: Option<PathBuf>,
@@ -42,6 +59,10 @@ pub struct Profile {
     /// Path to client key (for mTLS).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_path: Option<PathBuf>,
+
+    /// Optional browser entry point for SSO/SAML login.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sso_login_url: Option<String>,
 }
 
 /// Supported authentication methods.
@@ -63,6 +84,8 @@ pub enum OAuthGrantType {
     ClientCredentials,
     /// User-context: client_id + client_secret + username + password.
     Password,
+    /// Browser-based user authorization with a localhost redirect callback.
+    AuthorizationCode,
 }
 
 impl AppConfig {
@@ -308,8 +331,13 @@ mod tests {
                 username: Some("admin".to_string()),
                 client_id: None,
                 oauth_grant_type: None,
+                oauth_scope: None,
+                oauth_redirect_host: None,
+                oauth_redirect_port: None,
+                oauth_redirect_path: None,
                 cert_path: None,
                 key_path: None,
+                sso_login_url: None,
             },
         );
 
@@ -337,8 +365,13 @@ mod tests {
                 username: None,
                 client_id: None,
                 oauth_grant_type: None,
+                oauth_scope: None,
+                oauth_redirect_host: None,
+                oauth_redirect_port: None,
+                oauth_redirect_path: None,
                 cert_path: None,
                 key_path: None,
+                sso_login_url: None,
             },
         );
         config.profiles.insert(
@@ -349,8 +382,13 @@ mod tests {
                 username: None,
                 client_id: Some("client123".to_string()),
                 oauth_grant_type: None,
+                oauth_scope: None,
+                oauth_redirect_host: None,
+                oauth_redirect_port: None,
+                oauth_redirect_path: None,
                 cert_path: None,
                 key_path: None,
+                sso_login_url: None,
             },
         );
 
@@ -396,8 +434,13 @@ mod tests {
                 username: None,
                 client_id: None,
                 oauth_grant_type: None,
+                oauth_scope: None,
+                oauth_redirect_host: None,
+                oauth_redirect_port: None,
+                oauth_redirect_path: None,
                 cert_path: None,
                 key_path: None,
+                sso_login_url: None,
             },
         );
 
@@ -419,8 +462,13 @@ mod tests {
                 username: None,
                 client_id: None,
                 oauth_grant_type: None,
+                oauth_scope: None,
+                oauth_redirect_host: None,
+                oauth_redirect_port: None,
+                oauth_redirect_path: None,
                 cert_path: None,
                 key_path: None,
+                sso_login_url: None,
             },
         );
 
@@ -445,8 +493,13 @@ mod tests {
                 username: None,
                 client_id: None,
                 oauth_grant_type: None,
+                oauth_scope: None,
+                oauth_redirect_host: None,
+                oauth_redirect_port: None,
+                oauth_redirect_path: None,
                 cert_path: None,
                 key_path: None,
+                sso_login_url: None,
             },
         );
 

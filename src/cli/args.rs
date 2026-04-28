@@ -3,21 +3,23 @@ use clap_complete::Shell;
 
 const TOP_LEVEL_AFTER_HELP: &str = "Common workflows:\n  1) First-time setup\n     snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli auth login --password '<password>'\n\n  3) List recent incidents\n     snow-cli table list incident --query 'active=true' --limit 20\n\n  4) Create and update records\n     snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n     snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n\n  5) Call a custom API\n     snow-cli api get /api/x_myapp/status";
 
-const CONFIG_AFTER_HELP: &str = "Examples:\n  snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli config set-profile prod --instance https://prod.service-now.com --auth-method oauth2 --client-id abc123\n  snow-cli config list-profiles\n  snow-cli config list-now-sdk-profiles\n  snow-cli config import-now-sdk --alias dev\n  snow-cli config export-now-sdk prod --alias prod-sdk\n  snow-cli config use-profile prod\n  snow-cli config show";
+const CONFIG_AFTER_HELP: &str = "Examples:\n  snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli config set-profile prod --instance https://prod.service-now.com --auth-method oauth2 --client-id abc123\n  snow-cli config set-profile dev --instance https://dev.service-now.com --auth-method oauth2 --oauth-grant-type authorization-code --client-id abc123 --oauth-scope useraccount\n  snow-cli config set-profile corp --instance https://corp.service-now.com --auth-method saml --sso-login-url https://corp.service-now.com/login_with_sso.do\n  snow-cli config list-profiles\n  snow-cli config list-now-sdk-profiles\n  snow-cli config import-now-sdk --alias dev\n  snow-cli config export-now-sdk prod --alias prod-sdk\n  snow-cli config use-profile prod\n  snow-cli config show";
 
-const CONFIG_INIT_AFTER_HELP: &str = "Notes:\n  - This command is non-interactive by default (safe for agents and CI).\n  - Pass required values as flags.\n\nExamples:\n  snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli config init --name prod --instance https://prod.service-now.com --auth-method oauth2 --oauth-grant-type client-credentials";
+const CONFIG_INIT_AFTER_HELP: &str = "Notes:\n  - This command is non-interactive by default (safe for agents and CI).\n  - Pass required values as flags.\n\nExamples:\n  snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli config init --name prod --instance https://prod.service-now.com --auth-method oauth2 --oauth-grant-type client-credentials --client-id abc123\n  snow-cli config init --name dev --instance https://dev.service-now.com --auth-method oauth2 --oauth-grant-type authorization-code --client-id abc123 --oauth-scope useraccount";
 
-const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --password '<password>' --also-now-sdk --now-sdk-alias dev\n  snow-cli auth status\n  snow-cli auth token\n  snow-cli auth logout";
+const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --password '<password>' --also-now-sdk --now-sdk-alias dev\n  snow-cli auth login --session-cookie 'JSESSIONID=...; glide_user_route=...'\n  snow-cli auth status\n  snow-cli auth token\n  snow-cli auth logout";
 
-const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --password '<password>' --also-now-sdk --now-sdk-alias dev\n  snow-cli auth login --token '<api-token>'\n  snow-cli auth login --client-secret '<oauth-secret>'\n\nTip:\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.";
+const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --password '<password>' --also-now-sdk --now-sdk-alias dev\n  snow-cli auth login --token '<api-token>'\n  snow-cli auth login --client-secret '<oauth-secret>'\n  snow-cli auth login --client-secret '<oauth-secret>' --no-browser\n  snow-cli auth login --session-cookie 'JSESSIONID=...; glide_user_route=...'\n\nTip:\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.\n  For OAuth2 authorization-code profiles, snow-cli opens the authorization URL and waits for a local redirect callback.\n  For SAML profiles, omit --session-cookie to let snow-cli launch a managed browser session, wait for login completion, and capture the ServiceNow session automatically.";
 
 const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended";
 
-const DATA_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export sys_user --fields sys_id,user_name,email --out users.json\n  snow-cli data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli data validate --file export.json\n  snow-cli data import --file export.json";
+const DATA_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export sys_user --fields sys_id,user_name,email --out users.json\n  snow-cli data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli data validate --file export.json\n  snow-cli data import --file export.json\n  snow-cli data import --file users.json --import-set-table imp_user";
 
 const DATA_EXPORT_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export incident --fields sys_id,number,short_description --limit 50\n  snow-cli --output csv data export sys_user --fields sys_id,user_name,email --out users.csv";
 
 const DATA_EXPORT_PACKAGE_AFTER_HELP: &str = "Examples:\n  snow-cli data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli data validate --file exported-dataset/manifest.json\n  snow-cli data import --file exported-dataset/manifest.json";
+
+const IMPORT_SET_AFTER_HELP: &str = "Examples:\n  snow-cli import-set load imp_user --data '{\"user_name\":\"snow-cli-user\",\"email\":\"snow-cli-user@example.com\"}'\n  echo '{\"user_name\":\"stdin-user\",\"email\":\"stdin-user@example.com\"}' | snow-cli import-set load imp_user\n  snow-cli import-set load imp_user --fail-on-error --data '{\"user_name\":\"ci-user\",\"email\":\"ci-user@example.com\"}'\n\nNotes:\n  - `import-set load` posts to /api/now/import/{table}.\n  - On the validated `sprint` instance, this endpoint also ran the transform map automatically for `imp_user`.\n  - Use `--fail-on-error` when row-level transform errors should make the command exit non-zero.\n  - `import-set transform` remains a placeholder until a supported separate transform trigger is implemented.";
 
 const SEED_AFTER_HELP: &str = "Examples:\n  snow-cli seed plan --file qa-fixture.json\n  snow-cli seed apply --file qa-fixture.json\n  snow-cli seed cleanup <run-id> --dry-run";
 
@@ -139,9 +141,29 @@ pub enum ConfigCommands {
         #[arg(long)]
         username: Option<String>,
 
+        /// OAuth client ID (for oauth2)
+        #[arg(long)]
+        client_id: Option<String>,
+
         /// OAuth grant type (for oauth2 auth method)
         #[arg(long, value_enum)]
         oauth_grant_type: Option<CliOAuthGrantType>,
+
+        /// OAuth scopes requested during authorization-code login (default: useraccount)
+        #[arg(long)]
+        oauth_scope: Option<String>,
+
+        /// Host used in the OAuth authorization-code local redirect URI
+        #[arg(long)]
+        oauth_redirect_host: Option<String>,
+
+        /// Port used in the OAuth authorization-code local redirect URI
+        #[arg(long)]
+        oauth_redirect_port: Option<u16>,
+
+        /// Path used in the OAuth authorization-code local redirect URI
+        #[arg(long)]
+        oauth_redirect_path: Option<String>,
 
         /// Profile name to create (defaults to "default")
         #[arg(long, default_value = "default")]
@@ -173,6 +195,22 @@ pub enum ConfigCommands {
         #[arg(long, value_enum)]
         oauth_grant_type: Option<CliOAuthGrantType>,
 
+        /// OAuth scopes requested during authorization-code login (default: useraccount)
+        #[arg(long)]
+        oauth_scope: Option<String>,
+
+        /// Host used in the OAuth authorization-code local redirect URI
+        #[arg(long)]
+        oauth_redirect_host: Option<String>,
+
+        /// Port used in the OAuth authorization-code local redirect URI
+        #[arg(long)]
+        oauth_redirect_port: Option<u16>,
+
+        /// Path used in the OAuth authorization-code local redirect URI
+        #[arg(long)]
+        oauth_redirect_path: Option<String>,
+
         /// Path to client certificate (for mTLS)
         #[arg(long)]
         cert_path: Option<String>,
@@ -180,6 +218,10 @@ pub enum ConfigCommands {
         /// Path to client key (for mTLS)
         #[arg(long)]
         key_path: Option<String>,
+
+        /// Browser entry point for SSO/SAML login
+        #[arg(long)]
+        sso_login_url: Option<String>,
     },
 
     /// List all configured profiles
@@ -256,6 +298,7 @@ pub enum CliAuthMethod {
 pub enum CliOAuthGrantType {
     ClientCredentials,
     Password,
+    AuthorizationCode,
 }
 
 // --- Auth ---
@@ -283,6 +326,14 @@ pub enum AuthCommands {
         /// OAuth client secret (for oauth2 auth)
         #[arg(long)]
         client_secret: Option<String>,
+
+        /// Authenticated ServiceNow Cookie header value (for saml auth)
+        #[arg(long)]
+        session_cookie: Option<String>,
+
+        /// Print the OAuth authorization URL instead of opening it in a browser
+        #[arg(long)]
+        no_browser: bool,
 
         /// Also write the successful basic login into now-sdk
         #[arg(long)]
@@ -472,6 +523,14 @@ pub enum DataCommands {
         /// Preview the import plan without creating records
         #[arg(long)]
         dry_run: bool,
+
+        /// Staging table to use for flat Import Set API loads
+        #[arg(long)]
+        import_set_table: Option<String>,
+
+        /// Exit non-zero when Import Set API responses contain row-level errors
+        #[arg(long)]
+        fail_on_error: bool,
     },
 }
 
@@ -655,6 +714,7 @@ pub enum AttachmentCommands {
 // --- Import Set ---
 
 #[derive(Args, Debug)]
+#[command(after_help = IMPORT_SET_AFTER_HELP)]
 pub struct ImportSetArgs {
     #[command(subcommand)]
     pub command: ImportSetCommands,
@@ -670,6 +730,10 @@ pub enum ImportSetCommands {
         /// JSON data to load
         #[arg(long)]
         data: Option<String>,
+
+        /// Exit non-zero when the import response contains row-level errors
+        #[arg(long)]
+        fail_on_error: bool,
     },
 
     /// Transform staged data
