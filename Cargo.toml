@@ -72,6 +72,9 @@ tokio-test = "0.4"
 members = ["."]
 resolver = "3"
 
+[profile.dist]
+inherits = "release"
+
 [workspace.metadata.dist]
 cargo-dist-version = "0.28.0"
 allow-dirty = ["ci"]
