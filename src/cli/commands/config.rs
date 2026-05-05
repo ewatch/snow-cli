@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::cli::args::{
-    CliAuthMethod, CliOAuthGrantType, ConfigArgs, ConfigCommands, OutputFormat,
+    CliAuthMethod, CliOAuthGrantType, ConfigArgs, ConfigCommands, OutputFormat, ProfileSdkCommands,
 };
 use crate::cli::output;
 use crate::config::credentials;
@@ -62,6 +62,72 @@ pub async fn handle(
             )
             .await
         }
+        ConfigCommands::Add {
+            name,
+            instance,
+            auth_method,
+            username,
+            client_id,
+            oauth_grant_type,
+            oauth_scope,
+            oauth_redirect_host,
+            oauth_redirect_port,
+            oauth_redirect_path,
+            cert_path,
+            key_path,
+            sso_login_url,
+        } => {
+            handle_add_profile_with_oauth_options(
+                &config_path,
+                name,
+                instance,
+                auth_method,
+                username,
+                client_id,
+                oauth_grant_type,
+                oauth_scope,
+                oauth_redirect_host,
+                oauth_redirect_port,
+                oauth_redirect_path,
+                cert_path,
+                key_path,
+                sso_login_url,
+            )
+            .await
+        }
+        ConfigCommands::Edit {
+            name,
+            instance,
+            auth_method,
+            username,
+            client_id,
+            oauth_grant_type,
+            oauth_scope,
+            oauth_redirect_host,
+            oauth_redirect_port,
+            oauth_redirect_path,
+            cert_path,
+            key_path,
+            sso_login_url,
+        } => {
+            handle_edit_profile_with_oauth_options(
+                &config_path,
+                name,
+                instance,
+                auth_method,
+                username,
+                client_id,
+                oauth_grant_type,
+                oauth_scope,
+                oauth_redirect_host,
+                oauth_redirect_port,
+                oauth_redirect_path,
+                cert_path,
+                key_path,
+                sso_login_url,
+            )
+            .await
+        }
         ConfigCommands::SetProfile {
             name,
             instance,
@@ -96,6 +162,25 @@ pub async fn handle(
             .await
         }
         ConfigCommands::ListProfiles => handle_list_profiles(&config_path, output_format).await,
+        ConfigCommands::FindProfile { instance } => {
+            handle_find_profile(&config_path, output_format, instance).await
+        }
+        ConfigCommands::Sdk(sdk_args) => match sdk_args.command {
+            ProfileSdkCommands::List => handle_list_now_sdk_profiles(output_format).await,
+            ProfileSdkCommands::Import {
+                alias,
+                all,
+                set_default,
+            } => handle_import_now_sdk(&config_path, output_format, alias, all, set_default).await,
+            ProfileSdkCommands::Export {
+                profile,
+                alias,
+                set_default,
+            } => {
+                handle_export_now_sdk(&config_path, output_format, profile, alias, set_default)
+                    .await
+            }
+        },
         ConfigCommands::ListNowSdkProfiles => handle_list_now_sdk_profiles(output_format).await,
         ConfigCommands::ImportNowSdk {
             alias,
@@ -107,7 +192,10 @@ pub async fn handle(
             alias,
             set_default,
         } => handle_export_now_sdk(&config_path, output_format, profile, alias, set_default).await,
-        ConfigCommands::UseProfile { name } => handle_use_profile(&config_path, name).await,
+        ConfigCommands::UseProfile { name } => handle_default_profile(&config_path, name).await,
+        ConfigCommands::Current => {
+            handle_current(&config_path, active_profile, output_format).await
+        }
         ConfigCommands::Show => handle_show(&config_path, active_profile, output_format).await,
         ConfigCommands::DeleteProfile {
             name,
@@ -150,7 +238,21 @@ struct ExportNowSdkResult {
     set_default: bool,
 }
 
-/// `config init` — Create initial config with a default profile.
+#[derive(Debug, serde::Serialize)]
+struct ProfileMatch {
+    name: String,
+    instance: String,
+    auth_method: AuthMethod,
+    default: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct InstanceSelector {
+    host: String,
+    service_now_instance: Option<String>,
+}
+
+/// `profile init` — Create initial config with a default profile.
 ///
 /// If flags are provided (--instance, --auth-method, etc.), runs non-interactively.
 /// Otherwise, returns an error with guidance on required flags (no interactive
@@ -196,14 +298,14 @@ async fn handle_init_with_oauth_options(
 ) -> anyhow::Result<()> {
     if config_path.exists() {
         anyhow::bail!(
-            "Configuration already exists at {}. Use `snow-cli config set-profile` to modify profiles.",
+            "Configuration already exists at {}. Use `snow-cli profile add <name>` to create another profile or `snow-cli profile edit <name>` to modify one.",
             config_path.display()
         );
     }
 
     let instance = instance.ok_or_else(|| {
         anyhow::anyhow!(
-            "Instance URL is required for init. Use: snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin"
+            "Instance URL is required. Use: snow-cli profile add default --instance https://mycompany.service-now.com --auth-method basic --username admin"
         )
     })?;
 
@@ -246,7 +348,7 @@ async fn handle_init_with_oauth_options(
     Ok(())
 }
 
-/// `config set-profile <name>` — Create or update a named profile.
+/// `profile set <name>` — Create or update a named profile (legacy upsert).
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 async fn handle_set_profile(
@@ -273,6 +375,96 @@ async fn handle_set_profile(
         None,
         None,
         None,
+        cert_path,
+        key_path,
+        sso_login_url,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_add_profile_with_oauth_options(
+    config_path: &Path,
+    name: String,
+    instance: Option<String>,
+    auth_method: Option<CliAuthMethod>,
+    username: Option<String>,
+    client_id: Option<String>,
+    oauth_grant_type: Option<CliOAuthGrantType>,
+    oauth_scope: Option<String>,
+    oauth_redirect_host: Option<String>,
+    oauth_redirect_port: Option<u16>,
+    oauth_redirect_path: Option<String>,
+    cert_path: Option<String>,
+    key_path: Option<String>,
+    sso_login_url: Option<String>,
+) -> anyhow::Result<()> {
+    let config = AppConfig::load_from(config_path)?;
+    if config.profiles.contains_key(&name) {
+        anyhow::bail!(
+            "Profile '{}' already exists. Use `snow-cli profile edit {}` to update it.",
+            name,
+            name
+        );
+    }
+
+    handle_set_profile_with_oauth_options(
+        config_path,
+        name,
+        instance,
+        auth_method,
+        username,
+        client_id,
+        oauth_grant_type,
+        oauth_scope,
+        oauth_redirect_host,
+        oauth_redirect_port,
+        oauth_redirect_path,
+        cert_path,
+        key_path,
+        sso_login_url,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_edit_profile_with_oauth_options(
+    config_path: &Path,
+    name: String,
+    instance: Option<String>,
+    auth_method: Option<CliAuthMethod>,
+    username: Option<String>,
+    client_id: Option<String>,
+    oauth_grant_type: Option<CliOAuthGrantType>,
+    oauth_scope: Option<String>,
+    oauth_redirect_host: Option<String>,
+    oauth_redirect_port: Option<u16>,
+    oauth_redirect_path: Option<String>,
+    cert_path: Option<String>,
+    key_path: Option<String>,
+    sso_login_url: Option<String>,
+) -> anyhow::Result<()> {
+    let config = AppConfig::load_from(config_path)?;
+    if !config.profiles.contains_key(&name) {
+        anyhow::bail!(
+            "{}. Use `snow-cli profile add {} --instance <url>` to create it.",
+            config.profile_not_found_message(&name),
+            name
+        );
+    }
+
+    handle_set_profile_with_oauth_options(
+        config_path,
+        name,
+        instance,
+        auth_method,
+        username,
+        client_id,
+        oauth_grant_type,
+        oauth_scope,
+        oauth_redirect_host,
+        oauth_redirect_port,
+        oauth_redirect_path,
         cert_path,
         key_path,
         sso_login_url,
@@ -374,7 +566,7 @@ async fn handle_set_profile_with_oauth_options(
     Ok(())
 }
 
-/// `config list-profiles` — List all configured profiles.
+/// `profile list` — List all configured profiles.
 async fn handle_list_profiles(
     config_path: &Path,
     output_format: &OutputFormat,
@@ -382,7 +574,9 @@ async fn handle_list_profiles(
     let config = AppConfig::load_from(config_path)?;
 
     if config.profiles.is_empty() {
-        anyhow::bail!("No profiles configured. Run `snow-cli config init` to get started.");
+        anyhow::bail!(
+            "No profiles configured. Run `snow-cli profile add default --instance <url>` to get started."
+        );
     }
 
     match output_format {
@@ -434,6 +628,101 @@ async fn handle_list_profiles(
     }
 
     Ok(())
+}
+
+async fn handle_find_profile(
+    config_path: &Path,
+    output_format: &OutputFormat,
+    instance: String,
+) -> anyhow::Result<()> {
+    let config = AppConfig::load_from(config_path)?;
+
+    if config.profiles.is_empty() {
+        anyhow::bail!(
+            "No profiles configured. Run `snow-cli profile add default --instance <url>` to get started."
+        );
+    }
+
+    let selector = normalize_instance_selector(&instance)?;
+    let mut matches: Vec<ProfileMatch> = config
+        .profiles
+        .iter()
+        .filter(|(_, profile)| profile_matches_instance(&profile.instance, &selector))
+        .map(|(name, profile)| ProfileMatch {
+            name: name.clone(),
+            instance: profile.instance.clone(),
+            auth_method: profile.auth_method.clone(),
+            default: name == &config.default_profile,
+        })
+        .collect();
+    matches.sort_by(|a, b| a.name.cmp(&b.name));
+
+    if matches.is_empty() {
+        anyhow::bail!(
+            "No profile found for instance '{}'. Run `snow-cli profile list` to see configured profiles.",
+            instance
+        );
+    }
+
+    output::print_list(&matches, output_format)
+}
+
+fn normalize_instance_selector(input: &str) -> anyhow::Result<InstanceSelector> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Instance must not be empty.");
+    }
+
+    let url_candidate = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+
+    let url = reqwest::Url::parse(&url_candidate).map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid instance '{}'. Use an instance name, host, or URL.",
+            input
+        )
+    })?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid instance '{}'. Missing host.", input))?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+
+    Ok(InstanceSelector {
+        service_now_instance: service_now_instance_name(&host),
+        host,
+    })
+}
+
+fn service_now_instance_name(host: &str) -> Option<String> {
+    if !host.contains('.') {
+        return Some(host.to_string());
+    }
+
+    host.strip_suffix(".service-now.com")
+        .and_then(|without_suffix| without_suffix.split('.').next())
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
+}
+
+fn profile_matches_instance(profile_instance: &str, selector: &InstanceSelector) -> bool {
+    let Ok(profile_selector) = normalize_instance_selector(profile_instance) else {
+        return false;
+    };
+
+    profile_selector.host == selector.host
+        || match (
+            profile_selector.service_now_instance.as_deref(),
+            selector.service_now_instance.as_deref(),
+        ) {
+            (Some(profile_instance), Some(requested_instance)) => {
+                profile_instance == requested_instance
+            }
+            _ => false,
+        }
 }
 
 async fn handle_list_now_sdk_profiles(output_format: &OutputFormat) -> anyhow::Result<()> {
@@ -712,8 +1001,8 @@ fn restore_profiles_after_failed_import(
     Ok(())
 }
 
-/// `config use-profile <name>` — Set the default profile.
-async fn handle_use_profile(config_path: &Path, name: String) -> anyhow::Result<()> {
+/// `profile default <name>` — Set the default profile.
+async fn handle_default_profile(config_path: &Path, name: String) -> anyhow::Result<()> {
     let mut config = AppConfig::load_from(config_path)?;
 
     if !config.profiles.contains_key(&name) {
@@ -734,7 +1023,60 @@ async fn handle_use_profile(config_path: &Path, name: String) -> anyhow::Result<
     Ok(())
 }
 
-/// `config show` — Show the current active configuration.
+/// `profile current` — Show the currently selected profile summary.
+async fn handle_current(
+    config_path: &Path,
+    active_profile: &str,
+    output_format: &OutputFormat,
+) -> anyhow::Result<()> {
+    let config = AppConfig::load_from(config_path)?;
+    let profile = config.active_profile(Some(active_profile));
+
+    match output_format {
+        OutputFormat::Json => {
+            let output = serde_json::json!({
+                "active_profile": active_profile,
+                "default_profile": config.default_profile,
+                "profile": profile.map(|p| serde_json::json!({
+                    "name": active_profile,
+                    "instance": p.instance,
+                    "auth_method": p.auth_method,
+                })),
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        OutputFormat::Csv => {
+            let mut writer = csv::Writer::from_writer(std::io::stdout());
+            writer.write_record(["key", "value"])?;
+            writer.write_record(["active_profile", active_profile])?;
+            writer.write_record(["default_profile", &config.default_profile])?;
+            if let Some(p) = profile {
+                writer.write_record(["instance", &p.instance])?;
+                let auth_str = serde_json::to_string(&p.auth_method)?;
+                writer.write_record(["auth_method", auth_str.trim_matches('"')])?;
+            } else {
+                writer.write_record(["profile_status", "not_found"])?;
+            }
+            writer.flush()?;
+        }
+        OutputFormat::Text => {
+            let output = serde_json::json!({
+                "active_profile": active_profile,
+                "default_profile": config.default_profile,
+                "profile": profile.map(|p| serde_json::json!({
+                    "name": active_profile,
+                    "instance": p.instance,
+                    "auth_method": p.auth_method,
+                })),
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+    }
+
+    Ok(())
+}
+
+/// `profile show` — Show the current active configuration.
 async fn handle_show(
     config_path: &Path,
     active_profile: &str,
@@ -789,7 +1131,7 @@ async fn handle_show(
     Ok(())
 }
 
-/// `config delete-profile <name>` — Delete a named profile.
+/// `profile remove <name>` — Remove a named profile.
 async fn handle_delete_profile(
     config_path: &Path,
     name: String,
@@ -1149,7 +1491,7 @@ mod tests {
         .unwrap();
 
         // Switch to prod
-        handle_use_profile(&config_path, "prod".to_string())
+        handle_default_profile(&config_path, "prod".to_string())
             .await
             .unwrap();
 
@@ -1171,7 +1513,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = handle_use_profile(&config_path, "nonexistent".to_string()).await;
+        let result = handle_default_profile(&config_path, "nonexistent".to_string()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }

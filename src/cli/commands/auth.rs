@@ -434,7 +434,7 @@ async fn run_oauth_authorization_code_login(
     let redirect_path = oauth_redirect_path(profile);
     let listener = TcpListener::bind((bind_host, port)).await.map_err(|error| {
         anyhow::anyhow!(
-            "Failed to bind OAuth redirect listener on {}:{}: {}. Configure a different port with `snow-cli config set-profile {} --oauth-redirect-port <port>` and ensure the ServiceNow OAuth app redirect URL matches.",
+            "Failed to bind OAuth redirect listener on {}:{}: {}. Configure a different port with `snow-cli profile edit {} --oauth-redirect-port <port>` and ensure the ServiceNow OAuth app redirect URL matches.",
             bind_host,
             port,
             error,
@@ -646,7 +646,7 @@ fn store_basic_login(
 ) -> anyhow::Result<()> {
     let username = username.ok_or_else(|| {
         anyhow::anyhow!(
-            "Basic auth profile '{}' is missing a username. Use `snow-cli config set-profile {} --username <user>` first.",
+            "Basic auth profile '{}' is missing a username. Use `snow-cli profile edit {} --username <user>` first.",
             profile_name,
             profile_name,
         )

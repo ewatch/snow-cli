@@ -26,7 +26,7 @@ impl BasicAuth {
         let username = profile.username.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "Basic auth requires a username in the profile configuration. \
-                 Use: snow-cli config set-profile {} --username <user>",
+                 Use: snow-cli profile edit {} --username <user>",
                 profile_name
             )
         })?;

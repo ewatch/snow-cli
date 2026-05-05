@@ -45,13 +45,18 @@ snow-cli [GLOBAL FLAGS] <NOUN> <VERB> [OPTIONS]
 ### Commands
 
 ```
-snow-cli config
-  init                            First-time bootstrap (flag-based)
-  set-profile <name>              Create/update a named profile
-  delete-profile <name>           Delete a named profile
-  list-profiles                   List all profiles
-  use-profile <name>              Set the active default profile
-  show                            Show current active config
+snow-cli profile
+  add <name>                      Create a new profile
+  edit <name>                     Edit an existing profile
+  remove <name>                   Remove a profile
+  default <name>                  Set the default profile used when --profile is omitted
+  current                         Show the currently selected profile
+  show                            Show current active profile config
+  list                            List all profiles
+  find --instance <selector>      Find profiles by instance name, host, or URL
+  sdk list                        List saved now-sdk authentication aliases
+  sdk import [--alias|--all]      Import now-sdk aliases into snow-cli profiles
+  sdk export <profile>            Export a profile into the now-sdk alias store
 
 snow-cli auth
   login                           Authenticate and store credentials

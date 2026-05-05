@@ -146,11 +146,13 @@ For basic auth, the `creds` payload contains:
 ```
 
 ### `snow-cli` Commands
-- `snow-cli config list-now-sdk-profiles`
-- `snow-cli config import-now-sdk --alias <name>`
-- `snow-cli config import-now-sdk --all`
-- `snow-cli config export-now-sdk <profile> [--alias <name>]`
+- `snow-cli profile sdk list`
+- `snow-cli profile sdk import --alias <name>`
+- `snow-cli profile sdk import --all`
+- `snow-cli profile sdk export <profile> [--alias <name>]`
 - `snow-cli auth login --also-now-sdk [--now-sdk-alias <name>]`
+
+Legacy `snow-cli config ...` and `snow-cli profile <old-long-name>` forms remain accepted as hidden aliases for compatibility.
 
 ### Import Behavior
 - Import creates or overwrites a `snow-cli` profile with:

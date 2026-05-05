@@ -219,7 +219,7 @@ Phases 1 (Foundation), 2 (Authentication), and 3 (Table API) are **complete**.
 Phase 4 (Commands) is **in progress** — most commands are done, `attachment` remains.
 
 What's implemented and working:
-- Full CLI structure with clap, config management (init, set-profile, delete-profile, list, use, show)
+- Full CLI structure with clap, profile management (add, edit, remove, default, current, list, find, sdk, show)
 - All auth commands (login, logout, status, token)
 - Basic Auth, OAuth2 (client_credentials + password grant), and API Key authenticators
 - HTTP client with auto-pagination, 401 retry, and error mapping

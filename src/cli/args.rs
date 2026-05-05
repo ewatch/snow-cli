@@ -1,11 +1,11 @@
 use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
 
-const TOP_LEVEL_AFTER_HELP: &str = "Common workflows:\n  1) First-time setup\n     snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli auth login --password '<password>'\n\n  3) List recent incidents\n     snow-cli table list incident --query 'active=true' --limit 20\n\n  4) Create and update records\n     snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n     snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n\n  5) Call a custom API\n     snow-cli api get /api/x_myapp/status";
+const TOP_LEVEL_AFTER_HELP: &str = "Common workflows:\n  1) First-time setup\n     snow-cli profile add default --instance https://mycompany.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli auth login --password '<password>'\n\n  3) List recent incidents\n     snow-cli table list incident --query 'active=true' --limit 20\n\n  4) Create and update records\n     snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n     snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n\n  5) Call a custom API\n     snow-cli api get /api/x_myapp/status";
 
-const CONFIG_AFTER_HELP: &str = "Examples:\n  snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli config set-profile prod --instance https://prod.service-now.com --auth-method oauth2 --client-id abc123\n  snow-cli config set-profile dev --instance https://dev.service-now.com --auth-method oauth2 --oauth-grant-type authorization-code --client-id abc123 --oauth-scope useraccount\n  snow-cli config set-profile corp --instance https://corp.service-now.com --auth-method saml --sso-login-url https://corp.service-now.com/login_with_sso.do\n  snow-cli config list-profiles\n  snow-cli config list-now-sdk-profiles\n  snow-cli config import-now-sdk --alias dev\n  snow-cli config export-now-sdk prod --alias prod-sdk\n  snow-cli config use-profile prod\n  snow-cli config show";
+const PROFILE_AFTER_HELP: &str = "Examples:\n  snow-cli profile add dev --instance https://dev.service-now.com --auth-method basic --username admin\n  snow-cli profile edit dev --username new-admin\n  snow-cli profile add prod --instance https://prod.service-now.com --auth-method oauth2 --client-id abc123\n  snow-cli profile default prod\n  snow-cli profile current\n  snow-cli profile remove old-dev\n  snow-cli profile list\n  snow-cli profile find --instance dev123466\n  snow-cli profile sdk list\n  snow-cli profile sdk import --alias dev\n  snow-cli profile sdk export prod --alias prod-sdk\n  snow-cli profile show";
 
-const CONFIG_INIT_AFTER_HELP: &str = "Notes:\n  - This command is non-interactive by default (safe for agents and CI).\n  - Pass required values as flags.\n\nExamples:\n  snow-cli config init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli config init --name prod --instance https://prod.service-now.com --auth-method oauth2 --oauth-grant-type client-credentials --client-id abc123\n  snow-cli config init --name dev --instance https://dev.service-now.com --auth-method oauth2 --oauth-grant-type authorization-code --client-id abc123 --oauth-scope useraccount";
+const PROFILE_INIT_AFTER_HELP: &str = "Notes:\n  - This legacy command is non-interactive by default (safe for agents and CI).\n  - Prefer `snow-cli profile add <name>` for new profiles.\n  - Pass required values as flags.\n\nExamples:\n  snow-cli profile add default --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli profile init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli profile init --name prod --instance https://prod.service-now.com --auth-method oauth2 --oauth-grant-type client-credentials --client-id abc123";
 
 const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --password '<password>' --also-now-sdk --now-sdk-alias dev\n  snow-cli auth login --session-cookie 'JSESSIONID=...; glide_user_route=...'\n  snow-cli auth status\n  snow-cli auth token\n  snow-cli auth logout";
 
@@ -74,8 +74,9 @@ pub enum OutputFormat {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Manage configuration and profiles
-    Config(ConfigArgs),
+    /// Manage ServiceNow connection profiles
+    #[command(alias = "config")]
+    Profile(ConfigArgs),
 
     /// Authentication operations
     Auth(AuthArgs),
@@ -115,10 +116,10 @@ pub enum Commands {
     },
 }
 
-// --- Config ---
+// --- Profile ---
 
 #[derive(Args, Debug)]
-#[command(after_help = CONFIG_AFTER_HELP)]
+#[command(after_help = PROFILE_AFTER_HELP)]
 pub struct ConfigArgs {
     #[command(subcommand)]
     pub command: ConfigCommands,
@@ -126,8 +127,8 @@ pub struct ConfigArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ConfigCommands {
-    /// First-time setup (non-interactive by default)
-    #[command(after_help = CONFIG_INIT_AFTER_HELP)]
+    /// First-time setup (legacy; prefer `profile add <name>`)
+    #[command(after_help = PROFILE_INIT_AFTER_HELP, hide = true)]
     Init {
         /// Instance URL (e.g., https://mycompany.service-now.com)
         #[arg(long)]
@@ -170,7 +171,116 @@ pub enum ConfigCommands {
         name: String,
     },
 
-    /// Create or update a named profile
+    /// Create a new profile
+    Add {
+        /// Profile name
+        name: String,
+
+        /// Instance URL (e.g., https://mycompany.service-now.com)
+        #[arg(long)]
+        instance: Option<String>,
+
+        /// Authentication method
+        #[arg(long, value_enum)]
+        auth_method: Option<CliAuthMethod>,
+
+        /// Username (for basic auth or OAuth2 password grant)
+        #[arg(long)]
+        username: Option<String>,
+
+        /// OAuth client ID (for oauth2)
+        #[arg(long)]
+        client_id: Option<String>,
+
+        /// OAuth grant type (for oauth2 auth method)
+        #[arg(long, value_enum)]
+        oauth_grant_type: Option<CliOAuthGrantType>,
+
+        /// OAuth scopes requested during authorization-code login (default: useraccount)
+        #[arg(long)]
+        oauth_scope: Option<String>,
+
+        /// Host used in the OAuth authorization-code local redirect URI
+        #[arg(long)]
+        oauth_redirect_host: Option<String>,
+
+        /// Port used in the OAuth authorization-code local redirect URI
+        #[arg(long)]
+        oauth_redirect_port: Option<u16>,
+
+        /// Path used in the OAuth authorization-code local redirect URI
+        #[arg(long)]
+        oauth_redirect_path: Option<String>,
+
+        /// Path to client certificate (for mTLS)
+        #[arg(long)]
+        cert_path: Option<String>,
+
+        /// Path to client key (for mTLS)
+        #[arg(long)]
+        key_path: Option<String>,
+
+        /// Browser entry point for SSO/SAML login
+        #[arg(long)]
+        sso_login_url: Option<String>,
+    },
+
+    /// Edit an existing profile
+    Edit {
+        /// Profile name
+        name: String,
+
+        /// Instance URL (e.g., https://mycompany.service-now.com)
+        #[arg(long)]
+        instance: Option<String>,
+
+        /// Authentication method
+        #[arg(long, value_enum)]
+        auth_method: Option<CliAuthMethod>,
+
+        /// Username (for basic auth or OAuth2 password grant)
+        #[arg(long)]
+        username: Option<String>,
+
+        /// OAuth client ID (for oauth2)
+        #[arg(long)]
+        client_id: Option<String>,
+
+        /// OAuth grant type (for oauth2 auth method)
+        #[arg(long, value_enum)]
+        oauth_grant_type: Option<CliOAuthGrantType>,
+
+        /// OAuth scopes requested during authorization-code login (default: useraccount)
+        #[arg(long)]
+        oauth_scope: Option<String>,
+
+        /// Host used in the OAuth authorization-code local redirect URI
+        #[arg(long)]
+        oauth_redirect_host: Option<String>,
+
+        /// Port used in the OAuth authorization-code local redirect URI
+        #[arg(long)]
+        oauth_redirect_port: Option<u16>,
+
+        /// Path used in the OAuth authorization-code local redirect URI
+        #[arg(long)]
+        oauth_redirect_path: Option<String>,
+
+        /// Path to client certificate (for mTLS)
+        #[arg(long)]
+        cert_path: Option<String>,
+
+        /// Path to client key (for mTLS)
+        #[arg(long)]
+        key_path: Option<String>,
+
+        /// Browser entry point for SSO/SAML login
+        #[arg(long)]
+        sso_login_url: Option<String>,
+    },
+
+    /// Create or update a named profile (legacy upsert)
+    #[command(name = "set", aliases = ["set-profile"], hide = true)]
     SetProfile {
         /// Profile name
         name: String,
@@ -225,12 +335,26 @@ pub enum ConfigCommands {
     },
 
     /// List all configured profiles
+    #[command(name = "list", alias = "list-profiles")]
     ListProfiles,
 
+    /// Find configured profiles for a ServiceNow instance name, host, or URL
+    #[command(name = "find", alias = "find-profile")]
+    FindProfile {
+        /// Instance name, host, or URL (e.g., dev123466, dev123466.service-now.com, https://dev123466.service-now.com)
+        #[arg(long)]
+        instance: String,
+    },
+
+    /// Interoperate with now-sdk authentication aliases
+    Sdk(ProfileSdkArgs),
+
     /// List saved now-sdk authentication aliases
+    #[command(name = "list-now-sdk-profiles", hide = true)]
     ListNowSdkProfiles,
 
     /// Import saved now-sdk aliases into snow-cli profiles
+    #[command(name = "import-now-sdk", hide = true)]
     ImportNowSdk {
         /// Import a single now-sdk alias
         #[arg(long)]
@@ -246,6 +370,7 @@ pub enum ConfigCommands {
     },
 
     /// Export a basic snow-cli profile into the now-sdk alias store
+    #[command(name = "export-now-sdk", hide = true)]
     ExportNowSdk {
         /// snow-cli profile name to export
         profile: String,
@@ -259,16 +384,21 @@ pub enum ConfigCommands {
         set_default: bool,
     },
 
-    /// Set the active default profile
+    /// Set the default profile used when --profile is not provided
+    #[command(name = "default", aliases = ["use", "use-profile"])]
     UseProfile {
-        /// Profile name to activate
+        /// Profile name to make the default
         name: String,
     },
 
-    /// Show the current active configuration
+    /// Show the currently selected profile
+    Current,
+
+    /// Show the current active profile configuration
     Show,
 
-    /// Delete a named profile
+    /// Remove a named profile
+    #[command(name = "remove", aliases = ["delete", "delete-profile"])]
     DeleteProfile {
         /// Profile name to delete
         name: String,
@@ -280,6 +410,47 @@ pub enum ConfigCommands {
         /// New default profile to set when deleting the current default profile
         #[arg(long)]
         new_default: Option<String>,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct ProfileSdkArgs {
+    #[command(subcommand)]
+    pub command: ProfileSdkCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProfileSdkCommands {
+    /// List saved now-sdk authentication aliases
+    List,
+
+    /// Import saved now-sdk aliases into snow-cli profiles
+    Import {
+        /// Import a single now-sdk alias
+        #[arg(long)]
+        alias: Option<String>,
+
+        /// Import all saved now-sdk aliases
+        #[arg(long)]
+        all: bool,
+
+        /// Set the imported profile as the snow-cli default
+        #[arg(long)]
+        set_default: bool,
+    },
+
+    /// Export a basic snow-cli profile into the now-sdk alias store
+    Export {
+        /// snow-cli profile name to export
+        profile: String,
+
+        /// Override the destination now-sdk alias name
+        #[arg(long)]
+        alias: Option<String>,
+
+        /// Set the exported alias as the now-sdk default
+        #[arg(long)]
+        set_default: bool,
     },
 }
 

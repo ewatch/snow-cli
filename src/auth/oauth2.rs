@@ -107,7 +107,7 @@ impl OAuth2Auth {
         let client_id = profile.client_id.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "OAuth2 auth requires `client_id` in the profile configuration. \
-                 Use: snow-cli config set-profile {} --client-id <id>",
+                 Use: snow-cli profile edit {} --client-id <id>",
                 profile_name
             )
         })?;
@@ -120,7 +120,7 @@ impl OAuth2Auth {
         if grant_type == OAuthGrantType::Password && profile.username.is_none() {
             anyhow::bail!(
                 "OAuth2 password grant requires `username` in the profile configuration. \
-                 Use: snow-cli config set-profile {} --username <user>",
+                 Use: snow-cli profile edit {} --username <user>",
                 profile_name
             );
         }

@@ -18,9 +18,10 @@ use std::io::IsTerminal;
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = config::AppConfig::load()?;
+    let command_uses_connection = command_uses_connection(&cli.command);
     let active_profile = match &cli.command {
-        cli::args::Commands::Config(args) => match &args.command {
-            cli::args::ConfigCommands::Show => {
+        cli::args::Commands::Profile(args) => match &args.command {
+            cli::args::ConfigCommands::Show | cli::args::ConfigCommands::Current => {
                 config.resolve_active_profile_name(cli.profile.as_deref())?
             }
             _ => cli
@@ -35,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .unwrap_or_else(|| "default".to_string()),
         },
+        cli::args::Commands::Completions { .. } => "default".to_string(),
         _ => config.resolve_active_profile_name(cli.profile.as_deref())?,
     };
 
@@ -59,12 +61,12 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::debug!("snow-cli starting with verbosity level {}", cli.verbose);
 
-    if should_show_profile_hint() {
-        eprintln!("\x1b[32m[profile: {}]\x1b[0m", active_profile);
+    if command_uses_connection && should_show_profile_hint() {
+        eprintln!("\x1b[32mUsing profile: {}\x1b[0m", active_profile);
     }
 
     match cli.command {
-        cli::args::Commands::Config(args) => {
+        cli::args::Commands::Profile(args) => {
             cli::commands::config::handle(args, &active_profile, &cli.output).await
         }
         cli::args::Commands::Auth(args) => cli::commands::auth::handle(args, &active_profile).await,
@@ -162,6 +164,22 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+fn command_uses_connection(command: &cli::args::Commands) -> bool {
+    matches!(
+        command,
+        cli::args::Commands::Auth(_)
+            | cli::args::Commands::Table(_)
+            | cli::args::Commands::Data(_)
+            | cli::args::Commands::Seed(_)
+            | cli::args::Commands::Scope(_)
+            | cli::args::Commands::Attachment(_)
+            | cli::args::Commands::ImportSet(_)
+            | cli::args::Commands::Api(_)
+            | cli::args::Commands::Script(_)
+            | cli::args::Commands::Codesearch(_)
+    )
+}
+
 fn should_show_profile_hint() -> bool {
     if !std::io::stderr().is_terminal() {
         return false;
@@ -171,4 +189,42 @@ fn should_show_profile_hint() -> bool {
         return normalized != "0" && normalized != "false" && normalized != "off";
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap_complete::Shell;
+    use cli::args::{
+        AuthArgs, AuthCommands, Commands, ConfigArgs, ConfigCommands, TableArgs, TableCommands,
+    };
+
+    #[test]
+    fn connection_commands_show_profile_hint() {
+        assert!(command_uses_connection(&Commands::Auth(AuthArgs {
+            command: AuthCommands::Status,
+        })));
+        assert!(command_uses_connection(&Commands::Table(TableArgs {
+            command: TableCommands::List {
+                table: "incident".to_string(),
+                query: None,
+                fields: None,
+                limit: None,
+                order_by: None,
+            },
+        })));
+    }
+
+    #[test]
+    fn non_connection_commands_do_not_show_profile_hint() {
+        assert!(!command_uses_connection(&Commands::Profile(ConfigArgs {
+            command: ConfigCommands::ListProfiles,
+        })));
+        assert!(!command_uses_connection(&Commands::Profile(ConfigArgs {
+            command: ConfigCommands::Show,
+        })));
+        assert!(!command_uses_connection(&Commands::Completions {
+            shell: Shell::Bash,
+        }));
+    }
 }

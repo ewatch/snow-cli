@@ -165,13 +165,13 @@ impl AppConfig {
 
         if self.default_profile.is_empty() {
             anyhow::bail!(
-                "No default profile configured. Run `snow-cli config init --instance <url> --auth-method <method>` first."
+                "No default profile configured. Run `snow-cli profile add default --instance <url> --auth-method <method>` first."
             );
         }
 
         if self.profiles.is_empty() {
             anyhow::bail!(
-                "No profiles are configured yet. Run `snow-cli config init --instance <url> --auth-method <method>` first."
+                "No profiles are configured yet. Run `snow-cli profile add default --instance <url> --auth-method <method>` first."
             );
         }
 
@@ -179,7 +179,7 @@ impl AppConfig {
             let available_profiles = self.available_profiles_for_message();
             anyhow::bail!(
                 "Default profile '{}' not found. Available profiles: {}. \
-                 Run `snow-cli config use-profile <name>` to choose one.",
+                 Run `snow-cli profile default <name>` to choose one.",
                 self.default_profile,
                 available_profiles
             );
@@ -193,7 +193,7 @@ impl AppConfig {
         if self.profiles.is_empty() {
             return format!(
                 "Profile '{}' not found. No profiles are configured yet. \
-                 Run `snow-cli config init --instance <url> --auth-method <method>` first.",
+                 Run `snow-cli profile add default --instance <url> --auth-method <method>` first.",
                 requested
             );
         }
@@ -201,14 +201,14 @@ impl AppConfig {
         if let Some(suggested) = self.suggest_profile_name(requested) {
             return format!(
                 "Profile '{}' not found. Maybe you meant '{}'. \
-                 Run `snow-cli config list-profiles` to see available profiles.",
+                 Run `snow-cli profile list` to see available profiles.",
                 requested, suggested
             );
         }
 
         format!(
             "Profile '{}' not found. Available profiles: {}. \
-             Run `snow-cli config list-profiles` to see details.",
+             Run `snow-cli profile list` to see details.",
             requested,
             self.available_profiles_for_message()
         )
@@ -512,6 +512,6 @@ mod tests {
         let config = AppConfig::default();
         let message = config.profile_not_found_message("dev");
         assert!(message.contains("No profiles are configured yet"));
-        assert!(message.contains("config init"));
+        assert!(message.contains("profile add"));
     }
 }

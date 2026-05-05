@@ -32,28 +32,42 @@ fn test_no_args_shows_help() {
 }
 
 #[test]
-fn test_config_show_help() {
+fn test_profile_show_help() {
     cargo_bin_cmd!("snow-cli")
-        .args(["config", "--help"])
+        .args(["profile", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Manage configuration"))
-        .stdout(predicate::str::contains("Examples:"));
+        .stdout(predicate::str::contains(
+            "Manage ServiceNow connection profiles",
+        ))
+        .stdout(predicate::str::contains("Examples:"))
+        .stdout(predicate::str::contains("sdk"));
 }
 
 #[test]
-fn test_config_list_now_sdk_profiles_help() {
+fn test_profile_sdk_list_help() {
     cargo_bin_cmd!("snow-cli")
-        .args(["config", "list-now-sdk-profiles", "--help"])
+        .args(["profile", "sdk", "list", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("now-sdk"));
 }
 
 #[test]
-fn test_config_init_help_mentions_non_interactive() {
+fn test_config_alias_still_works() {
     cargo_bin_cmd!("snow-cli")
-        .args(["config", "init", "--help"])
+        .args(["config", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Manage ServiceNow connection profiles",
+        ));
+}
+
+#[test]
+fn test_profile_init_help_mentions_non_interactive() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["profile", "init", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("non-interactive by default"));
@@ -166,7 +180,7 @@ fn test_config_init_creates_file() {
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .args([
-            "config",
+            "profile",
             "init",
             "--instance",
             "https://test.service-now.com",
@@ -191,7 +205,7 @@ fn test_config_init_fails_without_instance() {
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["config", "init"])
+        .args(["profile", "init"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("Instance URL is required"));
@@ -212,7 +226,7 @@ auth_method = "basic"
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .args([
-            "config",
+            "profile",
             "init",
             "--instance",
             "https://test.service-now.com",
@@ -230,7 +244,7 @@ fn test_config_init_with_custom_profile_name() {
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .args([
-            "config",
+            "profile",
             "init",
             "--instance",
             "https://dev.service-now.com",
@@ -262,7 +276,7 @@ username = "admin"
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["config", "show"])
+        .args(["profile", "show"])
         .assert()
         .success()
         .stdout(predicate::str::contains("config_path"))
@@ -284,10 +298,32 @@ username = "admin"
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["--output", "csv", "config", "show"])
+        .args(["--output", "csv", "profile", "show"])
         .assert()
         .success()
         .stdout(predicate::str::contains("key,value"))
+        .stdout(predicate::str::contains("dev.service-now.com"));
+}
+
+#[test]
+fn test_profile_current_shows_active_profile() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+username = "admin"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args(["profile", "current"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"active_profile\": \"dev\""))
         .stdout(predicate::str::contains("dev.service-now.com"));
 }
 
@@ -311,11 +347,93 @@ client_id = "abc123"
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["config", "list-profiles"])
+        .args(["profile", "list"])
         .assert()
         .success()
         .stdout(predicate::str::contains("dev"))
         .stdout(predicate::str::contains("prod"));
+}
+
+#[test]
+fn test_config_find_profile_by_short_instance_name() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev123466.service-now.com"
+auth_method = "basic"
+username = "admin"
+
+[profiles.prod]
+instance = "https://prod.service-now.com"
+auth_method = "oauth2"
+client_id = "abc123"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args(["profile", "find", "--instance", "dev123466"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\":\"dev\""))
+        .stdout(predicate::str::contains("dev123466.service-now.com"))
+        .stdout(predicate::str::contains("prod").not())
+        .stdout(predicate::str::contains("admin").not());
+}
+
+#[test]
+fn test_config_find_profile_by_instance_url() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev123466.service-now.com"
+auth_method = "basic"
+username = "admin"
+
+[profiles.prod]
+instance = "https://prod.service-now.com"
+auth_method = "oauth2"
+client_id = "abc123"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args([
+            "profile",
+            "find",
+            "--instance",
+            "https://dev123466.service-now.com/nav_to.do",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\":\"dev\""))
+        .stdout(predicate::str::contains("\"default\":true"));
+}
+
+#[test]
+fn test_config_find_profile_no_match_errors() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev123466.service-now.com"
+auth_method = "basic"
+username = "admin"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args(["profile", "find", "--instance", "prod123466"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("No profile found for instance"));
 }
 
 #[test]
@@ -333,8 +451,8 @@ auth_method = "basic"
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .args([
-            "config",
-            "set-profile",
+            "profile",
+            "add",
             "staging",
             "--instance",
             "https://staging.service-now.com",
@@ -367,7 +485,7 @@ username = "olduser"
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["config", "set-profile", "dev", "--username", "newuser"])
+        .args(["profile", "edit", "dev", "--username", "newuser"])
         .assert()
         .success();
 
@@ -375,6 +493,74 @@ username = "olduser"
     assert!(content.contains("newuser"));
     // Instance should be preserved
     assert!(content.contains("dev.service-now.com"));
+}
+
+#[test]
+fn test_profile_add_fails_when_profile_exists() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args([
+            "profile",
+            "add",
+            "dev",
+            "--instance",
+            "https://other.service-now.com",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn test_profile_edit_fails_when_profile_missing() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args(["profile", "edit", "missing", "--username", "admin"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("profile add missing"));
+}
+
+#[test]
+fn test_config_set_profile_legacy_upsert_alias_still_works() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args(["profile", "set", "dev", "--username", "legacy-user"])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(content.contains("legacy-user"));
 }
 
 #[test]
@@ -392,8 +578,8 @@ auth_method = "saml"
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .args([
-            "config",
-            "set-profile",
+            "profile",
+            "edit",
             "dev",
             "--sso-login-url",
             "https://dev.service-now.com/login_with_sso.do",
@@ -421,8 +607,8 @@ client_id = "old-client"
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .args([
-            "config",
-            "set-profile",
+            "profile",
+            "edit",
             "dev",
             "--oauth-grant-type",
             "authorization-code",
@@ -468,7 +654,7 @@ client_id = "abc"
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["config", "use-profile", "prod"])
+        .args(["profile", "default", "prod"])
         .assert()
         .success()
         .stdout(predicate::str::contains("prod"));
@@ -491,7 +677,7 @@ auth_method = "basic"
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["config", "use-profile", "nonexistent"])
+        .args(["profile", "default", "nonexistent"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found"));
@@ -515,7 +701,7 @@ auth_method = "basic"
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["config", "use-profile", "de"])
+        .args(["profile", "default", "de"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("Maybe you meant 'dev'"));
@@ -539,7 +725,7 @@ auth_method = "api_key"
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["config", "delete-profile", "prod"])
+        .args(["profile", "remove", "prod"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"status\":\"deleted\""));
@@ -567,7 +753,7 @@ auth_method = "api_key"
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["config", "delete-profile", "dev"])
+        .args(["profile", "remove", "dev"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("current default"));
@@ -594,7 +780,7 @@ client_id = "abc"
     // Using --profile should show the prod profile info
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["--profile", "prod", "config", "show"])
+        .args(["--profile", "prod", "profile", "show"])
         .assert()
         .success()
         .stdout(predicate::str::contains("prod.service-now.com"));
@@ -636,7 +822,7 @@ fn test_config_list_now_sdk_profiles() {
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
-        .args(["config", "list-now-sdk-profiles"])
+        .args(["profile", "sdk", "list"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"alias\":\"dev\""))
@@ -673,8 +859,9 @@ fn test_config_import_now_sdk_alias_creates_profile_and_password() {
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .args([
-            "config",
-            "import-now-sdk",
+            "profile",
+            "sdk",
+            "import",
             "--alias",
             "dev",
             "--set-default",
@@ -730,7 +917,7 @@ username = "olduser"
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
-        .args(["config", "import-now-sdk", "--alias", "dev"])
+        .args(["profile", "sdk", "import", "--alias", "dev"])
         .assert()
         .success();
 
@@ -782,7 +969,7 @@ fn test_config_import_now_sdk_all_fails_when_oauth_present() {
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
-        .args(["config", "import-now-sdk", "--all"])
+        .args(["profile", "sdk", "import", "--all"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("unsupported auth type 'oauth'"));
@@ -830,7 +1017,7 @@ fn test_config_import_now_sdk_all_preserves_now_sdk_default_alias() {
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
-        .args(["config", "import-now-sdk", "--all"])
+        .args(["profile", "sdk", "import", "--all"])
         .assert()
         .success();
 
@@ -857,8 +1044,9 @@ username = "admin"
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .args([
-            "config",
-            "export-now-sdk",
+            "profile",
+            "sdk",
+            "export",
             "dev",
             "--alias",
             "sdk-dev",
@@ -1069,7 +1257,7 @@ fn test_table_list_missing_profile() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("No profiles are configured yet"))
-        .stderr(predicate::str::contains("config init"));
+        .stderr(predicate::str::contains("profile add"));
 }
 
 #[test]
