@@ -9,7 +9,7 @@ const CONFIG_INIT_AFTER_HELP: &str = "Notes:\n  - This command is non-interactiv
 
 const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --password '<password>' --also-now-sdk --now-sdk-alias dev\n  snow-cli auth login --session-cookie 'JSESSIONID=...; glide_user_route=...'\n  snow-cli auth status\n  snow-cli auth token\n  snow-cli auth logout";
 
-const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --password '<password>' --also-now-sdk --now-sdk-alias dev\n  snow-cli auth login --token '<api-token>'\n  snow-cli auth login --client-secret '<oauth-secret>'\n  snow-cli auth login --client-secret '<oauth-secret>' --no-browser\n  snow-cli auth login --session-cookie 'JSESSIONID=...; glide_user_route=...'\n\nTip:\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.\n  For OAuth2 authorization-code profiles, snow-cli opens the authorization URL and waits for a local redirect callback.\n  For SAML profiles, omit --session-cookie to let snow-cli launch a managed browser session, wait for login completion, and capture the ServiceNow session automatically.";
+const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --password '<password>' --also-now-sdk --now-sdk-alias dev\n  snow-cli auth login --token '<api-token>'\n  snow-cli auth login --client-secret '<oauth-secret>'\n  snow-cli auth login --no-browser\n  snow-cli auth login --client-secret '<oauth-secret>' --no-browser\n  snow-cli auth login --session-cookie 'JSESSIONID=...; glide_user_route=...'\n\nTip:\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.\n  For OAuth2 authorization-code profiles, snow-cli opens the authorization URL and waits for a local redirect callback. Public PKCE clients can omit --client-secret.\n  For SAML profiles, omit --session-cookie to let snow-cli launch a managed browser session, wait for login completion, and capture the ServiceNow session automatically.";
 
 const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended";
 
@@ -323,7 +323,7 @@ pub enum AuthCommands {
         #[arg(long)]
         token: Option<String>,
 
-        /// OAuth client secret (for oauth2 auth)
+        /// OAuth client secret (required for client_credentials/password, optional for public authorization-code PKCE clients)
         #[arg(long)]
         client_secret: Option<String>,
 

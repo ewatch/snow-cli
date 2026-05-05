@@ -154,21 +154,28 @@ async fn handle_login(
             println!("{}", serde_json::to_string(&result)?);
         }
         AuthMethod::Oauth2 => {
-            let secret = resolve_secret(client_secret, "Client secret: ", is_tty, || {
-                "Client secret required for OAuth2. Use: snow-cli auth login --client-secret <secret>"
-                    .to_string()
-            })?;
-            credentials::store_credential(profile_name, "client_secret", &secret)?;
-
             let grant_type = profile
                 .oauth_grant_type
                 .clone()
                 .unwrap_or(OAuthGrantType::ClientCredentials);
 
             if grant_type == OAuthGrantType::AuthorizationCode {
-                let (oauth_token, redirect_uri) =
-                    run_oauth_authorization_code_login(profile_name, profile, &secret, no_browser)
-                        .await?;
+                let secret = resolve_optional_secret(client_secret)?;
+                if let Some(secret) = secret.as_deref() {
+                    credentials::store_credential(profile_name, "client_secret", secret)?;
+                } else {
+                    // Public PKCE clients should not accidentally reuse a stale secret from an
+                    // earlier confidential-client login for the same profile.
+                    credentials::delete_credential(profile_name, "client_secret")?;
+                }
+
+                let (oauth_token, redirect_uri) = run_oauth_authorization_code_login(
+                    profile_name,
+                    profile,
+                    secret.as_deref(),
+                    no_browser,
+                )
+                .await?;
                 credentials::store_credential(
                     profile_name,
                     "oauth_token",
@@ -180,13 +187,19 @@ async fn handle_login(
                     "profile": profile_name,
                     "auth_method": profile.auth_method,
                     "oauth_grant_type": grant_type,
-                    "credential_types": vec!["client_secret", "oauth_token"],
+                    "credential_types": credential_types_for_auth(profile),
                     "redirect_uri": redirect_uri,
                     "scope": oauth_token.scope.or_else(|| profile.oauth_scope.clone()),
                     "has_refresh_token": oauth_token.refresh_token.is_some(),
                 });
                 println!("{}", serde_json::to_string(&result)?);
             } else {
+                let secret = resolve_secret(client_secret, "Client secret: ", is_tty, || {
+                    "Client secret required for OAuth2. Use: snow-cli auth login --client-secret <secret>"
+                        .to_string()
+                })?;
+                credentials::store_credential(profile_name, "client_secret", &secret)?;
+
                 // For password grant, also store the user's password
                 if grant_type == OAuthGrantType::Password {
                     let pw = resolve_secret(password, "Password: ", is_tty, || {
@@ -413,7 +426,7 @@ fn validate_session_cookie(value: String) -> anyhow::Result<String> {
 async fn run_oauth_authorization_code_login(
     profile_name: &str,
     profile: &Profile,
-    client_secret: &str,
+    client_secret: Option<&str>,
     no_browser: bool,
 ) -> anyhow::Result<(crate::auth::oauth2::StoredOAuthToken, String)> {
     let bind_host = oauth_redirect_host(profile);
@@ -708,6 +721,13 @@ where
     anyhow::bail!("{}", error_msg());
 }
 
+fn resolve_optional_secret(flag_value: Option<String>) -> anyhow::Result<Option<String>> {
+    match flag_value {
+        Some(value) if value.is_empty() => anyhow::bail!("Empty credential provided. Aborting."),
+        other => Ok(other),
+    }
+}
+
 /// `auth logout` — Remove stored credentials for the active profile.
 ///
 /// Removes all credential types associated with the profile's auth method.
@@ -721,6 +741,11 @@ async fn handle_logout(profile_name: &str) -> anyhow::Result<()> {
     let cred_types = credential_types_for_auth(profile);
     for cred_type in &cred_types {
         credentials::delete_credential(profile_name, cred_type)?;
+    }
+    if profile.auth_method == AuthMethod::Oauth2
+        && profile.oauth_grant_type.as_ref() == Some(&OAuthGrantType::AuthorizationCode)
+    {
+        credentials::delete_credential(profile_name, "client_secret")?;
     }
 
     tracing::info!("Credentials removed for profile '{}'", profile_name);
@@ -820,9 +845,9 @@ async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Return the list of credential types needed for the profile's auth method.
+/// Return the list of credential types required for the profile's auth method.
 ///
-/// OAuth2 password grant requires both `client_secret` and `password`.
+/// OAuth2 authorization-code profiles require only the stored `oauth_token`.
 fn credential_types_for_auth(profile: &crate::config::profile::Profile) -> Vec<&'static str> {
     match &profile.auth_method {
         AuthMethod::Basic => vec!["password"],
@@ -835,7 +860,7 @@ fn credential_types_for_auth(profile: &crate::config::profile::Profile) -> Vec<&
                 .unwrap_or(OAuthGrantType::ClientCredentials);
             match grant_type {
                 OAuthGrantType::Password => vec!["client_secret", "password"],
-                OAuthGrantType::AuthorizationCode => vec!["client_secret", "oauth_token"],
+                OAuthGrantType::AuthorizationCode => vec!["oauth_token"],
                 OAuthGrantType::ClientCredentials => vec!["client_secret"],
             }
         }
@@ -968,10 +993,7 @@ mod tests {
     #[test]
     fn test_credential_types_oauth2_authorization_code() {
         let profile = make_profile(AuthMethod::Oauth2, Some(OAuthGrantType::AuthorizationCode));
-        assert_eq!(
-            credential_types_for_auth(&profile),
-            vec!["client_secret", "oauth_token"]
-        );
+        assert_eq!(credential_types_for_auth(&profile), vec!["oauth_token"]);
     }
 
     #[test]

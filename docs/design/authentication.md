@@ -62,7 +62,27 @@ pub trait Authenticator: Send + Sync {
 - Note: ServiceNow requires both `client_id` + `client_secret` even for the
   password grant (unlike some OAuth2 implementations that make client auth optional).
 
-#### Token Response (both grants)
+#### Authorization Code Grant (`grant_type=authorization_code`)
+- For browser-based user login with a local redirect listener and PKCE.
+- Stores `client_id`, redirect settings, and requested scope in config.
+- Stores the resulting OAuth token set in keychain as `oauth_token`.
+- `client_secret` is optional:
+  - Public PKCE clients do not need one.
+  - Confidential clients can still provide one and `snow-cli` will send it on
+    token exchange and refresh requests.
+- Token request for public PKCE clients:
+  ```
+  POST /oauth_token.do
+  Content-Type: application/x-www-form-urlencoded
+
+  grant_type=authorization_code&client_id=<client_id>&code=<code>&redirect_uri=<redirect_uri>&code_verifier=<code_verifier>
+  ```
+- Refresh request for public PKCE clients:
+  ```
+  grant_type=refresh_token&client_id=<client_id>&refresh_token=<refresh_token>
+  ```
+
+#### Token Response (all grants)
 ```json
 {
   "access_token": "...",
@@ -74,14 +94,19 @@ pub trait Authenticator: Send + Sync {
 ```
 
 #### Config Fields
-- `oauth_grant_type`: `"client_credentials"` or `"password"` (defaults to
-  `"client_credentials"` if not specified, for backwards compatibility).
-- `client_id`: Required for both grants.
+- `oauth_grant_type`: `"client_credentials"`, `"password"`, or
+  `"authorization_code"` (defaults to `"client_credentials"` if not specified,
+  for backwards compatibility).
+- `client_id`: Required for all grants.
 - `username`: Required for password grant, stored in config.
+- `oauth_scope`, `oauth_redirect_host`, `oauth_redirect_port`,
+  `oauth_redirect_path`: Used for authorization-code profiles.
 
 #### Keychain Entries
-- `client_secret`: Required for both grants.
+- `client_secret`: Required for client credentials and password grants;
+  optional for authorization-code profiles.
 - `password`: Required only for password grant.
+- `oauth_token`: Required for authorization-code profiles.
 
 ### API Key / Token
 - Reads token from OS keychain.

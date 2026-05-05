@@ -66,7 +66,7 @@ enum CredentialSource {
     Keychain { profile_name: String },
     /// Use directly provided credentials (for testing).
     Direct {
-        client_secret: String,
+        client_secret: Option<String>,
         password: Option<String>,
         oauth_token: Option<StoredOAuthToken>,
     },
@@ -146,7 +146,7 @@ impl OAuth2Auth {
         client_id: String,
         grant_type: OAuthGrantType,
         username: Option<String>,
-        client_secret: String,
+        client_secret: impl Into<Option<String>>,
         password: Option<String>,
     ) -> Self {
         Self {
@@ -155,7 +155,7 @@ impl OAuth2Auth {
             grant_type,
             username,
             credential_source: CredentialSource::Direct {
-                client_secret,
+                client_secret: client_secret.into(),
                 password,
                 oauth_token: None,
             },
@@ -168,7 +168,7 @@ impl OAuth2Auth {
     pub fn new_with_stored_token(
         instance: String,
         client_id: String,
-        client_secret: String,
+        client_secret: impl Into<Option<String>>,
         oauth_token: StoredOAuthToken,
     ) -> Self {
         Self {
@@ -177,7 +177,7 @@ impl OAuth2Auth {
             grant_type: OAuthGrantType::AuthorizationCode,
             username: None,
             credential_source: CredentialSource::Direct {
-                client_secret,
+                client_secret: client_secret.into(),
                 password: None,
                 oauth_token: Some(oauth_token),
             },
@@ -193,23 +193,21 @@ impl OAuth2Auth {
     /// Build the form body for the initial token request.
     fn build_token_request_body(&self, client_secret: &str, password: Option<&str>) -> String {
         match self.grant_type {
-            OAuthGrantType::ClientCredentials => {
-                format!(
-                    "grant_type=client_credentials&client_id={}&client_secret={}",
-                    urlencoded(&self.client_id),
-                    urlencoded(client_secret),
-                )
-            }
+            OAuthGrantType::ClientCredentials => build_form_body(&[
+                ("grant_type", Some("client_credentials")),
+                ("client_id", Some(self.client_id.as_str())),
+                ("client_secret", Some(client_secret)),
+            ]),
             OAuthGrantType::Password => {
                 let username = self.username.as_deref().unwrap_or("");
                 let pw = password.unwrap_or("");
-                format!(
-                    "grant_type=password&client_id={}&client_secret={}&username={}&password={}",
-                    urlencoded(&self.client_id),
-                    urlencoded(client_secret),
-                    urlencoded(username),
-                    urlencoded(pw),
-                )
+                build_form_body(&[
+                    ("grant_type", Some("password")),
+                    ("client_id", Some(self.client_id.as_str())),
+                    ("client_secret", Some(client_secret)),
+                    ("username", Some(username)),
+                    ("password", Some(pw)),
+                ])
             }
             OAuthGrantType::AuthorizationCode => String::new(),
         }
@@ -219,32 +217,42 @@ impl OAuth2Auth {
     fn build_refresh_request_body(
         &self,
         client_id: &str,
-        client_secret: &str,
+        client_secret: Option<&str>,
         refresh_token: &str,
     ) -> String {
-        format!(
-            "grant_type=refresh_token&client_id={}&client_secret={}&refresh_token={}",
-            urlencoded(client_id),
-            urlencoded(client_secret),
-            urlencoded(refresh_token),
-        )
+        build_form_body(&[
+            ("grant_type", Some("refresh_token")),
+            ("client_id", Some(client_id)),
+            ("client_secret", client_secret),
+            ("refresh_token", Some(refresh_token)),
+        ])
     }
 
-    /// Retrieve the client_secret from the credential source.
-    fn get_client_secret(&self) -> anyhow::Result<String> {
+    /// Retrieve the client_secret from the credential source, if one is configured.
+    fn get_client_secret_optional(&self) -> anyhow::Result<Option<String>> {
         match &self.credential_source {
             CredentialSource::Direct { client_secret, .. } => Ok(client_secret.clone()),
             CredentialSource::Keychain { profile_name } => {
-                credentials::get_credential(profile_name, "client_secret")?.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "No client_secret found for profile '{}'. \
-                         Run `snow-cli auth login --profile {} --client-secret <secret>` first.",
-                        profile_name,
-                        profile_name
-                    )
-                })
+                credentials::get_credential(profile_name, "client_secret")
             }
         }
+    }
+
+    /// Retrieve the client_secret from the credential source when the grant requires it.
+    fn get_required_client_secret(&self) -> anyhow::Result<String> {
+        self.get_client_secret_optional()?
+            .ok_or_else(|| match &self.credential_source {
+                CredentialSource::Keychain { profile_name } => anyhow::anyhow!(
+                    "No client_secret found for profile '{}'. \
+                 Run `snow-cli auth login --profile {} --client-secret <secret>` first.",
+                    profile_name,
+                    profile_name
+                ),
+                CredentialSource::Direct { .. } => anyhow::anyhow!(
+                    "No client_secret provided for OAuth2 {:?} grant.",
+                    self.grant_type
+                ),
+            })
     }
 
     /// Retrieve the password from the credential source (for password grant).
@@ -306,7 +314,7 @@ impl OAuth2Auth {
             );
         }
 
-        let client_secret = self.get_client_secret()?;
+        let client_secret = self.get_required_client_secret()?;
         let password = self.get_password()?;
 
         let body = self.build_token_request_body(&client_secret, password.as_deref());
@@ -315,9 +323,10 @@ impl OAuth2Auth {
 
     /// Attempt to refresh using the stored refresh token.
     async fn refresh_token(&self, refresh_tok: &str) -> anyhow::Result<TokenSet> {
-        let client_secret = self.get_client_secret()?;
+        let client_secret = self.get_client_secret_optional()?;
 
-        let body = self.build_refresh_request_body(&self.client_id, &client_secret, refresh_tok);
+        let body =
+            self.build_refresh_request_body(&self.client_id, client_secret.as_deref(), refresh_tok);
         self.send_token_request(&body).await
     }
 
@@ -431,7 +440,7 @@ pub async fn exchange_authorization_code(
     profile: &Profile,
     code: &str,
     redirect_uri: &str,
-    client_secret: &str,
+    client_secret: Option<&str>,
     code_verifier: &str,
 ) -> anyhow::Result<StoredOAuthToken> {
     let client_id = profile.client_id.as_deref().ok_or_else(|| {
@@ -439,14 +448,14 @@ pub async fn exchange_authorization_code(
             "OAuth2 authorization-code login requires `client_id` in the profile configuration."
         )
     })?;
-    let body = format!(
-        "grant_type=authorization_code&client_id={}&client_secret={}&code={}&redirect_uri={}&code_verifier={}",
-        urlencoded(client_id),
-        urlencoded(client_secret),
-        urlencoded(code),
-        urlencoded(redirect_uri),
-        urlencoded(code_verifier),
-    );
+    let body = build_form_body(&[
+        ("grant_type", Some("authorization_code")),
+        ("client_id", Some(client_id)),
+        ("client_secret", client_secret),
+        ("code", Some(code)),
+        ("redirect_uri", Some(redirect_uri)),
+        ("code_verifier", Some(code_verifier)),
+    ]);
     let token_set =
         send_oauth_token_request(&token_url_for_instance(&profile.instance), &body).await?;
     Ok(token_set.stored)
@@ -578,6 +587,25 @@ pub fn pkce_code_challenge_s256(code_verifier: &str) -> String {
 }
 
 /// Simple URL encoding for form values.
+fn build_form_body(params: &[(&str, Option<&str>)]) -> String {
+    let mut body = String::new();
+
+    for (key, value) in params {
+        let Some(value) = value else {
+            continue;
+        };
+
+        if !body.is_empty() {
+            body.push('&');
+        }
+        body.push_str(key);
+        body.push('=');
+        body.push_str(&urlencoded(value));
+    }
+
+    body
+}
+
 pub fn urlencoded(s: &str) -> String {
     // Encode characters that are not unreserved per RFC 3986
     let mut result = String::with_capacity(s.len());
@@ -673,7 +701,7 @@ impl Authenticator for OAuth2Auth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{body_string_contains, header, method, path};
+    use wiremock::matchers::{body_string, body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // --- Unit tests ---
@@ -884,10 +912,34 @@ mod tests {
             sso_login_url: None,
         };
         let auth = OAuth2Auth::new("test", &profile).unwrap();
-        let body = auth.build_refresh_request_body("my_client", "my_secret", "refresh_xyz");
+        let body = auth.build_refresh_request_body("my_client", Some("my_secret"), "refresh_xyz");
         assert_eq!(
             body,
             "grant_type=refresh_token&client_id=my_client&client_secret=my_secret&refresh_token=refresh_xyz"
+        );
+    }
+
+    #[test]
+    fn test_build_refresh_body_without_client_secret() {
+        let profile = Profile {
+            instance: "https://test.service-now.com".to_string(),
+            auth_method: AuthMethod::Oauth2,
+            username: None,
+            client_id: Some("my_client".to_string()),
+            oauth_grant_type: Some(OAuthGrantType::AuthorizationCode),
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
+            cert_path: None,
+            key_path: None,
+            sso_login_url: None,
+        };
+        let auth = OAuth2Auth::new("test", &profile).unwrap();
+        let body = auth.build_refresh_request_body("my_client", None, "refresh_xyz");
+        assert_eq!(
+            body,
+            "grant_type=refresh_token&client_id=my_client&refresh_token=refresh_xyz"
         );
     }
 
@@ -1063,7 +1115,7 @@ mod tests {
             &profile,
             "auth_code_123",
             "http://127.0.0.1:8080/oauth/callback",
-            "test_client_secret",
+            Some("test_client_secret"),
             "verifier_123",
         )
         .await
@@ -1075,11 +1127,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_authorization_code_exchange_without_client_secret() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/oauth_token.do"))
+            .and(body_string(
+                "grant_type=authorization_code&client_id=test_client_id&code=auth_code_123&redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Foauth%2Fcallback&code_verifier=verifier_123"
+                    .to_string(),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(token_response_with_refresh(
+                    "auth_code_access_public",
+                    "refresh_auth_code_public",
+                    3600,
+                )),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let profile = Profile {
+            instance: server.uri(),
+            auth_method: AuthMethod::Oauth2,
+            username: None,
+            client_id: Some("test_client_id".to_string()),
+            oauth_grant_type: Some(OAuthGrantType::AuthorizationCode),
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
+            cert_path: None,
+            key_path: None,
+            sso_login_url: None,
+        };
+
+        let token = exchange_authorization_code(
+            &profile,
+            "auth_code_123",
+            "http://127.0.0.1:8080/oauth/callback",
+            None,
+            "verifier_123",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(token.access_token, "auth_code_access_public");
+        assert_eq!(
+            token.refresh_token,
+            Some("refresh_auth_code_public".to_string())
+        );
+        assert!(!token.is_expired());
+    }
+
+    #[tokio::test]
     async fn test_authorization_code_authenticate_uses_stored_token() {
         let auth = OAuth2Auth::new_with_stored_token(
             "https://test.service-now.com".to_string(),
             "test_client_id".to_string(),
-            "test_client_secret".to_string(),
+            Some("test_client_secret".to_string()),
             StoredOAuthToken {
                 access_token: "stored_access".to_string(),
                 refresh_token: Some("stored_refresh".to_string()),
@@ -1115,7 +1221,7 @@ mod tests {
         let auth = OAuth2Auth::new_with_stored_token(
             server.uri(),
             "test_client_id".to_string(),
-            "test_client_secret".to_string(),
+            Some("test_client_secret".to_string()),
             StoredOAuthToken {
                 access_token: "expired_access".to_string(),
                 refresh_token: Some("stored_refresh".to_string()),
@@ -1129,6 +1235,44 @@ mod tests {
         assert_eq!(
             headers.get("authorization").unwrap().to_str().unwrap(),
             "Bearer refreshed_access"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_authorization_code_expired_token_refreshes_without_client_secret() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/oauth_token.do"))
+            .and(body_string(
+                "grant_type=refresh_token&client_id=test_client_id&refresh_token=stored_refresh"
+                    .to_string(),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(token_response_json("refreshed_public_access", 3600)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let auth = OAuth2Auth::new_with_stored_token(
+            server.uri(),
+            "test_client_id".to_string(),
+            Option::<String>::None,
+            StoredOAuthToken {
+                access_token: "expired_access".to_string(),
+                refresh_token: Some("stored_refresh".to_string()),
+                token_type: Some("Bearer".to_string()),
+                expires_at: Some(now_epoch_secs().saturating_sub(60)),
+                scope: Some("useraccount".to_string()),
+            },
+        );
+
+        let headers = auth.authenticate().await.unwrap();
+        assert_eq!(
+            headers.get("authorization").unwrap().to_str().unwrap(),
+            "Bearer refreshed_public_access"
         );
     }
 
