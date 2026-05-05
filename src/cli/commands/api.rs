@@ -1,6 +1,7 @@
 use std::io::IsTerminal;
 
 use crate::cli::args::{ApiArgs, ApiCommands, OutputFormat};
+use crate::cli::output;
 
 pub async fn handle(
     args: ApiArgs,
@@ -169,6 +170,14 @@ async fn print_response(response: reqwest::Response, format: &OutputFormat) -> a
             // Raw API responses aren't necessarily tabular; output as-is
             println!("{}", body);
         }
+        OutputFormat::Jsonl => match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(json) => output::write_jsonl_value(&json, &mut std::io::stdout())?,
+            Err(_) => println!("{}", body),
+        },
+        OutputFormat::Toon => match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(json) => output::write_toon(&json, &mut std::io::stdout())?,
+            Err(_) => println!("{}", body),
+        },
         OutputFormat::Text => match serde_json::from_str::<serde_json::Value>(&body) {
             Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
             Err(_) => println!("{}", body),

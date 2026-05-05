@@ -50,7 +50,7 @@ pub struct Cli {
     pub instance: Option<String>,
 
     /// Output format
-    #[arg(long, global = true, default_value = "json")]
+    #[arg(long, alias = "format", global = true, default_value = "json")]
     pub output: OutputFormat,
 
     /// Override the HTTP request timeout in seconds
@@ -69,6 +69,8 @@ pub struct Cli {
 pub enum OutputFormat {
     Json,
     Csv,
+    Jsonl,
+    Toon,
     Text,
 }
 
@@ -1085,6 +1087,15 @@ mod tests {
     fn test_parse_output_format() {
         let cli = Cli::parse_from(["snow-cli", "--output", "csv", "config", "show"]);
         assert!(matches!(cli.output, OutputFormat::Csv));
+
+        let cli = Cli::parse_from(["snow-cli", "--output", "jsonl", "config", "show"]);
+        assert!(matches!(cli.output, OutputFormat::Jsonl));
+
+        let cli = Cli::parse_from(["snow-cli", "--output", "toon", "config", "show"]);
+        assert!(matches!(cli.output, OutputFormat::Toon));
+
+        let cli = Cli::parse_from(["snow-cli", "--format", "jsonl", "config", "show"]);
+        assert!(matches!(cli.output, OutputFormat::Jsonl));
     }
 
     #[test]

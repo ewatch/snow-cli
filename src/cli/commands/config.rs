@@ -610,6 +610,21 @@ async fn handle_list_profiles(
             }
             writer.flush()?;
         }
+        OutputFormat::Jsonl | OutputFormat::Toon => {
+            let profiles: Vec<serde_json::Value> = config
+                .profiles
+                .iter()
+                .map(|(name, profile)| {
+                    serde_json::json!({
+                        "name": name,
+                        "instance": profile.instance,
+                        "auth_method": profile.auth_method,
+                        "default": name == &config.default_profile,
+                    })
+                })
+                .collect();
+            output::print_output(&profiles, output_format)?;
+        }
         OutputFormat::Text => {
             let profiles: Vec<serde_json::Value> = config
                 .profiles
@@ -1059,6 +1074,18 @@ async fn handle_current(
             }
             writer.flush()?;
         }
+        OutputFormat::Jsonl | OutputFormat::Toon => {
+            let output = serde_json::json!({
+                "active_profile": active_profile,
+                "default_profile": config.default_profile,
+                "profile": profile.map(|p| serde_json::json!({
+                    "name": active_profile,
+                    "instance": p.instance,
+                    "auth_method": p.auth_method,
+                })),
+            });
+            output::print_output(&output, output_format)?;
+        }
         OutputFormat::Text => {
             let output = serde_json::json!({
                 "active_profile": active_profile,
@@ -1115,6 +1142,16 @@ async fn handle_show(
                 writer.write_record(["profile_status", "not_found"])?;
             }
             writer.flush()?;
+        }
+        OutputFormat::Jsonl | OutputFormat::Toon => {
+            let output = serde_json::json!({
+                "config_path": config_path.display().to_string(),
+                "default_profile": config.default_profile,
+                "active_profile": active_profile,
+                "profile": profile,
+                "total_profiles": config.profiles.len(),
+            });
+            output::print_output(&output, output_format)?;
         }
         OutputFormat::Text => {
             let output = serde_json::json!({

@@ -1,6 +1,6 @@
 [package]
 name = "snow-cli"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "CLI gateway for LLMs and coding agents to access ServiceNow instances"
 license = "MIT"
@@ -28,6 +28,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 csv = "1"
 toml = "0.8"
+toon-format = { version = "0.4.5", default-features = false }
 
 # Credential storage
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }

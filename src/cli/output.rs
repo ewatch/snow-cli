@@ -1,6 +1,7 @@
 use crate::cli::args::OutputFormat;
 use crate::models::record::Record;
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::io::Write;
 
@@ -15,6 +16,12 @@ pub fn print_output<T: Serialize>(value: &T, format: &OutputFormat) -> anyhow::R
             let mut writer = csv::Writer::from_writer(std::io::stdout());
             writer.serialize(value)?;
             writer.flush()?;
+        }
+        OutputFormat::Jsonl => {
+            write_jsonl_value(&serde_json::to_value(value)?, &mut std::io::stdout())?;
+        }
+        OutputFormat::Toon => {
+            write_toon(value, &mut std::io::stdout())?;
         }
         OutputFormat::Text => {
             let json = serde_json::to_string_pretty(value)?;
@@ -38,6 +45,12 @@ pub fn print_list<T: Serialize>(values: &[T], format: &OutputFormat) -> anyhow::
             }
             writer.flush()?;
         }
+        OutputFormat::Jsonl => {
+            write_jsonl_value(&serde_json::to_value(values)?, &mut std::io::stdout())?;
+        }
+        OutputFormat::Toon => {
+            write_toon(values, &mut std::io::stdout())?;
+        }
         OutputFormat::Text => {
             let json = serde_json::to_string_pretty(values)?;
             println!("{json}");
@@ -60,6 +73,12 @@ pub fn print_record(record: &Record, format: &OutputFormat) -> anyhow::Result<()
         OutputFormat::Csv => {
             write_records_csv(std::slice::from_ref(record), &mut std::io::stdout())?;
         }
+        OutputFormat::Jsonl => {
+            write_jsonl_value(&serde_json::to_value(record)?, &mut std::io::stdout())?;
+        }
+        OutputFormat::Toon => {
+            write_toon(record, &mut std::io::stdout())?;
+        }
         OutputFormat::Text => {
             let json = serde_json::to_string_pretty(record)?;
             println!("{json}");
@@ -81,11 +100,51 @@ pub fn print_records(records: &[Record], format: &OutputFormat) -> anyhow::Resul
         OutputFormat::Csv => {
             write_records_csv(records, &mut std::io::stdout())?;
         }
+        OutputFormat::Jsonl => {
+            write_jsonl_value(&serde_json::to_value(records)?, &mut std::io::stdout())?;
+        }
+        OutputFormat::Toon => {
+            write_toon(records, &mut std::io::stdout())?;
+        }
         OutputFormat::Text => {
             let json = serde_json::to_string_pretty(records)?;
             println!("{json}");
         }
     }
+    Ok(())
+}
+
+/// Write a JSON value as JSON Lines to the given writer.
+///
+/// Arrays are emitted as one compact JSON value per line. Objects and scalar
+/// values are emitted as a single compact JSON line.
+pub(crate) fn write_jsonl_value<W: Write>(value: &Value, writer: &mut W) -> anyhow::Result<()> {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                writeln!(writer, "{}", serde_json::to_string(item)?)?;
+            }
+        }
+        _ => {
+            writeln!(writer, "{}", serde_json::to_string(value)?)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Write any serializable value as TOON to the given writer.
+///
+/// TOON is most compact for arrays of similarly shaped objects, but the
+/// encoder handles all JSON-shaped values so callers do not need special-case
+/// fallbacks for nested or irregular API responses.
+pub(crate) fn write_toon<T: Serialize + ?Sized, W: Write>(
+    value: &T,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    let json = serde_json::to_value(value)?;
+    let toon = toon_format::encode_default(&json)?;
+    writeln!(writer, "{toon}")?;
     Ok(())
 }
 
@@ -144,6 +203,14 @@ pub fn print_status(message: &str, format: &OutputFormat) -> anyhow::Result<()> 
             // For non-tabular status messages, just print plaintext
             println!("{message}");
         }
+        OutputFormat::Jsonl => {
+            let json = serde_json::json!({ "status": "success", "message": message });
+            write_jsonl_value(&json, &mut std::io::stdout())?;
+        }
+        OutputFormat::Toon => {
+            let json = serde_json::json!({ "status": "success", "message": message });
+            write_toon(&json, &mut std::io::stdout())?;
+        }
         OutputFormat::Text => {
             println!("{message}");
         }
@@ -171,6 +238,73 @@ mod tests {
         let json = serde_json::to_string(&record).unwrap();
         assert!(json.contains("abc123"));
         assert!(json.contains("Test"));
+    }
+
+    #[test]
+    fn test_write_jsonl_value_array() {
+        let value = serde_json::json!([
+            {"number": "INC001", "state": "2"},
+            {"number": "INC002", "state": "3"}
+        ]);
+
+        let mut output = Vec::new();
+        write_jsonl_value(&value, &mut output).unwrap();
+        let jsonl = String::from_utf8(output).unwrap();
+
+        let lines: Vec<&str> = jsonl.trim().split('\n').collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines[0]).unwrap(),
+            serde_json::json!({"number": "INC001", "state": "2"})
+        );
+    }
+
+    #[test]
+    fn test_write_jsonl_value_object() {
+        let value = serde_json::json!({"status": "success", "message": "ok"});
+
+        let mut output = Vec::new();
+        write_jsonl_value(&value, &mut output).unwrap();
+        let jsonl = String::from_utf8(output).unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(jsonl.trim()).unwrap(),
+            value
+        );
+    }
+
+    #[test]
+    fn test_write_toon_flat_records() {
+        let value = serde_json::json!([
+            {"number": "INC001", "state": "2"},
+            {"number": "INC002", "state": "3"}
+        ]);
+
+        let mut output = Vec::new();
+        write_toon(&value, &mut output).unwrap();
+        let toon = String::from_utf8(output).unwrap();
+
+        assert!(toon.contains("[2]"));
+        assert!(toon.contains("number"));
+        assert!(toon.contains("state"));
+        assert!(toon.contains("INC001"));
+        assert!(toon.contains("INC002"));
+    }
+
+    #[test]
+    fn test_write_toon_nested_value() {
+        let value = serde_json::json!({
+            "result": [{"number": "INC001", "tags": ["agent", "llm"]}],
+            "count": 1
+        });
+
+        let mut output = Vec::new();
+        write_toon(&value, &mut output).unwrap();
+        let toon = String::from_utf8(output).unwrap();
+
+        assert!(toon.contains("result"));
+        assert!(toon.contains("tags"));
+        assert!(toon.contains("agent"));
     }
 
     #[test]

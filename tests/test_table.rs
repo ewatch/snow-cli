@@ -96,6 +96,91 @@ async fn test_table_list_csv_output() {
 }
 
 #[tokio::test]
+async fn test_table_list_jsonl_output() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"sys_id": "abc123", "number": "INC001"},
+                {"sys_id": "def456", "number": "INC002"}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    let assert = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "jsonl",
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let lines: Vec<&str> = stdout.trim().split('\n').collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(lines[0]).unwrap(),
+        serde_json::json!({"number": "INC001", "sys_id": "abc123"})
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(lines[1]).unwrap(),
+        serde_json::json!({"number": "INC002", "sys_id": "def456"})
+    );
+}
+
+#[tokio::test]
+async fn test_table_list_toon_output() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"sys_id": "abc123", "number": "INC001"},
+                {"sys_id": "def456", "number": "INC002"}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "toon",
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[2]"))
+        .stdout(predicate::str::contains("number"))
+        .stdout(predicate::str::contains("sys_id"))
+        .stdout(predicate::str::contains("INC001"))
+        .stdout(predicate::str::contains("INC002"));
+}
+
+#[tokio::test]
 async fn test_table_list_with_query_params() {
     let server = MockServer::start().await;
 

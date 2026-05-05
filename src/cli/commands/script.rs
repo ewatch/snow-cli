@@ -1,6 +1,7 @@
 use std::io::IsTerminal;
 
 use crate::cli::args::{OutputFormat, ScriptArgs, ScriptCommands};
+use crate::cli::output;
 use http::HeaderMap;
 
 const FORM_SCRIPT_ENDPOINT: &str = "/sys.scripts.do";
@@ -293,6 +294,14 @@ async fn handle_run(
         OutputFormat::Csv => {
             println!("{}", response_body);
         }
+        OutputFormat::Jsonl => match serde_json::from_str::<serde_json::Value>(&response_body) {
+            Ok(json) => output::write_jsonl_value(&json, &mut std::io::stdout())?,
+            Err(_) => println!("{}", response_body),
+        },
+        OutputFormat::Toon => match serde_json::from_str::<serde_json::Value>(&response_body) {
+            Ok(json) => output::write_toon(&json, &mut std::io::stdout())?,
+            Err(_) => println!("{}", response_body),
+        },
         OutputFormat::Text => match serde_json::from_str::<serde_json::Value>(&response_body) {
             Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
             Err(_) => println!("{}", response_body),

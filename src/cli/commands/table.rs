@@ -298,6 +298,7 @@ fn print_schema(entries: &[SchemaEntry], format: &OutputFormat) -> anyhow::Resul
             }
             writer.flush()?;
         }
+        OutputFormat::Jsonl | OutputFormat::Toon => output::print_list(entries, format)?,
         OutputFormat::Text => {
             let json = serde_json::to_string_pretty(entries)?;
             println!("{json}");
