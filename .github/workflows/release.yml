@@ -59,7 +59,7 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-        run: cargo dist build --artifacts=local --target "${TARGET}" --tag "${RELEASE_TAG}"
+        run: dist build --artifacts=local --target "${TARGET}" --tag "${RELEASE_TAG}"
 
       - name: Upload archive artifact
         uses: actions/upload-artifact@v4
@@ -85,7 +85,7 @@ jobs:
         run: cargo install cargo-dist --version "${CARGO_DIST_VERSION}" --locked
 
       - name: Build shell and PowerShell installers
-        run: cargo dist build --artifacts=global --tag "${RELEASE_TAG}"
+        run: dist build --artifacts=global --tag "${RELEASE_TAG}"
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
