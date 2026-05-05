@@ -66,3 +66,17 @@ tempfile = "3"
 
 # Async test support
 tokio-test = "0.4"
+
+[workspace]
+members = ["."]
+resolver = "3"
+
+[workspace.metadata.dist]
+cargo-dist-version = "0.28.0"
+ci = ["github"]
+installers = ["shell", "powershell"]
+targets = [
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]

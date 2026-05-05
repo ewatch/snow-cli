@@ -8,3 +8,4 @@ This directory contains practical guides for developing and using snow-cli.
 |------------------------------------|----------------------------------------------|
 | [testing.md](testing.md)           | How to write and run tests                   |
 | [adding-commands.md](adding-commands.md) | How to add a new CLI command           |
+| [releasing.md](releasing.md)       | How to publish cargo-dist release binaries   |
