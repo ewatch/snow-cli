@@ -74,6 +74,7 @@ resolver = "3"
 
 [workspace.metadata.dist]
 cargo-dist-version = "0.28.0"
+allow-dirty = true
 ci = ["github"]
 installers = ["shell", "powershell"]
 targets = [
