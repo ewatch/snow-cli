@@ -6,7 +6,7 @@ pub async fn handle(
     _format: &OutputFormat,
     _instance: Option<&str>,
     _timeout_secs: Option<u64>,
-    _proxy_url: Option<&str>,
+    _proxy: &crate::client::ProxyOptions,
 ) -> anyhow::Result<()> {
     match args.command {
         SeedCommands::Plan { .. } => {

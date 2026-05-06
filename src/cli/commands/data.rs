@@ -19,7 +19,7 @@ pub async fn handle(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
 ) -> anyhow::Result<()> {
     match args.command {
         DataCommands::Export {
@@ -38,15 +38,24 @@ pub async fn handle(
                 order_by,
                 out_path,
             };
-            handle_export(profile, format, instance, timeout_secs, proxy_url, export).await
+            handle_export(profile, format, instance, timeout_secs, proxy, export).await
         }
         DataCommands::ExportPackage { file, out_dir } => {
             ensure_json_output(format, "data export-package")?;
-            handle_export_package(profile, format, instance, timeout_secs, proxy_url, &file, &out_dir).await
+            handle_export_package(
+                profile,
+                format,
+                instance,
+                timeout_secs,
+                proxy,
+                &file,
+                &out_dir,
+            )
+            .await
         }
         DataCommands::Validate { file } => {
             ensure_json_output(format, "data validate")?;
-            handle_validate(profile, format, instance, timeout_secs, proxy_url, &file).await
+            handle_validate(profile, format, instance, timeout_secs, proxy, &file).await
         }
         DataCommands::Import {
             file,
@@ -60,7 +69,7 @@ pub async fn handle(
                 format,
                 instance,
                 timeout_secs,
-                proxy_url,
+                proxy,
                 &file,
                 ImportExecutionOptions {
                     dry_run,
@@ -351,12 +360,13 @@ async fn handle_export(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     export: ExportRequest,
 ) -> anyhow::Result<()> {
     tracing::info!("Exporting records from table: {}", export.table);
 
-    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+    let mut client =
+        crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
     let pagination = PaginationConfig::default().with_limit(export.limit);
 
     let records = client
@@ -410,7 +420,7 @@ async fn handle_export_package(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     file: &str,
     out_dir: &str,
 ) -> anyhow::Result<()> {
@@ -433,7 +443,7 @@ async fn handle_export_package(
         profile,
         instance,
         Some(long_running_timeout_secs(timeout_secs)),
-        proxy_url,
+        proxy,
     )?;
     let instance_url = client.base_url().to_string();
     let mut raw_records_by_table = BTreeMap::new();
@@ -525,13 +535,14 @@ async fn handle_validate(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     file: &str,
 ) -> anyhow::Result<()> {
     match read_dataset_input(file)? {
         DatasetInput::Flat(artifact) => {
             let report =
-                build_flat_validation_report(profile, instance, timeout_secs, proxy_url, &artifact).await?;
+                build_flat_validation_report(profile, instance, timeout_secs, proxy, &artifact)
+                    .await?;
             output::print_output(&report, format)
         }
         DatasetInput::Package(manifest) => {
@@ -539,7 +550,7 @@ async fn handle_validate(
                 profile,
                 instance,
                 Some(long_running_timeout_secs(timeout_secs)),
-                proxy_url,
+                proxy,
                 file,
                 &manifest,
             )
@@ -554,13 +565,22 @@ async fn handle_import(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     file: &str,
     options: ImportExecutionOptions<'_>,
 ) -> anyhow::Result<()> {
     match read_dataset_input(file)? {
         DatasetInput::Flat(artifact) => {
-            handle_import_flat(profile, format, instance, timeout_secs, proxy_url, &artifact, options).await
+            handle_import_flat(
+                profile,
+                format,
+                instance,
+                timeout_secs,
+                proxy,
+                &artifact,
+                options,
+            )
+            .await
         }
         DatasetInput::Package(manifest) => {
             if options.import_set_table.is_some() {
@@ -574,7 +594,7 @@ async fn handle_import(
                 format,
                 instance,
                 Some(long_running_timeout_secs(timeout_secs)),
-                proxy_url,
+                proxy,
                 file,
                 &manifest,
                 options.dry_run,
@@ -588,14 +608,14 @@ async fn build_flat_validation_report(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     artifact: &TableExportArtifact,
 ) -> anyhow::Result<ValidationReport> {
     build_table_validation_report(
         profile,
         instance,
         timeout_secs,
-        proxy_url,
+        proxy,
         &artifact.kind,
         &artifact.table,
         artifact.fields.as_deref(),
@@ -604,17 +624,18 @@ async fn build_flat_validation_report(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn build_table_validation_report(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     dataset_kind: &str,
     table: &str,
     fields: Option<&[String]>,
     records: &[Record],
 ) -> anyhow::Result<ValidationReport> {
-    let schema_fields = fetch_table_schema(profile, instance, timeout_secs, proxy_url, table).await?;
+    let schema_fields = fetch_table_schema(profile, instance, timeout_secs, proxy, table).await?;
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
@@ -720,11 +741,12 @@ async fn handle_import_flat(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     artifact: &TableExportArtifact,
     options: ImportExecutionOptions<'_>,
 ) -> anyhow::Result<()> {
-    let report = build_flat_validation_report(profile, instance, timeout_secs, proxy_url, artifact).await?;
+    let report =
+        build_flat_validation_report(profile, instance, timeout_secs, proxy, artifact).await?;
 
     if !report.ready {
         anyhow::bail!(
@@ -768,7 +790,8 @@ async fn handle_import_flat(
         return output::print_output(&import_report, format);
     }
 
-    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+    let mut client =
+        crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
     let use_import_set = options.import_set_table.is_some();
     let path = if let Some(staging_table) = options.import_set_table {
         format!("/api/now/import/{staging_table}")
@@ -880,7 +903,7 @@ async fn build_package_validation_report(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     file: &str,
     manifest: &DatasetManifest,
 ) -> anyhow::Result<DatasetValidationReport> {
@@ -898,7 +921,7 @@ async fn build_package_validation_report(
             profile,
             instance,
             timeout_secs,
-            proxy_url,
+            proxy,
             &artifact.kind,
             &table.name,
             table.fields.as_deref(),
@@ -1015,18 +1038,20 @@ async fn build_package_validation_report(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_import_package(
     profile: &str,
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     file: &str,
     manifest: &DatasetManifest,
     dry_run: bool,
 ) -> anyhow::Result<()> {
     let validation =
-        build_package_validation_report(profile, instance, timeout_secs, proxy_url, file, manifest).await?;
+        build_package_validation_report(profile, instance, timeout_secs, proxy, file, manifest)
+            .await?;
     if !validation.ready {
         anyhow::bail!(
             "Dataset package validation failed with {} error(s)",
@@ -1066,7 +1091,8 @@ async fn handle_import_package(
     let base_dir = dataset_base_dir(file);
     let manifest_tables = manifest_table_map(&manifest.tables)?;
     let required_source_keys = required_source_keys_from_manifest(&manifest.tables);
-    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+    let mut client =
+        crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
     let mut source_to_target_ids: HashMap<String, HashMap<String, HashMap<String, String>>> =
         HashMap::new();
     let mut table_results = Vec::new();
@@ -1161,10 +1187,11 @@ async fn fetch_table_schema(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     table: &str,
 ) -> anyhow::Result<Vec<SchemaField>> {
-    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+    let mut client =
+        crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
     let table_names = fetch_table_hierarchy(&mut client, table).await?;
     let query = if table_names.len() == 1 {
         format!(

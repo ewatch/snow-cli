@@ -40,14 +40,14 @@ pub async fn handle(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
 ) -> anyhow::Result<()> {
     match args.command {
         AttachmentCommands::List { table, sys_id } => {
             tracing::info!("Listing attachments for {}/{}", table, sys_id);
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
             let query = format!("table_name={table}^table_sys_id={sys_id}");
             let response: AttachmentListResponse = client
                 .get_json_with_params(
@@ -69,7 +69,7 @@ pub async fn handle(
             tracing::info!("Downloading attachment: {}", sys_id);
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
             let meta_path = format!("/api/now/attachment/{sys_id}");
             let metadata: AttachmentSingleResponse = client.get_json(&meta_path).await?;
 
@@ -117,7 +117,8 @@ pub async fn handle(
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", file, e))?;
 
-            let client = crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+            let client =
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
             let auth_headers = client.authenticator().authenticate().await?;
             let url = format!("{}/api/now/attachment/upload", client.base_url());
 

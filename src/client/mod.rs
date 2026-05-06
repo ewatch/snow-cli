@@ -8,6 +8,32 @@ use reqwest::{Client, Method, Response};
 
 use crate::client::error::ApiError;
 
+/// Proxy configuration for HTTP requests.
+///
+/// When `url` is `None` the standard `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`
+/// environment variables are respected automatically by reqwest.
+#[derive(Debug, Default, Clone)]
+pub struct ProxyOptions {
+    /// Explicit proxy URL, e.g. `http://proxy.example.com:8080`.
+    /// Credentials for basic auth can be embedded in the URL
+    /// (`http://user:pass@proxy.example.com:8080`) or supplied via
+    /// `username` / `password`.
+    pub url: Option<String>,
+
+    /// Proxy username for basic authentication.
+    pub username: Option<String>,
+
+    /// Proxy password for basic authentication.
+    pub password: Option<String>,
+}
+
+impl ProxyOptions {
+    /// Returns `true` when no proxy options are set (i.e., use env-var defaults).
+    pub fn is_empty(&self) -> bool {
+        self.url.is_none() && self.username.is_none() && self.password.is_none()
+    }
+}
+
 /// Build an authenticated [`SnowClient`] from the user's configuration.
 ///
 /// Loads the config, resolves the active profile, creates the appropriate
@@ -17,14 +43,19 @@ pub fn build_client(
     profile_name: &str,
     instance_override: Option<&str>,
 ) -> anyhow::Result<SnowClient> {
-    build_client_with_timeout(profile_name, instance_override, None, None)
+    build_client_with_timeout(
+        profile_name,
+        instance_override,
+        None,
+        &ProxyOptions::default(),
+    )
 }
 
 pub fn build_client_with_timeout(
     profile_name: &str,
     instance_override: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &ProxyOptions,
 ) -> anyhow::Result<SnowClient> {
     let config = crate::config::AppConfig::load()?;
     let profile = config
@@ -41,7 +72,7 @@ pub fn build_client_with_timeout(
         authenticator,
         ClientConfig {
             timeout_secs: timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
-            proxy_url: proxy_url.map(String::from),
+            proxy: proxy.clone(),
         },
     )
 }
@@ -407,21 +438,18 @@ pub struct ClientConfig {
     /// Request timeout in seconds.
     pub timeout_secs: u64,
 
-    /// Optional explicit proxy URL (e.g., `http://proxy.example.com:8080`).
+    /// Proxy settings for all HTTP requests.
     ///
-    /// When set, all HTTP/HTTPS traffic is routed through this proxy.
-    /// Basic-auth credentials can be embedded directly in the URL
-    /// (`http://user:pass@proxy.example.com:8080`).
-    /// When not set, the standard `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`
-    /// environment variables are respected automatically.
-    pub proxy_url: Option<String>,
+    /// When `proxy.url` is `None` the standard `HTTP_PROXY` / `HTTPS_PROXY` /
+    /// `ALL_PROXY` environment variables are respected automatically.
+    pub proxy: ProxyOptions,
 }
 
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
             timeout_secs: DEFAULT_TIMEOUT_SECS,
-            proxy_url: None,
+            proxy: ProxyOptions::default(),
         }
     }
 }
@@ -445,9 +473,13 @@ impl SnowClient {
             .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(config.timeout_secs));
 
-        if let Some(proxy_url) = config.proxy_url {
-            let proxy = reqwest::Proxy::all(&proxy_url)
+        if let Some(proxy_url) = config.proxy.url {
+            let mut proxy = reqwest::Proxy::all(&proxy_url)
                 .map_err(|e| anyhow::anyhow!("Invalid proxy URL '{}': {}", proxy_url, e))?;
+            if let (Some(username), Some(password)) = (config.proxy.username, config.proxy.password)
+            {
+                proxy = proxy.basic_auth(&username, &password);
+            }
             builder = builder.proxy(proxy);
         }
 

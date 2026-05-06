@@ -7,7 +7,7 @@ pub async fn handle(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
 ) -> anyhow::Result<()> {
     match args.command {
         CodesearchCommands::Search {
@@ -20,7 +20,7 @@ pub async fn handle(
             tracing::info!(query = %query, "Searching code");
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
 
             let limit_str = limit.to_string();
             let search_all_scopes = !current_scope;

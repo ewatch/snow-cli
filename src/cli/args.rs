@@ -60,11 +60,23 @@ pub struct Cli {
     /// Proxy URL for all HTTP requests (e.g., http://proxy.example.com:8080).
     ///
     /// Credentials for proxy basic auth can be embedded in the URL
-    /// (e.g., http://user:pass@proxy.example.com:8080).
+    /// (e.g., http://user:pass@proxy.example.com:8080) or supplied via
+    /// --proxy-username / --proxy-password.
     /// When not set, the HTTP_PROXY / HTTPS_PROXY / ALL_PROXY environment
     /// variables are respected automatically by the HTTP client.
+    ///
+    /// Note: Windows NTLM/Kerberos proxy authentication (ProxyUseDefaultCredentials)
+    /// is not supported with the current TLS backend.
     #[arg(long, global = true, env = "SNOW_CLI_PROXY")]
     pub proxy: Option<String>,
+
+    /// Username for proxy basic authentication (requires --proxy).
+    #[arg(long, global = true, env = "SNOW_CLI_PROXY_USERNAME")]
+    pub proxy_username: Option<String>,
+
+    /// Password for proxy basic authentication (requires --proxy).
+    #[arg(long, global = true, env = "SNOW_CLI_PROXY_PASSWORD")]
+    pub proxy_password: Option<String>,
 
     /// Increase verbosity (-v info, -vv debug, -vvv trace)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]

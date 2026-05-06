@@ -20,7 +20,7 @@ pub async fn run_background_script(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     script: &str,
     scope: &str,
     endpoint: Option<&str>,
@@ -34,7 +34,7 @@ pub async fn run_background_script(
         quota_managed_transaction: false,
     };
 
-    execute_background_script(profile, instance, timeout_secs, proxy_url, script, &options).await
+    execute_background_script(profile, instance, timeout_secs, proxy, script, &options).await
 }
 
 pub async fn handle(
@@ -43,7 +43,7 @@ pub async fn handle(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
 ) -> anyhow::Result<()> {
     match args.command {
         ScriptCommands::Run {
@@ -69,7 +69,7 @@ pub async fn handle(
                 format,
                 instance,
                 timeout_secs,
-                proxy_url,
+                proxy,
                 file,
                 code,
                 &options,
@@ -89,7 +89,7 @@ async fn execute_background_script(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     script: &str,
     options: &ScriptRunOptions,
 ) -> anyhow::Result<String> {
@@ -102,7 +102,8 @@ async fn execute_background_script(
         "Executing background script"
     );
 
-    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+    let mut client =
+        crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
     let requires_form_session = endpoint_requires_form_session(&options.endpoint);
     let form_session = if requires_form_session {
         Some(
@@ -277,19 +278,20 @@ async fn execute_background_script(
     Ok(response_body)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_run(
     profile: &str,
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     file: Option<String>,
     code: Option<String>,
     options: &ScriptRunOptions,
 ) -> anyhow::Result<()> {
     let script = resolve_script(file, code)?;
     let response_body =
-        execute_background_script(profile, instance, timeout_secs, proxy_url, &script, options).await?;
+        execute_background_script(profile, instance, timeout_secs, proxy, &script, options).await?;
 
     match format {
         OutputFormat::Json => match serde_json::from_str::<serde_json::Value>(&response_body) {

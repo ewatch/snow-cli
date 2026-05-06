@@ -11,7 +11,7 @@ pub async fn handle(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
 ) -> anyhow::Result<()> {
     match args.command {
         TableCommands::List {
@@ -24,7 +24,7 @@ pub async fn handle(
             tracing::info!("Listing records from table: {}", table);
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
             let pagination = PaginationConfig::default().with_limit(limit);
 
             let records = client
@@ -49,7 +49,7 @@ pub async fn handle(
             tracing::info!("Getting record {} from table: {}", sys_id, table);
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
 
             let path = format!("/api/now/table/{table}/{sys_id}");
             let mut params = Vec::new();
@@ -76,7 +76,7 @@ pub async fn handle(
                 .map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
 
             let path = format!("/api/now/table/{table}");
             let response: SingleRecordResponse = client.post_json(&path, &body).await?;
@@ -98,7 +98,7 @@ pub async fn handle(
                 .map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
 
             let path = format!("/api/now/table/{table}/{sys_id}");
             let response: SingleRecordResponse = client.patch_json(&path, &body).await?;
@@ -129,7 +129,7 @@ pub async fn handle(
             }
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
 
             let path = format!("/api/now/table/{table}/{sys_id}");
             client.delete(&path).await?;
@@ -148,7 +148,7 @@ pub async fn handle(
                 format,
                 instance,
                 timeout_secs,
-                proxy_url,
+                proxy,
                 &table,
                 extended,
                 include_inherited,
@@ -164,19 +164,21 @@ pub async fn handle(
 /// and labels. With `--extended`, also shows required, read-only, max_length,
 /// default_value, and reference table. With `--include-inherited`, queries
 /// parent tables as well (e.g., `incident` extends `task`).
+#[allow(clippy::too_many_arguments)]
 async fn handle_schema(
     profile: &str,
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
     table: &str,
     extended: bool,
     include_inherited: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Fetching schema for table: {}", table);
 
-    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+    let mut client =
+        crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
 
     // Build the base query: get columns for this table (exclude table-level metadata rows)
     let query = if include_inherited {

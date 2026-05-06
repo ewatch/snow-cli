@@ -12,6 +12,7 @@ mod models;
 
 use clap::Parser;
 use cli::args::Cli;
+use client::ProxyOptions;
 use std::io::IsTerminal;
 
 #[tokio::main]
@@ -38,6 +39,13 @@ async fn main() -> anyhow::Result<()> {
         },
         cli::args::Commands::Completions { .. } => "default".to_string(),
         _ => config.resolve_active_profile_name(cli.profile.as_deref())?,
+    };
+
+    // Build proxy options once from global flags.
+    let proxy = ProxyOptions {
+        url: cli.proxy.clone(),
+        username: cli.proxy_username.clone(),
+        password: cli.proxy_password.clone(),
     };
 
     // Initialize tracing based on verbosity level
@@ -77,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
-                cli.proxy.as_deref(),
+                &proxy,
             )
             .await
         }
@@ -88,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
-                cli.proxy.as_deref(),
+                &proxy,
             )
             .await
         }
@@ -99,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
-                cli.proxy.as_deref(),
+                &proxy,
             )
             .await
         }
@@ -110,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
-                cli.proxy.as_deref(),
+                &proxy,
             )
             .await
         }
@@ -121,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
-                cli.proxy.as_deref(),
+                &proxy,
             )
             .await
         }
@@ -132,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
-                cli.proxy.as_deref(),
+                &proxy,
             )
             .await
         }
@@ -143,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
-                cli.proxy.as_deref(),
+                &proxy,
             )
             .await
         }
@@ -154,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
-                cli.proxy.as_deref(),
+                &proxy,
             )
             .await
         }
@@ -165,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
-                cli.proxy.as_deref(),
+                &proxy,
             )
             .await
         }

@@ -9,7 +9,7 @@ pub async fn handle(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    proxy_url: Option<&str>,
+    proxy: &crate::client::ProxyOptions,
 ) -> anyhow::Result<()> {
     match args.command {
         ApiCommands::Get { path, header } => {
@@ -17,7 +17,7 @@ pub async fn handle(
 
             let extra_headers = parse_headers(&header)?;
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
 
             let response = if extra_headers.is_empty() {
                 client.get(&path).await?
@@ -35,7 +35,7 @@ pub async fn handle(
             let body = read_data(data)?;
             let extra_headers = parse_headers(&header)?;
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
 
             let response = if extra_headers.is_empty() {
                 client.post(&path, &body).await?
@@ -59,7 +59,7 @@ pub async fn handle(
             let body = read_data(data)?;
             let extra_headers = parse_headers(&header)?;
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
 
             let response = if extra_headers.is_empty() {
                 client.put(&path, &body).await?
@@ -82,7 +82,7 @@ pub async fn handle(
 
             let extra_headers = parse_headers(&header)?;
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy)?;
 
             let response = if extra_headers.is_empty() {
                 client.delete(&path).await?
