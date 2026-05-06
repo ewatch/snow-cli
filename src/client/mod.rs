@@ -473,12 +473,13 @@ impl SnowClient {
             .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(config.timeout_secs));
 
-        if let Some(proxy_url) = config.proxy.url {
-            let mut proxy = reqwest::Proxy::all(&proxy_url)
+        if let Some(ref proxy_url) = config.proxy.url {
+            let mut proxy = reqwest::Proxy::all(proxy_url)
                 .map_err(|e| anyhow::anyhow!("Invalid proxy URL '{}': {}", proxy_url, e))?;
-            if let (Some(username), Some(password)) = (config.proxy.username, config.proxy.password)
+            if let (Some(username), Some(password)) =
+                (&config.proxy.username, &config.proxy.password)
             {
-                proxy = proxy.basic_auth(&username, &password);
+                proxy = proxy.basic_auth(username, password);
             }
             builder = builder.proxy(proxy);
         }
