@@ -11,6 +11,7 @@ pub async fn handle(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
+    proxy_url: Option<&str>,
 ) -> anyhow::Result<()> {
     match args.command {
         TableCommands::List {
@@ -23,7 +24,7 @@ pub async fn handle(
             tracing::info!("Listing records from table: {}", table);
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
             let pagination = PaginationConfig::default().with_limit(limit);
 
             let records = client
@@ -48,7 +49,7 @@ pub async fn handle(
             tracing::info!("Getting record {} from table: {}", sys_id, table);
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
 
             let path = format!("/api/now/table/{table}/{sys_id}");
             let mut params = Vec::new();
@@ -75,7 +76,7 @@ pub async fn handle(
                 .map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
 
             let path = format!("/api/now/table/{table}");
             let response: SingleRecordResponse = client.post_json(&path, &body).await?;
@@ -97,7 +98,7 @@ pub async fn handle(
                 .map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
 
             let path = format!("/api/now/table/{table}/{sys_id}");
             let response: SingleRecordResponse = client.patch_json(&path, &body).await?;
@@ -128,7 +129,7 @@ pub async fn handle(
             }
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
 
             let path = format!("/api/now/table/{table}/{sys_id}");
             client.delete(&path).await?;
@@ -147,6 +148,7 @@ pub async fn handle(
                 format,
                 instance,
                 timeout_secs,
+                proxy_url,
                 &table,
                 extended,
                 include_inherited,
@@ -167,13 +169,14 @@ async fn handle_schema(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
+    proxy_url: Option<&str>,
     table: &str,
     extended: bool,
     include_inherited: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Fetching schema for table: {}", table);
 
-    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
 
     // Build the base query: get columns for this table (exclude table-level metadata rows)
     let query = if include_inherited {

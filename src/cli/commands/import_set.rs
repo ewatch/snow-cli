@@ -51,6 +51,7 @@ pub async fn handle(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
+    proxy_url: Option<&str>,
 ) -> anyhow::Result<()> {
     match args.command {
         crate::cli::args::ImportSetCommands::Load {
@@ -65,7 +66,7 @@ pub async fn handle(
                 .map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
 
             let mut client =
-                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
             let path = format!("/api/now/import/{table}");
             let response: ImportSetLoadResponse = client.post_json(&path, &body).await?;
             let summary = summarize_results(&response.result);

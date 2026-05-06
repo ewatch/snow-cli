@@ -227,6 +227,7 @@ pub async fn handle(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
+    proxy_url: Option<&str>,
 ) -> anyhow::Result<()> {
     match args.command {
         ScopeCommands::List {
@@ -240,6 +241,7 @@ pub async fn handle(
                 format,
                 instance,
                 timeout_secs,
+                proxy_url,
                 search.as_deref(),
                 &kind,
                 ScopeListTextOptions {
@@ -250,10 +252,10 @@ pub async fn handle(
             .await
         }
         ScopeCommands::Inspect { scope, details } => {
-            handle_inspect(profile, format, instance, timeout_secs, &scope, details).await
+            handle_inspect(profile, format, instance, timeout_secs, proxy_url, &scope, details).await
         }
         ScopeCommands::Inventory { scope } => {
-            handle_inventory(profile, format, instance, timeout_secs, &scope).await
+            handle_inventory(profile, format, instance, timeout_secs, proxy_url, &scope).await
         }
         ScopeCommands::MoveFile {
             table,
@@ -267,6 +269,7 @@ pub async fn handle(
                 format,
                 instance,
                 timeout_secs,
+                proxy_url,
                 MoveFileRequest {
                     table: &table,
                     sys_id: &sys_id,
@@ -285,11 +288,12 @@ async fn handle_list(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
+    proxy_url: Option<&str>,
     search: Option<&str>,
     kinds: &[ScopeListKind],
     text_options: ScopeListTextOptions,
 ) -> anyhow::Result<()> {
-    let payload = list_scopes(profile, instance, timeout_secs, search, kinds).await?;
+    let payload = list_scopes(profile, instance, timeout_secs, proxy_url, search, kinds).await?;
 
     match format {
         OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Toon => {
@@ -305,10 +309,11 @@ async fn handle_inspect(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
+    proxy_url: Option<&str>,
     scope_input: &str,
     details: ScopeDetailLevel,
 ) -> anyhow::Result<()> {
-    let collected = collect_scope_data(profile, instance, timeout_secs, scope_input).await?;
+    let collected = collect_scope_data(profile, instance, timeout_secs, proxy_url, scope_input).await?;
     let rows = collected.to_inventory_rows();
 
     let payload = ScopeInspectOutput {
@@ -345,9 +350,10 @@ async fn handle_inventory(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
+    proxy_url: Option<&str>,
     scope_input: &str,
 ) -> anyhow::Result<()> {
-    let collected = collect_scope_data(profile, instance, timeout_secs, scope_input).await?;
+    let collected = collect_scope_data(profile, instance, timeout_secs, proxy_url, scope_input).await?;
     let rows = collected.to_inventory_rows();
 
     match format {
@@ -378,6 +384,7 @@ async fn handle_move_file(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
+    proxy_url: Option<&str>,
     request: MoveFileRequest<'_>,
 ) -> anyhow::Result<()> {
     let script = build_move_file_script(
@@ -391,6 +398,7 @@ async fn handle_move_file(
         profile,
         instance,
         timeout_secs,
+        proxy_url,
         &script,
         "global",
         None,
@@ -758,9 +766,10 @@ async fn collect_scope_data(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
+    proxy_url: Option<&str>,
     scope_input: &str,
 ) -> anyhow::Result<CollectedScopeData> {
-    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
     let pagination = PaginationConfig::default();
 
     let scope_query = format!("scope={scope_input}^ORsys_id={scope_input}");
@@ -1066,10 +1075,11 @@ async fn list_scopes(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
+    proxy_url: Option<&str>,
     search: Option<&str>,
     kinds: &[ScopeListKind],
 ) -> anyhow::Result<ScopeListOutput> {
-    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs, proxy_url)?;
     let pagination = PaginationConfig::default();
     let scope_query = build_scope_search_query(search);
     let plugin_query = build_plugin_search_query(search);

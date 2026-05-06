@@ -17,13 +17,14 @@ pub fn build_client(
     profile_name: &str,
     instance_override: Option<&str>,
 ) -> anyhow::Result<SnowClient> {
-    build_client_with_timeout(profile_name, instance_override, None)
+    build_client_with_timeout(profile_name, instance_override, None, None)
 }
 
 pub fn build_client_with_timeout(
     profile_name: &str,
     instance_override: Option<&str>,
     timeout_secs: Option<u64>,
+    proxy_url: Option<&str>,
 ) -> anyhow::Result<SnowClient> {
     let config = crate::config::AppConfig::load()?;
     let profile = config
@@ -40,6 +41,7 @@ pub fn build_client_with_timeout(
         authenticator,
         ClientConfig {
             timeout_secs: timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+            proxy_url: proxy_url.map(String::from),
         },
     )
 }
@@ -404,12 +406,22 @@ pub struct SnowClient {
 pub struct ClientConfig {
     /// Request timeout in seconds.
     pub timeout_secs: u64,
+
+    /// Optional explicit proxy URL (e.g., `http://proxy.example.com:8080`).
+    ///
+    /// When set, all HTTP/HTTPS traffic is routed through this proxy.
+    /// Basic-auth credentials can be embedded directly in the URL
+    /// (`http://user:pass@proxy.example.com:8080`).
+    /// When not set, the standard `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`
+    /// environment variables are respected automatically.
+    pub proxy_url: Option<String>,
 }
 
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            proxy_url: None,
         }
     }
 }
@@ -429,10 +441,17 @@ impl SnowClient {
         authenticator: Box<dyn crate::auth::Authenticator>,
         config: ClientConfig,
     ) -> anyhow::Result<Self> {
-        let http = Client::builder()
+        let mut builder = Client::builder()
             .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(config.timeout_secs))
-            .build()?;
+            .timeout(Duration::from_secs(config.timeout_secs));
+
+        if let Some(proxy_url) = config.proxy_url {
+            let proxy = reqwest::Proxy::all(&proxy_url)
+                .map_err(|e| anyhow::anyhow!("Invalid proxy URL '{}': {}", proxy_url, e))?;
+            builder = builder.proxy(proxy);
+        }
+
+        let http = builder.build()?;
 
         Ok(Self {
             http,

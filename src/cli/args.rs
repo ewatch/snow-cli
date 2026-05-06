@@ -57,6 +57,15 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub timeout_secs: Option<u64>,
 
+    /// Proxy URL for all HTTP requests (e.g., http://proxy.example.com:8080).
+    ///
+    /// Credentials for proxy basic auth can be embedded in the URL
+    /// (e.g., http://user:pass@proxy.example.com:8080).
+    /// When not set, the HTTP_PROXY / HTTPS_PROXY / ALL_PROXY environment
+    /// variables are respected automatically by the HTTP client.
+    #[arg(long, global = true, env = "SNOW_CLI_PROXY")]
+    pub proxy: Option<String>,
+
     /// Increase verbosity (-v info, -vv debug, -vvv trace)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,

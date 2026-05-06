@@ -77,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
+                cli.proxy.as_deref(),
             )
             .await
         }
@@ -87,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
+                cli.proxy.as_deref(),
             )
             .await
         }
@@ -97,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
+                cli.proxy.as_deref(),
             )
             .await
         }
@@ -107,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
+                cli.proxy.as_deref(),
             )
             .await
         }
@@ -117,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
+                cli.proxy.as_deref(),
             )
             .await
         }
@@ -127,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
+                cli.proxy.as_deref(),
             )
             .await
         }
@@ -137,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
+                cli.proxy.as_deref(),
             )
             .await
         }
@@ -147,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
+                cli.proxy.as_deref(),
             )
             .await
         }
@@ -157,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
                 &cli.output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
+                cli.proxy.as_deref(),
             )
             .await
         }
