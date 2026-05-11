@@ -1,129 +1,73 @@
-# Command overview
+# Command reference
 
-Use `snow-cli --help` and `snow-cli <noun> --help` for the authoritative command reference.
+`snow-cli` uses a noun-verb command style:
 
-## Profile
+```bash
+snow-cli <noun> <verb> [options]
+```
 
-Manage ServiceNow connection profiles.
+Examples:
 
 ```bash
 snow-cli profile add dev --instance https://dev.service-now.com --auth-method basic --username admin
-snow-cli profile edit dev --username new-admin
-snow-cli profile default dev
-snow-cli profile current
-snow-cli profile list
-snow-cli profile show
-snow-cli profile remove old-dev
-```
-
-`config` is available as an alias for `profile`.
-
-## Auth
-
-Store and remove credentials, check login status, and retrieve tokens where supported.
-
-```bash
 snow-cli auth login
-snow-cli auth login --password '<password>'
-snow-cli auth status
-snow-cli auth token
-snow-cli auth logout
-```
-
-## Table API
-
-Perform CRUD operations against any ServiceNow table.
-
-```bash
 snow-cli table list incident --query 'active=true' --limit 20
-snow-cli table get incident <sys_id>
-snow-cli table create incident --data '{"short_description":"Disk alert"}'
-snow-cli table update incident <sys_id> --data '{"state":"2"}'
-snow-cli table delete incident <sys_id> --yes
-snow-cli table schema incident --extended
 ```
 
-## Raw API
-
-Call arbitrary REST endpoints.
+Use the pages in this section for command-specific guidance. The built-in help remains the authoritative source for exact usage:
 
 ```bash
-snow-cli api get /api/now/table/incident?sysparm_limit=1
-snow-cli api post /api/x_myapp/action --data '{"dry_run":true}'
-snow-cli api get /api/x_myapp/status -H 'X-Trace-Id:abc123'
+snow-cli --help
+snow-cli <noun> --help
+snow-cli <noun> <verb> --help
 ```
 
-## Script
+## Global flags
 
-Run a ServiceNow background script.
+Every command supports these top-level flags:
+
+- `--profile <name>`: use a specific saved profile
+- `--instance <url>`: temporarily override the instance URL from the active profile
+- `--output <json|csv|jsonl|toon|text>`: choose the stdout format
+- `--timeout-secs <seconds>`: override the HTTP timeout for the current command
+- `-v`, `-vv`, `-vvv`: increase log verbosity on stderr
+
+## Command pages
+
+| Command | What it is for |
+|---|---|
+| [`profile`](./commands/profile.md) | Create, edit, inspect, and switch connection profiles |
+| [`auth`](./commands/auth.md) | Log in, log out, inspect auth status, and print tokens |
+| [`table`](./commands/table.md) | CRUD operations and schema inspection for ServiceNow tables |
+| [`data`](./commands/data.md) | Export, validate, and import data artifacts |
+| [`seed`](./commands/seed.md) | Planned test-data workflows |
+| [`scope`](./commands/scope.md) | Inspect scopes, export inventory, and move files between scopes |
+| [`attachment`](./commands/attachment.md) | List, download, and upload attachments |
+| [`import-set`](./commands/import-set.md) | Load records into staging tables |
+| [`api`](./commands/api.md) | Send raw REST requests to arbitrary endpoints |
+| [`script`](./commands/script.md) | Run background scripts |
+| [`codesearch`](./commands/codesearch.md) | Search code and metadata on an instance |
+| [`completions`](./commands/completions.md) | Generate shell completion scripts |
+
+## Common patterns
+
+### Use a saved profile
 
 ```bash
-snow-cli script run --script 'gs.info("hello from snow-cli")'
+snow-cli --profile prod table list incident --limit 10
 ```
 
-## Code search
-
-Search code and metadata on the instance.
+### Pipe JSON into commands that accept stdin
 
 ```bash
-snow-cli codesearch search "GlideRecord"
+echo '{"short_description":"Created from stdin"}' | snow-cli table create incident
+echo '{"user_name":"import-user"}' | snow-cli import-set load imp_user
 ```
 
-## Attachments
-
-Work with attachments.
+### Ask the CLI for help at the exact level you need
 
 ```bash
-snow-cli attachment --help
-```
-
-## Import sets
-
-Load rows into import set tables.
-
-```bash
-snow-cli import-set load imp_user --data '{"user_name":"snow-cli-user","email":"snow-cli-user@example.com"}'
-echo '{"user_name":"stdin-user"}' | snow-cli import-set load imp_user
-```
-
-## Data workflows
-
-Export, validate, and import portable datasets.
-
-```bash
-snow-cli data export incident --query 'active=true'
-snow-cli data export sys_user --fields sys_id,user_name,email --out users.json
-snow-cli data validate --file users.json
-snow-cli data import --file users.json
-```
-
-## Seed workflows
-
-Plan, apply, and clean up declarative test data.
-
-```bash
-snow-cli seed plan --file qa-fixture.json
-snow-cli seed apply --file qa-fixture.json
-snow-cli seed cleanup <run-id> --dry-run
-```
-
-## Scope workflows
-
-Inspect ServiceNow application scope metadata.
-
-```bash
-snow-cli scope list
-snow-cli scope inspect x_my_app
-```
-
-## Shell completions
-
-Generate completions for supported shells.
-
-```bash
-snow-cli completions bash
-snow-cli completions zsh
-snow-cli completions fish
-snow-cli completions powershell
-snow-cli completions elvish
+snow-cli auth --help
+snow-cli auth login --help
+snow-cli scope move-file --help
 ```
