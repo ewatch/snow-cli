@@ -52,7 +52,7 @@ http = "1"
 base64 = "0.22"
 rpassword = "7.4.0"
 open = "5.3.4"
-rand = "0.8"
+rand = "0.9"
 sha2 = "0.10"
 
 [dev-dependencies]
