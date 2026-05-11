@@ -57,6 +57,25 @@ snow-cli script run --file ./job.js --sandbox
 snow-cli script run --code 'gs.sleep(1000); gs.info("done")' --quota-managed-transaction
 ```
 
+### Hints from live E2E testing
+
+- For safe live verification on a real instance, start with `--sandbox` so you can confirm auth, form bootstrap, and script execution without writing records.
+- All three input modes were validated end to end: `--code`, `--file`, and stdin.
+- Multiline scripts also worked from both `--file` and stdin.
+- Some ServiceNow instances use older background script JavaScript parsing. If the instance reports an older script engine level (for example `Script ES Level: 0`), wrapper syntax such as IIFEs may fail with errors like `Invalid function definition` even though simpler multiline scripts work.
+- If you hit parser compatibility issues, prefer plain top-level statements over wrapper patterns.
+
+Example multiline stdin run:
+
+```bash
+cat <<'EOF' | snow-cli script run --sandbox
+var user = gs.getUserName();
+gs.print('start');
+gs.print('user=' + user);
+gs.print('end');
+EOF
+```
+
 ## When to use `script`
 
 Use this command when you need to:

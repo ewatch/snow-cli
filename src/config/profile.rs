@@ -60,7 +60,8 @@ pub struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_path: Option<PathBuf>,
 
-    /// Optional browser entry point for SSO/SAML login.
+    /// Optional browser entry point for browser-session login.
+    /// Kept for backward compatibility but not required.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sso_login_url: Option<String>,
 }
@@ -73,7 +74,10 @@ pub enum AuthMethod {
     Oauth2,
     ApiKey,
     Mtls,
-    Saml,
+    /// Browser session token — cookie is read from the `SNOW_SESSION_COOKIE` env var at
+    /// runtime and is never persisted to the profile or keychain.
+    #[serde(alias = "saml")]
+    BrowserSession,
 }
 
 /// OAuth 2.0 grant type for token acquisition.

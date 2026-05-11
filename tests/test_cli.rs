@@ -1241,22 +1241,19 @@ oauth_grant_type = "client_credentials"
 }
 
 #[test]
-fn test_auth_login_saml_stores_session_cookie() {
+fn test_auth_login_browser_session_validates_cookie_and_prints_export_hint() {
     let (_dir, config_path) = common::create_temp_config(
         r#"
 default_profile = "default"
 
 [profiles.default]
 instance = "https://dev.service-now.com"
-auth_method = "saml"
+auth_method = "browser_session"
 "#,
     );
-    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
-        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
         .args([
             "auth",
             "login",
@@ -1265,19 +1262,18 @@ auth_method = "saml"
         ])
         .assert()
         .success()
+        // Token is NOT stored — output shows export hint instead
+        .stdout(predicate::str::contains("\"stored\":false"))
+        .stdout(predicate::str::contains("export_hint"))
+        .stdout(predicate::str::contains("SNOW_SESSION_COOKIE"))
         .stdout(predicate::str::contains(
             "\"credential_type\":\"session_cookie\"",
         ));
-
-    assert_eq!(
-        common::read_test_keychain_entry(&keychain_store, "snow-cli", "default:session_cookie")
-            .unwrap(),
-        "JSESSIONID=session123; glide_user_route=route456"
-    );
 }
 
 #[test]
-fn test_auth_login_saml_rejects_cookie_without_jsessionid() {
+fn test_auth_login_browser_session_accepts_legacy_saml_method_name() {
+    // Old profiles with auth_method = "saml" must still be loadable (backward compat)
     let (_dir, config_path) = common::create_temp_config(
         r#"
 default_profile = "default"
@@ -1287,12 +1283,35 @@ instance = "https://dev.service-now.com"
 auth_method = "saml"
 "#,
     );
-    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
-        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .args([
+            "auth",
+            "login",
+            "--session-cookie",
+            "JSESSIONID=session123; glide_user_route=route456",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"stored\":false"))
+        .stdout(predicate::str::contains("SNOW_SESSION_COOKIE"));
+}
+
+#[test]
+fn test_auth_login_browser_session_rejects_cookie_without_jsessionid() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "default"
+
+[profiles.default]
+instance = "https://dev.service-now.com"
+auth_method = "browser_session"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
         .args([
             "auth",
             "login",
@@ -1305,15 +1324,13 @@ auth_method = "saml"
 }
 
 #[test]
-fn test_auth_login_help_mentions_managed_browser_for_saml() {
+fn test_auth_login_help_mentions_browser_session_export_hint() {
     cargo_bin_cmd!("snow-cli")
         .args(["auth", "login", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("managed browser session"))
-        .stdout(predicate::str::contains(
-            "capture the ServiceNow session automatically",
-        ));
+        .stdout(predicate::str::contains("SNOW_SESSION_COOKIE"))
+        .stdout(predicate::str::contains("browser-session"));
 }
 
 // --- Table command integration tests ---

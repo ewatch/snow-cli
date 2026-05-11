@@ -7,9 +7,9 @@ const PROFILE_AFTER_HELP: &str = "Examples:\n  snow-cli profile add dev --instan
 
 const PROFILE_INIT_AFTER_HELP: &str = "Notes:\n  - This legacy command is non-interactive by default (safe for agents and CI).\n  - Prefer `snow-cli profile add <name>` for new profiles.\n  - Pass required values as flags.\n\nExamples:\n  snow-cli profile add default --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli profile init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli profile init --name prod --instance https://prod.service-now.com --auth-method oauth2 --oauth-grant-type client-credentials --client-id abc123";
 
-const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login\n  printf '%s' \"$SNOW_PASSWORD\" | snow-cli auth login --password-stdin\n  printf '%s' \"$SNOW_SESSION_COOKIE\" | snow-cli auth login --session-cookie-stdin\n  snow-cli auth status\n  snow-cli auth token\n  snow-cli auth logout";
+const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login\n  printf '%s' \"$SNOW_PASSWORD\" | snow-cli auth login --password-stdin\n  snow-cli auth status\n  snow-cli auth token\n  snow-cli auth logout";
 
-const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login\n  printf '%s' \"$SNOW_PASSWORD\" | snow-cli auth login --password-stdin\n  printf '%s' \"$SNOW_API_TOKEN\" | snow-cli auth login --token-stdin\n  printf '%s' \"$SNOW_CLIENT_SECRET\" | snow-cli auth login --client-secret-stdin\n  snow-cli auth login --no-browser\n  printf '%s' \"$SNOW_SESSION_COOKIE\" | snow-cli auth login --session-cookie-stdin\n\nTip:\n  Prefer interactive prompts or --*-stdin flags over command-line secret flags, which can leak through shell history and process listings.\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.\n  For OAuth2 authorization-code profiles, snow-cli opens the authorization URL and waits for a local redirect callback. Public PKCE clients can omit --client-secret.\n  For SAML profiles, omit --session-cookie to let snow-cli launch a managed browser session, wait for login completion, and capture the ServiceNow session automatically.";
+const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login\n  printf '%s' \"$SNOW_PASSWORD\" | snow-cli auth login --password-stdin\n  printf '%s' \"$SNOW_API_TOKEN\" | snow-cli auth login --token-stdin\n  printf '%s' \"$SNOW_CLIENT_SECRET\" | snow-cli auth login --client-secret-stdin\n  snow-cli auth login --no-browser\n  snow-cli auth login --session-cookie 'JSESSIONID=...; glide_user_route=...'\n\nTip:\n  Prefer interactive prompts or --*-stdin flags over command-line secret flags, which can leak through shell history and process listings.\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.\n  For OAuth2 authorization-code profiles, snow-cli opens the authorization URL and waits for a local redirect callback. Public PKCE clients can omit --client-secret.\n  For browser-session profiles, provide the full Cookie header value from your authenticated browser session via --session-cookie or the SNOW_SESSION_COOKIE environment variable. The token is not stored.";
 
 const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended";
 
@@ -463,7 +463,10 @@ pub enum CliAuthMethod {
     Oauth2,
     ApiKey,
     Mtls,
-    Saml,
+    /// Browser session token — cookie provided via SNOW_SESSION_COOKIE env var at runtime.
+    /// Accepts the legacy alias `saml` for backward compatibility.
+    #[value(name = "browser-session", alias = "saml")]
+    BrowserSession,
 }
 
 /// OAuth 2.0 grant type for CLI argument parsing.
@@ -512,11 +515,12 @@ pub enum AuthCommands {
         #[arg(long, conflicts_with = "client_secret")]
         client_secret_stdin: bool,
 
-        /// Authenticated ServiceNow Cookie header value (for saml auth)
+        /// Full Cookie header value from a browser session (for browser-session auth).
+        /// This value is NOT stored; export it as SNOW_SESSION_COOKIE for future requests.
         #[arg(long, conflicts_with = "session_cookie_stdin")]
         session_cookie: Option<String>,
 
-        /// Read authenticated ServiceNow Cookie header value from stdin
+        /// Read the Cookie header value from stdin (for browser-session auth)
         #[arg(long, conflicts_with = "session_cookie")]
         session_cookie_stdin: bool,
 
@@ -1056,6 +1060,10 @@ pub enum CodesearchCommands {
         /// Limit to a specific table (e.g., sys_script_include, sys_script, sysevent_script_action)
         #[arg(long = "source-table", alias = "table")]
         source_table: Option<String>,
+
+        /// Restrict search to a specific application scope (e.g., x_my_app, global)
+        #[arg(long)]
+        scope: Option<String>,
 
         /// Maximum number of results to return (default: 100)
         #[arg(long, default_value = "100")]

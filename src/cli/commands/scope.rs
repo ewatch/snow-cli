@@ -563,8 +563,8 @@ try {{
     version: text(target.getValue('version'))
   }};
 
-  if (!startsWith(output.target_scope.scope, 'x_')) {{
-    fail('Target scope must be a custom application scope (x_*).');
+  if (!startsWith(output.target_scope.scope, 'x_') && output.target_scope.scope !== 'global') {{
+    fail('Target scope must be a custom application scope (x_*) or global.');
     return;
   }}
 
@@ -605,8 +605,8 @@ try {{
     version: text(source.getValue('version'))
   }};
 
-  if (!startsWith(output.source_scope.scope, 'x_')) {{
-    fail('Source scope must be a custom application scope (x_*).');
+  if (!startsWith(output.source_scope.scope, 'x_') && output.source_scope.scope !== 'global') {{
+    fail('Source scope must be a custom application scope (x_*) or global.');
     return;
   }}
 

@@ -256,3 +256,84 @@ async fn test_codesearch_non_standard_response() {
         .stdout(predicate::str::contains("matches"))
         .stdout(predicate::str::contains("42"));
 }
+
+#[tokio::test]
+async fn test_codesearch_with_scope_filter() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/sn_codesearch/code_search/search"))
+        .and(query_param("term", "GlideRecord"))
+        .and(query_param("scope", "x_my_app"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "sys_id": "sc001",
+                    "name": "ScopedScript",
+                    "type": "sys_script_include"
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "codesearch",
+            "search",
+            "GlideRecord",
+            "--scope",
+            "x_my_app",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ScopedScript"))
+        .stdout(predicate::str::contains("sys_script_include"));
+}
+
+#[tokio::test]
+async fn test_codesearch_with_global_scope_filter() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/sn_codesearch/code_search/search"))
+        .and(query_param("term", "gs.info"))
+        .and(query_param("scope", "global"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "sys_id": "gl001",
+                    "name": "GlobalScript",
+                    "type": "sys_script_include"
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "codesearch",
+            "search",
+            "gs.info",
+            "--scope",
+            "global",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("GlobalScript"));
+}

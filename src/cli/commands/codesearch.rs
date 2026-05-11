@@ -12,6 +12,7 @@ pub async fn handle(
         CodesearchCommands::Search {
             query,
             source_table,
+            scope,
             limit,
             current_scope,
             search_group,
@@ -34,6 +35,10 @@ pub async fn handle(
 
             if let Some(ref t) = source_table {
                 params.push(("table", t.as_str()));
+            }
+
+            if let Some(ref s) = scope {
+                params.push(("scope", s.as_str()));
             }
 
             let response = client
@@ -74,6 +79,7 @@ mod tests {
             command: CodesearchCommands::Search {
                 query: "GlideRecord".to_string(),
                 source_table: Some("sys_script_include".to_string()),
+                scope: Some("x_my_app".to_string()),
                 limit: 500,
                 current_scope: false,
                 search_group: "sn_devstudio.Studio Search Group".to_string(),
@@ -83,12 +89,14 @@ mod tests {
             CodesearchCommands::Search {
                 query,
                 source_table,
+                scope,
                 limit,
                 current_scope,
                 search_group,
             } => {
                 assert_eq!(query, "GlideRecord");
                 assert_eq!(source_table, Some("sys_script_include".to_string()));
+                assert_eq!(scope, Some("x_my_app".to_string()));
                 assert_eq!(limit, 500);
                 assert!(!current_scope);
                 assert_eq!(search_group, "sn_devstudio.Studio Search Group");

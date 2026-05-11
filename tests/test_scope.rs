@@ -512,3 +512,290 @@ async fn test_scope_move_file_requires_yes_for_risky_records() {
             "Field script contains source scope identifiers",
         ));
 }
+
+// --- Move-file scope transition E2E tests ---
+
+/// Mount minimal script-runner mocks for move-file tests.
+/// Returns a mock that accepts any script body and responds with the supplied JSON.
+async fn mount_move_file_mocks(
+    server: &MockServer,
+    session_id: &str,
+    gck: &str,
+    result_json: &str,
+) {
+    Mock::given(method("GET"))
+        .and(path("/sys.scripts.modern.do"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header(
+                    "Set-Cookie",
+                    format!("JSESSIONID={session_id}; Path=/; HttpOnly"),
+                )
+                .set_body_string(format!("<script>window.g_ck = '{gck}';</script>")),
+        )
+        .expect(1)
+        .mount(server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/sys.scripts.do"))
+        .and(header("Cookie", format!("JSESSIONID={session_id}")))
+        .and(header("X-UserToken", gck))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!("<HTML><BODY>{result_json}</BODY></HTML>")),
+        )
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn test_scope_move_file_custom_scope_to_custom_scope_dry_run() {
+    // Named (x_*) scope → named (x_*) scope: the established baseline scenario.
+    let server = MockServer::start().await;
+
+    let result_json = serde_json::json!({
+        "ok": true,
+        "dry_run": true,
+        "table": "sys_script_include",
+        "sys_id": "file001",
+        "changed_fields": ["sys_scope", "sys_package", "sys_name", "api_name"],
+        "warnings": [],
+        "requires_confirmation": false,
+        "before": {
+            "sys_scope": "scope-src",
+            "sys_package": "scope-src",
+            "sys_name": "x_source_MyScript",
+            "api_name": "x_source.MyScript"
+        },
+        "after": {
+            "sys_scope": "scope-tgt",
+            "sys_package": "scope-tgt",
+            "sys_name": "x_target_MyScript",
+            "api_name": "x_target.MyScript"
+        },
+        "source_scope": {
+            "sys_id": "scope-src",
+            "scope": "x_source",
+            "name": "Source App",
+            "version": "1.0.0"
+        },
+        "target_scope": {
+            "sys_id": "scope-tgt",
+            "scope": "x_target",
+            "name": "Target App",
+            "version": "2.0.0"
+        }
+    })
+    .to_string();
+
+    mount_move_file_mocks(&server, "move-c2c-session", "move-c2c-gck", &result_json).await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "scope",
+            "move-file",
+            "sys_script_include",
+            "file001",
+            "--target-scope",
+            "x_target",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"dry_run\":true"))
+        .stdout(predicate::str::contains("\"ok\":true"))
+        .stdout(predicate::str::contains("x_target_MyScript"))
+        .stdout(predicate::str::contains("\"requires_confirmation\":false"));
+}
+
+#[tokio::test]
+async fn test_scope_move_file_global_to_named_scope_dry_run() {
+    // Global scope → named (x_*) scope: file in global scope being scoped into a custom app.
+    // The script should allow global as source (x_* restriction removed).
+    let server = MockServer::start().await;
+
+    // When source is global, names don't carry a scope prefix, so no renaming happens.
+    let result_json = serde_json::json!({
+        "ok": true,
+        "dry_run": true,
+        "table": "sys_script_include",
+        "sys_id": "global_file_001",
+        "changed_fields": ["sys_scope", "sys_package"],
+        "warnings": [
+            "Field script contains source scope identifiers and was not rewritten automatically."
+        ],
+        "requires_confirmation": true,
+        "before": {
+            "sys_scope": "global-scope-id",
+            "sys_package": "global-scope-id",
+            "sys_name": "GlobalHelper",
+            "api_name": ""
+        },
+        "after": {
+            "sys_scope": "scope-custom",
+            "sys_package": "scope-custom",
+            "sys_name": "GlobalHelper",
+            "api_name": ""
+        },
+        "source_scope": {
+            "sys_id": "global-scope-id",
+            "scope": "global",
+            "name": "Global",
+            "version": ""
+        },
+        "target_scope": {
+            "sys_id": "scope-custom",
+            "scope": "x_myapp",
+            "name": "My App",
+            "version": "1.0.0"
+        }
+    })
+    .to_string();
+
+    mount_move_file_mocks(&server, "move-g2n-session", "move-g2n-gck", &result_json).await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "scope",
+            "move-file",
+            "sys_script_include",
+            "global_file_001",
+            "--target-scope",
+            "x_myapp",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"dry_run\":true"))
+        .stdout(predicate::str::contains("\"ok\":true"))
+        // Source scope is global
+        .stdout(predicate::str::contains("\"scope\":\"global\""))
+        // Target scope is custom
+        .stdout(predicate::str::contains("\"scope\":\"x_myapp\""))
+        // requires_confirmation=true because of warnings
+        .stdout(predicate::str::contains("\"requires_confirmation\":true"));
+}
+
+#[tokio::test]
+async fn test_scope_move_file_named_to_global_scope_dry_run() {
+    // Named (x_*) scope → global scope: re-scoping a custom app file back to global.
+    let server = MockServer::start().await;
+
+    let result_json = serde_json::json!({
+        "ok": true,
+        "dry_run": true,
+        "table": "sys_script_include",
+        "sys_id": "custom_file_001",
+        "changed_fields": ["sys_scope", "sys_package", "sys_name", "api_name"],
+        "warnings": [],
+        "requires_confirmation": false,
+        "before": {
+            "sys_scope": "scope-custom",
+            "sys_package": "scope-custom",
+            "sys_name": "x_myapp_Helper",
+            "api_name": "x_myapp.Helper"
+        },
+        "after": {
+            "sys_scope": "global-scope-id",
+            "sys_package": "global-scope-id",
+            "sys_name": "x_myapp_Helper",
+            "api_name": "x_myapp.Helper"
+        },
+        "source_scope": {
+            "sys_id": "scope-custom",
+            "scope": "x_myapp",
+            "name": "My App",
+            "version": "1.0.0"
+        },
+        "target_scope": {
+            "sys_id": "global-scope-id",
+            "scope": "global",
+            "name": "Global",
+            "version": ""
+        }
+    })
+    .to_string();
+
+    mount_move_file_mocks(&server, "move-n2g-session", "move-n2g-gck", &result_json).await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "scope",
+            "move-file",
+            "sys_script_include",
+            "custom_file_001",
+            "--target-scope",
+            "global",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"dry_run\":true"))
+        .stdout(predicate::str::contains("\"ok\":true"))
+        // Source scope is custom
+        .stdout(predicate::str::contains("\"scope\":\"x_myapp\""))
+        // Target scope is global
+        .stdout(predicate::str::contains("\"scope\":\"global\""))
+        .stdout(predicate::str::contains("\"requires_confirmation\":false"));
+}
+
+#[tokio::test]
+async fn test_scope_move_file_global_to_global_rejected() {
+    // Moving a file from global to global (same scope) should fail.
+    let server = MockServer::start().await;
+
+    let result_json = serde_json::json!({
+        "ok": false,
+        "dry_run": true,
+        "table": "sys_script_include",
+        "sys_id": "global_file_001",
+        "warnings": [],
+        "requires_confirmation": false,
+        "error": "Source and target scope are the same."
+    })
+    .to_string();
+
+    mount_move_file_mocks(&server, "move-g2g-session", "move-g2g-gck", &result_json).await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "scope",
+            "move-file",
+            "sys_script_include",
+            "global_file_001",
+            "--target-scope",
+            "global",
+            "--dry-run",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Source and target scope are the same",
+        ));
+}

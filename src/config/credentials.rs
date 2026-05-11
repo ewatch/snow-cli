@@ -137,7 +137,7 @@ pub fn credential_type_for_auth(auth_method: &crate::config::profile::AuthMethod
         crate::config::profile::AuthMethod::Oauth2 => "client_secret",
         crate::config::profile::AuthMethod::ApiKey => "api_token",
         crate::config::profile::AuthMethod::Mtls => "cert_passphrase",
-        crate::config::profile::AuthMethod::Saml => "session_cookie",
+        crate::config::profile::AuthMethod::BrowserSession => "session_cookie",
     }
 }
 

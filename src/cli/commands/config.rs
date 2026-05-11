@@ -18,7 +18,7 @@ fn to_auth_method(cli: &CliAuthMethod) -> AuthMethod {
         CliAuthMethod::Oauth2 => AuthMethod::Oauth2,
         CliAuthMethod::ApiKey => AuthMethod::ApiKey,
         CliAuthMethod::Mtls => AuthMethod::Mtls,
-        CliAuthMethod::Saml => AuthMethod::Saml,
+        CliAuthMethod::BrowserSession => AuthMethod::BrowserSession,
     }
 }
 

@@ -5,8 +5,7 @@ use std::io::IsTerminal;
 use rand::RngCore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::process::Command;
-use tokio::time::{Duration, Instant, sleep, timeout};
+use tokio::time::{Duration, timeout};
 
 use crate::auth::Authenticator;
 use crate::auth::oauth2::{
@@ -19,27 +18,7 @@ use crate::config::credentials;
 use crate::config::now_sdk;
 use crate::config::profile::{AppConfig, AuthMethod, OAuthGrantType, Profile};
 
-const SAML_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
-const SAML_LOGIN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const OAUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
-
-#[derive(Debug, serde::Deserialize)]
-struct AgentBrowserCookiesEnvelope {
-    success: bool,
-    data: AgentBrowserCookiesData,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct AgentBrowserCookiesData {
-    cookies: Vec<AgentBrowserCookie>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct AgentBrowserCookie {
-    name: String,
-    value: String,
-    domain: String,
-}
 
 pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
     match args.command {
@@ -244,22 +223,27 @@ async fn handle_login(
                 println!("{}", serde_json::to_string(&result)?);
             }
         }
-        AuthMethod::Saml => {
-            let cookie = resolve_saml_session_cookie(
+        AuthMethod::BrowserSession => {
+            let cookie = resolve_browser_session_cookie(
                 profile_name,
-                profile,
                 session_cookie,
                 session_cookie_stdin,
                 is_tty,
             )
             .await?;
-            credentials::store_credential(profile_name, "session_cookie", &cookie)?;
+
+            // Browser session tokens are intentionally NOT stored in the keychain.
+            // The caller must export the cookie as SNOW_SESSION_COOKIE for future requests.
+            let export_hint = format!("export SNOW_SESSION_COOKIE='{cookie}'");
 
             let result = serde_json::json!({
-                "status": "authenticated",
+                "status": "ready",
                 "profile": profile_name,
                 "auth_method": profile.auth_method,
                 "credential_type": "session_cookie",
+                "stored": false,
+                "export_hint": export_hint,
+                "note": "Browser session tokens are not stored. Set SNOW_SESSION_COOKIE in your environment for future requests.",
             });
             println!("{}", serde_json::to_string(&result)?);
         }
@@ -273,9 +257,8 @@ async fn handle_login(
     Ok(())
 }
 
-async fn resolve_saml_session_cookie(
+async fn resolve_browser_session_cookie(
     profile_name: &str,
-    profile: &Profile,
     flag_value: Option<String>,
     stdin_flag: bool,
     is_tty: bool,
@@ -287,155 +270,20 @@ async fn resolve_saml_session_cookie(
         return validate_session_cookie(read_secret_from_stdin("session cookie")?);
     }
 
-    if !is_tty {
-        anyhow::bail!(
-            "Session cookie required for SAML auth in non-interactive mode. Use: snow-cli auth login --profile {} --session-cookie 'JSESSIONID=...; glide_user_route=...'",
-            profile_name
+    if is_tty {
+        eprintln!(
+            "Paste the full Cookie header from your authenticated ServiceNow browser session."
         );
+        eprintln!("Open browser dev tools → Network → any request → Request Headers → Cookie");
+        let value = rpassword::prompt_password("Session cookie: ")?;
+        return validate_session_cookie(value);
     }
 
-    let sso_url = profile.sso_login_url.clone().unwrap_or_else(|| {
-        format!(
-            "{}/login_with_sso.do",
-            profile.instance.trim_end_matches('/')
-        )
-    });
-
-    capture_managed_browser_session_cookie(profile_name, profile, &sso_url).await
-}
-
-async fn capture_managed_browser_session_cookie(
-    profile_name: &str,
-    profile: &Profile,
-    sso_url: &str,
-) -> anyhow::Result<String> {
-    let session_name = saml_browser_session_name(profile_name);
-    let instance_host = reqwest::Url::parse(&profile.instance)?
-        .host_str()
-        .ok_or_else(|| anyhow::anyhow!("Profile instance URL is missing a host"))?
-        .to_string();
-
-    tracing::info!(url = %sso_url, session = %session_name, "Launching managed browser for SSO login");
-    run_agent_browser(&[
-        "--session",
-        session_name.as_str(),
-        "--headed",
-        "open",
-        sso_url,
-    ])
-    .await?;
-
-    eprintln!(
-        "Complete the login in the opened browser window. Waiting for the ServiceNow session..."
+    anyhow::bail!(
+        "Session cookie required for browser-session auth in non-interactive mode. \
+         Use: snow-cli auth login --profile {} --session-cookie 'JSESSIONID=...; glide_user_route=...'",
+        profile_name
     );
-
-    let deadline = Instant::now() + SAML_LOGIN_TIMEOUT;
-    let result = loop {
-        if let Ok(cookie_header) = fetch_browser_session_cookie(&session_name, &instance_host).await
-        {
-            break Ok(cookie_header);
-        }
-
-        if Instant::now() >= deadline {
-            break Err(anyhow::anyhow!(
-                "Timed out waiting for ServiceNow SSO login to complete after {} seconds.",
-                SAML_LOGIN_TIMEOUT.as_secs()
-            ));
-        }
-
-        sleep(SAML_LOGIN_POLL_INTERVAL).await;
-    };
-
-    if let Err(error) = close_agent_browser_session(&session_name).await {
-        tracing::warn!(error = %error, session = %session_name, "Failed to close managed browser session");
-    }
-
-    result
-}
-
-async fn fetch_browser_session_cookie(
-    session_name: &str,
-    instance_host: &str,
-) -> anyhow::Result<String> {
-    let output =
-        run_agent_browser(&["--session", session_name, "cookies", "get", "--json"]).await?;
-    let envelope: AgentBrowserCookiesEnvelope = serde_json::from_slice(&output.stdout)?;
-
-    if !envelope.success {
-        anyhow::bail!("agent-browser reported an unsuccessful cookie read");
-    }
-
-    build_session_cookie_header(&envelope.data.cookies, instance_host)
-}
-
-async fn close_agent_browser_session(session_name: &str) -> anyhow::Result<()> {
-    run_agent_browser(&["--session", session_name, "close"]).await?;
-    Ok(())
-}
-
-async fn run_agent_browser(args: &[&str]) -> anyhow::Result<std::process::Output> {
-    let output = Command::new("agent-browser")
-        .args(args)
-        .output()
-        .await
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "Failed to run `agent-browser`: {}. Install it and ensure it is on PATH.",
-                error
-            )
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("agent-browser {} failed: {}", args.join(" "), stderr.trim());
-    }
-
-    Ok(output)
-}
-
-fn build_session_cookie_header(
-    cookies: &[AgentBrowserCookie],
-    instance_host: &str,
-) -> anyhow::Result<String> {
-    let mut matching = cookies
-        .iter()
-        .filter(|cookie| cookie_domain_matches_host(&cookie.domain, instance_host))
-        .map(|cookie| (cookie.name.as_str(), cookie.value.as_str()))
-        .collect::<Vec<_>>();
-
-    matching.sort_unstable_by(|a, b| a.0.cmp(b.0));
-    matching.dedup_by(|a, b| a.0 == b.0);
-
-    let header = matching
-        .iter()
-        .map(|(name, value)| format!("{name}={value}"))
-        .collect::<Vec<_>>()
-        .join("; ");
-
-    validate_session_cookie(header)
-}
-
-fn cookie_domain_matches_host(cookie_domain: &str, instance_host: &str) -> bool {
-    let domain = cookie_domain.trim().trim_start_matches('.');
-    !domain.is_empty()
-        && (instance_host.eq_ignore_ascii_case(domain)
-            || instance_host
-                .to_ascii_lowercase()
-                .ends_with(&format!(".{}", domain.to_ascii_lowercase())))
-}
-
-fn saml_browser_session_name(profile_name: &str) -> String {
-    let suffix = profile_name
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    format!("snow-cli-saml-{suffix}")
 }
 
 fn validate_session_cookie(value: String) -> anyhow::Result<String> {
@@ -820,6 +668,24 @@ async fn handle_status(profile_name: &str) -> anyhow::Result<()> {
         .active_profile(Some(profile_name))
         .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
+    // Browser-session auth is special: credentials are never stored; the env var is checked instead.
+    if profile.auth_method == AuthMethod::BrowserSession {
+        let env_set = crate::auth::browser_session::BrowserSessionAuth::is_env_var_set();
+        let result = serde_json::json!({
+            "profile": profile_name,
+            "instance": profile.instance,
+            "auth_method": profile.auth_method,
+            "credential_types": serde_json::Value::Array(vec![]),
+            "authenticated": env_set,
+            "session_cookie_env_var": "SNOW_SESSION_COOKIE",
+            "session_cookie_set": env_set,
+            "username": profile.username,
+            "note": "Browser session tokens are not stored. Set SNOW_SESSION_COOKIE for authenticated requests.",
+        });
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
     let cred_types = credential_types_for_auth(profile);
     let authenticated = cred_types
         .iter()
@@ -915,7 +781,11 @@ fn credential_types_for_auth(profile: &crate::config::profile::Profile) -> Vec<&
             }
         }
         AuthMethod::Mtls => vec!["cert_passphrase"],
-        AuthMethod::Saml => vec!["session_cookie"],
+        AuthMethod::BrowserSession => {
+            // Browser session tokens are not stored anywhere — they are provided
+            // at runtime via SNOW_SESSION_COOKIE.
+            vec![]
+        }
     }
 }
 
@@ -953,57 +823,6 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("JSESSIONID"));
-    }
-
-    #[test]
-    fn test_cookie_domain_matches_host_accepts_exact_and_parent_domains() {
-        assert!(cookie_domain_matches_host(
-            ".dev.service-now.com",
-            "dev.service-now.com"
-        ));
-        assert!(cookie_domain_matches_host(
-            ".service-now.com",
-            "dev.service-now.com"
-        ));
-        assert!(!cookie_domain_matches_host(
-            ".example.com",
-            "dev.service-now.com"
-        ));
-    }
-
-    #[test]
-    fn test_build_session_cookie_header_filters_to_instance_host() {
-        let header = build_session_cookie_header(
-            &[
-                AgentBrowserCookie {
-                    name: "glide_user_route".to_string(),
-                    value: "route123".to_string(),
-                    domain: ".service-now.com".to_string(),
-                },
-                AgentBrowserCookie {
-                    name: "JSESSIONID".to_string(),
-                    value: "session456".to_string(),
-                    domain: "dev.service-now.com".to_string(),
-                },
-                AgentBrowserCookie {
-                    name: "other".to_string(),
-                    value: "skip".to_string(),
-                    domain: ".example.com".to_string(),
-                },
-            ],
-            "dev.service-now.com",
-        )
-        .unwrap();
-
-        assert_eq!(header, "JSESSIONID=session456; glide_user_route=route123");
-    }
-
-    #[test]
-    fn test_saml_browser_session_name_sanitizes_profile_name() {
-        assert_eq!(
-            saml_browser_session_name("Prod EU/1"),
-            "snow-cli-saml-prod-eu-1"
-        );
     }
 
     #[test]
@@ -1103,8 +922,9 @@ mod tests {
     }
 
     #[test]
-    fn test_credential_types_saml() {
-        let profile = make_profile(AuthMethod::Saml, None);
-        assert_eq!(credential_types_for_auth(&profile), vec!["session_cookie"]);
+    fn test_credential_types_browser_session() {
+        let profile = make_profile(AuthMethod::BrowserSession, None);
+        // Browser session tokens are not stored in keychain, so no credential types.
+        assert_eq!(credential_types_for_auth(&profile), Vec::<&str>::new());
     }
 }
