@@ -6,6 +6,8 @@ use std::time::Duration;
 use http::HeaderMap;
 use reqwest::{Client, Method, Response, Url};
 
+use crate::cli::spinner::SnowflakeSpinner;
+
 use crate::client::error::ApiError;
 
 /// Build an authenticated [`SnowClient`] from the user's configuration.
@@ -1009,7 +1011,9 @@ impl SnowClient {
             let request = request.build()?;
             log_raw_http_request(&request);
 
+            let spinner = SnowflakeSpinner::start("Waiting for ServiceNow response...");
             let response = self.http.execute(request).await?;
+            drop(spinner);
 
             if let Some(jsessionid) = extract_jsessionid_from_headers(response.headers()) {
                 self.session.jsessionid = Some(jsessionid.clone());

@@ -13,6 +13,7 @@ fn test_help_flag() {
         .assert()
         .success()
         .stdout(predicate::str::contains("ServiceNow"))
+        .stdout(predicate::str::contains("❄️ snow-cli"))
         .stdout(predicate::str::contains("Common workflows"));
 }
 
