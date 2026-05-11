@@ -31,12 +31,12 @@ const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incide
 
 const API_AFTER_HELP: &str = "Examples:\n  snow-cli api get /api/now/table/incident?sysparm_limit=1\n  snow-cli api post /api/x_myapp/action --data '{\"dry_run\":true}'\n  snow-cli api get /api/x_myapp/status -H 'X-Trace-Id:abc123'";
 
-/// snow-cli — ServiceNow CLI for humans and coding agents
+/// ❄️ snow-cli — ServiceNow CLI for humans and coding agents
 #[derive(Parser, Debug)]
 #[command(
     name = "snow-cli",
     version,
-    about,
+    about = "❄️ snow-cli — CLI gateway for LLMs and coding agents to access ServiceNow instances",
     long_about = None,
     after_help = TOP_LEVEL_AFTER_HELP
 )]
@@ -1079,6 +1079,12 @@ mod tests {
     #[test]
     fn test_cli_debug_assert() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn test_top_level_help_includes_snowflake() {
+        let help = Cli::command().render_long_help().to_string();
+        assert!(help.contains("❄️ snow-cli"));
     }
 
     #[test]
