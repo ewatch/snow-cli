@@ -1,0 +1,26 @@
+name: External pull request policy
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  redirect-external-pr:
+    name: Redirect external pull requests to issues
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+    steps:
+      - name: Comment and close external pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr comment "${PR_URL}" --body "Thank you for your interest in contributing to snow-cli. We currently do not accept unsolicited pull requests from public contributors. Please open an issue first with the proposed change, context, and implementation approach so maintainers can discuss it before code is submitted. Dependabot pull requests are handled separately by automation."
+          gh pr close "${PR_URL}" --comment "Closing per repository policy: please open an issue first so maintainers can discuss the change before a pull request is submitted."
