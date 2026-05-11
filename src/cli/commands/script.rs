@@ -2,6 +2,7 @@ use std::io::IsTerminal;
 
 use crate::cli::args::{OutputFormat, ScriptArgs, ScriptCommands};
 use crate::cli::output;
+use crate::cli::validation::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use http::HeaderMap;
 
 const FORM_SCRIPT_ENDPOINT: &str = "/sys.scripts.do";
@@ -110,12 +111,7 @@ async fn execute_background_script(
         None
     };
 
-    let url = if options.endpoint.starts_with("http://") || options.endpoint.starts_with("https://")
-    {
-        options.endpoint.to_string()
-    } else {
-        format!("{}{}", client.base_url(), options.endpoint)
-    };
+    let url = client.authenticated_url(&options.endpoint)?;
 
     let response = if requires_form_session {
         let form_session = form_session
@@ -539,7 +535,7 @@ fn resolve_script(file: Option<String>, code: Option<String>) -> anyhow::Result<
 fn resolve_script_from<R: std::io::Read>(
     file: Option<String>,
     code: Option<String>,
-    mut reader: R,
+    reader: R,
     is_tty: bool,
 ) -> anyhow::Result<String> {
     // --code takes precedence
@@ -567,8 +563,7 @@ fn resolve_script_from<R: std::io::Read>(
         );
     }
 
-    let mut buf = String::new();
-    reader.read_to_string(&mut buf)?;
+    let buf = read_to_string_limited(reader, DEFAULT_MAX_STDIN_BYTES, "script stdin input")?;
 
     if buf.trim().is_empty() {
         anyhow::bail!("No script received from stdin.");

@@ -2,6 +2,9 @@ use std::io::IsTerminal;
 
 use crate::cli::args::{OutputFormat, TableArgs, TableCommands};
 use crate::cli::output;
+use crate::cli::validation::{
+    DEFAULT_MAX_STDIN_BYTES, read_to_string_limited, validate_path_segment, validate_table_name,
+};
 use crate::client::pagination::PaginationConfig;
 use crate::models::record::SingleRecordResponse;
 
@@ -21,6 +24,7 @@ pub async fn handle(
             order_by,
         } => {
             tracing::info!("Listing records from table: {}", table);
+            validate_table_name(&table)?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -46,6 +50,8 @@ pub async fn handle(
             fields,
         } => {
             tracing::info!("Getting record {} from table: {}", sys_id, table);
+            validate_table_name(&table)?;
+            validate_path_segment("sys_id", &sys_id)?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -68,6 +74,7 @@ pub async fn handle(
 
         TableCommands::Create { table, data } => {
             tracing::info!("Creating record in table: {}", table);
+            validate_table_name(&table)?;
 
             let body = read_data(data)?;
             // Validate that the body is valid JSON
@@ -90,6 +97,8 @@ pub async fn handle(
             data,
         } => {
             tracing::info!("Updating record {} in table: {}", sys_id, table);
+            validate_table_name(&table)?;
+            validate_path_segment("sys_id", &sys_id)?;
 
             let body = read_data(data)?;
             // Validate that the body is valid JSON
@@ -108,6 +117,8 @@ pub async fn handle(
 
         TableCommands::Delete { table, sys_id, yes } => {
             tracing::info!("Deleting record {} from table: {}", sys_id, table);
+            validate_table_name(&table)?;
+            validate_path_segment("sys_id", &sys_id)?;
 
             if !yes {
                 let stdin = std::io::stdin();
@@ -172,6 +183,7 @@ async fn handle_schema(
     include_inherited: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Fetching schema for table: {}", table);
+    validate_table_name(table)?;
 
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
@@ -333,7 +345,7 @@ fn read_data(data: Option<String>) -> anyhow::Result<String> {
 /// This enables testing without relying on actual stdin behavior.
 fn read_data_from<R: std::io::Read>(
     data: Option<String>,
-    mut reader: R,
+    reader: R,
     is_tty: bool,
 ) -> anyhow::Result<String> {
     if let Some(d) = data {
@@ -348,8 +360,7 @@ fn read_data_from<R: std::io::Read>(
         );
     }
 
-    let mut buf = String::new();
-    reader.read_to_string(&mut buf)?;
+    let buf = read_to_string_limited(reader, DEFAULT_MAX_STDIN_BYTES, "JSON stdin input")?;
 
     if buf.trim().is_empty() {
         anyhow::bail!(

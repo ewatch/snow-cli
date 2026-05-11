@@ -15,7 +15,14 @@ use cli::args::Cli;
 use std::io::IsTerminal;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
+    if let Err(error) = run().await {
+        let exit_code = error::write_anyhow_error_and_exit_code(error);
+        std::process::exit(exit_code);
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = config::AppConfig::load()?;
     let command_uses_connection = command_uses_connection(&cli.command);

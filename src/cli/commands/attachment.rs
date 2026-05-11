@@ -5,6 +5,11 @@ use reqwest::multipart::{Form, Part};
 
 use crate::cli::args::{AttachmentArgs, AttachmentCommands, OutputFormat};
 use crate::cli::output;
+use crate::cli::validation::{
+    validate_encoded_query_literal, validate_path_segment, validate_table_name,
+};
+
+const MAX_ATTACHMENT_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 struct AttachmentRecord {
@@ -44,6 +49,9 @@ pub async fn handle(
     match args.command {
         AttachmentCommands::List { table, sys_id } => {
             tracing::info!("Listing attachments for {}/{}", table, sys_id);
+            validate_table_name(&table)?;
+            validate_path_segment("sys_id", &sys_id)?;
+            validate_encoded_query_literal("sys_id", &sys_id)?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -66,6 +74,7 @@ pub async fn handle(
         }
         AttachmentCommands::Download { sys_id, out_path } => {
             tracing::info!("Downloading attachment: {}", sys_id);
+            validate_path_segment("attachment sys_id", &sys_id)?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -97,6 +106,8 @@ pub async fn handle(
             file,
         } => {
             tracing::info!("Uploading {} to {}/{}", file, table, sys_id);
+            validate_table_name(&table)?;
+            validate_path_segment("sys_id", &sys_id)?;
 
             let path = PathBuf::from(&file);
             let file_name = path
@@ -107,8 +118,17 @@ pub async fn handle(
                 })?
                 .to_string();
 
+            let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            if bytes > MAX_ATTACHMENT_UPLOAD_BYTES {
+                anyhow::bail!(
+                    "Attachment '{}' is {} bytes, exceeding the maximum upload size of {} bytes.",
+                    file,
+                    bytes,
+                    MAX_ATTACHMENT_UPLOAD_BYTES
+                );
+            }
+
             if std::io::stderr().is_terminal() {
-                let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                 eprintln!("Uploading '{}' ({} bytes)...", file_name, bytes);
             }
 
@@ -164,10 +184,34 @@ fn resolve_download_path(record: &AttachmentRecord, output: Option<String>) -> P
     if let Some(path) = output {
         return PathBuf::from(path);
     }
-    if !record.file_name.is_empty() {
-        return PathBuf::from(&record.file_name);
+    if let Some(file_name) = safe_default_download_file_name(&record.file_name) {
+        return PathBuf::from(file_name);
     }
     PathBuf::from(format!("{}.bin", record.sys_id))
+}
+
+fn safe_default_download_file_name(file_name: &str) -> Option<String> {
+    let base_name = Path::new(file_name).file_name()?.to_str()?.trim();
+    if base_name.is_empty() || base_name == "." || base_name == ".." {
+        return None;
+    }
+
+    let sanitized = base_name
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || ch == '/' || ch == '\\' {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>();
+
+    if sanitized.is_empty() {
+        None
+    } else {
+        Some(sanitized)
+    }
 }
 
 async fn download_attachment_file(
@@ -178,11 +222,7 @@ async fn download_attachment_file(
     use tokio::io::AsyncWriteExt;
 
     let auth_headers = client.authenticator().authenticate().await?;
-    let url = if path.starts_with("http://") || path.starts_with("https://") {
-        path.to_string()
-    } else {
-        format!("{}{}", client.base_url(), path)
-    };
+    let url = client.authenticated_url(path)?;
 
     let mut response = client
         .http()
@@ -235,4 +275,22 @@ async fn download_attachment_file(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_default_download_file_name_uses_basename() {
+        assert_eq!(
+            safe_default_download_file_name("../../secret.txt"),
+            Some("secret.txt".to_string())
+        );
+        assert_eq!(
+            safe_default_download_file_name("nested/report.pdf"),
+            Some("report.pdf".to_string())
+        );
+        assert_eq!(safe_default_download_file_name(".."), None);
+    }
 }

@@ -287,6 +287,59 @@ fn profile_similarity_score(requested: &str, candidate: &str) -> usize {
     0
 }
 
+pub fn validate_instance_url(input: &str) -> anyhow::Result<String> {
+    let trimmed = input.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        anyhow::bail!("Instance URL must not be empty.");
+    }
+
+    let url = reqwest::Url::parse(trimmed)
+        .map_err(|error| anyhow::anyhow!("Invalid instance URL '{}': {}", input, error))?;
+
+    if url.host_str().is_none() {
+        anyhow::bail!("Invalid instance URL '{}': missing host.", input);
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        anyhow::bail!(
+            "Invalid instance URL '{}': embedded credentials are not allowed.",
+            input
+        );
+    }
+    if !url.path().is_empty() && url.path() != "/" {
+        anyhow::bail!(
+            "Invalid instance URL '{}': paths are not allowed; provide only the instance origin.",
+            input
+        );
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        anyhow::bail!(
+            "Invalid instance URL '{}': query strings and fragments are not allowed.",
+            input
+        );
+    }
+
+    match url.scheme() {
+        "https" => Ok(trimmed.to_string()),
+        "http" if url.host_str().map(is_loopback_host).unwrap_or(false) => Ok(trimmed.to_string()),
+        "http" => anyhow::bail!(
+            "Invalid instance URL '{}': HTTP is only allowed for loopback test instances.",
+            input
+        ),
+        scheme => anyhow::bail!(
+            "Invalid instance URL '{}': unsupported scheme '{}'; use HTTPS.",
+            input,
+            scheme
+        ),
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host.starts_with("127.")
+}
+
 fn dirs_config_path() -> PathBuf {
     if let Some(home) = home_dir() {
         home.join(".servicenow")
@@ -309,6 +362,27 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_instance_url_accepts_https_and_loopback_http() {
+        assert_eq!(
+            validate_instance_url("https://dev.service-now.com/").unwrap(),
+            "https://dev.service-now.com"
+        );
+        assert_eq!(
+            validate_instance_url("http://127.0.0.1:8080").unwrap(),
+            "http://127.0.0.1:8080"
+        );
+    }
+
+    #[test]
+    fn test_validate_instance_url_rejects_unsafe_forms() {
+        assert!(validate_instance_url("http://dev.service-now.com").is_err());
+        assert!(validate_instance_url("https://user:pass@dev.service-now.com").is_err());
+        assert!(validate_instance_url("https://dev.service-now.com/nav_to.do").is_err());
+        assert!(validate_instance_url("https://dev.service-now.com?x=1").is_err());
+        assert!(validate_instance_url("file:///tmp/foo").is_err());
+    }
 
     #[test]
     fn test_default_config() {

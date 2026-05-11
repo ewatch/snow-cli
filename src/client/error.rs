@@ -27,7 +27,7 @@ impl ApiError {
             code: code.to_string(),
             message: message.to_string(),
             status,
-            detail: body,
+            detail: body.map(|body| safe_error_detail(&body)),
             instance: instance.to_string(),
         }
     }
@@ -40,6 +40,31 @@ impl std::fmt::Display for ApiError {
 }
 
 impl std::error::Error for ApiError {}
+
+fn safe_error_detail(body: &str) -> String {
+    const MAX_DETAIL_LEN: usize = 1024;
+
+    if body.trim().is_empty() {
+        return String::new();
+    }
+
+    let include_sensitive = std::env::var("SNOW_CLI_DEBUG_HTTP_INCLUDE_SENSITIVE")
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            !(normalized.is_empty() || matches!(normalized.as_str(), "0" | "false" | "off" | "no"))
+        })
+        .unwrap_or(false);
+
+    if !include_sensitive {
+        return format!("<response body redacted, {} bytes>", body.len());
+    }
+
+    let mut detail = body.chars().take(MAX_DETAIL_LEN).collect::<String>();
+    if body.chars().count() > MAX_DETAIL_LEN {
+        detail.push_str("... <truncated>");
+    }
+    detail
+}
 
 #[cfg(test)]
 mod tests {
@@ -62,13 +87,16 @@ mod tests {
     }
 
     #[test]
-    fn test_from_status_includes_detail() {
+    fn test_from_status_redacts_detail_by_default() {
         let err = ApiError::from_status(
             400,
             "https://test.service-now.com",
-            Some("Invalid encoded query".to_string()),
+            Some("Invalid encoded query containing token=secret".to_string()),
         );
-        assert_eq!(err.detail, Some("Invalid encoded query".to_string()));
+        assert_eq!(
+            err.detail,
+            Some("<response body redacted, 45 bytes>".to_string())
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::args::{DataArgs, DataCommands, OutputFormat};
 use crate::cli::output;
+use crate::cli::validation::validate_table_name;
 use crate::client::pagination::PaginationConfig;
 use crate::models::record::{Record, SingleRecordResponse};
 
@@ -468,8 +469,8 @@ async fn handle_export_package(
             &required_source_keys,
             &source_value_indexes,
         )?;
-        let file_name = table_output_file_name(table_spec);
-        let file_path = out_dir_path.join(&file_name);
+        let file_name = table_output_file_name(table_spec)?;
+        let file_path = package_file_path(&out_dir_path, &file_name)?;
         write_json_file(&file_path, &artifact)?;
 
         source_value_indexes = build_source_value_indexes(&spec.tables, &raw_records_by_table);
@@ -756,8 +757,10 @@ async fn handle_import_flat(
     }
 
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+    validate_table_name(&artifact.table)?;
     let use_import_set = options.import_set_table.is_some();
     let path = if let Some(staging_table) = options.import_set_table {
+        validate_table_name(staging_table)?;
         format!("/api/now/import/{staging_table}")
     } else {
         format!("/api/now/table/{}", artifact.table)
@@ -879,7 +882,7 @@ async fn build_package_validation_report(
     let mut table_artifacts = BTreeMap::new();
 
     for table in &manifest.tables {
-        let artifact = read_dataset_table_artifact(&base_dir.join(&table.file))?;
+        let artifact = read_dataset_table_artifact(&package_file_path(&base_dir, &table.file)?)?;
         let report = build_table_validation_report(
             profile,
             instance,
@@ -1061,7 +1064,9 @@ async fn handle_import_package(
         let manifest_table = manifest_tables
             .get(table_name)
             .ok_or_else(|| anyhow::anyhow!("Missing manifest table '{}'", table_name))?;
-        let artifact = read_dataset_table_artifact(&base_dir.join(&manifest_table.file))?;
+        validate_table_name(&manifest_table.name)?;
+        let artifact =
+            read_dataset_table_artifact(&package_file_path(&base_dir, &manifest_table.file)?)?;
         let path = format!("/api/now/table/{}", manifest_table.name);
         let mut created = 0usize;
         let mut failures = Vec::new();
@@ -1614,11 +1619,39 @@ fn build_dataset_table_artifact(
     })
 }
 
-fn table_output_file_name(table: &DatasetTableSpec) -> String {
-    table
+fn table_output_file_name(table: &DatasetTableSpec) -> anyhow::Result<String> {
+    let file = table
         .file
         .clone()
-        .unwrap_or_else(|| format!("{}.json", table.name))
+        .unwrap_or_else(|| format!("{}.json", table.name));
+    validate_package_file_name(&file)?;
+    Ok(file)
+}
+
+fn package_file_path(base_dir: &Path, file: &str) -> anyhow::Result<PathBuf> {
+    validate_package_file_name(file)?;
+    Ok(base_dir.join(file))
+}
+
+fn validate_package_file_name(file: &str) -> anyhow::Result<()> {
+    let path = Path::new(file);
+    if file.trim().is_empty() {
+        anyhow::bail!("Dataset package file name must not be empty.");
+    }
+    if path.is_absolute() {
+        anyhow::bail!("Dataset package file '{}' must be relative.", file);
+    }
+    if path.components().count() != 1
+        || !path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!(
+            "Dataset package file '{}' must be a plain file name without directories or traversal.",
+            file
+        );
+    }
+    Ok(())
 }
 
 fn artifact_field_list(artifact: &DatasetTableArtifact) -> Option<Vec<String>> {
@@ -1838,6 +1871,15 @@ fn long_running_timeout_secs(timeout_secs: Option<u64>) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_validate_package_file_name_rejects_traversal_and_absolute_paths() {
+        assert!(validate_package_file_name("incident.json").is_ok());
+        assert!(validate_package_file_name("../secret.json").is_err());
+        assert!(validate_package_file_name("nested/incident.json").is_err());
+        assert!(validate_package_file_name("/tmp/incident.json").is_err());
+        assert!(validate_package_file_name("").is_err());
+    }
 
     #[test]
     fn test_split_csv_fields_none() {

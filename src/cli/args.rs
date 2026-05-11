@@ -1,15 +1,15 @@
 use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
 
-const TOP_LEVEL_AFTER_HELP: &str = "Common workflows:\n  1) First-time setup\n     snow-cli profile add default --instance https://mycompany.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli auth login --password '<password>'\n\n  3) List recent incidents\n     snow-cli table list incident --query 'active=true' --limit 20\n\n  4) Create and update records\n     snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n     snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n\n  5) Call a custom API\n     snow-cli api get /api/x_myapp/status";
+const TOP_LEVEL_AFTER_HELP: &str = "Common workflows:\n  1) First-time setup\n     snow-cli profile add default --instance https://mycompany.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli auth login\n\n  3) List recent incidents\n     snow-cli table list incident --query 'active=true' --limit 20\n\n  4) Create and update records\n     snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n     snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n\n  5) Call a custom API\n     snow-cli api get /api/x_myapp/status";
 
 const PROFILE_AFTER_HELP: &str = "Examples:\n  snow-cli profile add dev --instance https://dev.service-now.com --auth-method basic --username admin\n  snow-cli profile edit dev --username new-admin\n  snow-cli profile add prod --instance https://prod.service-now.com --auth-method oauth2 --client-id abc123\n  snow-cli profile default prod\n  snow-cli profile current\n  snow-cli profile remove old-dev\n  snow-cli profile list\n  snow-cli profile find --instance dev123466\n  snow-cli profile sdk list\n  snow-cli profile sdk import --alias dev\n  snow-cli profile sdk export prod --alias prod-sdk\n  snow-cli profile show";
 
 const PROFILE_INIT_AFTER_HELP: &str = "Notes:\n  - This legacy command is non-interactive by default (safe for agents and CI).\n  - Prefer `snow-cli profile add <name>` for new profiles.\n  - Pass required values as flags.\n\nExamples:\n  snow-cli profile add default --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli profile init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli profile init --name prod --instance https://prod.service-now.com --auth-method oauth2 --oauth-grant-type client-credentials --client-id abc123";
 
-const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --password '<password>' --also-now-sdk --now-sdk-alias dev\n  snow-cli auth login --session-cookie 'JSESSIONID=...; glide_user_route=...'\n  snow-cli auth status\n  snow-cli auth token\n  snow-cli auth logout";
+const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login\n  printf '%s' \"$SNOW_PASSWORD\" | snow-cli auth login --password-stdin\n  printf '%s' \"$SNOW_SESSION_COOKIE\" | snow-cli auth login --session-cookie-stdin\n  snow-cli auth status\n  snow-cli auth token\n  snow-cli auth logout";
 
-const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login --password '<password>'\n  snow-cli auth login --password '<password>' --also-now-sdk --now-sdk-alias dev\n  snow-cli auth login --token '<api-token>'\n  snow-cli auth login --client-secret '<oauth-secret>'\n  snow-cli auth login --no-browser\n  snow-cli auth login --client-secret '<oauth-secret>' --no-browser\n  snow-cli auth login --session-cookie 'JSESSIONID=...; glide_user_route=...'\n\nTip:\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.\n  For OAuth2 authorization-code profiles, snow-cli opens the authorization URL and waits for a local redirect callback. Public PKCE clients can omit --client-secret.\n  For SAML profiles, omit --session-cookie to let snow-cli launch a managed browser session, wait for login completion, and capture the ServiceNow session automatically.";
+const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login\n  printf '%s' \"$SNOW_PASSWORD\" | snow-cli auth login --password-stdin\n  printf '%s' \"$SNOW_API_TOKEN\" | snow-cli auth login --token-stdin\n  printf '%s' \"$SNOW_CLIENT_SECRET\" | snow-cli auth login --client-secret-stdin\n  snow-cli auth login --no-browser\n  printf '%s' \"$SNOW_SESSION_COOKIE\" | snow-cli auth login --session-cookie-stdin\n\nTip:\n  Prefer interactive prompts or --*-stdin flags over command-line secret flags, which can leak through shell history and process listings.\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.\n  For OAuth2 authorization-code profiles, snow-cli opens the authorization URL and waits for a local redirect callback. Public PKCE clients can omit --client-secret.\n  For SAML profiles, omit --session-cookie to let snow-cli launch a managed browser session, wait for login completion, and capture the ServiceNow session automatically.";
 
 const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended";
 
@@ -488,21 +488,37 @@ pub enum AuthCommands {
     /// Authenticate and store credentials in the OS keychain
     #[command(after_help = AUTH_LOGIN_AFTER_HELP)]
     Login {
-        /// Password for basic auth (reads from stdin if not provided)
-        #[arg(long)]
+        /// Password for basic auth or OAuth2 password grant
+        #[arg(long, conflicts_with = "password_stdin")]
         password: Option<String>,
 
+        /// Read password from stdin
+        #[arg(long, conflicts_with = "password")]
+        password_stdin: bool,
+
         /// API token (for api_key auth)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "token_stdin")]
         token: Option<String>,
 
+        /// Read API token from stdin
+        #[arg(long, conflicts_with = "token")]
+        token_stdin: bool,
+
         /// OAuth client secret (required for client_credentials/password, optional for public authorization-code PKCE clients)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "client_secret_stdin")]
         client_secret: Option<String>,
 
+        /// Read OAuth client secret from stdin
+        #[arg(long, conflicts_with = "client_secret")]
+        client_secret_stdin: bool,
+
         /// Authenticated ServiceNow Cookie header value (for saml auth)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "session_cookie_stdin")]
         session_cookie: Option<String>,
+
+        /// Read authenticated ServiceNow Cookie header value from stdin
+        #[arg(long, conflicts_with = "session_cookie")]
+        session_cookie_stdin: bool,
 
         /// Print the OAuth authorization URL instead of opening it in a browser
         #[arg(long)]

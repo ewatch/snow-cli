@@ -3,6 +3,9 @@ use std::fmt::Write as _;
 
 use crate::cli::args::{OutputFormat, ScopeArgs, ScopeCommands, ScopeDetailLevel, ScopeListKind};
 use crate::cli::output;
+use crate::cli::validation::{
+    validate_encoded_query_literal, validate_path_segment, validate_table_name,
+};
 use crate::client::pagination::PaginationConfig;
 use crate::models::record::Record;
 
@@ -380,6 +383,8 @@ async fn handle_move_file(
     timeout_secs: Option<u64>,
     request: MoveFileRequest<'_>,
 ) -> anyhow::Result<()> {
+    validate_table_name(request.table)?;
+    validate_path_segment("sys_id", request.sys_id)?;
     let script = build_move_file_script(
         request.table,
         request.sys_id,
@@ -761,6 +766,7 @@ async fn collect_scope_data(
     scope_input: &str,
 ) -> anyhow::Result<CollectedScopeData> {
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+    validate_encoded_query_literal("scope", scope_input)?;
     let pagination = PaginationConfig::default();
 
     let scope_query = format!("scope={scope_input}^ORsys_id={scope_input}");
@@ -930,6 +936,15 @@ async fn fetch_dictionary_records(
         return Vec::new();
     }
 
+    for table_name in table_names {
+        if let Err(err) = validate_table_name(table_name) {
+            warnings.push(format!(
+                "Skipped sys_dictionary query for invalid table name '{table_name}': {err}"
+            ));
+            return Vec::new();
+        }
+    }
+
     let query = build_dictionary_query(table_names);
     let pagination = PaginationConfig::default().with_page_size(200);
 
@@ -958,6 +973,15 @@ async fn fetch_choice_records(
 ) -> Vec<Record> {
     if table_names.is_empty() {
         return Vec::new();
+    }
+
+    for table_name in table_names {
+        if let Err(err) = validate_table_name(table_name) {
+            warnings.push(format!(
+                "Skipped sys_choice query for invalid table name '{table_name}': {err}"
+            ));
+            return Vec::new();
+        }
     }
 
     let query = format!("nameIN{}", table_names.join(","));
@@ -1071,8 +1095,8 @@ async fn list_scopes(
 ) -> anyhow::Result<ScopeListOutput> {
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
     let pagination = PaginationConfig::default();
-    let scope_query = build_scope_search_query(search);
-    let plugin_query = build_plugin_search_query(search);
+    let scope_query = build_scope_search_query(search)?;
+    let plugin_query = build_plugin_search_query(search)?;
 
     let scopes = client
         .get_table_records(
@@ -1148,14 +1172,24 @@ async fn query_optional_table(
     }
 }
 
-fn build_scope_search_query(search: Option<&str>) -> Option<String> {
-    search.map(|search| {
-        format!("scope={search}^ORsys_id={search}^ORscopeLIKE{search}^ORnameLIKE{search}")
-    })
+fn build_scope_search_query(search: Option<&str>) -> anyhow::Result<Option<String>> {
+    search
+        .map(|search| {
+            validate_encoded_query_literal("search", search)?;
+            Ok(format!(
+                "scope={search}^ORsys_id={search}^ORscopeLIKE{search}^ORnameLIKE{search}"
+            ))
+        })
+        .transpose()
 }
 
-fn build_plugin_search_query(search: Option<&str>) -> Option<String> {
-    search.map(|search| format!("id={search}^ORidLIKE{search}^ORnameLIKE{search}"))
+fn build_plugin_search_query(search: Option<&str>) -> anyhow::Result<Option<String>> {
+    search
+        .map(|search| {
+            validate_encoded_query_literal("search", search)?;
+            Ok(format!("id={search}^ORidLIKE{search}^ORnameLIKE{search}"))
+        })
+        .transpose()
 }
 
 fn build_scope_list_rows(
@@ -1637,10 +1671,11 @@ mod tests {
     #[test]
     fn test_build_scope_search_query() {
         assert_eq!(
-            build_scope_search_query(Some("global")),
+            build_scope_search_query(Some("global")).unwrap(),
             Some("scope=global^ORsys_id=global^ORscopeLIKEglobal^ORnameLIKEglobal".to_string())
         );
-        assert_eq!(build_scope_search_query(None), None);
+        assert_eq!(build_scope_search_query(None).unwrap(), None);
+        assert!(build_scope_search_query(Some("global^ORactive=true")).is_err());
     }
 
     #[test]

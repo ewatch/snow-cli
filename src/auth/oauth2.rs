@@ -421,6 +421,17 @@ pub fn oauth_redirect_host(profile: &Profile) -> &str {
         .unwrap_or(DEFAULT_OAUTH_REDIRECT_HOST)
 }
 
+pub fn validate_oauth_redirect_host(host: &str) -> anyhow::Result<()> {
+    if matches!(host, "127.0.0.1" | "::1") || host.eq_ignore_ascii_case("localhost") {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "OAuth redirect host '{}' is not allowed. Use a loopback host such as 127.0.0.1, ::1, or localhost.",
+        host
+    )
+}
+
 pub fn oauth_redirect_port(profile: &Profile) -> u16 {
     profile
         .oauth_redirect_port
@@ -759,6 +770,16 @@ mod tests {
             pkce_code_challenge_s256("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
+    }
+
+    #[test]
+    fn test_validate_oauth_redirect_host_requires_loopback() {
+        assert!(validate_oauth_redirect_host("127.0.0.1").is_ok());
+        assert!(validate_oauth_redirect_host("localhost").is_ok());
+        assert!(validate_oauth_redirect_host("::1").is_ok());
+        assert!(validate_oauth_redirect_host("0.0.0.0").is_err());
+        assert!(validate_oauth_redirect_host("192.168.1.10").is_err());
+        assert!(validate_oauth_redirect_host("example.com").is_err());
     }
 
     #[test]

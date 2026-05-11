@@ -4,7 +4,7 @@ pub mod pagination;
 use std::time::Duration;
 
 use http::HeaderMap;
-use reqwest::{Client, Method, Response};
+use reqwest::{Client, Method, Response, Url};
 
 use crate::client::error::ApiError;
 
@@ -120,6 +120,99 @@ fn format_headers_for_http_debug(headers: &http::HeaderMap, include_sensitive: b
     }
 }
 
+fn is_sensitive_field_name(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "password"
+            | "user_password"
+            | "client_secret"
+            | "token"
+            | "access_token"
+            | "refresh_token"
+            | "api_token"
+            | "session_cookie"
+            | "code"
+            | "code_verifier"
+            | "sysparm_ck"
+    ) || normalized.contains("secret")
+        || normalized.contains("password")
+        || normalized.contains("token")
+        || normalized.contains("cookie")
+}
+
+fn redact_url_for_http_debug(url: &Url) -> String {
+    if url.query().is_none() {
+        return url.to_string();
+    }
+
+    let mut redacted = url.clone();
+    redacted
+        .query_pairs_mut()
+        .clear()
+        .extend_pairs(url.query_pairs().map(|(key, value)| {
+            let value = if is_sensitive_field_name(&key) {
+                std::borrow::Cow::Borrowed("<redacted>")
+            } else {
+                value
+            };
+            (key, value)
+        }));
+    redacted.to_string()
+}
+
+fn redact_form_body_for_http_debug(text: &str) -> String {
+    text.split('&')
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            if is_sensitive_field_name(key) {
+                format!("{key}=<redacted>")
+            } else if value.is_empty() && !pair.contains('=') {
+                key.to_string()
+            } else {
+                format!("{key}={value}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn redact_json_value_for_http_debug(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if is_sensitive_field_name(key) {
+                    *child = serde_json::Value::String("<redacted>".to_string());
+                } else {
+                    redact_json_value_for_http_debug(child);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_json_value_for_http_debug(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_body_text_for_http_debug(text: &str, content_type: Option<&str>) -> String {
+    let content_type = content_type.unwrap_or_default().to_ascii_lowercase();
+    if content_type.contains("application/json")
+        && let Ok(mut value) = serde_json::from_str::<serde_json::Value>(text)
+    {
+        redact_json_value_for_http_debug(&mut value);
+        return serde_json::to_string(&value).unwrap_or_else(|_| "<redacted body>".to_string());
+    }
+
+    if content_type.contains("application/x-www-form-urlencoded") || text.contains('=') {
+        return redact_form_body_for_http_debug(text);
+    }
+
+    "<redacted body>".to_string()
+}
+
 fn format_request_body_for_http_debug(request: &reqwest::Request) -> String {
     let body = match request.body() {
         Some(body) => body,
@@ -135,14 +228,26 @@ fn format_request_body_for_http_debug(request: &reqwest::Request) -> String {
         return "<empty>".to_string();
     }
 
+    if !is_http_debug_sensitive_enabled() {
+        return format!("<redacted body, {} bytes>", bytes.len());
+    }
+
     let preview_len = bytes.len().min(HTTP_DEBUG_BODY_PREVIEW_LIMIT);
     let preview_bytes = &bytes[..preview_len];
 
     match std::str::from_utf8(preview_bytes) {
-        Ok(text) if preview_len < bytes.len() => {
-            format!("{text}... <truncated, {} bytes total>", bytes.len())
+        Ok(text) => {
+            let content_type = request
+                .headers()
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok());
+            let redacted = redact_body_text_for_http_debug(text, content_type);
+            if preview_len < bytes.len() {
+                format!("{redacted}... <truncated, {} bytes total>", bytes.len())
+            } else {
+                redacted
+            }
         }
-        Ok(text) => text.to_string(),
         Err(_) => format!("<{} bytes binary>", bytes.len()),
     }
 }
@@ -159,7 +264,7 @@ pub(crate) fn log_raw_http_request(request: &reqwest::Request) {
     tracing::debug!(
         target: "snow_cli::http",
         method = %request.method(),
-        url = %request.url(),
+        url = %redact_url_for_http_debug(request.url()),
         headers = %headers,
         body = %body,
         "Raw HTTP request"
@@ -177,9 +282,13 @@ pub(crate) fn log_raw_http_response(
 
     let headers = format_headers_for_http_debug(headers, is_http_debug_sensitive_enabled());
 
+    let redacted_url = Url::parse(url)
+        .map(|parsed| redact_url_for_http_debug(&parsed))
+        .unwrap_or_else(|_| url.to_string());
+
     tracing::debug!(
         target: "snow_cli::http",
-        url = %url,
+        url = %redacted_url,
         status = status.as_u16(),
         headers = %headers,
         "Raw HTTP response"
@@ -414,6 +523,64 @@ impl Default for ClientConfig {
     }
 }
 
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host.starts_with("127.")
+}
+
+fn is_safe_authenticated_url(url: &Url) -> bool {
+    match url.scheme() {
+        "https" => true,
+        "http" => url.host_str().map(is_loopback_host).unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+pub(crate) fn resolve_authenticated_url(base_url: &str, path: &str) -> anyhow::Result<String> {
+    let base = Url::parse(base_url)
+        .map_err(|error| anyhow::anyhow!("Invalid instance URL '{}': {}", base_url, error))?;
+    if !is_safe_authenticated_url(&base) {
+        anyhow::bail!(
+            "Refusing to use unsafe instance URL '{}'. Authenticated requests require HTTPS, except loopback HTTP for local tests.",
+            base_url
+        );
+    }
+
+    let candidate = if path.starts_with("http://") || path.starts_with("https://") {
+        Url::parse(path)
+            .map_err(|error| anyhow::anyhow!("Invalid request URL '{}': {}", path, error))?
+    } else if path.starts_with('/') {
+        base.join(path)?
+    } else {
+        base.join(&format!("/{path}"))?
+    };
+
+    if !is_safe_authenticated_url(&candidate) {
+        anyhow::bail!(
+            "Refusing to send credentials to unsafe URL '{}'. Authenticated requests require HTTPS, except loopback HTTP for local tests.",
+            candidate
+        );
+    }
+
+    if !same_origin(&base, &candidate) {
+        anyhow::bail!(
+            "Refusing to send credentials to non-instance URL '{}'. Expected same origin as '{}'.",
+            candidate,
+            base
+        );
+    }
+
+    Ok(candidate.to_string())
+}
+
 impl SnowClient {
     /// Create a new client for the given instance URL and authenticator.
     pub fn new(
@@ -429,6 +596,16 @@ impl SnowClient {
         authenticator: Box<dyn crate::auth::Authenticator>,
         config: ClientConfig,
     ) -> anyhow::Result<Self> {
+        let base_url = crate::config::profile::validate_instance_url(&base_url)?;
+        let parsed_base = Url::parse(&base_url)
+            .map_err(|error| anyhow::anyhow!("Invalid instance URL '{}': {}", base_url, error))?;
+        if !is_safe_authenticated_url(&parsed_base) {
+            anyhow::bail!(
+                "Refusing to use unsafe instance URL '{}'. Authenticated requests require HTTPS, except loopback HTTP for local tests.",
+                base_url
+            );
+        }
+
         let http = Client::builder()
             .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(config.timeout_secs))
@@ -436,7 +613,7 @@ impl SnowClient {
 
         Ok(Self {
             http,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url,
             authenticator,
             session: SessionState::default(),
         })
@@ -555,12 +732,7 @@ impl SnowClient {
         username: &str,
         password: &str,
     ) -> anyhow::Result<String> {
-        let mut login_url = reqwest::Url::parse(&self.url("/login.do"))?;
-        login_url
-            .query_pairs_mut()
-            .append_pair("user_name", username)
-            .append_pair("sys_action", "sysverb_login")
-            .append_pair("user_password", password);
+        let login_url = reqwest::Url::parse(&self.url("/login.do"))?;
 
         tracing::debug!(url = %login_url, "Performing login.do form login");
 
@@ -570,13 +742,25 @@ impl SnowClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
 
-        let mut current_url = login_url;
+        let mut current_url = login_url.clone();
         let mut cookie_header = String::new();
 
         for _ in 0..5 {
-            let mut request_builder = no_redirect_client
-                .get(current_url.clone())
-                .header("Accept", "text/html,application/xhtml+xml");
+            let is_login_submission = current_url == login_url;
+            let mut request_builder = if is_login_submission {
+                no_redirect_client
+                    .post(current_url.clone())
+                    .header("Accept", "text/html,application/xhtml+xml")
+                    .form(&[
+                        ("user_name", username),
+                        ("sys_action", "sysverb_login"),
+                        ("user_password", password),
+                    ])
+            } else {
+                no_redirect_client
+                    .get(current_url.clone())
+                    .header("Accept", "text/html,application/xhtml+xml")
+            };
 
             if !cookie_header.is_empty() {
                 request_builder = request_builder.header("Cookie", cookie_header.clone());
@@ -707,13 +891,12 @@ impl SnowClient {
     /// If the path starts with `/`, it's treated as absolute on the instance.
     /// Otherwise it's appended to the base URL.
     fn url(&self, path: &str) -> String {
-        if path.starts_with("http://") || path.starts_with("https://") {
-            path.to_string()
-        } else if path.starts_with('/') {
-            format!("{}{}", self.base_url, path)
-        } else {
-            format!("{}/{}", self.base_url, path)
-        }
+        self.authenticated_url(path)
+            .expect("internal URL construction should use same-origin paths")
+    }
+
+    pub(crate) fn authenticated_url(&self, path: &str) -> anyhow::Result<String> {
+        resolve_authenticated_url(&self.base_url, path)
     }
 
     /// Send an authenticated GET request.
@@ -785,7 +968,7 @@ impl SnowClient {
         params: &[(&str, &str)],
         extra_headers: &[(String, String)],
     ) -> anyhow::Result<Response> {
-        let url = self.url(path);
+        let url = self.authenticated_url(path)?;
 
         for attempt in 0..=MAX_AUTH_RETRIES {
             let auth_headers = self.authenticator.authenticate().await?;
@@ -950,6 +1133,7 @@ impl SnowClient {
         pagination: &pagination::PaginationConfig,
         order_by: Option<&str>,
     ) -> anyhow::Result<Vec<crate::models::record::Record>> {
+        crate::cli::validation::validate_table_name(table)?;
         let path = format!("/api/now/table/{table}");
         let mut all_records = Vec::new();
         let mut offset: usize = 0;
@@ -1098,13 +1282,26 @@ mod tests {
     }
 
     #[test]
-    fn test_url_building_full_url_passthrough() {
+    fn test_url_building_allows_same_origin_full_url() {
         let auth = MockAuth::new("test");
         let client = test_client("https://test.service-now.com", auth);
         assert_eq!(
-            client.url("https://other.service-now.com/api/now/table/incident"),
-            "https://other.service-now.com/api/now/table/incident"
+            client
+                .authenticated_url("https://test.service-now.com/api/now/table/incident")
+                .unwrap(),
+            "https://test.service-now.com/api/now/table/incident"
         );
+    }
+
+    #[test]
+    fn test_url_building_rejects_off_origin_full_url() {
+        let auth = MockAuth::new("test");
+        let client = test_client("https://test.service-now.com", auth);
+        let err = client
+            .authenticated_url("https://other.service-now.com/api/now/table/incident")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("non-instance URL"));
     }
 
     #[test]
@@ -1164,7 +1361,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_request_body_for_http_debug_handles_missing_and_truncated_body() {
+    fn test_format_request_body_for_http_debug_redacts_body_by_default() {
         let no_body_request = reqwest::Client::new()
             .get("https://example.com/api")
             .build()
@@ -1174,15 +1371,53 @@ mod tests {
             "<none>"
         );
 
-        let long_body = "x".repeat(HTTP_DEBUG_BODY_PREVIEW_LIMIT + 16);
-        let long_body_request = reqwest::Client::new()
+        let request = reqwest::Client::new()
             .post("https://example.com/api")
-            .body(long_body)
+            .body("client_secret=secret&grant_type=client_credentials".to_string())
             .build()
             .unwrap();
 
-        let body_preview = format_request_body_for_http_debug(&long_body_request);
-        assert!(body_preview.contains("<truncated, "));
+        let body_preview = format_request_body_for_http_debug(&request);
+        assert!(body_preview.contains("<redacted body"));
+        assert!(!body_preview.contains("secret"));
+    }
+
+    #[test]
+    fn test_redact_body_text_for_http_debug_redacts_form_and_json_secrets() {
+        let form = redact_body_text_for_http_debug(
+            "client_secret=secret&grant_type=client_credentials&password=pw",
+            Some("application/x-www-form-urlencoded"),
+        );
+        assert!(form.contains("client_secret=<redacted>"));
+        assert!(form.contains("password=<redacted>"));
+        assert!(form.contains("grant_type=client_credentials"));
+        assert!(!form.contains("client_secret=secret"));
+        assert!(!form.contains("password=pw"));
+
+        let json = redact_body_text_for_http_debug(
+            r#"{"token":"abc","nested":{"refresh_token":"def"},"scope":"useraccount"}"#,
+            Some("application/json"),
+        );
+        assert!(json.contains(r#""token":"<redacted>""#));
+        assert!(json.contains(r#""refresh_token":"<redacted>""#));
+        assert!(json.contains(r#""scope":"useraccount""#));
+        assert!(!json.contains("abc"));
+        assert!(!json.contains("def"));
+    }
+
+    #[test]
+    fn test_redact_url_for_http_debug_redacts_sensitive_query_params() {
+        let url = Url::parse(
+            "https://example.com/oauth?code=abc&state=xyz&client_secret=secret&sysparm_limit=1",
+        )
+        .unwrap();
+        let redacted = redact_url_for_http_debug(&url);
+        assert!(redacted.contains("code=%3Credacted%3E"));
+        assert!(redacted.contains("client_secret=%3Credacted%3E"));
+        assert!(redacted.contains("state=xyz"));
+        assert!(redacted.contains("sysparm_limit=1"));
+        assert!(!redacted.contains("code=abc"));
+        assert!(!redacted.contains("client_secret=secret"));
     }
 
     #[test]
@@ -1502,7 +1737,10 @@ mod tests {
         let api_err = err.downcast_ref::<ApiError>().unwrap();
         assert_eq!(api_err.code, "NOT_FOUND");
         assert_eq!(api_err.status, 404);
-        assert_eq!(api_err.detail, Some("Record not found".to_string()));
+        assert_eq!(
+            api_err.detail,
+            Some("<response body redacted, 16 bytes>".to_string())
+        );
     }
 
     #[tokio::test]

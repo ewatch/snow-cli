@@ -1,12 +1,15 @@
 use std::path::{Path, PathBuf};
 
+use crate::auth::oauth2::validate_oauth_redirect_host;
 use crate::cli::args::{
     CliAuthMethod, CliOAuthGrantType, ConfigArgs, ConfigCommands, OutputFormat, ProfileSdkCommands,
 };
 use crate::cli::output;
 use crate::config::credentials;
 use crate::config::now_sdk;
-use crate::config::profile::{AppConfig, AuthMethod, OAuthGrantType, Profile};
+use crate::config::profile::{
+    AppConfig, AuthMethod, OAuthGrantType, Profile, validate_instance_url,
+};
 
 /// Convert CLI auth method enum to config auth method enum.
 fn to_auth_method(cli: &CliAuthMethod) -> AuthMethod {
@@ -308,6 +311,10 @@ async fn handle_init_with_oauth_options(
             "Instance URL is required. Use: snow-cli profile add default --instance https://mycompany.service-now.com --auth-method basic --username admin"
         )
     })?;
+    let instance = validate_instance_url(&instance)?;
+    if let Some(host) = oauth_redirect_host.as_deref() {
+        validate_oauth_redirect_host(host)?;
+    }
 
     let auth = auth_method
         .map(|a| to_auth_method(&a))
@@ -490,6 +497,12 @@ async fn handle_set_profile_with_oauth_options(
     sso_login_url: Option<String>,
 ) -> anyhow::Result<()> {
     let mut config = AppConfig::load_from(config_path)?;
+    let instance = instance
+        .map(|value| validate_instance_url(&value))
+        .transpose()?;
+    if let Some(host) = oauth_redirect_host.as_deref() {
+        validate_oauth_redirect_host(host)?;
+    }
 
     let profile = if let Some(existing) = config.profiles.get(&name) {
         // Update existing profile — merge provided fields

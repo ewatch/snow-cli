@@ -3,6 +3,8 @@ mod common;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use serde_json::json;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[test]
 fn test_help_flag() {
@@ -822,6 +824,7 @@ fn test_config_list_now_sdk_profiles() {
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
         .args(["profile", "sdk", "list"])
         .assert()
         .success()
@@ -858,6 +861,7 @@ fn test_config_import_now_sdk_alias_creates_profile_and_password() {
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
         .args([
             "profile",
             "sdk",
@@ -917,6 +921,7 @@ username = "olduser"
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
         .args(["profile", "sdk", "import", "--alias", "dev"])
         .assert()
         .success();
@@ -969,6 +974,7 @@ fn test_config_import_now_sdk_all_fails_when_oauth_present() {
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
         .args(["profile", "sdk", "import", "--all"])
         .assert()
         .failure()
@@ -1017,6 +1023,7 @@ fn test_config_import_now_sdk_all_preserves_now_sdk_default_alias() {
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
         .args(["profile", "sdk", "import", "--all"])
         .assert()
         .success();
@@ -1043,6 +1050,7 @@ username = "admin"
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
         .args([
             "profile",
             "sdk",
@@ -1081,6 +1089,7 @@ username = "admin"
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
         .args([
             "auth",
             "login",
@@ -1108,6 +1117,35 @@ username = "admin"
 }
 
 #[test]
+fn test_auth_login_token_stdin_stores_api_token() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "default"
+
+[profiles.default]
+instance = "https://dev.service-now.com"
+auth_method = "api_key"
+"#,
+    );
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .args(["auth", "login", "--token-stdin"])
+        .write_stdin("stdin-token\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("api_token"));
+
+    assert_eq!(
+        common::read_test_keychain_entry(&keychain_store, "snow-cli", "default:api_token").unwrap(),
+        "stdin-token"
+    );
+}
+
+#[test]
 fn test_auth_login_also_now_sdk_rejects_non_basic_profiles() {
     let (_dir, config_path) = common::create_temp_config(
         r#"
@@ -1123,12 +1161,82 @@ auth_method = "api_key"
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
         .args(["auth", "login", "--token", "abc123", "--also-now-sdk"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
             "only supported for basic auth profiles",
         ));
+}
+
+#[test]
+fn test_plaintext_test_keychain_requires_explicit_unsafe_opt_in() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "default"
+
+[profiles.default]
+instance = "https://dev.service-now.com"
+auth_method = "api_key"
+"#,
+    );
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .args(["auth", "login", "--token", "test-api-token"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN=1",
+        ));
+}
+
+#[tokio::test]
+async fn test_auth_token_oauth_client_credentials_prints_access_token_not_client_secret() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth_token.do"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "short-lived-access-token",
+            "token_type": "Bearer",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let config = format!(
+        r#"
+default_profile = "default"
+
+[profiles.default]
+instance = "{}"
+auth_method = "oauth2"
+client_id = "client-id"
+oauth_grant_type = "client_credentials"
+"#,
+        server.uri()
+    );
+    let (_dir, config_path) = common::create_temp_config(&config);
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+    common::write_test_keychain_entry(
+        &keychain_store,
+        "snow-cli",
+        "default:client_secret",
+        "super-secret-client-secret",
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .args(["auth", "token"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("short-lived-access-token"))
+        .stdout(predicate::str::contains("super-secret-client-secret").not());
 }
 
 #[test]
@@ -1147,6 +1255,7 @@ auth_method = "saml"
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
         .args([
             "auth",
             "login",
@@ -1182,6 +1291,7 @@ auth_method = "saml"
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
         .args([
             "auth",
             "login",

@@ -12,6 +12,7 @@ use crate::auth::Authenticator;
 use crate::auth::oauth2::{
     OAuth2Auth, authorization_url, exchange_authorization_code, oauth_redirect_host,
     oauth_redirect_path, oauth_redirect_port, pkce_code_challenge_s256,
+    validate_oauth_redirect_host,
 };
 use crate::cli::args::{AuthArgs, AuthCommands};
 use crate::config::credentials;
@@ -44,9 +45,13 @@ pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
     match args.command {
         AuthCommands::Login {
             password,
+            password_stdin,
             token,
+            token_stdin,
             client_secret,
+            client_secret_stdin,
             session_cookie,
+            session_cookie_stdin,
             no_browser,
             also_now_sdk,
             now_sdk_alias,
@@ -55,9 +60,13 @@ pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
             handle_login(
                 profile_name,
                 password,
+                password_stdin,
                 token,
+                token_stdin,
                 client_secret,
+                client_secret_stdin,
                 session_cookie,
+                session_cookie_stdin,
                 no_browser,
                 also_now_sdk,
                 now_sdk_alias,
@@ -83,9 +92,13 @@ pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
 async fn handle_login(
     profile_name: &str,
     password: Option<String>,
+    password_stdin: bool,
     token: Option<String>,
+    token_stdin: bool,
     client_secret: Option<String>,
+    client_secret_stdin: bool,
     session_cookie: Option<String>,
+    session_cookie_stdin: bool,
     no_browser: bool,
     also_now_sdk: bool,
     now_sdk_alias: Option<String>,
@@ -110,7 +123,7 @@ async fn handle_login(
 
     match &profile.auth_method {
         AuthMethod::Basic => {
-            let pw = resolve_secret(password, "Password: ", is_tty, || {
+            let pw = resolve_secret(password, password_stdin, "Password: ", is_tty, || {
                 "Password required for basic auth. Use: snow-cli auth login --password <password>"
                     .to_string()
             })?;
@@ -140,7 +153,7 @@ async fn handle_login(
             println!("{}", serde_json::to_string(&result)?);
         }
         AuthMethod::ApiKey => {
-            let tok = resolve_secret(token, "API token: ", is_tty, || {
+            let tok = resolve_secret(token, token_stdin, "API token: ", is_tty, || {
                 "API token required. Use: snow-cli auth login --token <token>".to_string()
             })?;
             credentials::store_credential(profile_name, "api_token", &tok)?;
@@ -160,7 +173,7 @@ async fn handle_login(
                 .unwrap_or(OAuthGrantType::ClientCredentials);
 
             if grant_type == OAuthGrantType::AuthorizationCode {
-                let secret = resolve_optional_secret(client_secret)?;
+                let secret = resolve_optional_secret(client_secret, client_secret_stdin)?;
                 if let Some(secret) = secret.as_deref() {
                     credentials::store_credential(profile_name, "client_secret", secret)?;
                 } else {
@@ -194,19 +207,26 @@ async fn handle_login(
                 });
                 println!("{}", serde_json::to_string(&result)?);
             } else {
-                let secret = resolve_secret(client_secret, "Client secret: ", is_tty, || {
-                    "Client secret required for OAuth2. Use: snow-cli auth login --client-secret <secret>"
+                let secret = resolve_secret(
+                    client_secret,
+                    client_secret_stdin,
+                    "Client secret: ",
+                    is_tty,
+                    || {
+                        "Client secret required for OAuth2. Use: snow-cli auth login --client-secret <secret>"
                         .to_string()
-                })?;
+                    },
+                )?;
                 credentials::store_credential(profile_name, "client_secret", &secret)?;
 
                 // For password grant, also store the user's password
                 if grant_type == OAuthGrantType::Password {
-                    let pw = resolve_secret(password, "Password: ", is_tty, || {
-                        "Password required for OAuth2 password grant. \
+                    let pw =
+                        resolve_secret(password, password_stdin, "Password: ", is_tty, || {
+                            "Password required for OAuth2 password grant. \
                          Use: snow-cli auth login --client-secret <secret> --password <password>"
-                            .to_string()
-                    })?;
+                                .to_string()
+                        })?;
                     credentials::store_credential(profile_name, "password", &pw)?;
                 }
 
@@ -225,8 +245,14 @@ async fn handle_login(
             }
         }
         AuthMethod::Saml => {
-            let cookie =
-                resolve_saml_session_cookie(profile_name, profile, session_cookie, is_tty).await?;
+            let cookie = resolve_saml_session_cookie(
+                profile_name,
+                profile,
+                session_cookie,
+                session_cookie_stdin,
+                is_tty,
+            )
+            .await?;
             credentials::store_credential(profile_name, "session_cookie", &cookie)?;
 
             let result = serde_json::json!({
@@ -251,10 +277,14 @@ async fn resolve_saml_session_cookie(
     profile_name: &str,
     profile: &Profile,
     flag_value: Option<String>,
+    stdin_flag: bool,
     is_tty: bool,
 ) -> anyhow::Result<String> {
     if let Some(value) = flag_value {
         return validate_session_cookie(value);
+    }
+    if stdin_flag {
+        return validate_session_cookie(read_secret_from_stdin("session cookie")?);
     }
 
     if !is_tty {
@@ -430,6 +460,7 @@ async fn run_oauth_authorization_code_login(
     no_browser: bool,
 ) -> anyhow::Result<(crate::auth::oauth2::StoredOAuthToken, String)> {
     let bind_host = oauth_redirect_host(profile);
+    validate_oauth_redirect_host(bind_host)?;
     let port = oauth_redirect_port(profile);
     let redirect_path = oauth_redirect_path(profile);
     let listener = TcpListener::bind((bind_host, port)).await.map_err(|error| {
@@ -699,6 +730,7 @@ fn store_basic_login(
 /// if stdin is a TTY, or return an error with a usage hint.
 fn resolve_secret<F>(
     flag_value: Option<String>,
+    stdin_flag: bool,
     prompt: &str,
     is_tty: bool,
     error_msg: F,
@@ -707,7 +739,14 @@ where
     F: FnOnce() -> String,
 {
     if let Some(value) = flag_value {
+        if value.is_empty() {
+            anyhow::bail!("Empty credential provided. Aborting.");
+        }
         return Ok(value);
+    }
+
+    if stdin_flag {
+        return read_secret_from_stdin("credential");
     }
 
     if is_tty {
@@ -721,11 +760,26 @@ where
     anyhow::bail!("{}", error_msg());
 }
 
-fn resolve_optional_secret(flag_value: Option<String>) -> anyhow::Result<Option<String>> {
+fn resolve_optional_secret(
+    flag_value: Option<String>,
+    stdin_flag: bool,
+) -> anyhow::Result<Option<String>> {
     match flag_value {
         Some(value) if value.is_empty() => anyhow::bail!("Empty credential provided. Aborting."),
-        other => Ok(other),
+        Some(value) => Ok(Some(value)),
+        None if stdin_flag => Ok(Some(read_secret_from_stdin("credential")?)),
+        None => Ok(None),
     }
+}
+
+fn read_secret_from_stdin(label: &str) -> anyhow::Result<String> {
+    let mut buf = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)?;
+    let value = buf.trim_end_matches(['\r', '\n']).to_string();
+    if value.is_empty() {
+        anyhow::bail!("Empty {} provided on stdin. Aborting.", label);
+    }
+    Ok(value)
 }
 
 /// `auth logout` — Remove stored credentials for the active profile.
@@ -796,33 +850,22 @@ async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
         .active_profile(Some(profile_name))
         .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
-    let primary_cred_type = if profile.auth_method == AuthMethod::Oauth2
-        && profile.oauth_grant_type.as_ref() == Some(&OAuthGrantType::AuthorizationCode)
-    {
-        "oauth_token"
-    } else {
-        credentials::credential_type_for_auth(&profile.auth_method)
-    };
-    let credential =
-        credentials::get_credential(profile_name, primary_cred_type)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "No credentials stored for profile '{}'. Run `snow-cli auth login` first.",
-                profile_name
-            )
-        })?;
-
-    // For basic auth, output the base64-encoded "user:pass" token
     match &profile.auth_method {
         crate::config::profile::AuthMethod::Basic => {
+            let credential =
+                credentials::get_credential(profile_name, "password")?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No credentials stored for profile '{}'. Run `snow-cli auth login` first.",
+                        profile_name
+                    )
+                })?;
             let username = profile.username.as_deref().unwrap_or("");
             use base64::Engine;
             let encoded = base64::engine::general_purpose::STANDARD
                 .encode(format!("{username}:{credential}"));
             print!("{encoded}");
         }
-        crate::config::profile::AuthMethod::Oauth2
-            if profile.oauth_grant_type.as_ref() == Some(&OAuthGrantType::AuthorizationCode) =>
-        {
+        crate::config::profile::AuthMethod::Oauth2 => {
             let auth = OAuth2Auth::new(profile_name, profile)?;
             let headers = auth.authenticate().await?;
             let authorization = headers
@@ -837,7 +880,14 @@ async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
             print!("{access_token}");
         }
         _ => {
-            // For other auth methods, output the raw credential
+            let primary_cred_type = credentials::credential_type_for_auth(&profile.auth_method);
+            let credential = credentials::get_credential(profile_name, primary_cred_type)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No credentials stored for profile '{}'. Run `snow-cli auth login` first.",
+                        profile_name
+                    )
+                })?;
             print!("{credential}");
         }
     }

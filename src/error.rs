@@ -1,6 +1,8 @@
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::client::error::ApiError;
+
 /// Top-level error type for the CLI.
 ///
 /// All variants serialize to a structured JSON error on stderr.
@@ -48,6 +50,33 @@ pub struct ErrorBody {
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
+}
+
+pub fn write_anyhow_error_and_exit_code(error: anyhow::Error) -> i32 {
+    if let Some(api_error) = error.downcast_ref::<ApiError>() {
+        let output = ErrorOutput {
+            error: ErrorBody {
+                code: api_error.code.clone(),
+                message: api_error.message.clone(),
+                status: Some(api_error.status),
+                detail: api_error.detail.clone(),
+                instance: Some(api_error.instance.clone()),
+            },
+        };
+        if let Ok(json) = serde_json::to_string(&output) {
+            eprintln!("{json}");
+        } else {
+            eprintln!("{api_error}");
+        }
+        return if api_error.status == 404 { 4 } else { 5 };
+    }
+
+    if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
+        return CliError::Io(std::io::Error::new(io_error.kind(), io_error.to_string()))
+            .write_and_exit_code();
+    }
+
+    CliError::Other(error).write_and_exit_code()
 }
 
 impl CliError {

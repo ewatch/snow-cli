@@ -2,6 +2,7 @@ use std::io::IsTerminal;
 
 use crate::cli::args::{ApiArgs, ApiCommands, OutputFormat};
 use crate::cli::output;
+use crate::cli::validation::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 
 pub async fn handle(
     args: ApiArgs,
@@ -120,7 +121,7 @@ fn read_data(data: Option<String>) -> anyhow::Result<String> {
 
 fn read_data_from<R: std::io::Read>(
     data: Option<String>,
-    mut reader: R,
+    reader: R,
     is_tty: bool,
 ) -> anyhow::Result<String> {
     if let Some(d) = data {
@@ -135,8 +136,7 @@ fn read_data_from<R: std::io::Read>(
         );
     }
 
-    let mut buf = String::new();
-    reader.read_to_string(&mut buf)?;
+    let buf = read_to_string_limited(reader, DEFAULT_MAX_STDIN_BYTES, "API stdin body")?;
 
     if buf.trim().is_empty() {
         anyhow::bail!(

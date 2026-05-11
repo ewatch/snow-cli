@@ -153,6 +153,14 @@ pub(crate) fn write_toon<T: Serialize + ?Sized, W: Write>(
 /// Uses a BTreeSet to produce deterministic, sorted column headers.
 /// Values are stringified from their JSON representation (strings unquoted,
 /// others as JSON).
+pub(crate) fn neutralize_csv_formula(value: &str) -> String {
+    if value.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{value}")
+    } else {
+        value.to_string()
+    }
+}
+
 pub(crate) fn write_records_csv<W: Write>(
     records: &[Record],
     writer: &mut W,
@@ -180,9 +188,9 @@ pub(crate) fn write_records_csv<W: Write>(
         let row: Vec<String> = columns
             .iter()
             .map(|col| match record.fields.get(col) {
-                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(serde_json::Value::String(s)) => neutralize_csv_formula(s),
                 Some(serde_json::Value::Null) | None => String::new(),
-                Some(v) => v.to_string(),
+                Some(v) => neutralize_csv_formula(&v.to_string()),
             })
             .collect();
         csv_writer.write_record(&row)?;
@@ -368,6 +376,32 @@ mod tests {
         let mut output = Vec::new();
         write_records_csv(&records, &mut output).unwrap();
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_write_records_csv_neutralizes_spreadsheet_formulas() {
+        let records = vec![Record {
+            fields: HashMap::from([
+                (
+                    "formula".to_string(),
+                    serde_json::json!("=HYPERLINK(\"http://evil\")"),
+                ),
+                ("plus".to_string(), serde_json::json!("+SUM(1,2)")),
+                ("minus".to_string(), serde_json::json!("-1+2")),
+                ("at".to_string(), serde_json::json!("@cmd")),
+                ("normal".to_string(), serde_json::json!("hello")),
+            ]),
+        }];
+
+        let mut output = Vec::new();
+        write_records_csv(&records, &mut output).unwrap();
+        let csv_str = String::from_utf8(output).unwrap();
+
+        assert!(csv_str.contains("'=HYPERLINK"));
+        assert!(csv_str.contains("'+SUM"));
+        assert!(csv_str.contains("'-1+2"));
+        assert!(csv_str.contains("'@cmd"));
+        assert!(csv_str.contains("hello"));
     }
 
     #[test]
