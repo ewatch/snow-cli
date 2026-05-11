@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build, for example v0.2.0"
+        description: "Release tag to build, for example v0.3.1"
         required: true
         type: string
 
@@ -68,32 +68,6 @@ jobs:
           path: target/distrib/*
           if-no-files-found: error
 
-  build-installers:
-    name: Build installers
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout release tag
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.RELEASE_TAG }}
-          fetch-depth: 0
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-dist
-        run: cargo install cargo-dist --version "${CARGO_DIST_VERSION}" --locked
-
-      - name: Build shell and PowerShell installers
-        run: dist build --artifacts=global --tag "${RELEASE_TAG}"
-
-      - name: Upload installer artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-installers
-          path: target/distrib/*
-          if-no-files-found: error
-
   publish:
     name: Publish GitHub release assets
     runs-on: ubuntu-latest
@@ -101,7 +75,6 @@ jobs:
       contents: write
     needs:
       - build-archives
-      - build-installers
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
@@ -114,6 +87,32 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: Curate release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p release-assets
+          mapfile -t files < <(
+            find dist -maxdepth 1 -type f \
+              \( -name 'snow-cli-*.tar.xz' -o -name 'snow-cli-*.zip' \) \
+              -printf '%f\n' | sort
+          )
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No archive release assets found in dist/." >&2
+            exit 1
+          fi
+
+          for file in "${files[@]}"; do
+            cp "dist/${file}" "release-assets/${file}"
+          done
+
+          (
+            cd release-assets
+            sha256sum "${files[@]}" > SHA256SUMS
+          )
 
       - name: Build release notes from changelog
         shell: bash
@@ -144,13 +143,13 @@ jobs:
           fi
 
       - name: List release assets
-        run: find dist -maxdepth 1 -type f -print | sort
+        run: find release-assets -maxdepth 1 -type f -print | sort
 
       - name: Upload assets to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          files: dist/*
+          files: release-assets/*
           body_path: release-notes.md
           fail_on_unmatched_files: true
           generate_release_notes: true
