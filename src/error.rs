@@ -53,6 +53,28 @@ pub struct ErrorBody {
 }
 
 pub fn write_anyhow_error_and_exit_code(error: anyhow::Error) -> i32 {
+    if let Some(policy_error) = error.downcast_ref::<crate::policy::PolicyError>() {
+        let output = ErrorOutput {
+            error: ErrorBody {
+                code: policy_error.code().to_string(),
+                message: policy_error.to_string(),
+                status: None,
+                detail: Some(format!(
+                    "mode={:?}; capability={}",
+                    policy_error.mode,
+                    policy_error.capability.as_str()
+                )),
+                instance: None,
+            },
+        };
+        if let Ok(json) = serde_json::to_string(&output) {
+            eprintln!("{json}");
+        } else {
+            eprintln!("{policy_error}");
+        }
+        return 7;
+    }
+
     if let Some(api_error) = error.downcast_ref::<ApiError>() {
         let output = ErrorOutput {
             error: ErrorBody {

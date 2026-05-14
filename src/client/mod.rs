@@ -970,6 +970,7 @@ impl SnowClient {
         params: &[(&str, &str)],
         extra_headers: &[(String, String)],
     ) -> anyhow::Result<Response> {
+        crate::policy::ensure_request_allowed(&method, path)?;
         let url = self.authenticated_url(path)?;
 
         for attempt in 0..=MAX_AUTH_RETRIES {

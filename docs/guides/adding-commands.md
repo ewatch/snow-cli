@@ -88,7 +88,18 @@ Commands::Change(args) => match args.command {
 },
 ```
 
-### 5. Write tests
+### 5. Classify read-only policy behavior
+
+Every command must be explicitly classified in `src/policy.rs`. If the command
+can mutate ServiceNow, export reusable credentials, or change local config or
+credentials, deny it under `PolicyMode::ReadOnly`. If the command is audited as
+read-only and should be available to agent harnesses, also add it to
+`src/cli/readonly_args.rs` so it appears in `snow-cli-ro` help and completions.
+
+`api get` is intentionally allowed by HTTP convention, but method override
+headers remain blocked in read-only mode.
+
+### 6. Write tests
 
 Add integration tests in `tests/test_change.rs`:
 
@@ -113,7 +124,10 @@ Add unit tests in `src/cli/commands/change.rs` for the handler logic.
 - [ ] Handler module created in `src/cli/commands/`
 - [ ] Module registered in `src/cli/commands/mod.rs`
 - [ ] Dispatch wired up in main
+- [ ] Read-only policy decision added in `src/policy.rs`
+- [ ] Added to `src/cli/readonly_args.rs` if it should be exposed by `snow-cli-ro`
 - [ ] Unit tests for handler logic
 - [ ] Integration tests for CLI invocation
+- [ ] Read-only allow/deny tests updated
 - [ ] `cargo test` passes
 - [ ] `cargo clippy` passes

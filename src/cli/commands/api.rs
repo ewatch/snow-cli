@@ -16,6 +16,7 @@ pub async fn handle(
             tracing::info!("API GET {}", path);
 
             let extra_headers = parse_headers(&header)?;
+            crate::policy::ensure_raw_api_get_headers_allowed(&extra_headers)?;
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 

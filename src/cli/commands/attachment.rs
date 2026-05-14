@@ -105,6 +105,16 @@ pub async fn handle(
             sys_id,
             file,
         } => {
+            if crate::policy::active_policy().mode() == crate::policy::PolicyMode::ReadOnly {
+                return Err(crate::policy::PolicyError {
+                    operation: "attachment upload".to_string(),
+                    mode: crate::policy::PolicyMode::ReadOnly,
+                    capability: crate::policy::CommandCapability::RemoteWrite,
+                    reason: "read-only policy does not allow attachment uploads".to_string(),
+                }
+                .into());
+            }
+
             tracing::info!("Uploading {} to {}/{}", file, table, sys_id);
             validate_table_name(&table)?;
             validate_path_segment("sys_id", &sys_id)?;
@@ -292,5 +302,24 @@ mod tests {
             Some("report.pdf".to_string())
         );
         assert_eq!(safe_default_download_file_name(".."), None);
+    }
+
+    #[tokio::test]
+    async fn attachment_upload_rejects_read_only_policy() {
+        crate::policy::set_active_policy(crate::policy::ExecutionPolicy::read_only());
+        let args = AttachmentArgs {
+            command: AttachmentCommands::Upload {
+                table: "incident".to_string(),
+                sys_id: "abc123".to_string(),
+                file: "/dev/null".to_string(),
+            },
+        };
+        let result = handle(args, "dummy", &OutputFormat::Json, None, None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let policy_err = err.downcast_ref::<crate::policy::PolicyError>();
+        assert!(policy_err.is_some(), "Expected PolicyError, got: {err}");
+        assert_eq!(policy_err.unwrap().code(), "POLICY_DENIED");
+        crate::policy::set_active_policy(crate::policy::ExecutionPolicy::full_access());
     }
 }

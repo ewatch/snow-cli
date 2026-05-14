@@ -12,6 +12,10 @@ categories = ["command-line-utilities"]
 name = "snow-cli"
 path = "src/main.rs"
 
+[[bin]]
+name = "snow-cli-ro"
+path = "src/bin/snow-cli-ro.rs"
+
 [dependencies]
 # CLI framework
 clap = { version = "4", features = ["derive"] }

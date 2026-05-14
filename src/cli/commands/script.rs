@@ -99,6 +99,16 @@ async fn execute_background_script(
         "Executing background script"
     );
 
+    if crate::policy::active_policy().mode() == crate::policy::PolicyMode::ReadOnly {
+        return Err(crate::policy::PolicyError {
+            operation: "script run".to_string(),
+            mode: crate::policy::PolicyMode::ReadOnly,
+            capability: crate::policy::CommandCapability::RemoteWrite,
+            reason: "read-only policy does not allow background script execution".to_string(),
+        }
+        .into());
+    }
+
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
     let requires_form_session = endpoint_requires_form_session(&options.endpoint);
     let form_session = if requires_form_session {
@@ -871,5 +881,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(script, "code content");
+    }
+
+    #[tokio::test]
+    async fn execute_background_script_rejects_read_only_policy() {
+        crate::policy::set_active_policy(crate::policy::ExecutionPolicy::read_only());
+        let result = execute_background_script(
+            "dummy",
+            None,
+            None,
+            "gs.info('test')",
+            &ScriptRunOptions {
+                scope: "global".to_string(),
+                endpoint: FORM_SCRIPT_ENDPOINT.to_string(),
+                rollback: false,
+                sandbox: false,
+                scriptlet: false,
+                quota_managed_transaction: false,
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let policy_err = err.downcast_ref::<crate::policy::PolicyError>();
+        assert!(policy_err.is_some(), "Expected PolicyError, got: {err}");
+        assert_eq!(policy_err.unwrap().code(), "POLICY_DENIED");
+        crate::policy::set_active_policy(crate::policy::ExecutionPolicy::full_access());
     }
 }

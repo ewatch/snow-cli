@@ -51,6 +51,29 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Verify both binaries build
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          cargo build --release --locked --target "${TARGET}" --bins
+
+          suffix=""
+          if [[ "${TARGET}" == *"windows"* ]]; then
+            suffix=".exe"
+          fi
+
+          for bin in snow-cli snow-cli-ro; do
+            path="target/${TARGET}/release/${bin}${suffix}"
+            if [[ ! -f "${path}" ]]; then
+              echo "Expected binary not found: ${path}" >&2
+              exit 1
+            fi
+            echo "Built ${path}"
+          done
+
       - name: Install cargo-dist
         shell: bash
         run: cargo install cargo-dist --version "${CARGO_DIST_VERSION}" --locked
@@ -60,6 +83,63 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: dist build --artifacts=local --target "${TARGET}" --tag "${RELEASE_TAG}"
+
+      - name: Verify release archives include both binaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          if command -v python3 >/dev/null 2>&1; then
+            PYTHON=python3
+          else
+            PYTHON=python
+          fi
+
+          "${PYTHON}" - <<'PY'
+          import pathlib
+          import sys
+          import tarfile
+          import zipfile
+
+          archives = sorted(
+              list(pathlib.Path("target/distrib").glob("*.tar.xz"))
+              + list(pathlib.Path("target/distrib").glob("*.zip"))
+          )
+          if not archives:
+              print("No release archives found in target/distrib", file=sys.stderr)
+              sys.exit(1)
+
+          found = set()
+          for archive in archives:
+              if archive.suffix == ".zip":
+                  with zipfile.ZipFile(archive) as zf:
+                      names = zf.namelist()
+              else:
+                  with tarfile.open(archive, "r:*") as tf:
+                      names = tf.getnames()
+
+              basenames = {pathlib.PurePosixPath(name).name for name in names}
+              if "snow-cli" in basenames or "snow-cli.exe" in basenames:
+                  found.add("snow-cli")
+              if "snow-cli-ro" in basenames or "snow-cli-ro.exe" in basenames:
+                  found.add("snow-cli-ro")
+
+          missing = {"snow-cli", "snow-cli-ro"} - found
+          if missing:
+              print(
+                  "Missing expected binaries from release archives: "
+                  + ", ".join(sorted(missing)),
+                  file=sys.stderr,
+              )
+              print("Archives inspected:", file=sys.stderr)
+              for archive in archives:
+                  print(f"  {archive}", file=sys.stderr)
+              sys.exit(1)
+
+          print("Verified release archives include snow-cli and snow-cli-ro")
+          PY
 
       - name: Upload archive artifact
         uses: actions/upload-artifact@v7

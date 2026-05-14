@@ -57,6 +57,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub timeout_secs: Option<u64>,
 
+    /// Block commands and HTTP methods that can mutate ServiceNow
+    #[arg(long, global = true)]
+    pub read_only: bool,
+
     /// Increase verbosity (-v info, -vv debug, -vvv trace)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,

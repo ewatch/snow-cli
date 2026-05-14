@@ -173,6 +173,118 @@ fn test_invalid_subcommand() {
         .failure();
 }
 
+#[test]
+fn test_read_only_denies_mutating_command_before_config_load() {
+    cargo_bin_cmd!("snow-cli")
+        .args([
+            "--read-only",
+            "table",
+            "update",
+            "incident",
+            "abc123",
+            "--data",
+            r#"{"state":"2"}"#,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("POLICY_DENIED"))
+        .stderr(predicate::str::contains("table mutations"));
+}
+
+#[test]
+fn test_snow_cli_ro_help_omits_mutating_commands() {
+    cargo_bin_cmd!("snow-cli-ro")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("snow-cli-ro"))
+        .stdout(predicate::str::contains("Raw REST API GET"))
+        .stdout(predicate::str::contains("codesearch"))
+        .stdout(predicate::str::contains("Script").not())
+        .stdout(predicate::str::contains("ImportSet").not());
+}
+
+#[test]
+fn test_snow_cli_ro_rejects_mutating_command_at_parse_time() {
+    cargo_bin_cmd!("snow-cli-ro")
+        .args(["table", "delete", "incident", "abc123", "--yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand 'delete'"));
+}
+
+#[test]
+fn test_snow_cli_ro_rejects_api_post_at_parse_time() {
+    cargo_bin_cmd!("snow-cli-ro")
+        .args(["api", "post", "/api/x/action", "--data", "{}"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand 'post'"));
+}
+
+#[test]
+fn test_read_only_api_get_denies_method_override_header() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+username = "admin"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args([
+            "--read-only",
+            "api",
+            "get",
+            "/api/x_myapp/action",
+            "-H",
+            "X-HTTP-Method-Override: POST",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("POLICY_DENIED"))
+        .stderr(predicate::str::contains("method override"));
+}
+
+#[tokio::test]
+async fn test_read_only_allows_api_get() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/x_myapp/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "ok": true })))
+        .mount(&server)
+        .await;
+
+    let config = format!(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "{}"
+auth_method = "basic"
+username = "admin"
+"#,
+        server.uri()
+    );
+    let (_dir, config_path) = common::create_temp_config(&config);
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+    common::write_test_keychain_entry(&keychain_store, "snow-cli", "dev:password", "secret");
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .args(["--read-only", "api", "get", "/api/x_myapp/status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"ok\": true"));
+}
+
 // --- Config integration tests ---
 
 #[test]
