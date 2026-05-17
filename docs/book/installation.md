@@ -72,6 +72,8 @@ If you prefer to install by hand, download the archive for your platform from th
 | Linux x64 | `snow-cli-x86_64-unknown-linux-gnu.tar.gz` |
 | Windows x64 | `snow-cli-x86_64-pc-windows-msvc.zip` |
 
+> The "unknown" in the Linux filename is not a placeholder — it is the standard Rust target triple vendor field (x86_64-**unknown**-linux-gnu), which is how the release archives are named.
+
 Extract the archive and place `snow-cli` (and optionally `snow-cli-ro`) in a directory on your `PATH`.
 
 ## Build from source
