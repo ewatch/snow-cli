@@ -3,6 +3,7 @@
 - [Introduction](./introduction.md)
 - [Installation](./installation.md)
 - [Quick start](./quick-start.md)
+- [Testing with a PDI](./pdi-testing.md)
 - [Configuration and authentication](./configuration.md)
   - [OAuth authorization code with PKCE](./oauth-authorization-code-pkce.md)
 - [Command reference](./commands.md)

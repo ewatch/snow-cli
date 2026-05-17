@@ -12,9 +12,24 @@ Use OAuth 2.0 authorization-code login when `snow-cli` must act in **user scope*
 
 ## What you need from ServiceNow
 
-Before configuring the CLI, create or update an OAuth client/application in ServiceNow that supports the authorization-code flow.
+Before configuring the CLI, create an OAuth application in ServiceNow that supports the authorization-code flow.
 
-Make sure you have:
+### Create the OAuth application in ServiceNow
+
+1. Navigate to **System OAuth > Application Registry**.
+2. Click **New** and choose **Create an OAuth API endpoint for external clients**.
+3. Fill in:
+   - **Name**: `snow-cli` (or any descriptive name)
+   - **Redirect URL**: `http://127.0.0.1:8080/oauth/callback`
+   - **Active**: checked
+4. Click **Submit**.
+5. Open the newly created record and note:
+   - **Client ID**
+   - **Client Secret** (click the lock icon to reveal it)
+
+> **PDI tip**: If you are using a Personal Developer Instance, the steps are the same. See [Testing with a PDI](./pdi-testing.md) for a full walkthrough.
+
+You will need:
 
 - the instance URL, for example `https://dev123456.service-now.com`
 - the OAuth `client_id`

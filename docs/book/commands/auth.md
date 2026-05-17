@@ -27,8 +27,7 @@ snow-cli auth login [options]
 | `oauth2` + `password` | `client_id`, `username` | client secret and password |
 | `oauth2` + `authorization-code` | `client_id`, optional redirect/scope settings | browser login, optional client secret |
 | `api-key` | no extra profile secret fields | API token |
-| `saml` | optional `sso_login_url` | session cookie or interactive browser login |
-| `mtls` | `cert_path` and `key_path` | nothing; `auth login` is not used |
+| `browser-session` | no extra profile fields | session cookie via env var or flag; `auth login` is not used |
 
 ### Secret input options
 
@@ -70,12 +69,9 @@ Public PKCE clients can omit the client secret. Confidential clients can provide
 
 See [OAuth authorization code with PKCE](../oauth-authorization-code-pkce.md).
 
-### SAML login
+### Browser session
 
-For `saml` profiles you can either:
-
-- pass a session cookie explicitly, or
-- run `snow-cli auth login` without `--session-cookie` and let the CLI launch a managed browser session.
+For `browser-session` profiles, provide the full authenticated `Cookie` header value via the `SNOW_SESSION_COOKIE` environment variable or the `--session-cookie` / `--session-cookie-stdin` flags. This auth method does not use `auth login`.
 
 ## `auth status`
 

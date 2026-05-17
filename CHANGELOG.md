@@ -5,6 +5,27 @@ All notable changes to `snow-cli` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows semantic versioning conventions while it is pre-1.0.
 
+## [0.4.0] - 2026-05-17
+
+### Added
+
+- Added read-only policy engine and `snow-cli-ro` executable. Commands that mutate ServiceNow data are blocked when the policy is active.
+- Added cross-platform install script (`scripts/install.sh`) for easy binary installation on macOS and Linux.
+- Added PDI testing guide (`docs/book/pdi-testing.md`) with step-by-step OAuth setup instructions for Personal Developer Instances.
+- Added ServiceNow-side OAuth application setup instructions to the OAuth authorization-code + PKCE guide.
+
+### Changed
+
+- Removed `mtls` and `saml` from documented supported auth methods; `browser-session` (cookie-based) is the current SSO workaround.
+- Updated `docs/PLAN.md` to reflect that `attachment` and `data` commands are fully implemented.
+- Updated installation docs to cover the install script, pre-built binaries, and build-from-source paths.
+
+### Validation
+
+- `cargo fmt`
+- `cargo clippy -- -D warnings`
+- `cargo test`
+
 ## [0.3.1] - 2026-05-11
 
 ### Security

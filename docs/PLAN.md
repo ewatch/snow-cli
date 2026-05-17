@@ -112,13 +112,14 @@ snow-cli completions <shell>      Generate shell completions
 
 All auth methods implement a common `Authenticator` trait:
 
-| Method          | Flow                                                   |
-|-----------------|--------------------------------------------------------|
-| Basic Auth      | Username/password, stored in OS keychain               |
-| OAuth 2.0       | Client credentials or authorization code flow          |
-| API Key / Token | Bearer token stored in keychain                        |
-| mTLS            | Client certificate + key file paths in config          |
-| SSO / SAML      | Browser-based SAML flow, captures token via callback   |
+| Method           | Flow                                                   |
+|------------------|--------------------------------------------------------|
+| Basic Auth       | Username/password, stored in OS keychain               |
+| OAuth 2.0        | Client credentials, password, or authorization code    |
+| API Key / Token  | Bearer token stored in keychain                        |
+| Browser Session  | Cookie header from an authenticated browser session    |
+| mTLS             | Not yet implemented                                    |
+| SSO / SAML       | Not yet implemented (use browser-session as a workaround) |
 
 ## ServiceNow APIs
 
@@ -165,11 +166,6 @@ instance = "https://company.service-now.com"
 auth_method = "basic"
 username = "admin"
 
-[profiles.staging]
-instance = "https://staging-company.service-now.com"
-auth_method = "mtls"
-cert_path = "/path/to/client.pem"
-key_path = "/path/to/client-key.pem"
 ```
 
 Secrets (passwords, client secrets, tokens) are stored in the OS keychain,
@@ -210,7 +206,7 @@ never in the config file.
 - [x] Implement `table schema` command (compact, extended, include-inherited)
 - [x] Implement `codesearch` command (search via Code Search API)
 - [x] Implement `script run` command
-- [ ] Implement `attachment` commands (upload/download with streaming)
+  - [x] Implement `attachment` commands (upload/download with streaming)
 - [x] Write tests for each command group
 - ~~Implement `incident` shortcut commands~~ (removed — achievable via `table` commands)
 - ~~Implement `import-set` commands~~ (delayed for later)
@@ -219,8 +215,10 @@ never in the config file.
 
 - [x] Add shell completions generation
 - [x] Implement `config init` first-time bootstrap
-- [ ] Implement `data export` MVP and command model for `data` / `seed`
-- [ ] Implement dataset packages, reference remapping, and seed workflows
+- [x] Implement `data export` MVP and command model for `data`
+- [x] Implement dataset packages and reference remapping
+- [ ] Implement `seed` workflows
 - [ ] Set up CI/CD (GitHub Actions) for cross-compilation
 - [ ] Create Homebrew formula
-- [ ] Add mTLS and SSO/SAML auth
+- [ ] Add mTLS auth
+- [ ] Add full SSO/SAML auth (browser-based flow with callback capture)

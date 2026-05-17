@@ -16,8 +16,7 @@ The config file contains non-secret settings such as:
 - authentication method,
 - username,
 - OAuth client ID and grant settings,
-- mTLS certificate paths,
-- SAML login URL,
+- mTLS certificate paths (not yet implemented),
 - default profile name.
 
 Secrets such as passwords, API tokens, OAuth client secrets, and stored OAuth tokens are kept outside the TOML file.
@@ -82,8 +81,7 @@ The CLI supports these `--auth-method` values:
 - `basic`
 - `oauth2`
 - `api-key`
-- `mtls`
-- `saml`
+- `browser-session`
 
 In `config.toml`, the API key method is serialized as `api_key`.
 
@@ -126,41 +124,26 @@ snow-cli profile add integration \
 printf '%s' "$SNOW_API_TOKEN" | snow-cli auth login --profile integration --token-stdin
 ```
 
-### mTLS
+### Browser session
 
-mTLS profiles store certificate paths in the profile instead of logging in interactively:
-
-```bash
-snow-cli profile add mtls-dev \
-  --instance https://dev.service-now.com \
-  --auth-method mtls \
-  --cert-path ./client.crt \
-  --key-path ./client.key
-```
-
-`auth login` is not used for mTLS profiles.
-
-### SAML / SSO
-
-SAML profiles can either:
-
-- accept an already-authenticated `Cookie` header value, or
-- launch a managed browser session and capture the ServiceNow session automatically.
+`browser-session` profiles accept an already-authenticated `Cookie` header value from your browser. This is useful for instances that require SSO or SAML, where you can copy the cookie from an authenticated browser session.
 
 Example profile:
 
 ```bash
 snow-cli profile add sso-dev \
   --instance https://dev.service-now.com \
-  --auth-method saml \
-  --sso-login-url https://dev.service-now.com/login_with_sso.do
+  --auth-method browser-session
 ```
 
-Then log in:
+Then provide the cookie at runtime via the `SNOW_SESSION_COOKIE` environment variable or the `--session-cookie` flag:
 
 ```bash
-snow-cli auth login --profile sso-dev
+export SNOW_SESSION_COOKIE='JSESSIONID=...; glide_user_route=...'
+snow-cli table list incident --limit 10 --profile sso-dev
 ```
+
+The session cookie is never stored in the config file or keychain.
 
 ## Global options
 
