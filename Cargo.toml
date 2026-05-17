@@ -20,7 +20,7 @@ path = "src/bin/snow-cli-ro.rs"
 # CLI framework
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
-indicatif = "0.17"
+indicatif = "0.18"
 
 # Async runtime
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
