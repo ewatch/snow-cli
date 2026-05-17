@@ -1,39 +1,75 @@
 # Installation
 
-## Quick install (macOS and Linux)
+## Quick install
 
-The quickest way to install `snow-cli` is with the install script:
+### macOS and Linux
 
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.sh | bash
-```
-
-This detects your platform, downloads the latest release from GitHub, and places both `snow-cli` and `snow-cli-ro` in `~/.local/bin` (or `~/.snow-cli/bin` as a fallback).
-
-If the install directory is not already on your `PATH`, the script will tell you how to add it.
-
-### Custom install directory
+Copy the command below into your terminal. The script shows exactly what it will do before downloading anything:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.sh | bash -s -- --install-dir /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.sh | bash
 ```
 
-### Overwrite existing binaries
+You will see a plan like this and be asked to confirm:
+
+```text
+Plan:
+  Download: https://github.com/ewatch/snow-cli/releases/download/v0.4.0/snow-cli-aarch64-apple-darwin.tar.gz
+  Release:  v0.4.0
+  Install to: /Users/you/.local/bin
+  Binaries: snow-cli, snow-cli-ro
+
+Proceed? [Y/n]
+```
+
+#### Skip the confirmation
+
+If you are running this in CI or prefer no prompts:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.sh | bash -s -- --force
+FORCE=1 curl -fsSL https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.sh | bash
 ```
 
-## Pre-built binaries
+#### Use a different directory
 
-If you prefer to install manually, download the archive for your platform from the [GitHub releases page](https://github.com/ewatch/snow-cli/releases).
+```bash
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.sh | bash
+```
 
-Supported platforms:
+### Windows
+
+Open PowerShell and run:
+
+```powershell
+irm https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.ps1 | iex
+```
+
+The script shows the same plan-and-confirm flow. To skip the prompt in automation:
+
+```powershell
+$env:FORCE = "1"; irm https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.ps1 | iex
+```
+
+### What the script does (in plain English)
+
+1. Detects your operating system and CPU architecture.
+2. Finds the latest release on GitHub.
+3. Downloads the matching archive (`tar.gz` for macOS/Linux, `zip` for Windows).
+4. Extracts it to a temporary folder.
+5. Copies `snow-cli` and `snow-cli-ro` into the install directory.
+6. Tells you if the directory is missing from your `PATH` and how to add it.
+
+No registry changes, no admin rights required by default, and the archive is deleted automatically.
+
+## Manual install (pre-built binaries)
+
+If you prefer to install by hand, download the archive for your platform from the [GitHub releases page](https://github.com/ewatch/snow-cli/releases).
 
 | Platform | Archive |
 |----------|---------|
 | macOS Intel | `snow-cli-x86_64-apple-darwin.tar.gz` |
 | macOS Apple Silicon | `snow-cli-aarch64-apple-darwin.tar.gz` |
+| Linux x64 | `snow-cli-x86_64-unknown-linux-gnu.tar.gz` |
 | Windows x64 | `snow-cli-x86_64-pc-windows-msvc.zip` |
 
 Extract the archive and place `snow-cli` (and optionally `snow-cli-ro`) in a directory on your `PATH`.
