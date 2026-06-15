@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::cli::args::{
     ApiCommands, AttachmentCommands, AuthCommands, CodesearchCommands, Commands, ConfigCommands,
     DataCommands, ImportSetCommands, ProfileSdkCommands, ScopeCommands, ScriptCommands,
-    SeedCommands, TableCommands,
+    SeedCommands, SnuCommands, SnuContextCommands, TableCommands,
 };
 
 static ACTIVE_POLICY_MODE: AtomicU8 = AtomicU8::new(PolicyMode::FullAccess as u8);
@@ -35,6 +35,7 @@ pub enum CommandCapability {
     LocalCredentialRead,
     LocalCredentialWrite,
     LocalFileWrite,
+    LocalDaemon,
     Unknown,
 }
 
@@ -51,6 +52,7 @@ impl CommandCapability {
             Self::LocalCredentialRead => "local_credential_read",
             Self::LocalCredentialWrite => "local_credential_write",
             Self::LocalFileWrite => "local_file_write",
+            Self::LocalDaemon => "local_daemon",
             Self::Unknown => "unknown",
         }
     }
@@ -300,6 +302,55 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
         },
         Commands::Codesearch(args) => match &args.command {
             CodesearchCommands::Search { .. } => PolicyDecision::Allow,
+        },
+        Commands::Snu(args) => match &args.command {
+            SnuCommands::CheckConnection { .. }
+            | SnuCommands::GetInstanceInfo { .. }
+            | SnuCommands::WaitToken { .. }
+            | SnuCommands::ListTables { .. }
+            | SnuCommands::GetRecord { .. }
+            | SnuCommands::Query { .. }
+            | SnuCommands::Schema { .. }
+            | SnuCommands::Slash { .. }
+            | SnuCommands::Tab(_)
+            | SnuCommands::Screenshot { .. } => PolicyDecision::Allow,
+            SnuCommands::UpdateRecord { .. } => deny(
+                "snu update-record",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow record updates through SN-Utils",
+            ),
+            SnuCommands::UpdateRecordBatch { .. } => deny(
+                "snu update-record-batch",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow record updates through SN-Utils",
+            ),
+            SnuCommands::DeleteRecord { .. } => deny(
+                "snu delete-record",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow record deletion through SN-Utils",
+            ),
+            SnuCommands::ExecuteBgScript { .. } => deny(
+                "snu execute-bg-script",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow background script execution through SN-Utils",
+            ),
+            SnuCommands::Context(context_args) => match &context_args.command {
+                SnuContextCommands::Switch { .. } => deny(
+                    "snu context switch",
+                    CommandCapability::RemoteWrite,
+                    "read-only policy does not allow switching browser session context",
+                ),
+            },
+            SnuCommands::AttachmentUpload { .. } => deny(
+                "snu attachment upload",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow attachment uploads",
+            ),
+            SnuCommands::Daemon(_) => deny(
+                "snu daemon",
+                CommandCapability::LocalDaemon,
+                "read-only policy does not allow starting/stopping the bridge daemon",
+            ),
         },
         Commands::Completions { .. } => PolicyDecision::Allow,
     }

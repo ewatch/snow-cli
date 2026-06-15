@@ -52,12 +52,16 @@ async-trait = "0.1"
 # HTTP header types
 http = "1"
 
-# Base64 encoding (for Basic auth)
+# Base64 encoding (for Basic auth and SN-Utils attachment payloads)
 base64 = "0.22"
 rpassword = "7.4.0"
 open = "5.3.4"
 rand = "0.8"
 sha2 = "0.10"
+futures-util = "0.3"
+tokio-tungstenite = "0.24"
+urlencoding = "2"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 # HTTP mocking

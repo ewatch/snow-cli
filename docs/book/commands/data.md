@@ -104,6 +104,28 @@ Notes:
 - `--fail-on-error` is mainly useful together with `--import-set-table`.
 - `data import` does not support `--output csv`.
 
+### Real-world export → validate → import workflow
+
+```bash
+# 1. Export records to a file
+snow-cli data export incident \
+  --fields number,short_description,priority,state \
+  --limit 10 \
+  --out export-incidents.json
+
+# 2. Validate the exported file against the target instance
+snow-cli data validate --file export-incidents.json
+
+# 3. Preview what an import would do (dry-run)
+snow-cli data import --file export-incidents.json --dry-run
+
+# 4. Import (creates new records via Table API)
+snow-cli data import --file export-incidents.json
+```
+
+The validation step checks that the fields in the export exist on the target
+table and reports any mismatches before you attempt the import.
+
 ## When to use `data` instead of `table`
 
 Use `data` when you want:

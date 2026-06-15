@@ -81,7 +81,25 @@ Show the current authentication state for the active profile.
 snow-cli auth status
 ```
 
-Use it to confirm whether the required credentials are available.
+Sample output when credentials are stored:
+
+```json
+{
+  "profile": "dev",
+  "instance": "https://dev.service-now.com",
+  "auth_method": "basic",
+  "credential_types": ["password"],
+  "authenticated": true,
+  "username": "admin"
+}
+```
+
+The `authenticated` field confirms that credentials are present in the
+keychain or environment. It does **not** verify that they are still valid
+against the instance — a 401 on the first API call means the stored
+password has changed or expired.
+
+Use `snow-cli auth login` to update stale credentials.
 
 ## `auth token`
 
@@ -93,11 +111,18 @@ snow-cli auth token
 
 This is useful for piping into other tools. For OAuth2 profiles, the command prints an actual short-lived access token rather than a stored client secret.
 
-Example:
+Examples:
 
 ```bash
+# Copy to clipboard (macOS)
 snow-cli auth token | pbcopy
+
+# Use in another API call
+TOKEN=$(snow-cli auth token)
+curl -H "Authorization: Bearer $TOKEN" https://instance.service-now.com/api/now/table/incident
 ```
+
+For basic auth profiles, the output is a base64-encoded `username:password` string.
 
 ## `auth logout`
 

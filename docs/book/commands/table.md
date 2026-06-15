@@ -150,6 +150,42 @@ snow-cli table update incident <sys_id> --data '{"assigned_to":"6816f79cc0a80164
 snow-cli table delete incident <sys_id> --yes
 ```
 
+### Real-world workflow
+
+```bash
+# 1. List records with just a few fields
+snow-cli table list incident --limit 5 --fields number,short_description,priority --output csv
+
+# 2. Inspect available columns for the table
+snow-cli table schema incident --extended
+
+# 3. Get full details on one record
+snow-cli table get incident <sys_id> --fields number,short_description,state,assignment_group
+
+# 4. Create a new record
+snow-cli table create incident --data '{"short_description":"Disk space low on server-01","category":"hardware","urgency":"2"}'
+
+# 5. Update it
+snow-cli table update incident <sys_id> --data '{"state":"2","assigned_to":"<user_sys_id>"}'
+
+# 6. Clean up
+snow-cli table delete incident <sys_id> --yes
+```
+
+### JSON quoting in the shell
+
+The `--data` value must be valid JSON. When using single quotes on the command
+line, the shell passes the string verbatim to the CLI. Double quotes inside
+the JSON must not be escaped:
+
+```bash
+# Correct
+snow-cli table create incident --data '{"short_description":"VPN issue"}'
+
+# Wrong — inner escaped quotes are not valid JSON
+snow-cli table create incident --data "{\"short_description\":\"VPN issue\"}"
+```
+
 ## Related pages
 
 - [`data` command reference](./data.md)

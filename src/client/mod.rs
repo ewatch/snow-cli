@@ -987,6 +987,18 @@ impl SnowClient {
                 request = request.header(key, value);
             }
 
+            // Browser-session table/API calls can reuse the g_ck captured by the
+            // SN-Utils bridge as the ServiceNow X-UserToken header. The token is
+            // loaded only when it matches the request instance origin.
+            if self.authenticator.auth_type() == crate::config::AuthMethod::BrowserSession
+                && !auth_headers.contains_key("X-UserToken")
+                && let Some(cached) =
+                    crate::snu::session_cache::load_session_for_url(&self.base_url)?
+                && let Some(g_ck) = cached.instance.g_ck.as_deref()
+            {
+                request = request.header("X-UserToken", g_ck);
+            }
+
             // Add custom headers (may override defaults like Content-Type)
             for (key, value) in extra_headers {
                 request = request.header(key.as_str(), value.as_str());

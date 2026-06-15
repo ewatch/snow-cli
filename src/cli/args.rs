@@ -31,6 +31,11 @@ const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incide
 
 const API_AFTER_HELP: &str = "Examples:\n  snow-cli api get /api/now/table/incident?sysparm_limit=1\n  snow-cli api post /api/x_myapp/action --data '{\"dry_run\":true}'\n  snow-cli api get /api/x_myapp/status -H 'X-Trace-Id:abc123'";
 
+const SCRIPT_RUN_AFTER_HELP: &str = "Examples:\n  snow-cli script run --code 'gs.info(\"hello from snow-cli\")'\n  snow-cli script run --file ./cleanup.js --sandbox\n  printf '%s' 'gs.info(\"from stdin\")' | snow-cli script run --scope x_my_app\n  snow-cli script run --code 'gs.print(\"done\")' --rollback --quota-managed-transaction\n\nNotes:\n  - `script run` executes a background script directly against the ServiceNow instance.\n  - If you are using SN-Utils, the `snu` command family is for browser/session helper actions, not background scripts.";
+
+const SNU_AFTER_HELP: &str = "Examples:\n  snow-cli snu check-connection\n  snow-cli snu get-instance-info\n  snow-cli snu list-tables\n  snow-cli snu get-record incident 46d44a1b1b223010d9f2ed7c2e4bcb1 --fields sys_id,number,short_description\n  snow-cli snu update-record sys_script_include 46d44a1b1b223010d9f2ed7c2e4bcb1 --field script --content 'gs.info(\"hello\")'\n  snow-cli snu update-record-batch sp_widget 46d44a1b1b223010d9f2ed7c2e4bcb1 --fields '{\"script\":\"data.hello = \\\"world\\\";\",\"css\":\".c1 { color: red; }\"}'\n  snow-cli snu delete-record incident 46d44a1b1b223010d9f2ed7c2e4bcb1\n  snow-cli snu wait-token\n  snow-cli snu query incident --query 'active=true' --fields sys_id,number --limit 10\n  snow-cli snu schema incident\n  snow-cli snu execute-bg-script --code 'gs.info(\"hello from SN-Utils\")'\n  snow-cli snu slash /tn\n  snow-cli snu tab activate 'https://dev12345.service-now.com/incident.do*' --open-if-not-found\n  snow-cli snu context switch application x_my_app --tab-url 'https://dev12345.service-now.com/*'\n  snow-cli snu screenshot --url 'https://dev12345.service-now.com/*' --out incident.png\n  snow-cli snu attachment upload incident <sys_id> --file ./attachment.png\n\nNotes:\n  - SN-Utils must be installed in the browser. Run wait-token once, open the SN-Utils ScriptSync helper tab, then run /token in a ServiceNow tab. Later snu commands reuse the cached browser token from the OS keychain.\n  - `script run` is the direct background-script command; `snu execute-bg-script` runs the same kind of server-side script through the browser helper tab.\n  - `snu check-connection` and `snu get-instance-info` are lightweight diagnostics for the websocket bridge and browser session.\n  - `snu list-tables`, `snu get-record`, `snu update-record`, `snu update-record-batch`, and `snu delete-record` map to the SN-Utils record-management helpers.\n  - The bridge binds 127.0.0.1:1978, the port hard-coded by SN-Utils scriptsync.html. Stop sn-scriptsync first if it owns that port.";
+pub const DEFAULT_SNU_TIMEOUT_SECS: u64 = 180;
+
 /// ❄️ snow-cli — ServiceNow CLI for humans and coding agents
 #[derive(Parser, Debug)]
 #[command(
@@ -113,6 +118,9 @@ pub enum Commands {
 
     /// Search code across ServiceNow instance (scripts, business rules, etc.)
     Codesearch(CodesearchArgs),
+
+    /// Use the SN-Utils browser extension helper tab directly (without sn-scriptsync)
+    Snu(SnuArgs),
 
     /// Generate shell completions
     Completions {
@@ -1011,6 +1019,7 @@ pub struct ScriptArgs {
 #[derive(Subcommand, Debug)]
 pub enum ScriptCommands {
     /// Execute a background script on the ServiceNow instance
+    #[command(after_help = SCRIPT_RUN_AFTER_HELP)]
     Run {
         /// Path to a script file to execute
         #[arg(long, short = 'f', group = "script_source")]
@@ -1044,6 +1053,355 @@ pub enum ScriptCommands {
         #[arg(long = "quota-managed-transaction", alias = "limit-transaction")]
         quota_managed_transaction: bool,
     },
+}
+
+// --- SN-Utils bridge ---
+
+#[derive(Args, Debug)]
+#[command(after_help = SNU_AFTER_HELP)]
+pub struct SnuArgs {
+    #[command(subcommand)]
+    pub command: SnuCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnuCommands {
+    /// Check whether the SN-Utils bridge and browser helper are connected
+    CheckConnection {
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Get SN-Utils bridge instance info
+    GetInstanceInfo {
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Wait for /token from SN-Utils and print the received browser session metadata
+    WaitToken {
+        /// Seconds to wait for the helper tab and /token message
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Query ServiceNow records through the active SN-Utils browser session
+    Query {
+        /// Table name
+        table: String,
+
+        /// Encoded query
+        #[arg(long)]
+        query: Option<String>,
+
+        /// Comma-separated sysparm_fields
+        #[arg(long, default_value = "sys_id,number,short_description,sys_created_on")]
+        fields: String,
+
+        /// Maximum records to return
+        #[arg(long, default_value = "10")]
+        limit: u32,
+
+        /// ORDERBY clause or field expression appended to sysparm_query
+        #[arg(long)]
+        order_by: Option<String>,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Execute a server-side background script through the active SN-Utils browser session
+    ExecuteBgScript {
+        /// Path to a script file to execute
+        #[arg(long, short = 'f', group = "script_source")]
+        file: Option<String>,
+
+        /// Inline script code to execute
+        #[arg(long, short = 'c', group = "script_source")]
+        code: Option<String>,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// List available tables through the active SN-Utils browser session
+    ListTables {
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Fetch a single record through the active SN-Utils browser session
+    GetRecord {
+        /// Table name
+        table: String,
+
+        /// Record sys_id
+        sys_id: String,
+
+        /// Optional comma-separated fields list
+        #[arg(long)]
+        fields: Option<String>,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Update a single field through the active SN-Utils browser session
+    UpdateRecord {
+        /// Table name
+        table: String,
+
+        /// Record sys_id
+        sys_id: String,
+
+        /// Field name to update
+        #[arg(long)]
+        field: String,
+
+        /// New field content
+        #[arg(long)]
+        content: String,
+
+        /// Confirm the updated value by reading it back
+        #[arg(long = "await")]
+        await_confirmation: bool,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Update multiple fields through the active SN-Utils browser session
+    UpdateRecordBatch {
+        /// Table name
+        table: String,
+
+        /// Record sys_id
+        sys_id: String,
+
+        /// JSON object of field/value pairs
+        #[arg(long)]
+        fields: String,
+
+        /// Confirm the updated values by reading them back
+        #[arg(long = "await")]
+        await_confirmation: bool,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Delete a record through the active SN-Utils browser session
+    DeleteRecord {
+        /// Table name
+        table: String,
+
+        /// Record sys_id (single delete)
+        #[arg(long, group = "delete_target")]
+        sys_id: Option<String>,
+
+        /// Encoded query (bulk delete)
+        #[arg(long, group = "delete_target")]
+        query: Option<String>,
+
+        /// Required for bulk delete to confirm destructive intent
+        #[arg(long)]
+        confirm: bool,
+
+        /// Maximum records to delete in bulk mode
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Preview without deleting
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Fetch table UI metadata through the active SN-Utils browser session
+    Schema {
+        /// Table name
+        table: String,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Run an SN-Utils slash command in a ServiceNow browser tab
+    Slash {
+        /// Slash command, e.g. /tn or tn
+        command: String,
+
+        /// Browser tab URL pattern to target
+        #[arg(long, default_value = "https://*.service-now.com/*")]
+        url: String,
+
+        /// Specific browser tab id to target
+        #[arg(long)]
+        tab_id: Option<u64>,
+
+        /// Insert/show but do not auto-run the slash command
+        #[arg(long)]
+        no_auto_run: bool,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Browser tab operations through SN-Utils
+    Tab(SnuTabArgs),
+
+    /// Switch browser session context through SN-Utils
+    Context(SnuContextArgs),
+
+    /// Capture a browser screenshot through SN-Utils
+    Screenshot {
+        /// Browser tab URL/pattern to capture
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Specific browser tab id to capture
+        #[arg(long)]
+        tab_id: Option<u64>,
+
+        /// Output PNG path; defaults to the helper-provided filename
+        #[arg(long = "out", short = 'o')]
+        out_path: Option<String>,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Upload an attachment through the active SN-Utils browser session
+    AttachmentUpload {
+        /// Table name
+        table: String,
+
+        /// Record sys_id
+        sys_id: String,
+
+        /// Path to file to upload
+        #[arg(long, short)]
+        file: String,
+
+        /// Content type override
+        #[arg(long)]
+        content_type: Option<String>,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Manage the SN-Utils bridge daemon (persistent WebSocket server)
+    #[command(subcommand)]
+    Daemon(SnuDaemonCommands),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnuDaemonCommands {
+    /// Start the persistent bridge daemon
+    Start {
+        /// Seconds to wait for the helper tab connection
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+    /// Stop the running bridge daemon
+    Stop,
+    /// Check if the bridge daemon is running
+    Status,
+}
+
+#[derive(Args, Debug)]
+pub struct SnuTabArgs {
+    #[command(subcommand)]
+    pub command: SnuTabCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnuTabCommands {
+    /// Activate a browser tab matching a URL pattern
+    Activate {
+        /// URL or browser extension match pattern
+        url: String,
+
+        /// Reload after activation
+        #[arg(long)]
+        reload: bool,
+
+        /// Wait for page load completion
+        #[arg(long)]
+        wait_for_load: bool,
+
+        /// Open the URL if no tab matches
+        #[arg(long)]
+        open_if_not_found: bool,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct SnuContextArgs {
+    #[command(subcommand)]
+    pub command: SnuContextCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnuContextCommands {
+    /// Switch update set, application, or domain in the browser session
+    Switch {
+        /// Context type to switch
+        #[arg(value_enum)]
+        switch_type: SnuSwitchType,
+
+        /// sys_id/app_id/domain value
+        value: String,
+
+        /// Do not reload a ServiceNow tab after switching
+        #[arg(long)]
+        no_reload_tab: bool,
+
+        /// Browser tab URL pattern to reload
+        #[arg(long, default_value = "https://*.service-now.com/*")]
+        tab_url: String,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum SnuSwitchType {
+    Updateset,
+    Application,
+    Domain,
+}
+
+impl SnuSwitchType {
+    pub fn as_action_value(&self) -> &'static str {
+        match self {
+            Self::Updateset => "updateset",
+            Self::Application => "application",
+            Self::Domain => "domain",
+        }
+    }
 }
 
 // --- Codesearch ---
@@ -1097,6 +1455,31 @@ mod tests {
     fn test_top_level_help_includes_snowflake() {
         let help = Cli::command().render_long_help().to_string();
         assert!(help.contains("❄️ snow-cli"));
+    }
+
+    #[test]
+    fn test_script_run_help_includes_examples() {
+        let help = Cli::command()
+            .find_subcommand_mut("script")
+            .unwrap()
+            .find_subcommand_mut("run")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("snow-cli script run --code 'gs.info(\"hello from snow-cli\")'"));
+        assert!(help.contains("background script directly against the ServiceNow instance"));
+    }
+
+    #[test]
+    fn test_snu_help_mentions_browser_helpers_and_background_scripts() {
+        let help = Cli::command()
+            .find_subcommand_mut("snu")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("snow-cli snu check-connection"));
+        assert!(help.contains("snow-cli snu context switch application x_my_app"));
+        assert!(help.contains("snu execute-bg-script"));
     }
 
     #[test]
@@ -1159,6 +1542,135 @@ mod tests {
                 _ => panic!("Expected Table List command"),
             },
             _ => panic!("Expected Table command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_snu_execute_bg_script() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "snu",
+            "execute-bg-script",
+            "--code",
+            "gs.info('hi')",
+        ]);
+
+        match cli.command {
+            Commands::Snu(args) => match args.command {
+                SnuCommands::ExecuteBgScript { code, file, .. } => {
+                    assert_eq!(code, Some("gs.info('hi')".to_string()));
+                    assert_eq!(file, None);
+                }
+                _ => panic!("Expected Snu ExecuteBgScript command"),
+            },
+            _ => panic!("Expected Snu command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_snu_check_connection() {
+        let cli = Cli::parse_from(["snow-cli", "snu", "check-connection"]);
+
+        match cli.command {
+            Commands::Snu(args) => match args.command {
+                SnuCommands::CheckConnection { timeout_secs } => {
+                    assert_eq!(timeout_secs, DEFAULT_SNU_TIMEOUT_SECS);
+                }
+                _ => panic!("Expected Snu CheckConnection command"),
+            },
+            _ => panic!("Expected Snu command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_snu_get_instance_info() {
+        let cli = Cli::parse_from(["snow-cli", "snu", "get-instance-info"]);
+
+        match cli.command {
+            Commands::Snu(args) => match args.command {
+                SnuCommands::GetInstanceInfo { timeout_secs } => {
+                    assert_eq!(timeout_secs, DEFAULT_SNU_TIMEOUT_SECS);
+                }
+                _ => panic!("Expected Snu GetInstanceInfo command"),
+            },
+            _ => panic!("Expected Snu command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_snu_list_tables() {
+        let cli = Cli::parse_from(["snow-cli", "snu", "list-tables"]);
+
+        match cli.command {
+            Commands::Snu(args) => match args.command {
+                SnuCommands::ListTables { timeout_secs } => {
+                    assert_eq!(timeout_secs, DEFAULT_SNU_TIMEOUT_SECS);
+                }
+                _ => panic!("Expected Snu ListTables command"),
+            },
+            _ => panic!("Expected Snu command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_snu_get_record() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "snu",
+            "get-record",
+            "incident",
+            "abc123",
+            "--fields",
+            "sys_id,number",
+        ]);
+
+        match cli.command {
+            Commands::Snu(args) => match args.command {
+                SnuCommands::GetRecord {
+                    table,
+                    sys_id,
+                    fields,
+                    ..
+                } => {
+                    assert_eq!(table, "incident");
+                    assert_eq!(sys_id, "abc123");
+                    assert_eq!(fields, Some("sys_id,number".to_string()));
+                }
+                _ => panic!("Expected Snu GetRecord command"),
+            },
+            _ => panic!("Expected Snu command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_snu_update_record_batch() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "snu",
+            "update-record-batch",
+            "sp_widget",
+            "abc123",
+            "--fields",
+            "{\"script\":\"gs.info('x')\",\"css\":\".a{}\"}",
+        ]);
+
+        match cli.command {
+            Commands::Snu(args) => match args.command {
+                SnuCommands::UpdateRecordBatch {
+                    table,
+                    sys_id,
+                    fields,
+                    await_confirmation,
+                    ..
+                } => {
+                    assert_eq!(table, "sp_widget");
+                    assert_eq!(sys_id, "abc123");
+                    assert_eq!(fields, "{\"script\":\"gs.info('x')\",\"css\":\".a{}\"}");
+                    assert!(!await_confirmation);
+                }
+                _ => panic!("Expected Snu UpdateRecordBatch command"),
+            },
+            _ => panic!("Expected Snu command"),
         }
     }
 
