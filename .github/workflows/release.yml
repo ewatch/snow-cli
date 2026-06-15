@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  CARGO_DIST_VERSION: "0.28.0"
+  CARGO_DIST_VERSION: "0.27.0"
   RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
 
 jobs:
@@ -36,6 +36,10 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
 
