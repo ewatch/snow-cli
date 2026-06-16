@@ -151,10 +151,6 @@ pub fn active_policy() -> ExecutionPolicy {
     }
 }
 
-pub fn ensure_request_allowed(method: &Method, path: &str) -> Result<(), PolicyError> {
-    active_policy().ensure_request_allowed(method, path)
-}
-
 pub fn ensure_raw_api_get_headers_allowed(
     extra_headers: &[(String, String)],
 ) -> Result<(), PolicyError> {
