@@ -35,12 +35,18 @@ enum CookieSource {
 #[derive(Debug)]
 pub struct BrowserSessionAuth {
     cookie_source: CookieSource,
+    /// Instance base URL, used to look up a matching SN-Utils browser session
+    /// (captured via `snow-cli snu`) so its `g_ck` can be replayed as the
+    /// ServiceNow `X-UserToken` header. Empty when no instance is associated
+    /// (e.g. in tests), in which case the SN-Utils lookup is skipped.
+    instance_url: String,
 }
 
 impl BrowserSessionAuth {
-    pub fn new(_profile_name: &str, _profile: &Profile) -> anyhow::Result<Self> {
+    pub fn new(_profile_name: &str, profile: &Profile) -> anyhow::Result<Self> {
         Ok(Self {
             cookie_source: CookieSource::EnvVar,
+            instance_url: profile.instance.clone(),
         })
     }
 
@@ -49,6 +55,7 @@ impl BrowserSessionAuth {
     pub fn new_with_cookie(cookie_header: String) -> Self {
         Self {
             cookie_source: CookieSource::Direct { cookie_header },
+            instance_url: String::new(),
         }
     }
 
@@ -86,6 +93,20 @@ impl Authenticator for BrowserSessionAuth {
         let cookie_header = self.get_cookie_header()?;
         let mut headers = HeaderMap::new();
         headers.insert(http::header::COOKIE, cookie_header.parse()?);
+
+        // If a SN-Utils browser session was captured for this same instance
+        // origin (via `snow-cli snu`), replay its `g_ck` as the ServiceNow
+        // `X-UserToken` header so mutating-form endpoints accept the request.
+        // This keeps SN-Utils knowledge inside the browser-session authenticator
+        // rather than leaking it into the generic HTTP path.
+        if !self.instance_url.is_empty()
+            && let Some(cached) =
+                crate::snu::session_cache::load_session_for_url(&self.instance_url)?
+            && let Some(g_ck) = cached.instance.g_ck.as_deref()
+        {
+            headers.insert("X-UserToken", g_ck.parse()?);
+        }
+
         Ok(headers)
     }
 
@@ -137,6 +158,7 @@ mod tests {
             cookie_source: CookieSource::Direct {
                 cookie_header: String::new(),
             },
+            instance_url: String::new(),
         };
         // A direct empty cookie should fail at the HTTP header parse step, not our validation.
         // The real env-var path is tested via is_env_var_set().

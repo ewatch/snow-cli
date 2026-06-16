@@ -4,9 +4,9 @@ use reqwest::Method;
 use thiserror::Error;
 
 use crate::cli::args::{
-    ApiCommands, AttachmentCommands, AuthCommands, CodesearchCommands, Commands, DataCommands,
-    ImportSetCommands, ScopeCommands, ScriptCommands, SeedCommands, SnuCommands, SnuContextCommands,
-    TableCommands,
+    ApiCommands, AttachmentCommands, AuthCommands, CodesearchCommands, Commands, ConfigCommands,
+    DataCommands, ImportSetCommands, ProfileSdkCommands, ScopeCommands, ScriptCommands,
+    SeedCommands, SnuCommands, SnuContextCommands, TableCommands,
 };
 
 static ACTIVE_POLICY_MODE: AtomicU8 = AtomicU8::new(PolicyMode::FullAccess as u8);
@@ -180,11 +180,35 @@ pub fn ensure_raw_api_get_headers_allowed(
 
 fn read_only_command_decision(command: &Commands) -> PolicyDecision {
     match command {
-        // Profile management only writes local configuration (`~/.servicenow/config.toml`)
+        // Profile management writes local configuration (`~/.servicenow/config.toml`)
         // and never mutates the remote ServiceNow instance, so it is permitted in
         // read-only mode. This lets snow-cli-ro be used standalone to add, edit, and
         // select the profiles it reads from.
-        Commands::Profile(_) => PolicyDecision::Allow,
+        //
+        // The now-sdk *export* commands are the exception: they read a stored
+        // password from the OS keychain and write it, in plaintext, into the
+        // now-sdk alias store on disk. That materializes a reusable, write-capable
+        // credential a full client could replay — the same risk that keeps
+        // `auth token` denied — so export stays blocked. Import is the inbound
+        // direction (now-sdk store -> keychain) and remains allowed.
+        Commands::Profile(args) => match &args.command {
+            ConfigCommands::ExportNowSdk { .. } => deny(
+                "profile export-now-sdk",
+                CommandCapability::CredentialExport,
+                "read-only policy does not allow exporting reusable credentials to the now-sdk store",
+            ),
+            ConfigCommands::Sdk(sdk_args) => match &sdk_args.command {
+                ProfileSdkCommands::Export { .. } => deny(
+                    "profile sdk export",
+                    CommandCapability::CredentialExport,
+                    "read-only policy does not allow exporting reusable credentials to the now-sdk store",
+                ),
+                ProfileSdkCommands::List | ProfileSdkCommands::Import { .. } => {
+                    PolicyDecision::Allow
+                }
+            },
+            _ => PolicyDecision::Allow,
+        },
         Commands::Auth(args) => match &args.command {
             // login/logout only write local credentials (OS keychain / config) and do
             // not grant any additional remote access beyond what the credentials' own
@@ -498,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_allows_local_profile_and_auth_management() {
+    fn read_only_allows_local_management_but_denies_credential_export() {
         // Profile writes are local-only and now permitted in read-only mode.
         assert_allowed(Commands::Profile(ConfigArgs {
             command: ConfigCommands::Add {
@@ -530,6 +554,24 @@ mod tests {
                     set_default: false,
                 },
             }),
+        }));
+        // ...but exporting a stored credential into the on-disk now-sdk store is
+        // a reusable-credential export and stays denied (same risk as `auth token`).
+        assert_denied(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::Sdk(ProfileSdkArgs {
+                command: ProfileSdkCommands::Export {
+                    profile: "dev".to_string(),
+                    alias: None,
+                    set_default: false,
+                },
+            }),
+        }));
+        assert_denied(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::ExportNowSdk {
+                profile: "dev".to_string(),
+                alias: None,
+                set_default: false,
+            },
         }));
         // auth login/logout are local credential writes and now permitted.
         assert_allowed(Commands::Auth(AuthArgs {
