@@ -177,6 +177,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          version="${RELEASE_TAG#v}"
           mkdir -p release-assets
           mapfile -t files < <(
             find dist -maxdepth 1 -type f \
@@ -189,13 +190,25 @@ jobs:
             exit 1
           fi
 
+          # Publish versioned archive names (snow-cli-<version>-<target>.<ext>),
+          # the contract that scripts/install.sh, scripts/install.ps1, and the
+          # Homebrew tap all rely on. cargo-dist emits unversioned names
+          # (snow-cli-<target>.<ext>) by default, so insert the version when it is
+          # missing. Idempotent if the archive is already versioned.
+          curated=()
           for file in "${files[@]}"; do
-            cp "dist/${file}" "release-assets/${file}"
+            if [[ "${file}" == "snow-cli-${version}-"* ]]; then
+              dest="${file}"
+            else
+              dest="snow-cli-${version}-${file#snow-cli-}"
+            fi
+            cp "dist/${file}" "release-assets/${dest}"
+            curated+=("${dest}")
           done
 
           (
             cd release-assets
-            sha256sum "${files[@]}" > SHA256SUMS
+            sha256sum "${curated[@]}" > SHA256SUMS
           )
 
       - name: Build release notes from changelog
