@@ -1,0 +1,18 @@
+# Cross-compilation config for the Linux release targets.
+#
+# The keyring crate's `sync-secret-service` feature pulls in `libdbus-sys`,
+# which links the system libdbus-1 for the *target* architecture. The default
+# `cross` images do not ship it, so install it (for the target arch) before the
+# build. This is what lets both the native x86_64 and the cross aarch64 Linux
+# builds compile without a host dbus dependency.
+
+[target.x86_64-unknown-linux-gnu]
+pre-build = [
+    "apt-get update && apt-get install --assume-yes libdbus-1-dev pkg-config",
+]
+
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update && apt-get install --assume-yes libdbus-1-dev:$CROSS_DEB_ARCH pkg-config",
+]
