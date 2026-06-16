@@ -5,6 +5,14 @@ All notable changes to `snow-cli` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows semantic versioning conventions while it is pre-1.0.
 
+## [0.4.1] - 2026-06-16
+
+### Fixed
+
+- Fixed the release pipeline, which had never produced working artifacts. Replaced the misconfigured cargo-dist packaging with direct `tar.xz`/`zip` archiving, so macOS, Linux, and Windows archives are built and named `snow-cli-<version>-<target>.<ext>` as the install scripts and Homebrew tap expect.
+- Fixed Linux release builds by compiling the `x86_64` and `aarch64` targets through `cross` with `libdbus-1-dev` provided for the target architecture (see `Cross.toml`), resolving the missing `libdbus`/cross-compiler errors.
+- Added a release guard that fails fast with a clear message when the git tag does not match the version in `Cargo.toml`.
+
 ## [0.4.0] - 2026-05-17
 
 ### Added

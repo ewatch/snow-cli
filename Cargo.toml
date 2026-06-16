@@ -1,6 +1,6 @@
 [package]
 name = "snow-cli"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "CLI gateway for LLMs and coding agents to access ServiceNow instances"
 license = "MIT"
@@ -80,22 +80,3 @@ tokio-test = "0.4"
 [workspace]
 members = ["."]
 resolver = "3"
-
-[profile.dist]
-inherits = "release"
-
-# Config for 'dist'
-[workspace.metadata.dist]
-# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.27.0"
-# Skip checking whether the specified configuration files are up to date
-allow-dirty = ["ci"]
-# CI backends to support
-ci = "github"
-# Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
-# The installers to generate for each app.
-# Homebrew is intentionally NOT listed here: the formula is owned and
-# auto-updated by the separate tap repo (ewatch/homebrew-tap) via its
-# update-formula.yml workflow, which is the single source of truth.
-installers = []
