@@ -4,9 +4,9 @@ use reqwest::Method;
 use thiserror::Error;
 
 use crate::cli::args::{
-    ApiCommands, AttachmentCommands, AuthCommands, CodesearchCommands, Commands, ConfigCommands,
-    DataCommands, ImportSetCommands, ProfileSdkCommands, ScopeCommands, ScriptCommands,
-    SeedCommands, SnuCommands, SnuContextCommands, TableCommands,
+    ApiCommands, AttachmentCommands, AuthCommands, CodesearchCommands, Commands, DataCommands,
+    ImportSetCommands, ScopeCommands, ScriptCommands, SeedCommands, SnuCommands, SnuContextCommands,
+    TableCommands,
 };
 
 static ACTIVE_POLICY_MODE: AtomicU8 = AtomicU8::new(PolicyMode::FullAccess as u8);
@@ -180,44 +180,25 @@ pub fn ensure_raw_api_get_headers_allowed(
 
 fn read_only_command_decision(command: &Commands) -> PolicyDecision {
     match command {
-        Commands::Profile(args) => match &args.command {
-            ConfigCommands::ListProfiles
-            | ConfigCommands::FindProfile { .. }
-            | ConfigCommands::Current
-            | ConfigCommands::Show
-            | ConfigCommands::ListNowSdkProfiles => PolicyDecision::Allow,
-            ConfigCommands::Sdk(sdk_args) => match &sdk_args.command {
-                ProfileSdkCommands::List => PolicyDecision::Allow,
-                ProfileSdkCommands::Import { .. } | ProfileSdkCommands::Export { .. } => deny(
-                    "profile sdk import/export",
-                    CommandCapability::LocalConfigWrite,
-                    "read-only policy does not allow profile import or export operations",
-                ),
-            },
-            ConfigCommands::Init { .. }
-            | ConfigCommands::Add { .. }
-            | ConfigCommands::Edit { .. }
-            | ConfigCommands::SetProfile { .. }
-            | ConfigCommands::ImportNowSdk { .. }
-            | ConfigCommands::ExportNowSdk { .. }
-            | ConfigCommands::UseProfile { .. }
-            | ConfigCommands::DeleteProfile { .. } => deny(
-                "profile write",
-                CommandCapability::LocalConfigWrite,
-                "read-only policy does not allow profile configuration changes",
-            ),
-        },
+        // Profile management only writes local configuration (`~/.servicenow/config.toml`)
+        // and never mutates the remote ServiceNow instance, so it is permitted in
+        // read-only mode. This lets snow-cli-ro be used standalone to add, edit, and
+        // select the profiles it reads from.
+        Commands::Profile(_) => PolicyDecision::Allow,
         Commands::Auth(args) => match &args.command {
-            AuthCommands::Status => PolicyDecision::Allow,
+            // login/logout only write local credentials (OS keychain / config) and do
+            // not grant any additional remote access beyond what the credentials' own
+            // ServiceNow ACLs allow. They are permitted so snow-cli-ro can bootstrap
+            // authentication on its own.
+            AuthCommands::Status | AuthCommands::Login { .. } | AuthCommands::Logout => {
+                PolicyDecision::Allow
+            }
+            // `auth token` exports a reusable credential/bearer token that could be
+            // replayed by a full client to perform writes, so it stays denied.
             AuthCommands::Token => deny(
                 "auth token",
                 CommandCapability::CredentialExport,
                 "read-only policy does not allow exporting reusable credentials",
-            ),
-            AuthCommands::Login { .. } | AuthCommands::Logout => deny(
-                "auth login/logout",
-                CommandCapability::LocalCredentialWrite,
-                "read-only policy does not allow credential changes",
             ),
         },
         Commands::Table(args) => match &args.command {
@@ -513,6 +494,62 @@ mod tests {
                 code: Some("gs.info('x')".to_string()),
                 timeout_secs: 1,
             },
+        }));
+    }
+
+    #[test]
+    fn read_only_allows_local_profile_and_auth_management() {
+        // Profile writes are local-only and now permitted in read-only mode.
+        assert_allowed(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::Add {
+                name: "dev".to_string(),
+                instance: Some("https://dev.service-now.com".to_string()),
+                auth_method: Some(CliAuthMethod::Basic),
+                username: Some("admin".to_string()),
+                client_id: None,
+                oauth_grant_type: None,
+                oauth_scope: None,
+                oauth_redirect_host: None,
+                oauth_redirect_port: None,
+                oauth_redirect_path: None,
+                cert_path: None,
+                key_path: None,
+                sso_login_url: None,
+            },
+        }));
+        assert_allowed(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::UseProfile {
+                name: "dev".to_string(),
+            },
+        }));
+        assert_allowed(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::Sdk(ProfileSdkArgs {
+                command: ProfileSdkCommands::Import {
+                    alias: None,
+                    all: true,
+                    set_default: false,
+                },
+            }),
+        }));
+        // auth login/logout are local credential writes and now permitted.
+        assert_allowed(Commands::Auth(AuthArgs {
+            command: AuthCommands::Login {
+                password: Some("secret".to_string()),
+                password_stdin: false,
+                token: None,
+                token_stdin: false,
+                client_secret: None,
+                client_secret_stdin: false,
+                session_cookie: None,
+                session_cookie_stdin: false,
+                no_browser: false,
+                also_now_sdk: false,
+                now_sdk_alias: None,
+                set_now_sdk_default: false,
+            },
+        }));
+        assert_allowed(Commands::Auth(AuthArgs {
+            command: AuthCommands::Logout,
         }));
     }
 
