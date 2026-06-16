@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod models;
 pub mod policy;
+pub mod snu;
 
 use clap::Parser;
 use cli::args::Cli;
@@ -64,7 +65,9 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
                 })
                 .unwrap_or_else(|| "default".to_string()),
         },
-        cli::args::Commands::Completions { .. } => "default".to_string(),
+        cli::args::Commands::Completions { .. } | cli::args::Commands::Snu(_) => {
+            "default".to_string()
+        }
         _ => config.resolve_active_profile_name(cli.profile.as_deref())?,
     };
 
@@ -196,6 +199,7 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             )
             .await
         }
+        cli::args::Commands::Snu(args) => cli::commands::snu::handle(args, &cli.output).await,
         cli::args::Commands::Completions { shell } => cli::commands::completions::handle(shell),
     }
 }
@@ -213,6 +217,7 @@ pub fn command_uses_connection(command: &cli::args::Commands) -> bool {
             | cli::args::Commands::Api(_)
             | cli::args::Commands::Script(_)
             | cli::args::Commands::Codesearch(_)
+            | cli::args::Commands::Snu(_)
     )
 }
 
@@ -262,5 +267,10 @@ mod tests {
         assert!(!command_uses_connection(&Commands::Completions {
             shell: Shell::Bash,
         }));
+        assert!(command_uses_connection(&Commands::Snu(
+            crate::cli::args::SnuArgs {
+                command: crate::cli::args::SnuCommands::WaitToken { timeout_secs: 1 },
+            }
+        )));
     }
 }

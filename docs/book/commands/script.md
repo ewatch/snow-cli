@@ -86,6 +86,7 @@ Use this command when you need to:
 - prototype logic before turning it into an app artifact.
 
 For raw REST endpoints instead of background scripts, use [`api`](./api.md).
+For browser-helper actions through SN-Utils, use [`snu`](./snu.md).
 
 ## Related pages
 

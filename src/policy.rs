@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::cli::args::{
     ApiCommands, AttachmentCommands, AuthCommands, CodesearchCommands, Commands, ConfigCommands,
     DataCommands, ImportSetCommands, ProfileSdkCommands, ScopeCommands, ScriptCommands,
-    SeedCommands, TableCommands,
+    SeedCommands, SnuCommands, SnuContextCommands, TableCommands,
 };
 
 static ACTIVE_POLICY_MODE: AtomicU8 = AtomicU8::new(PolicyMode::FullAccess as u8);
@@ -151,10 +151,6 @@ pub fn active_policy() -> ExecutionPolicy {
     }
 }
 
-pub fn ensure_request_allowed(method: &Method, path: &str) -> Result<(), PolicyError> {
-    active_policy().ensure_request_allowed(method, path)
-}
-
 pub fn ensure_raw_api_get_headers_allowed(
     extra_headers: &[(String, String)],
 ) -> Result<(), PolicyError> {
@@ -184,44 +180,49 @@ pub fn ensure_raw_api_get_headers_allowed(
 
 fn read_only_command_decision(command: &Commands) -> PolicyDecision {
     match command {
+        // Profile management writes local configuration (`~/.servicenow/config.toml`)
+        // and never mutates the remote ServiceNow instance, so it is permitted in
+        // read-only mode. This lets snow-cli-ro be used standalone to add, edit, and
+        // select the profiles it reads from.
+        //
+        // The now-sdk *export* commands are the exception: they read a stored
+        // password from the OS keychain and write it, in plaintext, into the
+        // now-sdk alias store on disk. That materializes a reusable, write-capable
+        // credential a full client could replay — the same risk that keeps
+        // `auth token` denied — so export stays blocked. Import is the inbound
+        // direction (now-sdk store -> keychain) and remains allowed.
         Commands::Profile(args) => match &args.command {
-            ConfigCommands::ListProfiles
-            | ConfigCommands::FindProfile { .. }
-            | ConfigCommands::Current
-            | ConfigCommands::Show
-            | ConfigCommands::ListNowSdkProfiles => PolicyDecision::Allow,
-            ConfigCommands::Sdk(sdk_args) => match &sdk_args.command {
-                ProfileSdkCommands::List => PolicyDecision::Allow,
-                ProfileSdkCommands::Import { .. } | ProfileSdkCommands::Export { .. } => deny(
-                    "profile sdk import/export",
-                    CommandCapability::LocalConfigWrite,
-                    "read-only policy does not allow profile import or export operations",
-                ),
-            },
-            ConfigCommands::Init { .. }
-            | ConfigCommands::Add { .. }
-            | ConfigCommands::Edit { .. }
-            | ConfigCommands::SetProfile { .. }
-            | ConfigCommands::ImportNowSdk { .. }
-            | ConfigCommands::ExportNowSdk { .. }
-            | ConfigCommands::UseProfile { .. }
-            | ConfigCommands::DeleteProfile { .. } => deny(
-                "profile write",
-                CommandCapability::LocalConfigWrite,
-                "read-only policy does not allow profile configuration changes",
+            ConfigCommands::ExportNowSdk { .. } => deny(
+                "profile export-now-sdk",
+                CommandCapability::CredentialExport,
+                "read-only policy does not allow exporting reusable credentials to the now-sdk store",
             ),
+            ConfigCommands::Sdk(sdk_args) => match &sdk_args.command {
+                ProfileSdkCommands::Export { .. } => deny(
+                    "profile sdk export",
+                    CommandCapability::CredentialExport,
+                    "read-only policy does not allow exporting reusable credentials to the now-sdk store",
+                ),
+                ProfileSdkCommands::List | ProfileSdkCommands::Import { .. } => {
+                    PolicyDecision::Allow
+                }
+            },
+            _ => PolicyDecision::Allow,
         },
         Commands::Auth(args) => match &args.command {
-            AuthCommands::Status => PolicyDecision::Allow,
+            // login/logout only write local credentials (OS keychain / config) and do
+            // not grant any additional remote access beyond what the credentials' own
+            // ServiceNow ACLs allow. They are permitted so snow-cli-ro can bootstrap
+            // authentication on its own.
+            AuthCommands::Status | AuthCommands::Login { .. } | AuthCommands::Logout => {
+                PolicyDecision::Allow
+            }
+            // `auth token` exports a reusable credential/bearer token that could be
+            // replayed by a full client to perform writes, so it stays denied.
             AuthCommands::Token => deny(
                 "auth token",
                 CommandCapability::CredentialExport,
                 "read-only policy does not allow exporting reusable credentials",
-            ),
-            AuthCommands::Login { .. } | AuthCommands::Logout => deny(
-                "auth login/logout",
-                CommandCapability::LocalCredentialWrite,
-                "read-only policy does not allow credential changes",
             ),
         },
         Commands::Table(args) => match &args.command {
@@ -300,6 +301,50 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
         },
         Commands::Codesearch(args) => match &args.command {
             CodesearchCommands::Search { .. } => PolicyDecision::Allow,
+        },
+        Commands::Snu(args) => match &args.command {
+            SnuCommands::CheckConnection { .. }
+            | SnuCommands::GetInstanceInfo { .. }
+            | SnuCommands::WaitToken { .. }
+            | SnuCommands::ListTables { .. }
+            | SnuCommands::GetRecord { .. }
+            | SnuCommands::Query { .. }
+            | SnuCommands::Schema { .. }
+            | SnuCommands::Slash { .. }
+            | SnuCommands::Tab(_)
+            | SnuCommands::Screenshot { .. } => PolicyDecision::Allow,
+            SnuCommands::UpdateRecord { .. } => deny(
+                "snu update-record",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow record updates through SN-Utils",
+            ),
+            SnuCommands::UpdateRecordBatch { .. } => deny(
+                "snu update-record-batch",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow record updates through SN-Utils",
+            ),
+            SnuCommands::DeleteRecord { .. } => deny(
+                "snu delete-record",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow record deletion through SN-Utils",
+            ),
+            SnuCommands::ExecuteBgScript { .. } => deny(
+                "snu execute-bg-script",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow background script execution through SN-Utils",
+            ),
+            SnuCommands::Context(context_args) => match &context_args.command {
+                SnuContextCommands::Switch { .. } => deny(
+                    "snu context switch",
+                    CommandCapability::RemoteWrite,
+                    "read-only policy does not allow switching browser session context",
+                ),
+            },
+            SnuCommands::AttachmentUpload { .. } => deny(
+                "snu attachment upload",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow attachment uploads",
+            ),
         },
         Commands::Completions { .. } => PolicyDecision::Allow,
     }
@@ -394,6 +439,160 @@ mod tests {
             },
         }));
         assert_allowed(Commands::Completions { shell: Shell::Bash });
+    }
+
+    #[test]
+    fn read_only_allows_snu_read_commands() {
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::CheckConnection { timeout_secs: 1 },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::GetInstanceInfo { timeout_secs: 1 },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::WaitToken { timeout_secs: 1 },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::ListTables { timeout_secs: 1 },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::GetRecord {
+                table: "incident".to_string(),
+                sys_id: "abc".to_string(),
+                fields: None,
+                timeout_secs: 1,
+            },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::Query {
+                table: "incident".to_string(),
+                query: None,
+                fields: "sys_id".to_string(),
+                limit: 10,
+                order_by: None,
+                timeout_secs: 1,
+            },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::Schema {
+                table: "incident".to_string(),
+                timeout_secs: 1,
+            },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::Screenshot {
+                url: None,
+                tab_id: None,
+                out_path: None,
+                timeout_secs: 1,
+            },
+        }));
+    }
+
+    #[test]
+    fn read_only_denies_snu_mutating_commands() {
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::UpdateRecord {
+                table: "incident".to_string(),
+                sys_id: "abc".to_string(),
+                field: "state".to_string(),
+                content: "2".to_string(),
+                await_confirmation: false,
+                timeout_secs: 1,
+            },
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::DeleteRecord {
+                table: "incident".to_string(),
+                sys_id: Some("abc".to_string()),
+                query: None,
+                confirm: false,
+                limit: None,
+                dry_run: false,
+                timeout_secs: 1,
+            },
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::ExecuteBgScript {
+                file: None,
+                code: Some("gs.info('x')".to_string()),
+                timeout_secs: 1,
+            },
+        }));
+    }
+
+    #[test]
+    fn read_only_allows_local_management_but_denies_credential_export() {
+        // Profile writes are local-only and now permitted in read-only mode.
+        assert_allowed(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::Add {
+                name: "dev".to_string(),
+                instance: Some("https://dev.service-now.com".to_string()),
+                auth_method: Some(CliAuthMethod::Basic),
+                username: Some("admin".to_string()),
+                client_id: None,
+                oauth_grant_type: None,
+                oauth_scope: None,
+                oauth_redirect_host: None,
+                oauth_redirect_port: None,
+                oauth_redirect_path: None,
+                cert_path: None,
+                key_path: None,
+                sso_login_url: None,
+            },
+        }));
+        assert_allowed(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::UseProfile {
+                name: "dev".to_string(),
+            },
+        }));
+        assert_allowed(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::Sdk(ProfileSdkArgs {
+                command: ProfileSdkCommands::Import {
+                    alias: None,
+                    all: true,
+                    set_default: false,
+                },
+            }),
+        }));
+        // ...but exporting a stored credential into the on-disk now-sdk store is
+        // a reusable-credential export and stays denied (same risk as `auth token`).
+        assert_denied(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::Sdk(ProfileSdkArgs {
+                command: ProfileSdkCommands::Export {
+                    profile: "dev".to_string(),
+                    alias: None,
+                    set_default: false,
+                },
+            }),
+        }));
+        assert_denied(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::ExportNowSdk {
+                profile: "dev".to_string(),
+                alias: None,
+                set_default: false,
+            },
+        }));
+        // auth login/logout are local credential writes and now permitted.
+        assert_allowed(Commands::Auth(AuthArgs {
+            command: AuthCommands::Login {
+                password: Some("secret".to_string()),
+                password_stdin: false,
+                token: None,
+                token_stdin: false,
+                client_secret: None,
+                client_secret_stdin: false,
+                session_cookie: None,
+                session_cookie_stdin: false,
+                no_browser: false,
+                also_now_sdk: false,
+                now_sdk_alias: None,
+                set_now_sdk_default: false,
+            },
+        }));
+        assert_allowed(Commands::Auth(AuthArgs {
+            command: AuthCommands::Logout,
+        }));
     }
 
     #[test]

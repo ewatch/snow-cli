@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  CARGO_DIST_VERSION: "0.28.0"
+  CARGO_DIST_VERSION: "0.27.0"
   RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
 
 jobs:
@@ -36,6 +36,10 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
 
@@ -234,3 +238,33 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
           overwrite_files: true
+
+  notify-homebrew-tap:
+    name: Trigger Homebrew tap update
+    runs-on: ubuntu-latest
+    needs:
+      - publish
+    steps:
+      - name: Dispatch new-release event to ewatch/homebrew-tap
+        shell: bash
+        env:
+          # PAT with `contents: write` on ewatch/homebrew-tap.
+          # Stored as a repo secret named HOMEBREW_TAP_TOKEN.
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set; skipping tap dispatch." >&2
+            echo "The tap will still update via its daily cron in update-formula.yml." >&2
+            exit 0
+          fi
+
+          curl -fsSL -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${TAP_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/ewatch/homebrew-tap/dispatches \
+            -d '{"event_type":"new-release"}'
+
+          echo "Dispatched new-release to ewatch/homebrew-tap."

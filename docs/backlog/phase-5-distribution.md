@@ -21,10 +21,10 @@ Final polish, advanced auth methods, CI/CD, and distribution.
   - [ ] Run tests on all platforms
   - [ ] Release workflow: build binaries, create GitHub release
   - [ ] Cargo clippy and fmt checks
-- [ ] Homebrew distribution
-  - [ ] Create Homebrew formula
-  - [ ] Tap repository setup
-  - [ ] Automated formula update on release
+- [x] Homebrew distribution
+  - [x] Create Homebrew formula
+  - [x] Tap repository setup
+  - [x] Automated formula update on release
 - [ ] CLI UX improvements (agent-browser-inspired usability, adapted for snow-cli)
   - [x] Help that teaches
     - [x] Add practical examples (`after_help`) for top-level and high-traffic commands

@@ -46,6 +46,7 @@ Every command supports these top-level flags:
 | [`import-set`](./commands/import-set.md) | Load records into staging tables |
 | [`api`](./commands/api.md) | Send raw REST requests to arbitrary endpoints |
 | [`script`](./commands/script.md) | Run background scripts |
+| [`snu`](./commands/snu.md) | Drive the SN-Utils browser helper tab |
 | [`codesearch`](./commands/codesearch.md) | Search code and metadata on an instance |
 | [`completions`](./commands/completions.md) | Generate shell completion scripts |
 
@@ -71,3 +72,24 @@ snow-cli auth --help
 snow-cli auth login --help
 snow-cli scope move-file --help
 ```
+
+### Handle slow or hibernating instances
+
+```bash
+snow-cli --timeout-secs 60 table list incident --limit 5
+```
+
+The default timeout is 90 seconds. Increase it when an instance is slow,
+hibernating, or under load.
+
+### Pass credentials via environment variable (CI/headless)
+
+Instead of storing credentials in the OS keychain, you can provide them
+through environment variables for one-off or CI usage:
+
+```bash
+SNOW_CLI_PASSWORD='<password>' snow-cli table list incident --limit 5
+SNOW_CLI_API_TOKEN='<token>' snow-cli table list incident --limit 5
+```
+
+The keychain is tried first; env vars are used as fallback.

@@ -1,5 +1,23 @@
 # Installation
 
+## Homebrew (macOS and Linux)
+
+The simplest way to install on macOS or Linux is via the Homebrew tap:
+
+```sh
+brew tap ewatch/tap
+brew install snow-cli
+```
+
+Upgrade later with:
+
+```sh
+brew upgrade snow-cli
+```
+
+This installs both `snow-cli` and `snow-cli-ro`. Homebrew keeps the formula up to
+date automatically, so `brew upgrade` always fetches the latest release.
+
 ## Quick install
 
 ### macOS and Linux
@@ -14,7 +32,7 @@ You will see a plan like this and be asked to confirm:
 
 ```text
 Plan:
-  Download: https://github.com/ewatch/snow-cli/releases/download/v0.4.0/snow-cli-aarch64-apple-darwin.tar.gz
+  Download: https://github.com/ewatch/snow-cli/releases/download/v0.4.0/snow-cli-0.4.0-aarch64-apple-darwin.tar.xz
   Release:  v0.4.0
   Install to: /Users/you/.local/bin
   Binaries: snow-cli, snow-cli-ro
@@ -54,7 +72,7 @@ $env:FORCE = "1"; irm https://raw.githubusercontent.com/ewatch/snow-cli/main/scr
 
 1. Detects your operating system and CPU architecture.
 2. Finds the latest release on GitHub.
-3. Downloads the matching archive (`tar.gz` for macOS/Linux, `zip` for Windows).
+3. Downloads the matching archive (`tar.xz` for macOS/Linux, `zip` for Windows).
 4. Extracts it to a temporary folder.
 5. Copies `snow-cli` and `snow-cli-ro` into the install directory.
 6. Tells you if the directory is missing from your `PATH` and how to add it.
@@ -67,10 +85,11 @@ If you prefer to install by hand, download the archive for your platform from th
 
 | Platform | Archive |
 |----------|---------|
-| macOS Intel | `snow-cli-x86_64-apple-darwin.tar.gz` |
-| macOS Apple Silicon | `snow-cli-aarch64-apple-darwin.tar.gz` |
-| Linux x64 | `snow-cli-x86_64-unknown-linux-gnu.tar.gz` |
-| Windows x64 | `snow-cli-x86_64-pc-windows-msvc.zip` |
+| macOS Intel | `snow-cli-<version>-x86_64-apple-darwin.tar.xz` |
+| macOS Apple Silicon | `snow-cli-<version>-aarch64-apple-darwin.tar.xz` |
+| Linux x64 | `snow-cli-<version>-x86_64-unknown-linux-gnu.tar.xz` |
+| Linux ARM64 | `snow-cli-<version>-aarch64-unknown-linux-gnu.tar.xz` |
+| Windows x64 | `snow-cli-<version>-x86_64-pc-windows-msvc.zip` |
 
 > The "unknown" in the Linux filename is not a placeholder — it is the standard Rust target triple vendor field (x86_64-**unknown**-linux-gnu), which is how the release archives are named.
 

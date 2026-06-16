@@ -66,6 +66,11 @@ snow-cli scope inspect 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --details full
 
 Use `basic` when you only need counts and summary data. Use `full` when you want normalized artifact rows in the response.
 
+**Performance note:** `scope inspect global` or other large platform scopes
+may time out because they contain thousands of artifacts. Prefer inspecting
+a specific custom scope (like `x_my_app`) or use `--details basic` on large
+scopes.
+
 ## `scope inventory <scope>`
 
 Export normalized artifact rows for a scope.

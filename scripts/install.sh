@@ -10,6 +10,13 @@ REPO="ewatch/snow-cli"
 OS=$(uname -s)
 ARCH=$(uname -m)
 
+# Normalize architecture to Rust target-triple naming.
+case "$ARCH" in
+  arm64|aarch64) ARCH="aarch64" ;;
+  x86_64|amd64)  ARCH="x86_64" ;;
+  *) echo "Unsupported architecture: ${ARCH}"; echo "See: https://github.com/${REPO}/releases"; exit 1 ;;
+esac
+
 case "$OS" in
   Linux)  PLATFORM="${ARCH}-unknown-linux-gnu" ;;
   Darwin) PLATFORM="${ARCH}-apple-darwin" ;;
@@ -29,7 +36,8 @@ echo "Checking latest release..."
 TAG=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
 [ -z "$TAG" ] && { echo "Could not find latest release."; exit 1; }
 
-ARCHIVE="snow-cli-${PLATFORM}.tar.gz"
+VERSION="${TAG#v}"
+ARCHIVE="snow-cli-${VERSION}-${PLATFORM}.tar.xz"
 URL="https://github.com/${REPO}/releases/download/${TAG}/${ARCHIVE}"
 
 # --- Show plan ---
@@ -58,7 +66,7 @@ echo "Downloading..."
 curl -fsSL "$URL" -o "${TMP}/${ARCHIVE}"
 
 echo "Extracting..."
-tar -xzf "${TMP}/${ARCHIVE}" -C "$TMP"
+tar -xf "${TMP}/${ARCHIVE}" -C "$TMP"
 
 # --- Install binaries ---
 for BIN in snow-cli snow-cli-ro; do

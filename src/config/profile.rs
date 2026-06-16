@@ -3,6 +3,20 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Return the name of the currently running binary (`snow-cli` or `snow-cli-ro`)
+/// for use in user-facing hints, so suggestions reference the command the user
+/// actually invoked. Falls back to `snow-cli` when the name cannot be determined.
+pub(crate) fn program_name() -> String {
+    std::env::args_os()
+        .next()
+        .map(PathBuf::from)
+        .as_deref()
+        .and_then(|path| path.file_stem())
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("snow-cli"))
+        .unwrap_or_else(|| "snow-cli".to_string())
+}
+
 /// Top-level application configuration, loaded from ~/.servicenow/config.toml.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
@@ -169,13 +183,15 @@ impl AppConfig {
 
         if self.default_profile.is_empty() {
             anyhow::bail!(
-                "No default profile configured. Run `snow-cli profile add default --instance <url> --auth-method <method>` first."
+                "No default profile configured. Run `{} profile add default --instance <url> --auth-method <method>` first.",
+                program_name()
             );
         }
 
         if self.profiles.is_empty() {
             anyhow::bail!(
-                "No profiles are configured yet. Run `snow-cli profile add default --instance <url> --auth-method <method>` first."
+                "No profiles are configured yet. Run `{} profile add default --instance <url> --auth-method <method>` first.",
+                program_name()
             );
         }
 
@@ -183,9 +199,10 @@ impl AppConfig {
             let available_profiles = self.available_profiles_for_message();
             anyhow::bail!(
                 "Default profile '{}' not found. Available profiles: {}. \
-                 Run `snow-cli profile default <name>` to choose one.",
+                 Run `{} profile default <name>` to choose one.",
                 self.default_profile,
-                available_profiles
+                available_profiles,
+                program_name()
             );
         }
 
@@ -197,24 +214,28 @@ impl AppConfig {
         if self.profiles.is_empty() {
             return format!(
                 "Profile '{}' not found. No profiles are configured yet. \
-                 Run `snow-cli profile add default --instance <url> --auth-method <method>` first.",
-                requested
+                 Run `{} profile add default --instance <url> --auth-method <method>` first.",
+                requested,
+                program_name()
             );
         }
 
         if let Some(suggested) = self.suggest_profile_name(requested) {
             return format!(
                 "Profile '{}' not found. Maybe you meant '{}'. \
-                 Run `snow-cli profile list` to see available profiles.",
-                requested, suggested
+                 Run `{} profile list` to see available profiles.",
+                requested,
+                suggested,
+                program_name()
             );
         }
 
         format!(
             "Profile '{}' not found. Available profiles: {}. \
-             Run `snow-cli profile list` to see details.",
+             Run `{} profile list` to see details.",
             requested,
-            self.available_profiles_for_message()
+            self.available_profiles_for_message(),
+            program_name()
         )
     }
 

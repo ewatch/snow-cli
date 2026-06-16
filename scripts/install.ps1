@@ -19,7 +19,7 @@ $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/l
 $Tag = $Release.tag_name
 if (!$Tag) { Write-Error "Could not find latest release."; exit 1 }
 
-$Archive = "snow-cli-$Platform.zip"
+$Archive = "snow-cli-$($Tag.TrimStart('v'))-$Platform.zip"
 $Url = "https://github.com/$Repo/releases/download/$Tag/$Archive"
 
 # --- Show plan ---

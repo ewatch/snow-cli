@@ -83,6 +83,19 @@ snow-cli api delete <path>
 
 Use `-H` if the endpoint needs additional headers.
 
+### Shell quoting for URLs with query parameters
+
+URLs containing `?` or `&` must be quoted in most shells (zsh, bash) to prevent glob expansion:
+
+```bash
+# Correct — quoted
+snow-cli api get '/api/now/table/incident?sysparm_limit=1'
+snow-cli api get "/api/now/table/incident?sysparm_limit=1"
+
+# Wrong — will fail in zsh with "no matches found"
+snow-cli api get /api/now/table/incident?sysparm_limit=1
+```
+
 ## Response handling
 
 `snow-cli` prints the raw response body to stdout.

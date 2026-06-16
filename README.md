@@ -20,6 +20,28 @@ snow-cli auth login
 snow-cli table list incident --query 'active=true' --limit 20
 ```
 
+### Common patterns
+
+```bash
+# List records with a subset of fields in CSV format
+snow-cli --output csv table list incident --fields number,short_description,priority --limit 10
+
+# Get a single record
+snow-cli table get incident <sys_id> --fields number,short_description,state
+
+# Inspect table schema before building a query
+snow-cli table schema incident --extended | head -20
+
+# Export records to a portable file
+snow-cli data export incident --fields number,short_description --limit 50 --out incidents.json
+
+# Handle slow instances
+snow-cli --timeout-secs 60 table list incident --limit 5
+
+# Pipe credentials for CI (see auth docs for all env vars)
+SNOW_CLI_PASSWORD='<password>' snow-cli table get incident <sys_id>
+```
+
 ## Agent-safe read-only access
 
 For agent harnesses that should not mutate ServiceNow through snow-cli, use the

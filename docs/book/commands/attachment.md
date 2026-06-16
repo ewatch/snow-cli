@@ -71,6 +71,7 @@ snow-cli attachment upload incident 46d44a4b2f13000044e0bfc8fb99b6fd --file ./re
 Notes:
 
 - The CLI reads the file locally and uploads it with the attachment API.
+- `--file -` (stdin) is **not** supported — you must provide a real file path.
 - Attachments larger than 100 MiB are rejected by the CLI before upload.
 
 ## Related pages

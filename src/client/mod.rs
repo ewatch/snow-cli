@@ -9,6 +9,7 @@ use reqwest::{Client, Method, Response, Url};
 use crate::cli::spinner::SnowflakeSpinner;
 
 use crate::client::error::ApiError;
+use crate::policy::ExecutionPolicy;
 
 /// Build an authenticated [`SnowClient`] from the user's configuration.
 ///
@@ -42,6 +43,9 @@ pub fn build_client_with_timeout(
         authenticator,
         ClientConfig {
             timeout_secs: timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+            // Snapshot the active policy here, the single place that reads the
+            // process-global. The policy then travels with the client.
+            policy: crate::policy::active_policy(),
         },
     )
 }
@@ -509,18 +513,31 @@ pub struct SnowClient {
     base_url: String,
     authenticator: Box<dyn crate::auth::Authenticator>,
     session: SessionState,
+    /// Execution policy enforced on every outbound request.
+    ///
+    /// The policy travels with the client: it is fixed at construction time and
+    /// checked per request in `request_inner`, so the read-only HTTP backstop
+    /// never depends on process-global state being set at request time.
+    policy: ExecutionPolicy,
 }
 
 /// Configuration for building a SnowClient.
 pub struct ClientConfig {
     /// Request timeout in seconds.
     pub timeout_secs: u64,
+    /// Execution policy the resulting client enforces on every request.
+    ///
+    /// Defaults to full access. The CLI entry point (`build_client_with_timeout`)
+    /// snapshots the active policy into this field; direct callers get full
+    /// access by design unless they opt into a stricter policy.
+    pub policy: ExecutionPolicy,
 }
 
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
             timeout_secs: DEFAULT_TIMEOUT_SECS,
+            policy: ExecutionPolicy::full_access(),
         }
     }
 }
@@ -618,6 +635,7 @@ impl SnowClient {
             base_url,
             authenticator,
             session: SessionState::default(),
+            policy: config.policy,
         })
     }
 
@@ -970,7 +988,7 @@ impl SnowClient {
         params: &[(&str, &str)],
         extra_headers: &[(String, String)],
     ) -> anyhow::Result<Response> {
-        crate::policy::ensure_request_allowed(&method, path)?;
+        self.policy.ensure_request_allowed(&method, path)?;
         let url = self.authenticated_url(path)?;
 
         for attempt in 0..=MAX_AUTH_RETRIES {
@@ -1264,6 +1282,49 @@ mod tests {
             ClientConfig::default(),
         )
         .unwrap()
+    }
+
+    /// The read-only policy travels with the client: a client built with a
+    /// read-only `ClientConfig` denies a write request regardless of the
+    /// process-global policy state.
+    #[tokio::test]
+    async fn read_only_client_policy_denies_write_without_global_state() {
+        let mut client = SnowClient::with_config(
+            "https://test.service-now.com".to_string(),
+            Box::new(MockAuth::new("token")),
+            ClientConfig {
+                policy: ExecutionPolicy::read_only(),
+                ..ClientConfig::default()
+            },
+        )
+        .unwrap();
+
+        let error = client
+            .post("/api/now/table/incident", "{}")
+            .await
+            .expect_err("read-only client must reject POST");
+        let policy_error = error
+            .downcast_ref::<crate::policy::PolicyError>()
+            .expect("error should be a PolicyError");
+        assert_eq!(policy_error.mode, crate::policy::PolicyMode::ReadOnly);
+    }
+
+    /// A full-access client (the constructor default) permits writes even when
+    /// no global policy has been configured.
+    #[tokio::test]
+    async fn full_access_client_policy_allows_write() {
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/now/table/incident"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        client
+            .post("/api/now/table/incident", "{}")
+            .await
+            .expect("full-access client must allow POST");
     }
 
     #[test]
