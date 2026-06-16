@@ -94,5 +94,8 @@ allow-dirty = ["ci"]
 ci = "github"
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
-# The installers to generate for each app
-installers = ["homebrew"]
+# The installers to generate for each app.
+# Homebrew is intentionally NOT listed here: the formula is owned and
+# auto-updated by the separate tap repo (ewatch/homebrew-tap) via its
+# update-formula.yml workflow, which is the single source of truth.
+installers = []
