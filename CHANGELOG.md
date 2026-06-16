@@ -5,7 +5,7 @@ All notable changes to `snow-cli` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows semantic versioning conventions while it is pre-1.0.
 
-## [0.4.1] - 2026-06-16
+## [0.4.2] - 2026-06-16
 
 ### Fixed
 
