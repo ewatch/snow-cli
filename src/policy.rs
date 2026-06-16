@@ -35,7 +35,6 @@ pub enum CommandCapability {
     LocalCredentialRead,
     LocalCredentialWrite,
     LocalFileWrite,
-    LocalDaemon,
     Unknown,
 }
 
@@ -52,7 +51,6 @@ impl CommandCapability {
             Self::LocalCredentialRead => "local_credential_read",
             Self::LocalCredentialWrite => "local_credential_write",
             Self::LocalFileWrite => "local_file_write",
-            Self::LocalDaemon => "local_daemon",
             Self::Unknown => "unknown",
         }
     }
@@ -345,11 +343,6 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 "snu attachment upload",
                 CommandCapability::RemoteWrite,
                 "read-only policy does not allow attachment uploads",
-            ),
-            SnuCommands::Daemon(_) => deny(
-                "snu daemon",
-                CommandCapability::LocalDaemon,
-                "read-only policy does not allow starting/stopping the bridge daemon",
             ),
         },
         Commands::Completions { .. } => PolicyDecision::Allow,

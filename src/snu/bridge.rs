@@ -19,13 +19,19 @@ pub struct SnuBridge {
 
 impl SnuBridge {
     pub async fn accept(timeout_secs: u64) -> anyhow::Result<Self> {
-        let listener = TcpListener::bind(DEFAULT_SNU_WS_ADDR)
-            .await
-            .with_context(|| {
-                format!(
-                    "could not bind SN-Utils bridge on {DEFAULT_SNU_WS_ADDR}; stop sn-scriptsync or any other process using the SN-Utils ScriptSync port"
-                )
-            })?;
+        let listener = match TcpListener::bind(DEFAULT_SNU_WS_ADDR).await {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+                return Err(anyhow!(
+                    "SN-Utils bridge port {DEFAULT_SNU_WS_ADDR} is already in use. Only one bridge can own this port at a time, so this usually means another `snow-cli snu` command, the `sn-scriptsync` VS Code extension, or another process is bound to it. Stop the other owner and retry. (Concurrent SN-Utils commands are not yet supported; a multiplexing broker is tracked separately.)"
+                ));
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("failed to bind SN-Utils bridge on {DEFAULT_SNU_WS_ADDR}")
+                });
+            }
+        };
 
         eprintln!(
             "SN-Utils bridge listening on ws://{DEFAULT_SNU_WS_ADDR}. Open the SN-Utils ScriptSync helper tab if it is not already connected."

@@ -192,26 +192,24 @@ snow-cli snu attachment upload incident <sys_id> --file ./attachment.png
 - If no cached session exists, `wait-token` is the first command you should run.
 - Some helper actions are available in the SN-Utils extension but are not yet exposed as `snow-cli` commands, including `get_file_structure`, `query_records`, `get_form_state`, `set_field`, `run_ui_action`, `navigate`, `navigate_and_screenshot`, `rest_request`, `run_slash_command`, `switch_context`, `take_screenshot`, `upload_attachment`, `refresh_preview`, and `code_search`.
 
-### Persistent bridge (single daemon)
+### One bridge at a time (port 127.0.0.1:1978)
 
-The first `snu` command starts a WebSocket bridge daemon on `ws://127.0.0.1:1978`.
-Subsequent `snu` commands will fail with **"Address already in use"** because
-the port is already taken.
+Each `snu` command opens a short-lived WebSocket bridge on the port hard-coded
+by SN-Utils (`127.0.0.1:1978`), waits for the helper tab to connect, performs
+one exchange, then releases the port. Because SN-Utils dials this exact port,
+**only one bridge can own it at a time.**
 
-**Workaround:** Use a single shell session for all `snu` commands, or set
-a custom port via the `SNU_BRIDGE_PORT` environment variable if you need
-parallel sessions.
+As a result:
 
-```bash
-# Session 1 (port 1978)
-snow-cli snu query incident --limit 10
+- The `sn-scriptsync` VS Code extension and `snow-cli snu` are mutually
+  exclusive — stop `sn-scriptsync` before using `snu`.
+- Two `snu` commands cannot run concurrently. The second one fails fast with a
+  clear *"port is already in use"* error rather than hanging.
 
-# Session 2 (port 1979)
-SNU_BRIDGE_PORT=1979 snow-cli snu query sys_user --limit 10
-```
-
-The bridge remains active until the `snow-cli` process exits. You do not
-need to restart it between commands within the same invocation.
+If you need concurrent SN-Utils access (for example, multiple agents sharing one
+browser), that requires a multiplexing broker that owns the port and fans
+requests out by correlation id. That is tracked as a separate piece of work and
+is not yet available.
 
 ## Related pages
 

@@ -1305,24 +1305,6 @@ pub enum SnuCommands {
         #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
         timeout_secs: u64,
     },
-
-    /// Manage the SN-Utils bridge daemon (persistent WebSocket server)
-    #[command(subcommand)]
-    Daemon(SnuDaemonCommands),
-}
-
-#[derive(Subcommand, Debug)]
-pub enum SnuDaemonCommands {
-    /// Start the persistent bridge daemon
-    Start {
-        /// Seconds to wait for the helper tab connection
-        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
-        timeout_secs: u64,
-    },
-    /// Stop the running bridge daemon
-    Stop,
-    /// Check if the bridge daemon is running
-    Status,
 }
 
 #[derive(Args, Debug)]

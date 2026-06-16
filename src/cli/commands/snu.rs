@@ -6,22 +6,15 @@ use base64::Engine;
 use reqwest::{Client, Method};
 use serde_json::{Map, Value, json};
 
-use crate::cli::args::{
-    OutputFormat, SnuArgs, SnuCommands, SnuContextCommands, SnuTabCommands, SnuDaemonCommands,
-};
+use crate::cli::args::{OutputFormat, SnuArgs, SnuCommands, SnuContextCommands, SnuTabCommands};
 use crate::cli::output::print_output;
 use crate::cli::validation::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::snu::bridge::SnuBridge;
-use crate::snu::daemon;
-use crate::snu::daemon::{DaemonRequest, DaemonResponse};
 use crate::snu::protocol::{SnuInstance, SnuMessage, redact_session_for_output};
 use crate::snu::session_cache;
 
 pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Result<()> {
     match args.command {
-        SnuCommands::Daemon(daemon_cmd) => {
-            handle_daemon(daemon_cmd, output_format).await
-        }
         SnuCommands::CheckConnection { timeout_secs } => {
             let mut bridge = connect_bridge(timeout_secs, None).await?;
             let payload = json!({
@@ -356,136 +349,6 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                 )
                 .await?;
             print_response_value(response, output_format)
-        }
-    }
-}
-
-async fn handle_daemon(cmd: SnuDaemonCommands, output_format: &OutputFormat) -> anyhow::Result<()> {
-    match cmd {
-        SnuDaemonCommands::Start { timeout_secs } => {
-            // If already running, error
-            if daemon::is_running() {
-                let state = daemon::read_state();
-                anyhow::bail!(
-                    "bridge daemon is already running (PID {})",
-                    state.as_ref().map(|s| s.pid).unwrap_or(0)
-                );
-            }
-            // Run the daemon (blocks until shutdown)
-            daemon::run_daemon(timeout_secs).await
-        }
-        SnuDaemonCommands::Stop => {
-            daemon::stop_daemon().await?;
-            print_output(&json!({"status": "stopped"}), output_format)
-        }
-        SnuDaemonCommands::Status => {
-            if daemon::is_running() {
-                let resp = daemon::send_request(&DaemonRequest {
-                    id: "status".into(),
-                    cmd: "status".into(),
-                    payload: json!({}),
-                }).await?;
-                if resp.success {
-                    print_output(&resp.data.unwrap_or(json!({"running": true})), output_format)
-                } else {
-                    print_output(&json!({"running": true}), output_format)
-                }
-            } else {
-                print_output(&json!({"running": false}), output_format)
-            }
-        }
-    }
-}
-
-/// Try to perform a bridge action through the daemon.
-/// Returns Ok(Some(response)) if daemon handled it, Ok(None) if daemon not available.
-async fn daemon_bridge_action(
-    payload: &serde_json::Value,
-    _timeout_secs: u64,
-) -> anyhow::Result<Option<DaemonResponse>> {
-    if !daemon::is_running() {
-        return Ok(None);
-    }
-
-    let request = DaemonRequest {
-        id: payload.get("agentRequestId")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("action_{}", uuid::Uuid::new_v4().simple())),
-        cmd: "bridge-action".into(),
-        payload: payload.clone(),
-    };
-
-    match daemon::send_request(&request).await {
-        Ok(resp) => {
-            if resp.success {
-                Ok(Some(resp))
-            } else {
-                Err(anyhow!("bridge action failed: {}", resp.error.unwrap_or_default()))
-            }
-        }
-        Err(e) => {
-            tracing::warn!("daemon bridge action failed: {e}, falling back to direct bridge");
-            Ok(None)
-        }
-    }
-}
-
-/// Try to get a session through the daemon.
-/// Returns Ok(Some(instance)) if daemon provided it, Ok(None) if daemon not available.
-async fn daemon_get_session(timeout_secs: u64) -> anyhow::Result<Option<SnuInstance>> {
-    if !daemon::is_running() {
-        return Ok(None);
-    }
-
-    // First check cached session on the daemon side
-    let status_req = DaemonRequest {
-        id: "session".into(),
-        cmd: "session".into(),
-        payload: json!({}),
-    };
-
-    match daemon::send_request(&status_req).await {
-        Ok(resp) if resp.success => {
-            if let Some(data) = &resp.data
-                && data.get("has_session").and_then(Value::as_bool).unwrap_or(false)
-            {
-                let url = data.get("instance_url").and_then(Value::as_str).unwrap_or("");
-                let name = data.get("instance_name").and_then(Value::as_str).unwrap_or("");
-                return Ok(Some(SnuInstance {
-                    name: name.to_string(),
-                    url: url.to_string(),
-                    g_ck: Some("cached".to_string()),
-                    scope: data.get("scope").and_then(Value::as_str).map(str::to_string),
-                }));
-            }
-            // No session cached, ask daemon to wait for /token
-            let wait_req = DaemonRequest {
-                id: "wait-for-session".into(),
-                cmd: "wait-for-session".into(),
-                payload: json!({"timeout_secs": timeout_secs}),
-            };
-            match daemon::send_request(&wait_req).await {
-                Ok(wait_resp) if wait_resp.success => {
-                    // Session is now cached, load from local keychain
-                    if let Ok(Some(cached)) = session_cache::load_session() {
-                        return Ok(Some(cached.instance));
-                    }
-                    Ok(None)
-                }
-                Ok(wait_resp) => {
-                    Err(anyhow!("daemon failed to get session: {}", wait_resp.error.unwrap_or_default()))
-                }
-                Err(e) => {
-                    tracing::warn!("daemon wait-for-session failed: {e}");
-                    Ok(None)
-                }
-            }
-        }
-        Ok(_) => Ok(None),
-        Err(e) => {
-            tracing::warn!("daemon session check failed: {e}");
-            Ok(None)
         }
     }
 }
