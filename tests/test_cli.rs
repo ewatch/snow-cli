@@ -223,6 +223,39 @@ fn test_snow_cli_ro_rejects_api_post_at_parse_time() {
 }
 
 #[test]
+fn test_snow_cli_ro_exposes_snu_read_commands() {
+    cargo_bin_cmd!("snow-cli-ro")
+        .args(["snu", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("check-connection"))
+        .stdout(predicate::str::contains("query"))
+        .stdout(predicate::str::contains("screenshot"))
+        .stdout(predicate::str::contains("update-record").not())
+        .stdout(predicate::str::contains("execute-bg-script").not());
+}
+
+#[test]
+fn test_snow_cli_ro_rejects_snu_update_record_at_parse_time() {
+    cargo_bin_cmd!("snow-cli-ro")
+        .args([
+            "snu",
+            "update-record",
+            "incident",
+            "abc123",
+            "--field",
+            "state",
+            "--content",
+            "2",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unrecognized subcommand 'update-record'",
+        ));
+}
+
+#[test]
 fn test_read_only_api_get_denies_method_override_header() {
     let (_dir, config_path) = common::create_temp_config(
         r#"

@@ -3,9 +3,10 @@ use clap_complete::Shell;
 
 use crate::cli::args::{
     ApiArgs, ApiCommands, AttachmentArgs, AttachmentCommands, AuthArgs, AuthCommands,
-    CodesearchArgs, CodesearchCommands, Commands, ConfigArgs, ConfigCommands, DataArgs,
-    DataCommands, OutputFormat, ProfileSdkArgs, ProfileSdkCommands, ScopeArgs, ScopeCommands,
-    ScopeDetailLevel, ScopeListKind, TableArgs, TableCommands,
+    CodesearchArgs, CodesearchCommands, Commands, ConfigArgs, ConfigCommands,
+    DEFAULT_SNU_TIMEOUT_SECS, DataArgs, DataCommands, OutputFormat, ProfileSdkArgs,
+    ProfileSdkCommands, ScopeArgs, ScopeCommands, ScopeDetailLevel, ScopeListKind, SnuArgs,
+    SnuCommands, TableArgs, TableCommands,
 };
 
 const READ_ONLY_AFTER_HELP: &str = "Read-only workflows:\n  1) List recent incidents\n     snow-cli-ro table list incident --query 'active=true' --limit 20\n\n  2) Fetch a record\n     snow-cli-ro table get incident <sys_id>\n\n  3) Inspect schema or app metadata\n     snow-cli-ro table schema incident --extended\n     snow-cli-ro scope inspect x_my_app\n\n  4) Call a read-oriented custom API\n     snow-cli-ro api get /api/x_myapp/status\n\nNotes:\n  - snow-cli-ro runs with a locked read-only policy.\n  - Raw API access is limited to GET.\n  - GET is allowed by HTTP convention; use read-only ServiceNow credentials for stronger guarantees.";
@@ -70,6 +71,9 @@ pub enum ReadOnlyCommands {
 
     /// Search code across ServiceNow instance
     Codesearch(ReadOnlyCodesearchArgs),
+
+    /// Read-only SN-Utils browser-session operations
+    Snu(ReadOnlySnuArgs),
 
     /// Generate shell completions for snow-cli-ro
     Completions {
@@ -343,7 +347,6 @@ pub struct ReadOnlyCodesearchArgs {
     #[command(subcommand)]
     pub command: ReadOnlyCodesearchCommands,
 }
-
 #[derive(Subcommand, Debug)]
 pub enum ReadOnlyCodesearchCommands {
     /// Search code across the ServiceNow instance
@@ -370,6 +373,115 @@ pub enum ReadOnlyCodesearchCommands {
         /// Search group to use (advanced)
         #[arg(long, default_value = "sn_devstudio.Studio Search Group")]
         search_group: String,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct ReadOnlySnuArgs {
+    #[command(subcommand)]
+    pub command: ReadOnlySnuCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReadOnlySnuCommands {
+    /// Check whether the SN-Utils bridge and browser helper are connected
+    CheckConnection {
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Get SN-Utils bridge instance info
+    GetInstanceInfo {
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Wait for /token from SN-Utils and print the received browser session metadata
+    WaitToken {
+        /// Seconds to wait for the helper tab and /token message
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Query ServiceNow records through the active SN-Utils browser session
+    Query {
+        /// Table name
+        table: String,
+
+        /// Encoded query
+        #[arg(long)]
+        query: Option<String>,
+
+        /// Comma-separated sysparm_fields
+        #[arg(long, default_value = "sys_id,number,short_description,sys_created_on")]
+        fields: String,
+
+        /// Maximum records to return
+        #[arg(long, default_value = "10")]
+        limit: u32,
+
+        /// ORDERBY clause or field expression appended to sysparm_query
+        #[arg(long)]
+        order_by: Option<String>,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// List available tables through the active SN-Utils browser session
+    ListTables {
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Fetch a single record through the active SN-Utils browser session
+    GetRecord {
+        /// Table name
+        table: String,
+
+        /// Record sys_id
+        sys_id: String,
+
+        /// Optional comma-separated fields list
+        #[arg(long)]
+        fields: Option<String>,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Fetch table UI metadata through the active SN-Utils browser session
+    Schema {
+        /// Table name
+        table: String,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
+    /// Capture a browser screenshot through SN-Utils
+    Screenshot {
+        /// Browser tab URL/pattern to capture
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Specific browser tab id to capture
+        #[arg(long)]
+        tab_id: Option<u64>,
+
+        /// Output PNG path; defaults to the helper-provided filename
+        #[arg(long = "out", short = 'o')]
+        out_path: Option<String>,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
     },
 }
 
@@ -424,6 +536,9 @@ impl ReadOnlyCommands {
                 command: args.command.into_full_command(),
             }),
             Self::Codesearch(args) => Commands::Codesearch(CodesearchArgs {
+                command: args.command.into_full_command(),
+            }),
+            Self::Snu(args) => Commands::Snu(SnuArgs {
                 command: args.command.into_full_command(),
             }),
             Self::Completions { shell } => Commands::Completions { shell },
@@ -579,6 +694,61 @@ impl ReadOnlyCodesearchCommands {
     }
 }
 
+impl ReadOnlySnuCommands {
+    fn into_full_command(self) -> SnuCommands {
+        match self {
+            Self::CheckConnection { timeout_secs } => SnuCommands::CheckConnection { timeout_secs },
+            Self::GetInstanceInfo { timeout_secs } => SnuCommands::GetInstanceInfo { timeout_secs },
+            Self::WaitToken { timeout_secs } => SnuCommands::WaitToken { timeout_secs },
+            Self::Query {
+                table,
+                query,
+                fields,
+                limit,
+                order_by,
+                timeout_secs,
+            } => SnuCommands::Query {
+                table,
+                query,
+                fields,
+                limit,
+                order_by,
+                timeout_secs,
+            },
+            Self::ListTables { timeout_secs } => SnuCommands::ListTables { timeout_secs },
+            Self::GetRecord {
+                table,
+                sys_id,
+                fields,
+                timeout_secs,
+            } => SnuCommands::GetRecord {
+                table,
+                sys_id,
+                fields,
+                timeout_secs,
+            },
+            Self::Schema {
+                table,
+                timeout_secs,
+            } => SnuCommands::Schema {
+                table,
+                timeout_secs,
+            },
+            Self::Screenshot {
+                url,
+                tab_id,
+                out_path,
+                timeout_secs,
+            } => SnuCommands::Screenshot {
+                url,
+                tab_id,
+                out_path,
+                timeout_secs,
+            },
+        }
+    }
+}
+
 pub fn generate_completions(shell: Shell) {
     let mut cmd = ReadOnlyCli::command();
     let name = cmd.get_name().to_string();
@@ -599,7 +769,27 @@ mod tests {
         let help = ReadOnlyCli::command().render_long_help().to_string();
         assert!(help.contains("snow-cli-ro"));
         assert!(help.contains("Raw REST API GET"));
+        assert!(help.contains("SN-Utils"));
         assert!(!help.contains("Execute background scripts"));
         assert!(!help.contains("Import set operations"));
+    }
+
+    #[test]
+    fn snu_subcommand_omits_mutating_commands() {
+        let help = ReadOnlyCli::command()
+            .find_subcommand("snu")
+            .expect("snu subcommand exists")
+            .clone()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("check-connection"));
+        assert!(help.contains("query"));
+        assert!(help.contains("screenshot"));
+        assert!(!help.contains("update-record"));
+        assert!(!help.contains("delete-record"));
+        assert!(!help.contains("execute-bg-script"));
+        assert!(!help.contains("attachment-upload"));
+        assert!(!help.contains("slash"));
+        assert!(!help.contains("context"));
     }
 }

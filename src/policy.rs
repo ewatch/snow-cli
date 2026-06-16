@@ -437,6 +437,86 @@ mod tests {
     }
 
     #[test]
+    fn read_only_allows_snu_read_commands() {
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::CheckConnection { timeout_secs: 1 },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::GetInstanceInfo { timeout_secs: 1 },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::WaitToken { timeout_secs: 1 },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::ListTables { timeout_secs: 1 },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::GetRecord {
+                table: "incident".to_string(),
+                sys_id: "abc".to_string(),
+                fields: None,
+                timeout_secs: 1,
+            },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::Query {
+                table: "incident".to_string(),
+                query: None,
+                fields: "sys_id".to_string(),
+                limit: 10,
+                order_by: None,
+                timeout_secs: 1,
+            },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::Schema {
+                table: "incident".to_string(),
+                timeout_secs: 1,
+            },
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::Screenshot {
+                url: None,
+                tab_id: None,
+                out_path: None,
+                timeout_secs: 1,
+            },
+        }));
+    }
+
+    #[test]
+    fn read_only_denies_snu_mutating_commands() {
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::UpdateRecord {
+                table: "incident".to_string(),
+                sys_id: "abc".to_string(),
+                field: "state".to_string(),
+                content: "2".to_string(),
+                await_confirmation: false,
+                timeout_secs: 1,
+            },
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::DeleteRecord {
+                table: "incident".to_string(),
+                sys_id: Some("abc".to_string()),
+                query: None,
+                confirm: false,
+                limit: None,
+                dry_run: false,
+                timeout_secs: 1,
+            },
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::ExecuteBgScript {
+                file: None,
+                code: Some("gs.info('x')".to_string()),
+                timeout_secs: 1,
+            },
+        }));
+    }
+
+    #[test]
     fn read_only_denies_mutating_and_sensitive_commands() {
         assert_denied(Commands::Auth(AuthArgs {
             command: AuthCommands::Token,
