@@ -506,7 +506,7 @@ fn generate_pkce_code_verifier() -> String {
 
 fn random_hex_nonce() -> String {
     let mut bytes = [0_u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     let mut nonce = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         let _ = write!(&mut nonce, "{byte:02x}");
