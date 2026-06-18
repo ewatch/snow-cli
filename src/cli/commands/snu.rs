@@ -405,10 +405,76 @@ async fn connect_and_wait_for_fresh_session(
     Ok((bridge, instance))
 }
 
+/// Resolve a [`SnuInstance`] (carrying the `g_ck` token) for commands that talk
+/// to ServiceNow over plain HTTP rather than the live WebSocket bridge.
+///
+/// When a browser token was cached by an earlier `snu` command (or
+/// `snu wait-token`), it is reused directly — **without** opening the WebSocket
+/// bridge or waiting for the SN-Utils helper tab. Only when no token is cached
+/// do we connect the bridge and wait for SN-Utils to push one. This is what makes
+/// repeated `snu` commands fast: you pay the helper-tab round-trip once, then
+/// every later command reuses the cached token instantly.
+async fn resolve_session_for_http(timeout_secs: u64) -> anyhow::Result<SnuInstance> {
+    if let Some(cached) = session_cache::load_session()? {
+        tracing::debug!(
+            instance_url = %cached.instance.url,
+            "Reusing cached SN-Utils browser token; skipping WebSocket bridge"
+        );
+        return Ok(cached.instance);
+    }
+
+    let (_bridge, instance) = connect_and_wait_for_fresh_session(timeout_secs).await?;
+    Ok(instance)
+}
+
+/// Drop the cached token and re-capture a fresh one from SN-Utils via the bridge.
+/// Used when ServiceNow rejects a stale cached token.
+async fn refresh_session_for_http(timeout_secs: u64) -> anyhow::Result<SnuInstance> {
+    let _ = session_cache::delete_session();
+    let (_bridge, instance) = connect_and_wait_for_fresh_session(timeout_secs).await?;
+    Ok(instance)
+}
+
+/// `true` when an error from [`snu_request_json`] looks like a rejected/expired
+/// `g_ck` token, meaning we should refresh it from SN-Utils and retry.
+fn is_stale_token_error(error: &anyhow::Error) -> bool {
+    let text = error.to_string();
+    text.contains("HTTP 401") || text.contains("HTTP 403")
+}
+
+/// Perform a direct-HTTP ServiceNow request, transparently refreshing the cached
+/// `g_ck` token once if ServiceNow rejects it as stale.
+///
+/// `instance` is updated in place with the refreshed token so subsequent calls in
+/// the same command reuse it, and `refreshed` guards against refresh loops.
+async fn snu_request_with_refresh(
+    instance: &mut SnuInstance,
+    refreshed: &mut bool,
+    timeout_secs: u64,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> anyhow::Result<Value> {
+    match snu_request_json(instance, timeout_secs, method.clone(), path, body.clone()).await {
+        Ok(value) => Ok(value),
+        Err(error) if !*refreshed && is_stale_token_error(&error) => {
+            tracing::info!(
+                "Cached SN-Utils token was rejected by ServiceNow; refreshing it via the bridge"
+            );
+            *instance = refresh_session_for_http(timeout_secs).await?;
+            *refreshed = true;
+            snu_request_json(instance, timeout_secs, method, path, body).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
 async fn handle_list_tables(timeout_secs: u64, output_format: &OutputFormat) -> anyhow::Result<()> {
-    let (_bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
-    let response = snu_request_json(
-        &instance,
+    let mut instance = resolve_session_for_http(timeout_secs).await?;
+    let mut refreshed = false;
+    let response = snu_request_with_refresh(
+        &mut instance,
+        &mut refreshed,
         timeout_secs,
         Method::GET,
         "/api/now/table/sys_db_object?sysparm_fields=name&sysparm_query=nameISNOTEMPTY^ORDERBYname&sysparm_limit=10000",
@@ -442,7 +508,8 @@ async fn handle_get_record(
     timeout_secs: u64,
     output_format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let (_bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
+    let mut instance = resolve_session_for_http(timeout_secs).await?;
+    let mut refreshed = false;
     let path = match fields.as_deref() {
         Some(fields) if !fields.trim().is_empty() => format!(
             "/api/now/table/{table}/{sys_id}?sysparm_fields={}",
@@ -450,7 +517,15 @@ async fn handle_get_record(
         ),
         _ => format!("/api/now/table/{table}/{sys_id}"),
     };
-    let response = snu_request_json(&instance, timeout_secs, Method::GET, &path, None).await?;
+    let response = snu_request_with_refresh(
+        &mut instance,
+        &mut refreshed,
+        timeout_secs,
+        Method::GET,
+        &path,
+        None,
+    )
+    .await?;
     let record = response.get("result").cloned().unwrap_or(Value::Null);
     print_output(
         &json!({ "table": table, "sys_id": sys_id, "record": record }),
@@ -467,12 +542,14 @@ async fn handle_update_record(
     timeout_secs: u64,
     output_format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let (_bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
+    let mut instance = resolve_session_for_http(timeout_secs).await?;
+    let mut refreshed = false;
     let mut body = Map::new();
     body.insert(field.clone(), Value::String(content.clone()));
     let path = format!("/api/now/table/{table}/{sys_id}");
-    let response = snu_request_json(
-        &instance,
+    let response = snu_request_with_refresh(
+        &mut instance,
+        &mut refreshed,
         timeout_secs,
         Method::PUT,
         &path,
@@ -493,8 +570,14 @@ async fn handle_update_record(
         );
     }
 
-    let persisted =
-        snu_fetch_persisted_record(&instance, timeout_secs, &path, &[field.as_str()]).await?;
+    let persisted = snu_fetch_persisted_record(
+        &mut instance,
+        &mut refreshed,
+        timeout_secs,
+        &path,
+        &[field.as_str()],
+    )
+    .await?;
     let warnings = snu_field_warnings(&field, &persisted);
     print_output(
         &json!({
@@ -525,10 +608,12 @@ async fn handle_update_record_batch(
     }
 
     let requested_fields: Vec<String> = fields_object.keys().cloned().collect();
-    let (_bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
+    let mut instance = resolve_session_for_http(timeout_secs).await?;
+    let mut refreshed = false;
     let path = format!("/api/now/table/{table}/{sys_id}");
-    let response = snu_request_json(
-        &instance,
+    let response = snu_request_with_refresh(
+        &mut instance,
+        &mut refreshed,
         timeout_secs,
         Method::PUT,
         &path,
@@ -550,8 +635,14 @@ async fn handle_update_record_batch(
     }
 
     let requested_field_refs: Vec<&str> = requested_fields.iter().map(|s| s.as_str()).collect();
-    let persisted =
-        snu_fetch_persisted_record(&instance, timeout_secs, &path, &requested_field_refs).await?;
+    let persisted = snu_fetch_persisted_record(
+        &mut instance,
+        &mut refreshed,
+        timeout_secs,
+        &path,
+        &requested_field_refs,
+    )
+    .await?;
     let warnings = snu_fields_warnings(&requested_fields, &persisted);
     print_output(
         &json!({
@@ -582,13 +673,21 @@ async fn handle_delete_record(
     timeout_secs: u64,
     output_format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let (_bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
+    let mut instance = resolve_session_for_http(timeout_secs).await?;
+    let mut refreshed = false;
 
     if let Some(sys_id) = request.sys_id {
         let path = format!("/api/now/table/{}/{}", request.table, sys_id);
         if request.dry_run {
-            let response =
-                snu_request_json(&instance, timeout_secs, Method::GET, &path, None).await?;
+            let response = snu_request_with_refresh(
+                &mut instance,
+                &mut refreshed,
+                timeout_secs,
+                Method::GET,
+                &path,
+                None,
+            )
+            .await?;
             return print_output(
                 &json!({
                     "dry_run": true,
@@ -600,8 +699,15 @@ async fn handle_delete_record(
             );
         }
 
-        let response =
-            snu_request_json(&instance, timeout_secs, Method::DELETE, &path, None).await?;
+        let response = snu_request_with_refresh(
+            &mut instance,
+            &mut refreshed,
+            timeout_secs,
+            Method::DELETE,
+            &path,
+            None,
+        )
+        .await?;
         return print_output(
             &json!({
                 "deleted": true,
@@ -631,8 +737,15 @@ async fn handle_delete_record(
         urlencoding::encode(&query),
         table = request.table
     );
-    let response =
-        snu_request_json(&instance, timeout_secs, Method::GET, &query_path, None).await?;
+    let response = snu_request_with_refresh(
+        &mut instance,
+        &mut refreshed,
+        timeout_secs,
+        Method::GET,
+        &query_path,
+        None,
+    )
+    .await?;
     let records = response
         .get("result")
         .and_then(Value::as_array)
@@ -660,7 +773,16 @@ async fn handle_delete_record(
             continue;
         };
         let record_path = format!("/api/now/table/{}/{}", request.table, record_sys_id);
-        match snu_request_json(&instance, timeout_secs, Method::DELETE, &record_path, None).await {
+        match snu_request_with_refresh(
+            &mut instance,
+            &mut refreshed,
+            timeout_secs,
+            Method::DELETE,
+            &record_path,
+            None,
+        )
+        .await
+        {
             Ok(_) => deleted.push(record_sys_id.to_string()),
             Err(error) => failed.push(json!({"sys_id": record_sys_id, "error": error.to_string()})),
         }
@@ -707,7 +829,8 @@ fn parse_json_object(input: &str, label: &str) -> anyhow::Result<Map<String, Val
 }
 
 async fn snu_fetch_persisted_record(
-    instance: &SnuInstance,
+    instance: &mut SnuInstance,
+    refreshed: &mut bool,
     timeout_secs: u64,
     path: &str,
     field_names: &[&str],
@@ -720,7 +843,9 @@ async fn snu_fetch_persisted_record(
     } else {
         format!("{path}?sysparm_fields={}", urlencoding::encode(&field_list))
     };
-    let response = snu_request_json(instance, timeout_secs, Method::GET, &path, None).await?;
+    let response =
+        snu_request_with_refresh(instance, refreshed, timeout_secs, Method::GET, &path, None)
+            .await?;
     Ok(response.get("result").cloned().unwrap_or(Value::Null))
 }
 
@@ -994,5 +1119,25 @@ mod tests {
             guess_content_type(Path::new("a.unknown")),
             "application/octet-stream"
         );
+    }
+
+    #[test]
+    fn stale_token_error_detects_auth_rejections() {
+        assert!(is_stale_token_error(&anyhow!(
+            "ServiceNow request failed with HTTP 401 Unauthorized: User Not Authenticated"
+        )));
+        assert!(is_stale_token_error(&anyhow!(
+            "ServiceNow request failed with HTTP 403 Forbidden: invalid token"
+        )));
+    }
+
+    #[test]
+    fn stale_token_error_ignores_other_failures() {
+        assert!(!is_stale_token_error(&anyhow!(
+            "ServiceNow request failed with HTTP 404 Not Found"
+        )));
+        assert!(!is_stale_token_error(&anyhow!(
+            "timed out waiting for SN-Utils"
+        )));
     }
 }
