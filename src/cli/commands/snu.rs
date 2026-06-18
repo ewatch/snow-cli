@@ -115,6 +115,16 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                 .await?;
             print_background_script_response(response, output_format)
         }
+        SnuCommands::CreateRecord {
+            table,
+            data,
+            scope,
+            timeout_secs,
+        } => handle_create_record(table, data, scope, timeout_secs, output_format).await,
+        SnuCommands::AppMeta {
+            app_id,
+            timeout_secs,
+        } => handle_app_meta(app_id, timeout_secs, output_format).await,
         SnuCommands::ListTables { timeout_secs } => {
             handle_list_tables(timeout_secs, output_format).await
         }
@@ -467,6 +477,101 @@ async fn snu_request_with_refresh(
         }
         Err(error) => Err(error),
     }
+}
+
+/// Read a JSON object payload from `--data` or, when absent, from stdin.
+fn resolve_record_data(data: Option<String>) -> anyhow::Result<Map<String, Value>> {
+    let raw = match data {
+        Some(data) if !data.trim().is_empty() => data,
+        _ => {
+            let stdin = std::io::stdin();
+            if stdin.is_terminal() {
+                anyhow::bail!(
+                    "No record data provided. Pass --data '<json>' or pipe a JSON object on stdin."
+                );
+            }
+            read_to_string_limited(
+                stdin.lock(),
+                DEFAULT_MAX_STDIN_BYTES,
+                "record data stdin input",
+            )
+            .context("failed to read record data from stdin")?
+        }
+    };
+    parse_json_object(&raw, "data")
+}
+
+async fn handle_create_record(
+    table: String,
+    data: Option<String>,
+    scope: Option<String>,
+    timeout_secs: u64,
+    output_format: &OutputFormat,
+) -> anyhow::Result<()> {
+    let payload = resolve_record_data(data)?;
+    if payload.is_empty() {
+        anyhow::bail!("record data must contain at least one field");
+    }
+
+    let mut instance = resolve_session_for_http(timeout_secs).await?;
+    let mut refreshed = false;
+    // Mirror SN-Utils createRecord: POST /api/now/table/{table} with the payload,
+    // optionally scoped via sysparm_transaction_scope for ACL context.
+    let path = match scope.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(scope) => format!(
+            "/api/now/table/{table}?sysparm_transaction_scope={}",
+            urlencoding::encode(scope)
+        ),
+        None => format!("/api/now/table/{table}"),
+    };
+    let response = snu_request_with_refresh(
+        &mut instance,
+        &mut refreshed,
+        timeout_secs,
+        Method::POST,
+        &path,
+        Some(Value::Object(payload)),
+    )
+    .await?;
+
+    let record = response.get("result").cloned().unwrap_or(Value::Null);
+    let sys_id = record.get("sys_id").and_then(Value::as_str);
+    print_output(
+        &json!({
+            "success": true,
+            "table": table,
+            "sys_id": sys_id,
+            "record": record,
+        }),
+        output_format,
+    )
+}
+
+async fn handle_app_meta(
+    app_id: String,
+    timeout_secs: u64,
+    output_format: &OutputFormat,
+) -> anyhow::Result<()> {
+    let mut instance = resolve_session_for_http(timeout_secs).await?;
+    let mut refreshed = false;
+    // Mirror SN-Utils requestAppMeta: fetch the scoped app's artifacts.
+    let path = format!(
+        "/_sn/sn_devstudio_/v1/ds?sysparm_transaction_scope={}",
+        urlencoding::encode(&app_id)
+    );
+    let response = snu_request_with_refresh(
+        &mut instance,
+        &mut refreshed,
+        timeout_secs,
+        Method::GET,
+        &path,
+        None,
+    )
+    .await?;
+    print_output(
+        &json!({ "app_id": app_id, "meta": response }),
+        output_format,
+    )
 }
 
 async fn handle_list_tables(timeout_secs: u64, output_format: &OutputFormat) -> anyhow::Result<()> {

@@ -473,6 +473,16 @@ pub enum ReadOnlySnuCommands {
         timeout_secs: u64,
     },
 
+    /// Fetch a scoped application's artifacts/metadata (SN-Utils requestAppMeta)
+    AppMeta {
+        /// Application scope or sys_id (sysparm_transaction_scope)
+        app_id: String,
+
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
     /// Capture a browser screenshot through SN-Utils
     Screenshot {
         /// Browser tab URL/pattern to capture
@@ -749,6 +759,13 @@ impl ReadOnlySnuCommands {
                 timeout_secs,
             } => SnuCommands::Schema {
                 table,
+                timeout_secs,
+            },
+            Self::AppMeta {
+                app_id,
+                timeout_secs,
+            } => SnuCommands::AppMeta {
+                app_id,
                 timeout_secs,
             },
             Self::Screenshot {

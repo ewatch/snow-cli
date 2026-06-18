@@ -308,6 +308,7 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             | SnuCommands::WaitToken { .. }
             | SnuCommands::ListTables { .. }
             | SnuCommands::GetRecord { .. }
+            | SnuCommands::AppMeta { .. }
             | SnuCommands::Query { .. }
             | SnuCommands::Schema { .. }
             | SnuCommands::Slash { .. }
@@ -317,6 +318,11 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 "snu update-record",
                 CommandCapability::RemoteWrite,
                 "read-only policy does not allow record updates through SN-Utils",
+            ),
+            SnuCommands::CreateRecord { .. } => deny(
+                "snu create-record",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow record creation through SN-Utils",
             ),
             SnuCommands::UpdateRecordBatch { .. } => deny(
                 "snu update-record-batch",
