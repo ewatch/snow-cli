@@ -12,6 +12,13 @@ use crate::snu::protocol::{SnuInstance, SnuMessage};
 
 pub const DEFAULT_SNU_WS_ADDR: &str = "127.0.0.1:1978";
 
+/// Maximum time to wait for the SN-Utils ScriptSync helper tab to *connect* to the
+/// bridge. This is deliberately short and separate from the per-action/response
+/// timeout: an installed, open helper tab reconnects within ~1s, so a long wait
+/// here only ever penalizes the "SN-Utils is not running" case. The full
+/// `timeout_secs` budget still applies to waiting for `/token` and action replies.
+pub const HELPER_CONNECT_TIMEOUT_SECS: u64 = 20;
+
 pub struct SnuBridge {
     socket: WebSocketStream<TcpStream>,
     peer_addr: SocketAddr,
@@ -43,10 +50,16 @@ impl SnuBridge {
             anyhow::Ok(Self { socket, peer_addr })
         };
 
-        timeout(Duration::from_secs(timeout_secs), accept_future)
+        // Fail fast and uniformly when no helper tab is present: the connection
+        // itself is near-instant when SN-Utils is running, so cap this wait well
+        // below the (possibly large) response timeout.
+        let connect_timeout = timeout_secs.min(HELPER_CONNECT_TIMEOUT_SECS);
+        timeout(Duration::from_secs(connect_timeout), accept_future)
             .await
             .map_err(|_| {
-                anyhow!("timed out waiting {timeout_secs}s for SN-Utils helper tab connection")
+                anyhow!(
+                    "timed out waiting {connect_timeout}s for the SN-Utils ScriptSync helper tab to connect on ws://{DEFAULT_SNU_WS_ADDR}. Is SN-Utils installed and the ScriptSync helper tab open? It auto-connects within ~1s when running."
+                )
             })?
     }
 
