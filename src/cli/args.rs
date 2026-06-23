@@ -33,9 +33,10 @@ const API_AFTER_HELP: &str = "Examples:\n  snow-cli api get /api/now/table/incid
 
 const SCRIPT_RUN_AFTER_HELP: &str = "Examples:\n  snow-cli script run --code 'gs.info(\"hello from snow-cli\")'\n  snow-cli script run --file ./cleanup.js --sandbox\n  printf '%s' 'gs.info(\"from stdin\")' | snow-cli script run --scope x_my_app\n  snow-cli script run --code 'gs.print(\"done\")' --rollback --quota-managed-transaction\n\nNotes:\n  - `script run` executes a background script directly against the ServiceNow instance.\n  - If you are using SN-Utils, the `snu` command family is for browser/session helper actions, not background scripts.";
 
-const SNU_AFTER_HELP: &str = "Examples:\n  snow-cli snu check-connection\n  snow-cli snu get-instance-info\n  snow-cli snu list-tables\n  snow-cli snu create-record incident --data '{\"short_description\":\"Created via snu\"}'\n  snow-cli snu app-meta x_my_app\n  snow-cli snu get-record incident 46d44a1b1b223010d9f2ed7c2e4bcb1 --fields sys_id,number,short_description\n  snow-cli snu update-record sys_script_include 46d44a1b1b223010d9f2ed7c2e4bcb1 --field script --content 'gs.info(\"hello\")'\n  snow-cli snu update-record-batch sp_widget 46d44a1b1b223010d9f2ed7c2e4bcb1 --fields '{\"script\":\"data.hello = \\\"world\\\";\",\"css\":\".c1 { color: red; }\"}'\n  snow-cli snu delete-record incident 46d44a1b1b223010d9f2ed7c2e4bcb1\n  snow-cli snu wait-token\n  snow-cli snu query incident --query 'active=true' --fields sys_id,number --limit 10\n  snow-cli snu schema incident\n  snow-cli snu execute-bg-script --code 'gs.info(\"hello from SN-Utils\")'\n  snow-cli snu slash /tn\n  snow-cli snu tab activate 'https://dev12345.service-now.com/incident.do*' --open-if-not-found\n  snow-cli snu context switch application x_my_app --tab-url 'https://dev12345.service-now.com/*'\n  snow-cli snu screenshot --url 'https://dev12345.service-now.com/*' --out incident.png\n  snow-cli snu attachment upload incident <sys_id> --file ./attachment.png\n\nNotes:\n  - SN-Utils must be installed in the browser. Run wait-token once, open the SN-Utils ScriptSync helper tab, then run /token in a ServiceNow tab. Later snu commands reuse the cached browser token from the OS keychain.
-  - Record commands (list-tables, get-record, create-record, update-record, update-record-batch, delete-record, app-meta) reuse the cached token over plain HTTP and do NOT reopen the WebSocket bridge or wait for the helper tab. If the cached token is rejected as expired, they refresh it once via the bridge automatically.\n  - `script run` is the direct background-script command; `snu execute-bg-script` runs the same kind of server-side script through the browser helper tab.\n  - `snu check-connection` and `snu get-instance-info` are lightweight diagnostics for the websocket bridge and browser session.\n  - `snu list-tables`, `snu get-record`, `snu create-record`, `snu update-record`, `snu update-record-batch`, `snu delete-record`, and `snu app-meta` map to the SN-Utils record-management helpers.\n  - The bridge binds 127.0.0.1:1978, the port hard-coded by SN-Utils scriptsync.html. Stop sn-scriptsync first if it owns that port.";
+const SNU_AFTER_HELP: &str = "Examples:\n  snow-cli snu check-connection\n  snow-cli snu get-instance-info\n  snow-cli snu list-tables\n  snow-cli snu create-record incident --data '{\"short_description\":\"Created via snu\"}'\n  snow-cli snu app-meta x_my_app\n  snow-cli snu get-record incident 46d44a1b1b223010d9f2ed7c2e4bcb1 --fields sys_id,number,short_description\n  snow-cli snu update-record sys_script_include 46d44a1b1b223010d9f2ed7c2e4bcb1 --field script --content 'gs.info(\"hello\")'\n  snow-cli snu update-record sp_widget 46d44a1b1b223010d9f2ed7c2e4bcb1 --data '{\"script\":\"data.hello = \\\"world\\\";\",\"css\":\".c1 { color: red; }\"}'\n  snow-cli snu delete-record incident 46d44a1b1b223010d9f2ed7c2e4bcb1\n  snow-cli snu wait-token\n  snow-cli snu query incident --query 'active=true' --fields sys_id,number --limit 10\n  snow-cli snu schema incident\n  snow-cli snu execute-bg-script --code 'gs.info(\"hello from SN-Utils\")'\n  snow-cli snu slash /tn\n  snow-cli snu tab activate 'https://dev12345.service-now.com/incident.do*' --open-if-not-found\n  snow-cli snu context switch application x_my_app --tab-url 'https://dev12345.service-now.com/*'\n  snow-cli snu screenshot --url 'https://dev12345.service-now.com/*' --out incident.png\n  snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png\n  snow-cli snu broker status\n\nNotes:\n  - SN-Utils must be installed in the browser and the SN-Utils ScriptSync helper tab must be open. Commands auto-start a local broker that owns the SN-Utils WebSocket port and waits for helper/session metadata as needed; run /token in a ServiceNow tab if prompted.\n  - The g_ck token is treated as live browser-session metadata only. snow-cli keeps it in broker memory per instance while the broker is running, but does not store it in the OS keychain or use it as a standalone reusable credential.\n  - `script run` is the direct background-script command; `snu execute-bg-script` runs the same kind of server-side script through the browser helper tab.\n  - `snu check-connection` and `snu get-instance-info` are lightweight diagnostics for the websocket bridge and browser session.\n  - `snu list-tables`, `snu get-record`, `snu create-record`, `snu update-record`, `snu delete-record`, and `snu app-meta` map to SN-Utils helper/browser-session actions.\n  - The broker binds 127.0.0.1:1978, the port hard-coded by SN-Utils scriptsync.html, and shuts down after an idle timeout. Use `snu broker status` or `snu broker stop` if something unexpected happens. Stop sn-scriptsync first if it owns that port.";
 pub const DEFAULT_SNU_TIMEOUT_SECS: u64 = 180;
+/// Default sysparm_fields used by snu record reads (query, get-record).
+pub const DEFAULT_SNU_FIELDS: &str = "sys_id,number,short_description";
 
 /// ❄️ snow-cli — ServiceNow CLI for humans and coding agents
 #[derive(Parser, Debug)]
@@ -1098,7 +1099,7 @@ pub enum SnuCommands {
         query: Option<String>,
 
         /// Comma-separated sysparm_fields
-        #[arg(long, default_value = "sys_id,number,short_description,sys_created_on")]
+        #[arg(long, default_value = DEFAULT_SNU_FIELDS)]
         fields: String,
 
         /// Maximum records to return
@@ -1181,7 +1182,7 @@ pub enum SnuCommands {
         timeout_secs: u64,
     },
 
-    /// Update a single field through the active SN-Utils browser session
+    /// Update one or more fields through the active SN-Utils browser session
     UpdateRecord {
         /// Table name
         table: String,
@@ -1189,34 +1190,17 @@ pub enum SnuCommands {
         /// Record sys_id
         sys_id: String,
 
-        /// Field name to update
-        #[arg(long)]
-        field: String,
+        /// JSON object of field/value pairs to update (use for multiple fields)
+        #[arg(long, group = "update_source")]
+        data: Option<String>,
 
-        /// New field content
-        #[arg(long)]
-        content: String,
+        /// Single field name to update (use with --content; convenient for large values)
+        #[arg(long, group = "update_source", requires = "content")]
+        field: Option<String>,
 
-        /// Confirm the updated value by reading it back
-        #[arg(long = "await")]
-        await_confirmation: bool,
-
-        /// Seconds to wait for helper/session/response
-        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
-        timeout_secs: u64,
-    },
-
-    /// Update multiple fields through the active SN-Utils browser session
-    UpdateRecordBatch {
-        /// Table name
-        table: String,
-
-        /// Record sys_id
-        sys_id: String,
-
-        /// JSON object of field/value pairs
-        #[arg(long)]
-        fields: String,
+        /// New content for the field named by --field
+        #[arg(long, requires = "field")]
+        content: Option<String>,
 
         /// Confirm the updated values by reading them back
         #[arg(long = "await")]
@@ -1334,6 +1318,28 @@ pub enum SnuCommands {
         #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
         timeout_secs: u64,
     },
+
+    /// Inspect or stop the auto-started SN-Utils broker
+    Broker(SnuBrokerArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct SnuBrokerArgs {
+    #[command(subcommand)]
+    pub command: SnuBrokerCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnuBrokerCommands {
+    /// Show broker status
+    Status,
+
+    /// Stop the running broker
+    Stop,
+
+    /// Run the broker server process
+    #[command(hide = true)]
+    Serve,
 }
 
 #[derive(Args, Debug)]
@@ -1701,35 +1707,89 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_snu_update_record_batch() {
+    fn test_parse_snu_update_record_with_data() {
         let cli = Cli::parse_from([
             "snow-cli",
             "snu",
-            "update-record-batch",
+            "update-record",
             "sp_widget",
             "abc123",
-            "--fields",
+            "--data",
             "{\"script\":\"gs.info('x')\",\"css\":\".a{}\"}",
         ]);
 
         match cli.command {
             Commands::Snu(args) => match args.command {
-                SnuCommands::UpdateRecordBatch {
+                SnuCommands::UpdateRecord {
                     table,
                     sys_id,
-                    fields,
+                    data,
+                    field,
+                    content,
                     await_confirmation,
                     ..
                 } => {
                     assert_eq!(table, "sp_widget");
                     assert_eq!(sys_id, "abc123");
-                    assert_eq!(fields, "{\"script\":\"gs.info('x')\",\"css\":\".a{}\"}");
+                    assert_eq!(
+                        data.as_deref(),
+                        Some("{\"script\":\"gs.info('x')\",\"css\":\".a{}\"}")
+                    );
+                    assert_eq!(field, None);
+                    assert_eq!(content, None);
                     assert!(!await_confirmation);
                 }
-                _ => panic!("Expected Snu UpdateRecordBatch command"),
+                _ => panic!("Expected Snu UpdateRecord command"),
             },
             _ => panic!("Expected Snu command"),
         }
+    }
+
+    #[test]
+    fn test_parse_snu_update_record_single_field() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "snu",
+            "update-record",
+            "incident",
+            "abc123",
+            "--field",
+            "state",
+            "--content",
+            "2",
+        ]);
+
+        match cli.command {
+            Commands::Snu(args) => match args.command {
+                SnuCommands::UpdateRecord {
+                    field, content, data, ..
+                } => {
+                    assert_eq!(field.as_deref(), Some("state"));
+                    assert_eq!(content.as_deref(), Some("2"));
+                    assert_eq!(data, None);
+                }
+                _ => panic!("Expected Snu UpdateRecord command"),
+            },
+            _ => panic!("Expected Snu command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_snu_update_record_data_and_field_conflict() {
+        let result = Cli::try_parse_from([
+            "snow-cli",
+            "snu",
+            "update-record",
+            "incident",
+            "abc123",
+            "--data",
+            "{\"state\":\"2\"}",
+            "--field",
+            "state",
+            "--content",
+            "2",
+        ]);
+        assert!(result.is_err(), "--data and --field must be mutually exclusive");
     }
 
     #[test]

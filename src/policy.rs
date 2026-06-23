@@ -313,7 +313,8 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             | SnuCommands::Schema { .. }
             | SnuCommands::Slash { .. }
             | SnuCommands::Tab(_)
-            | SnuCommands::Screenshot { .. } => PolicyDecision::Allow,
+            | SnuCommands::Screenshot { .. }
+            | SnuCommands::Broker(_) => PolicyDecision::Allow,
             SnuCommands::UpdateRecord { .. } => deny(
                 "snu update-record",
                 CommandCapability::RemoteWrite,
@@ -323,11 +324,6 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 "snu create-record",
                 CommandCapability::RemoteWrite,
                 "read-only policy does not allow record creation through SN-Utils",
-            ),
-            SnuCommands::UpdateRecordBatch { .. } => deny(
-                "snu update-record-batch",
-                CommandCapability::RemoteWrite,
-                "read-only policy does not allow record updates through SN-Utils",
             ),
             SnuCommands::DeleteRecord { .. } => deny(
                 "snu delete-record",
@@ -501,8 +497,9 @@ mod tests {
             command: SnuCommands::UpdateRecord {
                 table: "incident".to_string(),
                 sys_id: "abc".to_string(),
-                field: "state".to_string(),
-                content: "2".to_string(),
+                data: None,
+                field: Some("state".to_string()),
+                content: Some("2".to_string()),
                 await_confirmation: false,
                 timeout_secs: 1,
             },
