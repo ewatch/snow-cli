@@ -10,14 +10,14 @@ All `snu` subcommands also accept the global flags from the [command overview](.
 
 ## What it is for
 
-`snu` is the browser-session bridge for actions that need the SN-Utils helper tab and its cached `g_ck` token:
+`snu` is the browser-session bridge for actions that need the live SN-Utils helper tab:
 
 - check whether the helper bridge is connected
 - inspect instance connection info
-- wait for and cache `/token`
+- wait for `/token` and print the live browser session metadata
 - list tables and fetch records through the active ServiceNow session
 - fetch table schema metadata
-- update or delete records through the direct ServiceNow API
+- update or delete records through the live browser helper session
 - execute background scripts through the helper tab
 - open slash commands
 - activate tabs
@@ -35,7 +35,7 @@ snow-cli snu get-instance-info
 snow-cli snu list-tables
 snow-cli snu get-record incident <sys_id> --fields sys_id,number,short_description
 snow-cli snu update-record incident <sys_id> --field state --content 2
-snow-cli snu update-record-batch sp_widget <sys_id> --fields '{"script":"gs.info(\"hi\")"}'
+snow-cli snu update-record sp_widget <sys_id> --data '{"script":"gs.info(\"hi\")"}'
 snow-cli snu delete-record incident <sys_id>
 snow-cli snu wait-token
 snow-cli snu query incident --query 'active=true' --fields sys_id,number --limit 10
@@ -45,7 +45,7 @@ snow-cli snu slash /tn
 snow-cli snu tab activate 'https://dev12345.service-now.com/incident.do*' --open-if-not-found
 snow-cli snu context switch application x_my_app --tab-url 'https://dev12345.service-now.com/*'
 snow-cli snu screenshot --url 'https://dev12345.service-now.com/*' --out incident.png
-snow-cli snu attachment upload incident <sys_id> --file ./attachment.png
+snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png
 ```
 
 ## `snu check-connection`
@@ -82,18 +82,13 @@ snow-cli snu get-record incident <sys_id> --fields sys_id,number,short_descripti
 
 ## `snu update-record <table> <sys_id>`
 
-Update one field on a record.
+Update one or more fields on a record. Use `--data` with a JSON object for
+multiple fields, or `--field`/`--content` for a single value (handy for large
+contents where JSON escaping is awkward). The two forms are mutually exclusive.
 
 ```bash
 snow-cli snu update-record incident <sys_id> --field state --content 2
-```
-
-## `snu update-record-batch <table> <sys_id>`
-
-Update multiple fields on the same record.
-
-```bash
-snow-cli snu update-record-batch sp_widget <sys_id> --fields '{"script":"gs.info(\"hi\")"}'
+snow-cli snu update-record sp_widget <sys_id> --data '{"script":"gs.info(\"hi\")","css":".c1 { color: red; }"}'
 ```
 
 ## `snu delete-record <table> [--sys-id <sys_id> | --query <encoded-query>]`
@@ -113,7 +108,7 @@ Wait for the SN-Utils helper tab to emit `/token` and print the browser session 
 snow-cli snu wait-token
 ```
 
-The cached session is stored in the OS keychain so later `snu` commands can reuse it without prompting again.
+The `g_ck` token is not stored in the OS keychain. Treat it as live browser-session metadata that is only useful together with the SN-Utils helper connection.
 
 ## `snu query <table>`
 
@@ -123,7 +118,7 @@ Query records through the active browser session.
 snow-cli snu query incident --query 'active=true' --fields sys_id,number --limit 20
 ```
 
-This is useful when you want the browser session and SN-Utils bridge to handle the request instead of the CLI's direct HTTP client.
+This is useful when you want the browser session and SN-Utils bridge to handle the request instead of the CLI's regular authenticated HTTP client.
 
 ## `snu schema <table>`
 
@@ -177,39 +172,70 @@ Capture a screenshot through the helper tab.
 snow-cli snu screenshot --url 'https://dev12345.service-now.com/*' --out incident.png
 ```
 
-## `snu attachment upload`
+## `snu attachment-upload`
 
 Upload a file as an attachment using the active browser session.
 
 ```bash
-snow-cli snu attachment upload incident <sys_id> --file ./attachment.png
+snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png
 ```
 
 ## Notes
 
 - SN-Utils must be installed in the browser, and the helper tab must be reachable at `ws://127.0.0.1:1978`.
-- The cached browser session is stored in a dedicated internal OS keychain entry alongside the instance URL and reused by later `snu` commands when present.
-- If no cached session exists, `wait-token` is the first command you should run.
-- Some helper actions are available in the SN-Utils extension but are not yet exposed as `snow-cli` commands, including `get_file_structure`, `query_records`, `get_form_state`, `set_field`, `run_ui_action`, `navigate`, `navigate_and_screenshot`, `rest_request`, `run_slash_command`, `switch_context`, `take_screenshot`, `upload_attachment`, `refresh_preview`, and `code_search`.
+- `snow-cli snu` commands auto-start a local broker that owns the SN-Utils WebSocket port and idles out when unused.
+- The `g_ck` token is not stored as a reusable credential. The broker keeps live browser-session metadata in memory per instance while it is running.
+- If a command waits for session metadata, run `/token` in a ServiceNow tab.
+- Some helper actions are available in the SN-Utils extension but are not yet exposed as `snow-cli` commands, including `get_file_structure`, `get_form_state`, `set_field`, `run_ui_action`, `navigate`, `navigate_and_screenshot`, `rest_request`, and `refresh_preview`.
 
-### One bridge at a time (port 127.0.0.1:1978)
+### Targeting a specific instance
 
-Each `snu` command opens a short-lived WebSocket bridge on the port hard-coded
-by SN-Utils (`127.0.0.1:1978`), waits for the helper tab to connect, performs
-one exchange, then releases the port. Because SN-Utils dials this exact port,
-**only one bridge can own it at a time.**
+The SN-Utils tab can be a portal to several ServiceNow instances at once, each
+with its own `g_ck`. Every `/token` push is self-describing — it carries the
+instance URL alongside the token — so the broker stores one session per
+instance, keyed by origin (`scheme://host:port`).
 
-As a result:
+By default a command uses the **most recently active** instance. To pin a
+command to a specific instance, pass the global `--instance` flag with a URL or
+bare host:
 
-- The `sn-scriptsync` VS Code extension and `snow-cli snu` are mutually
-  exclusive — stop `sn-scriptsync` before using `snu`.
-- Two `snu` commands cannot run concurrently. The second one fails fast with a
-  clear *"port is already in use"* error rather than hanging.
+```bash
+snow-cli --instance https://dev12345.service-now.com snu query incident --query 'active=true'
+```
 
-If you need concurrent SN-Utils access (for example, multiple agents sharing one
-browser), that requires a multiplexing broker that owns the port and fans
-requests out by correlation id. That is tracked as a separate piece of work and
-is not yet available.
+When the requested instance has no cached token yet, the command prompts you to
+run `/token` in a tab for that instance and ignores tokens pushed from other
+tabs. `snow-cli snu broker status` lists every instance the broker currently
+holds a live `g_ck` for, with the active one flagged.
+
+### Broker lifecycle
+
+The broker starts automatically on the first `snu` command that needs it. It
+owns the port hard-coded by SN-Utils (`127.0.0.1:1978`) and accepts foreground
+CLI requests on a local broker IPC port. When no clients or requests are active,
+it exits after the idle timeout.
+
+Usually you do not need to manage it. For debugging:
+
+```bash
+snow-cli snu broker status
+snow-cli snu broker stop
+```
+
+To drop cached browser sessions without stopping the broker — for example after
+logging out of an instance, or to force a fresh `/token` — use `broker clear`:
+
+```bash
+snow-cli snu broker clear                                          # all instances
+snow-cli snu broker clear --instance https://dev12345.service-now.com  # just one
+```
+
+The next command for a cleared instance re-prompts for `/token`. Clearing is
+broker-memory only; it does not affect the ServiceNow session in the browser.
+
+The `sn-scriptsync` VS Code extension and `snow-cli snu` are still mutually
+exclusive because both need the same SN-Utils browser port. Stop `sn-scriptsync`
+before using `snu`.
 
 ## Related pages
 

@@ -6,17 +6,35 @@ use base64::Engine;
 use reqwest::{Client, Method};
 use serde_json::{Map, Value, json};
 
-use crate::cli::args::{OutputFormat, SnuArgs, SnuCommands, SnuContextCommands, SnuTabCommands};
+use crate::cli::args::{
+    DEFAULT_SNU_FIELDS, OutputFormat, SnuArgs, SnuBrokerCommands, SnuCommands, SnuContextCommands,
+    SnuTabCommands,
+};
 use crate::cli::output::print_output;
 use crate::cli::validation::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
-use crate::snu::bridge::SnuBridge;
-use crate::snu::protocol::{SnuInstance, SnuMessage, redact_session_for_output};
-use crate::snu::session_cache;
+use crate::snu::broker::BrokerBridge;
+use crate::snu::protocol::{
+    SnuInstance, SnuMessage, normalize_origin, redact_session_for_output, resolve_origin,
+};
 
-pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Result<()> {
+pub async fn handle(
+    args: SnuArgs,
+    instance: Option<&str>,
+    output_format: &OutputFormat,
+) -> anyhow::Result<()> {
+    // Resolve the optional global `--instance` selector to a normalized origin up
+    // front so every session-backed subcommand targets the same instance's
+    // `g_ck`. When the SN-Utils tab is a portal to several instances, this picks
+    // which one; omitting it uses the most recently active instance.
+    let target_origin = match instance {
+        Some(value) => Some(resolve_origin(value).ok_or_else(|| {
+            anyhow!("invalid --instance value '{value}': expected a ServiceNow URL or host")
+        })?),
+        None => None,
+    };
     match args.command {
         SnuCommands::CheckConnection { timeout_secs } => {
-            let mut bridge = connect_bridge(timeout_secs, None).await?;
+            let bridge = connect_bridge(timeout_secs, None).await?;
             let payload = json!({
                 "id": "0",
                 "command": "check_connection",
@@ -25,7 +43,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
             print_response_value(response, output_format)
         }
         SnuCommands::GetInstanceInfo { timeout_secs } => {
-            let mut bridge = connect_bridge(timeout_secs, None).await?;
+            let bridge = connect_bridge(timeout_secs, None).await?;
             let payload = json!({
                 "id": "2",
                 "command": "get_instance_info",
@@ -34,7 +52,8 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
             print_response_value(response, output_format)
         }
         SnuCommands::WaitToken { timeout_secs } => {
-            let (_bridge, instance) = connect_and_wait_for_fresh_session(timeout_secs).await?;
+            let (_bridge, instance) =
+                connect_and_wait_for_fresh_session(timeout_secs, target_origin).await?;
             print_output(&redact_session_for_output(&instance), output_format)
         }
         SnuCommands::Query {
@@ -45,7 +64,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
             order_by,
             timeout_secs,
         } => {
-            let (mut bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
+            let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let correlation_id = correlation_id("query");
             let query_string =
                 build_table_query_string(&fields, limit, query.as_deref(), order_by.as_deref());
@@ -58,11 +77,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                 "appName": "snow-cli",
             });
             let response = bridge
-                .send_action_and_wait(
-                    &payload,
-                    payload["agentRequestId"].as_str().unwrap(),
-                    timeout_secs,
-                )
+                .send_action_and_wait(&payload, &correlation_id, timeout_secs)
                 .await?;
             let value = json!({
                 "table": response.extra.get("tableName").and_then(Value::as_str).unwrap_or(&table),
@@ -75,7 +90,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
             table,
             timeout_secs,
         } => {
-            let (mut bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
+            let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let correlation_id = correlation_id("schema");
             let payload = json!({
                 "action": "requestTableStructure",
@@ -85,11 +100,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                 "appName": "snow-cli",
             });
             let response = bridge
-                .send_action_and_wait(
-                    &payload,
-                    payload["agentRequestId"].as_str().unwrap(),
-                    timeout_secs,
-                )
+                .send_action_and_wait(&payload, &correlation_id, timeout_secs)
                 .await?;
             print_response_value(response, output_format)
         }
@@ -99,7 +110,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
             timeout_secs,
         } => {
             let script = resolve_script(file, code)?;
-            let (mut bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
+            let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let payload = json!({
                 "action": "executeBackgroundScript",
                 "content": script,
@@ -115,18 +126,32 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                 .await?;
             print_background_script_response(response, output_format)
         }
+        SnuCommands::CreateRecord {
+            table,
+            data,
+            scope,
+            timeout_secs,
+        } => {
+            handle_create_record(table, data, scope, timeout_secs, target_origin, output_format)
+                .await
+        }
+        SnuCommands::AppMeta {
+            app_id,
+            timeout_secs,
+        } => handle_app_meta(app_id, timeout_secs, target_origin, output_format).await,
         SnuCommands::ListTables { timeout_secs } => {
-            handle_list_tables(timeout_secs, output_format).await
+            handle_list_tables(timeout_secs, target_origin, output_format).await
         }
         SnuCommands::GetRecord {
             table,
             sys_id,
             fields,
             timeout_secs,
-        } => handle_get_record(table, sys_id, fields, timeout_secs, output_format).await,
+        } => handle_get_record(table, sys_id, fields, timeout_secs, target_origin, output_format).await,
         SnuCommands::UpdateRecord {
             table,
             sys_id,
+            data,
             field,
             content,
             await_confirmation,
@@ -135,27 +160,12 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
             handle_update_record(
                 table,
                 sys_id,
+                data,
                 field,
                 content,
                 await_confirmation,
                 timeout_secs,
-                output_format,
-            )
-            .await
-        }
-        SnuCommands::UpdateRecordBatch {
-            table,
-            sys_id,
-            fields,
-            await_confirmation,
-            timeout_secs,
-        } => {
-            handle_update_record_batch(
-                table,
-                sys_id,
-                fields,
-                await_confirmation,
-                timeout_secs,
+                target_origin,
                 output_format,
             )
             .await
@@ -179,6 +189,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                     dry_run,
                 },
                 timeout_secs,
+                target_origin,
                 output_format,
             )
             .await
@@ -190,7 +201,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
             no_auto_run,
             timeout_secs,
         } => {
-            let mut bridge = connect_bridge(
+            let bridge = connect_bridge(
                 timeout_secs,
                 Some("snow-cli SN-Utils bridge connected. This command does not require /token."),
             )
@@ -206,11 +217,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                 "appName": "snow-cli",
             });
             let response = bridge
-                .send_action_and_wait(
-                    &payload,
-                    payload["agentRequestId"].as_str().unwrap(),
-                    timeout_secs,
-                )
+                .send_action_and_wait(&payload, &correlation_id, timeout_secs)
                 .await?;
             print_response_value(response, output_format)
         }
@@ -223,7 +230,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                     open_if_not_found,
                     timeout_secs,
                 } => {
-                    let mut bridge = connect_bridge(
+                    let bridge = connect_bridge(
                     timeout_secs,
                     Some("snow-cli SN-Utils bridge connected. This command does not require /token."),
                 )
@@ -239,11 +246,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                         "appName": "snow-cli",
                     });
                     let response = bridge
-                        .send_action_and_wait(
-                            &payload,
-                            payload["agentRequestId"].as_str().unwrap(),
-                            timeout_secs,
-                        )
+                        .send_action_and_wait(&payload, &correlation_id, timeout_secs)
                         .await?;
                     print_response_value(response, output_format)
                 }
@@ -257,7 +260,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                 tab_url,
                 timeout_secs,
             } => {
-                let (mut bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
+                let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
                 let correlation_id = correlation_id("context");
                 let payload = json!({
                     "action": "switchContext",
@@ -270,11 +273,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                     "appName": "snow-cli",
                 });
                 let response = bridge
-                    .send_action_and_wait(
-                        &payload,
-                        payload["agentRequestId"].as_str().unwrap(),
-                        timeout_secs,
-                    )
+                    .send_action_and_wait(&payload, &correlation_id, timeout_secs)
                     .await?;
                 print_response_value(response, output_format)
             }
@@ -288,7 +287,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
             if url.is_none() && tab_id.is_none() {
                 return Err(anyhow!("missing required option: --url or --tab-id"));
             }
-            let mut bridge = connect_bridge(
+            let bridge = connect_bridge(
                 timeout_secs,
                 Some("snow-cli SN-Utils bridge connected. This command does not require /token."),
             )
@@ -302,11 +301,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                 "appName": "snow-cli",
             });
             let response = bridge
-                .send_action_and_wait(
-                    &payload,
-                    payload["agentRequestId"].as_str().unwrap(),
-                    timeout_secs,
-                )
+                .send_action_and_wait(&payload, &correlation_id, timeout_secs)
                 .await?;
             let value = save_screenshot_response(response, out_path.as_deref())?;
             print_output(&value, output_format)
@@ -318,7 +313,7 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
             content_type,
             timeout_secs,
         } => {
-            let (mut bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
+            let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let file_path = PathBuf::from(&file);
             let bytes = std::fs::read(&file_path)
                 .with_context(|| format!("failed to read attachment file: {file}"))?;
@@ -342,23 +337,43 @@ pub async fn handle(args: SnuArgs, output_format: &OutputFormat) -> anyhow::Resu
                 "appName": "snow-cli",
             });
             let response = bridge
-                .send_action_and_wait(
-                    &payload,
-                    payload["agentRequestId"].as_str().unwrap(),
-                    timeout_secs,
-                )
+                .send_action_and_wait(&payload, &correlation_id, timeout_secs)
                 .await?;
             print_response_value(response, output_format)
         }
+        SnuCommands::Broker(args) => match args.command {
+            SnuBrokerCommands::Status => {
+                let status = crate::snu::broker::broker_status().await?;
+                print_output(&status, output_format)
+            }
+            SnuBrokerCommands::Stop => {
+                crate::snu::broker::stop_broker().await?;
+                print_output(&json!({ "stopped": true }), output_format)
+            }
+            SnuBrokerCommands::Clear { instance } => {
+                let origin = match instance.as_deref() {
+                    Some(value) => Some(resolve_origin(value).ok_or_else(|| {
+                        anyhow!("invalid --instance value '{value}': expected a ServiceNow URL or host")
+                    })?),
+                    None => None,
+                };
+                let cleared = crate::snu::broker::clear_broker_sessions(origin).await?;
+                print_output(
+                    &json!({ "cleared": cleared, "cleared_count": cleared.len() }),
+                    output_format,
+                )
+            }
+            SnuBrokerCommands::Serve => crate::snu::broker::run_broker_server().await,
+        },
     }
 }
 
-async fn connect_bridge(timeout_secs: u64, banner: Option<&str>) -> anyhow::Result<SnuBridge> {
-    let mut bridge = SnuBridge::accept(timeout_secs).await?;
-    tracing::debug!(peer_addr = %bridge.peer_addr(), "SN-Utils helper connected");
+async fn connect_bridge(timeout_secs: u64, banner: Option<&str>) -> anyhow::Result<BrokerBridge> {
+    let bridge = BrokerBridge::connect_or_spawn().await?;
+    tracing::debug!("SN-Utils broker connected");
 
     if let Some(message) = banner {
-        let _ = bridge.send_banner(message).await;
+        let _ = bridge.send_banner(message, timeout_secs).await;
     }
 
     Ok(bridge)
@@ -366,58 +381,155 @@ async fn connect_bridge(timeout_secs: u64, banner: Option<&str>) -> anyhow::Resu
 
 async fn connect_and_wait_for_session(
     timeout_secs: u64,
-) -> anyhow::Result<(SnuBridge, SnuInstance)> {
-    let cached_session = session_cache::load_session()?;
-    let banner = if cached_session.is_some() {
-        None
-    } else {
-        Some(
-            "snow-cli SN-Utils bridge connected. Reusing the cached browser token when available; run `snow-cli snu wait-token` to refresh it.",
-        )
-    };
-    let bridge = connect_bridge(timeout_secs, banner).await?;
-
-    if let Some(cached) = cached_session {
-        tracing::debug!(
-            instance_url = %cached.instance.url,
-            saved_at_unix_secs = cached.saved_at_unix_secs,
-            "Using cached SN-Utils browser session token"
-        );
-        return Ok((bridge, cached.instance));
-    }
-
-    let mut bridge = bridge;
-    let instance = bridge.wait_for_session(timeout_secs).await?;
-    session_cache::store_session(&instance)?;
+    target_origin: Option<String>,
+) -> anyhow::Result<(BrokerBridge, SnuInstance)> {
+    let bridge = connect_bridge(
+        timeout_secs,
+        Some("snow-cli SN-Utils bridge connected. Run /token in a ServiceNow tab if the helper has not sent the browser session yet."),
+    )
+    .await?;
+    let instance = bridge
+        .wait_for_session(timeout_secs, false, target_origin)
+        .await?;
     Ok((bridge, instance))
 }
 
 async fn connect_and_wait_for_fresh_session(
     timeout_secs: u64,
-) -> anyhow::Result<(SnuBridge, SnuInstance)> {
-    let mut bridge = connect_bridge(
+    target_origin: Option<String>,
+) -> anyhow::Result<(BrokerBridge, SnuInstance)> {
+    let bridge = connect_bridge(
         timeout_secs,
-        Some("snow-cli SN-Utils bridge connected. Run /token in a ServiceNow tab to cache the browser token."),
+        Some("snow-cli SN-Utils bridge connected. Run /token in a ServiceNow tab to refresh the browser session metadata."),
     )
     .await?;
-    let instance = bridge.wait_for_session(timeout_secs).await?;
-    session_cache::store_session(&instance)?;
+    let instance = bridge
+        .wait_for_session(timeout_secs, true, target_origin)
+        .await?;
     Ok((bridge, instance))
 }
 
-async fn handle_list_tables(timeout_secs: u64, output_format: &OutputFormat) -> anyhow::Result<()> {
-    let (_bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
-    let response = snu_request_json(
+/// Read a JSON object payload from `--data` or, when absent, from stdin.
+fn resolve_record_data(data: Option<String>) -> anyhow::Result<Map<String, Value>> {
+    let raw = match data {
+        Some(data) if !data.trim().is_empty() => data,
+        _ => {
+            let stdin = std::io::stdin();
+            if stdin.is_terminal() {
+                anyhow::bail!(
+                    "No record data provided. Pass --data '<json>' or pipe a JSON object on stdin."
+                );
+            }
+            read_to_string_limited(
+                stdin.lock(),
+                DEFAULT_MAX_STDIN_BYTES,
+                "record data stdin input",
+            )
+            .context("failed to read record data from stdin")?
+        }
+    };
+    parse_json_object(&raw, "data")
+}
+
+async fn handle_create_record(
+    table: String,
+    data: Option<String>,
+    scope: Option<String>,
+    timeout_secs: u64,
+    target_origin: Option<String>,
+    output_format: &OutputFormat,
+) -> anyhow::Result<()> {
+    let payload = resolve_record_data(data)?;
+    if payload.is_empty() {
+        anyhow::bail!("record data must contain at least one field");
+    }
+
+    let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
+    let correlation_id = correlation_id("create");
+    let response = bridge
+        .send_action_and_wait(
+            &json!({
+                "action": "createRecord",
+                "agentRequestId": correlation_id,
+                "tableName": table,
+                "fields": payload,
+                "scope": scope,
+                "instance": instance,
+                "appName": "snow-cli",
+            }),
+            &correlation_id,
+            timeout_secs,
+        )
+        .await?;
+
+    let record = response
+        .extra
+        .get("result")
+        .or_else(|| response.extra.get("record"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::to_value(&response).unwrap_or(Value::Null));
+    let sys_id = record.get("sys_id").and_then(Value::as_str);
+    print_output(
+        &json!({
+            "success": true,
+            "table": table,
+            "sys_id": sys_id,
+            "record": record,
+        }),
+        output_format,
+    )
+}
+
+async fn handle_app_meta(
+    app_id: String,
+    timeout_secs: u64,
+    target_origin: Option<String>,
+    output_format: &OutputFormat,
+) -> anyhow::Result<()> {
+    let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
+    let correlation_id = correlation_id("app_meta");
+    let response = bridge
+        .send_action_and_wait(
+            &json!({
+                "action": "requestAppMeta",
+                "agentRequestId": correlation_id,
+                "appId": app_id,
+                "instance": instance,
+                "appName": "snow-cli",
+            }),
+            &correlation_id,
+            timeout_secs,
+        )
+        .await?;
+    print_output(
+        &json!({ "app_id": app_id, "meta": response.extra }),
+        output_format,
+    )
+}
+
+async fn handle_list_tables(
+    timeout_secs: u64,
+    target_origin: Option<String>,
+    output_format: &OutputFormat,
+) -> anyhow::Result<()> {
+    let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
+    let response = query_records_via_bridge(
+        &bridge,
         &instance,
+        QueryRecordsRequest {
+            table: "sys_db_object",
+            fields: "name",
+            limit: 10_000,
+            query: Some("nameISNOTEMPTY"),
+            order_by: Some("ORDERBYname"),
+        },
         timeout_secs,
-        Method::GET,
-        "/api/now/table/sys_db_object?sysparm_fields=name&sysparm_query=nameISNOTEMPTY^ORDERBYname&sysparm_limit=10000",
-        None,
     )
     .await?;
 
     let tables = response
-        .get("result")
+        .extra
+        .get("records")
         .and_then(Value::as_array)
         .map(|records| {
             records
@@ -440,95 +552,92 @@ async fn handle_get_record(
     sys_id: String,
     fields: Option<String>,
     timeout_secs: u64,
+    target_origin: Option<String>,
     output_format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let (_bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
-    let path = match fields.as_deref() {
-        Some(fields) if !fields.trim().is_empty() => format!(
-            "/api/now/table/{table}/{sys_id}?sysparm_fields={}",
-            urlencoding::encode(fields)
-        ),
-        _ => format!("/api/now/table/{table}/{sys_id}"),
-    };
-    let response = snu_request_json(&instance, timeout_secs, Method::GET, &path, None).await?;
-    let record = response.get("result").cloned().unwrap_or(Value::Null);
+    let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
+    let fields = fields
+        .as_deref()
+        .filter(|fields| !fields.trim().is_empty())
+        .unwrap_or(DEFAULT_SNU_FIELDS);
+    let sys_id_query = format!("sys_id={sys_id}");
+    let response = query_records_via_bridge(
+        &bridge,
+        &instance,
+        QueryRecordsRequest {
+            table: &table,
+            fields,
+            limit: 1,
+            query: Some(&sys_id_query),
+            order_by: None,
+        },
+        timeout_secs,
+    )
+    .await?;
+    let record = response
+        .extra
+        .get("records")
+        .and_then(Value::as_array)
+        .and_then(|records| records.first())
+        .cloned()
+        .unwrap_or(Value::Null);
     print_output(
         &json!({ "table": table, "sys_id": sys_id, "record": record }),
         output_format,
     )
 }
 
+/// Build the field/value map for an update from either `--data` (JSON object)
+/// or the single-field `--field`/`--content` convenience pair.
+fn resolve_update_fields(
+    data: Option<String>,
+    field: Option<String>,
+    content: Option<String>,
+) -> anyhow::Result<Map<String, Value>> {
+    match (data, field, content) {
+        (Some(data), _, _) => {
+            let object = parse_json_object(&data, "data")?;
+            if object.is_empty() {
+                anyhow::bail!("--data must contain at least one key/value pair");
+            }
+            Ok(object)
+        }
+        (None, Some(field), Some(content)) => {
+            let mut object = Map::new();
+            object.insert(field, Value::String(content));
+            Ok(object)
+        }
+        (None, _, _) => {
+            anyhow::bail!("provide either --data '<json object>' or both --field and --content")
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn handle_update_record(
     table: String,
     sys_id: String,
-    field: String,
-    content: String,
+    data: Option<String>,
+    field: Option<String>,
+    content: Option<String>,
     await_confirmation: bool,
     timeout_secs: u64,
+    target_origin: Option<String>,
     output_format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let (_bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
-    let mut body = Map::new();
-    body.insert(field.clone(), Value::String(content.clone()));
-    let path = format!("/api/now/table/{table}/{sys_id}");
-    let response = snu_request_json(
-        &instance,
-        timeout_secs,
-        Method::PUT,
-        &path,
-        Some(Value::Object(body)),
-    )
-    .await?;
-
-    if !await_confirmation {
-        return print_output(
-            &json!({
-                "success": true,
-                "table": table,
-                "sys_id": sys_id,
-                "field": field,
-                "response": response,
-            }),
-            output_format,
-        );
-    }
-
-    let persisted =
-        snu_fetch_persisted_record(&instance, timeout_secs, &path, &[field.as_str()]).await?;
-    let warnings = snu_field_warnings(&field, &persisted);
-    print_output(
-        &json!({
-            "success": true,
-            "awaited": true,
-            "table": table,
-            "sys_id": sys_id,
-            "field": field,
-            "persisted": persisted,
-            "warnings": warnings,
-            "response": response,
-        }),
-        output_format,
-    )
-}
-
-async fn handle_update_record_batch(
-    table: String,
-    sys_id: String,
-    fields: String,
-    await_confirmation: bool,
-    timeout_secs: u64,
-    output_format: &OutputFormat,
-) -> anyhow::Result<()> {
-    let fields_object = parse_json_object(&fields, "fields")?;
-    if fields_object.is_empty() {
-        anyhow::bail!("--fields must contain at least one key/value pair");
-    }
-
+    let fields_object = resolve_update_fields(data, field, content)?;
     let requested_fields: Vec<String> = fields_object.keys().cloned().collect();
-    let (_bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
+    // The bridge is used only for the optional read-back below: SN-Utils'
+    // `updateRecord` helper sends no correlated success response over the
+    // WebSocket, so the mutating PUT itself goes out over direct HTTP using the
+    // browser session's `g_ck` that the broker captured.
+    let (bridge, mut instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
+    let mut refreshed = false;
     let path = format!("/api/now/table/{table}/{sys_id}");
-    let response = snu_request_json(
-        &instance,
+    let response = snu_http_request_with_refresh(
+        &bridge,
+        &mut instance,
+        &mut refreshed,
         timeout_secs,
         Method::PUT,
         &path,
@@ -550,8 +659,15 @@ async fn handle_update_record_batch(
     }
 
     let requested_field_refs: Vec<&str> = requested_fields.iter().map(|s| s.as_str()).collect();
-    let persisted =
-        snu_fetch_persisted_record(&instance, timeout_secs, &path, &requested_field_refs).await?;
+    let persisted = snu_fetch_persisted_record(
+        &bridge,
+        &instance,
+        timeout_secs,
+        &table,
+        &sys_id,
+        &requested_field_refs,
+    )
+    .await?;
     let warnings = snu_fields_warnings(&requested_fields, &persisted);
     print_output(
         &json!({
@@ -580,28 +696,45 @@ struct DeleteRecordRequest {
 async fn handle_delete_record(
     request: DeleteRecordRequest,
     timeout_secs: u64,
+    target_origin: Option<String>,
     output_format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let (_bridge, instance) = connect_and_wait_for_session(timeout_secs).await?;
+    let (bridge, mut instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
+    let mut refreshed = false;
 
     if let Some(sys_id) = request.sys_id {
-        let path = format!("/api/now/table/{}/{}", request.table, sys_id);
         if request.dry_run {
-            let response =
-                snu_request_json(&instance, timeout_secs, Method::GET, &path, None).await?;
+            let record = fetch_record_by_sys_id(
+                &bridge,
+                &instance,
+                timeout_secs,
+                &request.table,
+                &sys_id,
+                "sys_id,number,short_description,name",
+            )
+            .await?;
             return print_output(
                 &json!({
                     "dry_run": true,
                     "table": request.table,
                     "sys_id": sys_id,
-                    "record": response.get("result").cloned().unwrap_or(Value::Null),
+                    "record": record,
                 }),
                 output_format,
             );
         }
 
-        let response =
-            snu_request_json(&instance, timeout_secs, Method::DELETE, &path, None).await?;
+        let path = format!("/api/now/table/{}/{}", request.table, sys_id);
+        let response = snu_http_request_with_refresh(
+            &bridge,
+            &mut instance,
+            &mut refreshed,
+            timeout_secs,
+            Method::DELETE,
+            &path,
+            None,
+        )
+        .await?;
         return print_output(
             &json!({
                 "deleted": true,
@@ -626,15 +759,22 @@ async fn handle_delete_record(
         anyhow::bail!("bulk delete requires --confirm");
     }
 
-    let query_path = format!(
-        "/api/now/table/{table}?sysparm_fields=sys_id,number,short_description,name&sysparm_query={}&sysparm_limit={limit}",
-        urlencoding::encode(&query),
-        table = request.table
-    );
-    let response =
-        snu_request_json(&instance, timeout_secs, Method::GET, &query_path, None).await?;
+    let response = query_records_via_bridge(
+        &bridge,
+        &instance,
+        QueryRecordsRequest {
+            table: &request.table,
+            fields: "sys_id,number,short_description,name",
+            limit,
+            query: Some(&query),
+            order_by: None,
+        },
+        timeout_secs,
+    )
+    .await?;
     let records = response
-        .get("result")
+        .extra
+        .get("records")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
@@ -660,7 +800,17 @@ async fn handle_delete_record(
             continue;
         };
         let record_path = format!("/api/now/table/{}/{}", request.table, record_sys_id);
-        match snu_request_json(&instance, timeout_secs, Method::DELETE, &record_path, None).await {
+        match snu_http_request_with_refresh(
+            &bridge,
+            &mut instance,
+            &mut refreshed,
+            timeout_secs,
+            Method::DELETE,
+            &record_path,
+            None,
+        )
+        .await
+        {
             Ok(_) => deleted.push(record_sys_id.to_string()),
             Err(error) => failed.push(json!({"sys_id": record_sys_id, "error": error.to_string()})),
         }
@@ -678,15 +828,6 @@ async fn handle_delete_record(
         }),
         output_format,
     )
-}
-
-fn snu_field_warnings(field: &str, persisted: &Value) -> Vec<Value> {
-    match persisted.get(field) {
-        Some(Value::Null) | None => {
-            vec![json!({"field": field, "warning": "field missing or empty after await"})]
-        }
-        _ => Vec::new(),
-    }
 }
 
 fn snu_fields_warnings(fields: &[String], persisted: &Value) -> Vec<Value> {
@@ -707,24 +848,100 @@ fn parse_json_object(input: &str, label: &str) -> anyhow::Result<Map<String, Val
 }
 
 async fn snu_fetch_persisted_record(
+    bridge: &BrokerBridge,
     instance: &SnuInstance,
     timeout_secs: u64,
-    path: &str,
+    table: &str,
+    sys_id: &str,
     field_names: &[&str],
 ) -> anyhow::Result<Value> {
-    let field_list = field_names.join(",");
-    let path = if field_list.is_empty() {
-        path.to_string()
-    } else if path.contains('?') {
-        format!("{path}&sysparm_fields={}", urlencoding::encode(&field_list))
+    let fields = if field_names.is_empty() {
+        "sys_id".to_string()
     } else {
-        format!("{path}?sysparm_fields={}", urlencoding::encode(&field_list))
+        field_names.join(",")
     };
-    let response = snu_request_json(instance, timeout_secs, Method::GET, &path, None).await?;
-    Ok(response.get("result").cloned().unwrap_or(Value::Null))
+    fetch_record_by_sys_id(bridge, instance, timeout_secs, table, sys_id, &fields).await
 }
 
-async fn snu_request_json(
+async fn fetch_record_by_sys_id(
+    bridge: &BrokerBridge,
+    instance: &SnuInstance,
+    timeout_secs: u64,
+    table: &str,
+    sys_id: &str,
+    fields: &str,
+) -> anyhow::Result<Value> {
+    let sys_id_query = format!("sys_id={sys_id}");
+    let response = query_records_via_bridge(
+        bridge,
+        instance,
+        QueryRecordsRequest {
+            table,
+            fields,
+            limit: 1,
+            query: Some(&sys_id_query),
+            order_by: None,
+        },
+        timeout_secs,
+    )
+    .await?;
+    Ok(response
+        .extra
+        .get("records")
+        .and_then(Value::as_array)
+        .and_then(|records| records.first())
+        .cloned()
+        .unwrap_or(Value::Null))
+}
+
+struct QueryRecordsRequest<'a> {
+    table: &'a str,
+    fields: &'a str,
+    limit: u32,
+    query: Option<&'a str>,
+    order_by: Option<&'a str>,
+}
+
+async fn query_records_via_bridge(
+    bridge: &BrokerBridge,
+    instance: &SnuInstance,
+    request: QueryRecordsRequest<'_>,
+    timeout_secs: u64,
+) -> anyhow::Result<SnuMessage> {
+    let correlation_id = correlation_id("query");
+    let query_string = build_table_query_string(
+        request.fields,
+        request.limit,
+        request.query,
+        request.order_by,
+    );
+    bridge
+        .send_action_and_wait(
+            &json!({
+                "action": "agentQueryRecords",
+                "agentRequestId": correlation_id,
+                "tableName": request.table,
+                "queryString": query_string,
+                "instance": instance,
+                "appName": "snow-cli",
+            }),
+            &correlation_id,
+            timeout_secs,
+        )
+        .await
+}
+
+/// Perform a direct ServiceNow REST call authenticated with the browser
+/// session's `g_ck` (replayed as `X-UserToken`).
+///
+/// Mutating record operations use this rather than the WebSocket bridge because
+/// SN-Utils' ScriptSync helper does not give us a usable acknowledgement for
+/// them: its `updateRecord` handler sends no correlated success response, and it
+/// has no `deleteRecord` handler at all (the message falls through to
+/// `updateRecord`). Both would therefore hang until the command timed out.
+/// Reads/queries still go over the bridge, where SN-Utils does reply with a
+/// matching `agentRequestId`.
+async fn snu_http_request(
     instance: &SnuInstance,
     timeout_secs: u64,
     method: Method,
@@ -734,7 +951,7 @@ async fn snu_request_json(
     let token = instance
         .g_ck
         .as_deref()
-        .ok_or_else(|| anyhow!("SN-Utils session is missing a cached g_ck token"))?;
+        .ok_or_else(|| anyhow!("SN-Utils session is missing a g_ck token"))?;
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(timeout_secs))
         .build()?;
@@ -770,6 +987,47 @@ async fn snu_request_json(
     }
 
     serde_json::from_str(&text).with_context(|| format!("invalid JSON from ServiceNow: {text}"))
+}
+
+/// `true` when a direct-HTTP error looks like an expired/rejected `g_ck`.
+fn is_stale_token_error(error: &anyhow::Error) -> bool {
+    let text = error.to_string().to_lowercase();
+    text.contains("http 401")
+        || text.contains("http 403")
+        || text.contains("not authenticated")
+        || text.contains("unauthorized")
+        || text.contains("forbidden")
+}
+
+/// Run a mutating direct-HTTP request, and if ServiceNow rejects the session's
+/// `g_ck` as expired, ask the broker to capture a fresh one (which prompts the
+/// user to re-run `/token`) and retry exactly once. `instance` is updated in
+/// place so any follow-up call in the same command reuses the refreshed token,
+/// and `refreshed` guards against refresh loops.
+async fn snu_http_request_with_refresh(
+    bridge: &BrokerBridge,
+    instance: &mut SnuInstance,
+    refreshed: &mut bool,
+    timeout_secs: u64,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> anyhow::Result<Value> {
+    match snu_http_request(instance, timeout_secs, method.clone(), path, body.clone()).await {
+        Ok(value) => Ok(value),
+        Err(error) if !*refreshed && is_stale_token_error(&error) => {
+            tracing::info!(
+                "ServiceNow rejected the cached SN-Utils token; refreshing it via the helper tab"
+            );
+            // Scope the refresh to this instance's own origin so a `/token` from
+            // another tab can't redirect the retry to a different instance.
+            let origin = normalize_origin(&instance.url);
+            *instance = bridge.refresh_session(timeout_secs, origin).await?;
+            *refreshed = true;
+            snu_http_request(instance, timeout_secs, method, path, body).await
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn correlation_id(prefix: &str) -> String {
