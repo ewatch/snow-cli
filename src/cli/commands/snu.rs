@@ -64,7 +64,8 @@ pub async fn handle(
             order_by,
             timeout_secs,
         } => {
-            let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
+            let (bridge, instance) =
+                connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let correlation_id = correlation_id("query");
             let query_string =
                 build_table_query_string(&fields, limit, query.as_deref(), order_by.as_deref());
@@ -90,7 +91,8 @@ pub async fn handle(
             table,
             timeout_secs,
         } => {
-            let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
+            let (bridge, instance) =
+                connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let correlation_id = correlation_id("schema");
             let payload = json!({
                 "action": "requestTableStructure",
@@ -110,7 +112,8 @@ pub async fn handle(
             timeout_secs,
         } => {
             let script = resolve_script(file, code)?;
-            let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
+            let (bridge, instance) =
+                connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let payload = json!({
                 "action": "executeBackgroundScript",
                 "content": script,
@@ -132,8 +135,15 @@ pub async fn handle(
             scope,
             timeout_secs,
         } => {
-            handle_create_record(table, data, scope, timeout_secs, target_origin, output_format)
-                .await
+            handle_create_record(
+                table,
+                data,
+                scope,
+                timeout_secs,
+                target_origin,
+                output_format,
+            )
+            .await
         }
         SnuCommands::AppMeta {
             app_id,
@@ -147,7 +157,17 @@ pub async fn handle(
             sys_id,
             fields,
             timeout_secs,
-        } => handle_get_record(table, sys_id, fields, timeout_secs, target_origin, output_format).await,
+        } => {
+            handle_get_record(
+                table,
+                sys_id,
+                fields,
+                timeout_secs,
+                target_origin,
+                output_format,
+            )
+            .await
+        }
         SnuCommands::UpdateRecord {
             table,
             sys_id,
@@ -260,7 +280,8 @@ pub async fn handle(
                 tab_url,
                 timeout_secs,
             } => {
-                let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
+                let (bridge, instance) =
+                    connect_and_wait_for_session(timeout_secs, target_origin).await?;
                 let correlation_id = correlation_id("context");
                 let payload = json!({
                     "action": "switchContext",
@@ -313,7 +334,8 @@ pub async fn handle(
             content_type,
             timeout_secs,
         } => {
-            let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
+            let (bridge, instance) =
+                connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let file_path = PathBuf::from(&file);
             let bytes = std::fs::read(&file_path)
                 .with_context(|| format!("failed to read attachment file: {file}"))?;
@@ -341,30 +363,32 @@ pub async fn handle(
                 .await?;
             print_response_value(response, output_format)
         }
-        SnuCommands::Broker(args) => match args.command {
-            SnuBrokerCommands::Status => {
-                let status = crate::snu::broker::broker_status().await?;
-                print_output(&status, output_format)
-            }
-            SnuBrokerCommands::Stop => {
-                crate::snu::broker::stop_broker().await?;
-                print_output(&json!({ "stopped": true }), output_format)
-            }
-            SnuBrokerCommands::Clear { instance } => {
-                let origin = match instance.as_deref() {
+        SnuCommands::Broker(args) => {
+            match args.command {
+                SnuBrokerCommands::Status => {
+                    let status = crate::snu::broker::broker_status().await?;
+                    print_output(&status, output_format)
+                }
+                SnuBrokerCommands::Stop => {
+                    crate::snu::broker::stop_broker().await?;
+                    print_output(&json!({ "stopped": true }), output_format)
+                }
+                SnuBrokerCommands::Clear { instance } => {
+                    let origin = match instance.as_deref() {
                     Some(value) => Some(resolve_origin(value).ok_or_else(|| {
                         anyhow!("invalid --instance value '{value}': expected a ServiceNow URL or host")
                     })?),
                     None => None,
                 };
-                let cleared = crate::snu::broker::clear_broker_sessions(origin).await?;
-                print_output(
-                    &json!({ "cleared": cleared, "cleared_count": cleared.len() }),
-                    output_format,
-                )
+                    let cleared = crate::snu::broker::clear_broker_sessions(origin).await?;
+                    print_output(
+                        &json!({ "cleared": cleared, "cleared_count": cleared.len() }),
+                        output_format,
+                    )
+                }
+                SnuBrokerCommands::Serve => crate::snu::broker::run_broker_server().await,
             }
-            SnuBrokerCommands::Serve => crate::snu::broker::run_broker_server().await,
-        },
+        }
     }
 }
 

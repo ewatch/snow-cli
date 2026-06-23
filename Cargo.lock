@@ -1678,6 +1678,7 @@ dependencies = [
  "http",
  "indicatif",
  "keyring",
+ "libc",
  "open",
  "predicates",
  "rand 0.9.4",

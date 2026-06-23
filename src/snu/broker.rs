@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow};
 use serde::{Deserialize, Serialize};
@@ -17,12 +18,16 @@ use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
 pub const DEFAULT_SNU_BROKER_ADDR: &str = "127.0.0.1:1979";
 const BROKER_READY_TIMEOUT_SECS: u64 = 5;
-const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 1800;
+/// File name for the on-disk session cache under `~/.servicenow/`.
+const SESSIONS_FILE_NAME: &str = "snu-broker-sessions.json";
+/// Persisted sessions older than this are ignored on load: a `g_ck` that stale
+/// is certainly dead server-side, and the refresh path would re-prompt anyway.
+const PERSISTED_SESSION_MAX_AGE_SECS: u64 = 12 * 60 * 60;
 
 /// Banner shown in the SN-Utils helper tab when ServiceNow rejects the cached
 /// `g_ck`, telling the user how to mint a fresh one.
-const TOKEN_EXPIRED_BANNER: &str =
-    "snow-cli: ServiceNow rejected the saved session token. Run /token in a ServiceNow tab to refresh it.";
+const TOKEN_EXPIRED_BANNER: &str = "snow-cli: ServiceNow rejected the saved session token. Run /token in a ServiceNow tab to refresh it.";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -156,7 +161,10 @@ impl BrokerState {
             .map(|(origin, instance)| InstanceSummary {
                 url: instance.url.clone(),
                 origin: origin.clone(),
-                has_g_ck: instance.g_ck.as_deref().is_some_and(|token| !token.is_empty()),
+                has_g_ck: instance
+                    .g_ck
+                    .as_deref()
+                    .is_some_and(|token| !token.is_empty()),
                 scope: instance.scope.clone(),
                 is_latest: self.latest_origin.as_deref() == Some(origin.as_str()),
             })
@@ -218,6 +226,24 @@ impl BrokerState {
         self.sessions_by_origin.clear();
         self.latest_origin = None;
         cleared
+    }
+
+    /// Seed the in-memory cache from a persisted snapshot at broker startup.
+    /// `latest_origin` is honored when it still maps to a restored session, so
+    /// the "most recently active instance" survives a broker restart; otherwise
+    /// an arbitrary restored origin is used.
+    fn restore_sessions(
+        &mut self,
+        sessions: HashMap<String, SnuInstance>,
+        latest_origin: Option<String>,
+    ) {
+        if sessions.is_empty() {
+            return;
+        }
+        self.latest_origin = latest_origin
+            .filter(|origin| sessions.contains_key(origin))
+            .or_else(|| sessions.keys().next().cloned());
+        self.sessions_by_origin = sessions;
     }
 }
 
@@ -412,6 +438,17 @@ pub async fn run_broker_server() -> anyhow::Result<()> {
             format!("failed to bind SN-Utils broker IPC on {DEFAULT_SNU_BROKER_ADDR}")
         })?;
     let broker = Arc::new(Broker::new(idle_timeout));
+
+    // Reload any persisted browser sessions so a freshly (re)spawned broker
+    // doesn't force a new `/token` for instances that already authenticated.
+    if let Some(persisted) = load_persisted_sessions() {
+        broker
+            .state
+            .lock()
+            .await
+            .restore_sessions(persisted.sessions, persisted.latest_origin);
+    }
+
     let idle_broker = Arc::clone(&broker);
 
     tokio::spawn(async move {
@@ -582,6 +619,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 }
             };
             broker.state.lock().await.remember_session(&instance);
+            persist_broker_sessions(broker).await;
             Ok(BrokerResponse {
                 ok: true,
                 error: None,
@@ -652,17 +690,20 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             })
         }
         BrokerRequest::ClearSessions { origin } => {
-            let mut state = broker.state.lock().await;
-            let cleared = match origin.as_deref() {
-                Some(origin) => {
-                    if state.clear_origin(origin) {
-                        vec![origin.to_string()]
-                    } else {
-                        Vec::new()
+            let cleared = {
+                let mut state = broker.state.lock().await;
+                match origin.as_deref() {
+                    Some(origin) => {
+                        if state.clear_origin(origin) {
+                            vec![origin.to_string()]
+                        } else {
+                            Vec::new()
+                        }
                     }
+                    None => state.clear_all(),
                 }
-                None => state.clear_all(),
             };
+            persist_broker_sessions(broker).await;
             Ok(BrokerResponse {
                 ok: true,
                 error: None,
@@ -846,6 +887,7 @@ fn message_response(message: SnuMessage) -> BrokerResponse {
 async fn remember_message_session(broker: &Broker, message: &SnuMessage) {
     if let Some(instance) = &message.instance {
         broker.state.lock().await.remember_session(instance);
+        persist_broker_sessions(broker).await;
     }
 }
 
@@ -860,14 +902,67 @@ async fn connect_once() -> anyhow::Result<()> {
 
 fn spawn_broker() -> anyhow::Result<()> {
     let exe = std::env::current_exe().context("failed to resolve current snow-cli executable")?;
-    std::process::Command::new(exe)
+    let mut command = std::process::Command::new(exe);
+    command
         .args(["snu", "broker", "serve"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to spawn SN-Utils broker")?;
+        .stderr(Stdio::null());
+    spawn_detached(command).context("failed to spawn SN-Utils broker")?;
     Ok(())
+}
+
+/// Spawn the broker detached from the spawning command's process group so it
+/// outlives the `snow-cli` invocation that started it. Without this the broker
+/// dies whenever the spawning command's process group is torn down (terminal
+/// close, or a command runner that reaps its child group), forcing a fresh
+/// `/token` on the next command.
+#[cfg(unix)]
+fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    // SAFETY: `setsid` is async-signal-safe and is the only call made between
+    // fork and exec. It places the child in a new session (and process group),
+    // detaching it from the parent's controlling terminal and process group. It
+    // cannot fail here because the freshly forked child is never already a
+    // process-group leader.
+    unsafe {
+        command.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    command.spawn().map(|_| ())
+}
+
+#[cfg(windows)]
+fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+
+    // Detach from the console and start a new process group so console Ctrl
+    // events don't reach the broker.
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    // Escape a parent Job object so the broker isn't killed when the job closes.
+    // Only honored if the job sets JOB_OBJECT_LIMIT_BREAKAWAY_OK; otherwise
+    // `CreateProcess` fails and we retry without it (persistence is the fallback).
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+
+    let base_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
+    command.creation_flags(base_flags | CREATE_BREAKAWAY_FROM_JOB);
+    match command.spawn() {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            command.creation_flags(base_flags);
+            command.spawn().map(|_| ())
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()> {
+    command.spawn().map(|_| ())
 }
 
 async fn wait_until_ready() -> anyhow::Result<()> {
@@ -892,6 +987,162 @@ fn idle_timeout() -> Duration {
         .filter(|secs| *secs > 0)
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS))
+}
+
+/// On-disk shape of the broker's browser-session cache.
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedSessions {
+    /// Unix epoch seconds the snapshot was written (used for the freshness guard).
+    saved_at: u64,
+    #[serde(default)]
+    latest_origin: Option<String>,
+    sessions: HashMap<String, SnuInstance>,
+}
+
+/// Session persistence is on by default; `SNOW_CLI_SNU_BROKER_PERSIST=0` opts out
+/// (keeps the cache memory-only).
+fn persistence_enabled() -> bool {
+    !matches!(
+        std::env::var("SNOW_CLI_SNU_BROKER_PERSIST").ok().as_deref(),
+        Some("0")
+    )
+}
+
+/// Path to the on-disk session cache, mirroring the `~/.servicenow/` convention
+/// in `config::profile`. `SNOW_CLI_SNU_SESSIONS_FILE` overrides it (used by tests).
+fn sessions_file_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("SNOW_CLI_SNU_SESSIONS_FILE")
+        && !path.is_empty()
+    {
+        return Some(PathBuf::from(path));
+    }
+    Some(
+        sessions_home_dir()?
+            .join(".servicenow")
+            .join(SESSIONS_FILE_NAME),
+    )
+}
+
+fn sessions_home_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("USERPROFILE").map(PathBuf::from)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
+fn now_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Snapshot the broker's sessions under the state lock, then write them to disk
+/// outside the lock. Best-effort: persistence failures are logged, not fatal.
+async fn persist_broker_sessions(broker: &Broker) {
+    if !persistence_enabled() {
+        return;
+    }
+    let (sessions, latest_origin) = {
+        let state = broker.state.lock().await;
+        (
+            state.sessions_by_origin.clone(),
+            state.latest_origin.clone(),
+        )
+    };
+    if let Err(error) = persist_sessions(&sessions, latest_origin.as_deref()) {
+        tracing::debug!(%error, "failed to persist SN-Utils broker sessions");
+    }
+}
+
+fn persist_sessions(
+    sessions: &HashMap<String, SnuInstance>,
+    latest_origin: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(path) = sessions_file_path() else {
+        return Ok(());
+    };
+    write_session_cache(&path, sessions, latest_origin, now_epoch_secs())
+}
+
+/// Write the session snapshot atomically (temp file + rename) with `0o600` on
+/// unix. An empty snapshot removes the file so `snu broker clear` clears disk too.
+fn write_session_cache(
+    path: &Path,
+    sessions: &HashMap<String, SnuInstance>,
+    latest_origin: Option<&str>,
+    saved_at: u64,
+) -> anyhow::Result<()> {
+    if sessions.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let payload = PersistedSessions {
+        saved_at,
+        latest_origin: latest_origin.map(str::to_string),
+        sessions: sessions.clone(),
+    };
+    let contents = serde_json::to_string_pretty(&payload)?;
+    let tmp = path.with_extension("json.tmp");
+    write_private(&tmp, contents.as_bytes())?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("failed to persist sessions to {}", path.display()))?;
+    Ok(())
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(bytes)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)
+    }
+}
+
+/// Load the persisted session cache, or `None` when persistence is disabled, the
+/// file is absent/unreadable, or the snapshot is older than the freshness guard.
+fn load_persisted_sessions() -> Option<PersistedSessions> {
+    if !persistence_enabled() {
+        return None;
+    }
+    let path = sessions_file_path()?;
+    let persisted = read_session_cache(&path)?;
+    if !session_snapshot_is_fresh(persisted.saved_at, now_epoch_secs()) {
+        return None;
+    }
+    Some(persisted)
+}
+
+fn read_session_cache(path: &Path) -> Option<PersistedSessions> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+fn session_snapshot_is_fresh(saved_at: u64, now: u64) -> bool {
+    now.saturating_sub(saved_at) <= PERSISTED_SESSION_MAX_AGE_SECS
 }
 
 #[cfg(test)]
@@ -922,9 +1173,16 @@ mod tests {
             .unwrap();
         assert_eq!(a.url, "https://a.service-now.com");
         // latest_session points at the most recently remembered instance...
-        assert_eq!(state.latest_session().unwrap().url, "https://b.service-now.com");
+        assert_eq!(
+            state.latest_session().unwrap().url,
+            "https://b.service-now.com"
+        );
         // ...but origin lookup still returns the one that was asked for.
-        assert!(state.session_for_origin("https://c.service-now.com:443").is_none());
+        assert!(
+            state
+                .session_for_origin("https://c.service-now.com:443")
+                .is_none()
+        );
     }
 
     #[test]
@@ -935,8 +1193,15 @@ mod tests {
 
         // b was remembered last, so it is the latest; clearing it must not wipe a.
         assert!(state.clear_origin("https://b.service-now.com:443"));
-        assert!(state.session_for_origin("https://b.service-now.com:443").is_none());
-        assert_eq!(state.latest_session().unwrap().url, "https://a.service-now.com");
+        assert!(
+            state
+                .session_for_origin("https://b.service-now.com:443")
+                .is_none()
+        );
+        assert_eq!(
+            state.latest_session().unwrap().url,
+            "https://a.service-now.com"
+        );
         // clearing a missing origin reports nothing removed.
         assert!(!state.clear_origin("https://missing.service-now.com:443"));
     }
@@ -977,5 +1242,98 @@ mod tests {
         assert_eq!(latest, vec!["https://b.service-now.com"]);
         assert!(status.instances.iter().all(|i| i.has_g_ck));
     }
-}
 
+    fn sessions_map(urls: &[&str]) -> HashMap<String, SnuInstance> {
+        urls.iter()
+            .map(|url| {
+                let instance = instance(url);
+                (normalize_origin(url).unwrap(), instance)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn session_cache_round_trips_through_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snu-broker-sessions.json");
+        let sessions = sessions_map(&["https://a.service-now.com", "https://b.service-now.com"]);
+        let latest = normalize_origin("https://b.service-now.com");
+
+        write_session_cache(&path, &sessions, latest.as_deref(), now_epoch_secs()).unwrap();
+        let loaded = read_session_cache(&path).expect("cache should load");
+
+        assert_eq!(loaded.sessions, sessions);
+        assert_eq!(loaded.latest_origin, latest);
+    }
+
+    #[test]
+    fn restore_sessions_prefers_persisted_latest_origin() {
+        let sessions = sessions_map(&["https://a.service-now.com", "https://b.service-now.com"]);
+        let latest = normalize_origin("https://a.service-now.com");
+
+        let mut restored = state();
+        restored.restore_sessions(sessions, latest.clone());
+
+        assert_eq!(
+            restored.latest_session().unwrap().url,
+            "https://a.service-now.com"
+        );
+        // A latest_origin that no longer maps to a session falls back gracefully.
+        let mut fallback = state();
+        fallback.restore_sessions(
+            sessions_map(&["https://c.service-now.com"]),
+            Some("https://gone.service-now.com:443".to_string()),
+        );
+        assert_eq!(
+            fallback.latest_session().unwrap().url,
+            "https://c.service-now.com"
+        );
+    }
+
+    #[test]
+    fn empty_snapshot_removes_cache_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snu-broker-sessions.json");
+        let sessions = sessions_map(&["https://a.service-now.com"]);
+
+        write_session_cache(&path, &sessions, None, now_epoch_secs()).unwrap();
+        assert!(path.exists());
+
+        // Clearing (empty map) should remove the on-disk cache.
+        write_session_cache(&path, &HashMap::new(), None, now_epoch_secs()).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_file_is_owner_only_readable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snu-broker-sessions.json");
+        write_session_cache(
+            &path,
+            &sessions_map(&["https://a.service-now.com"]),
+            None,
+            now_epoch_secs(),
+        )
+        .unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn freshness_guard_rejects_stale_snapshots() {
+        let now = 1_000_000;
+        assert!(session_snapshot_is_fresh(now, now));
+        assert!(session_snapshot_is_fresh(
+            now - PERSISTED_SESSION_MAX_AGE_SECS,
+            now
+        ));
+        assert!(!session_snapshot_is_fresh(
+            now - PERSISTED_SESSION_MAX_AGE_SECS - 1,
+            now
+        ));
+    }
+}
