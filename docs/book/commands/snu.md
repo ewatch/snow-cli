@@ -188,6 +188,26 @@ snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png
 - If a command waits for session metadata, run `/token` in a ServiceNow tab.
 - Some helper actions are available in the SN-Utils extension but are not yet exposed as `snow-cli` commands, including `get_file_structure`, `get_form_state`, `set_field`, `run_ui_action`, `navigate`, `navigate_and_screenshot`, `rest_request`, and `refresh_preview`.
 
+### Targeting a specific instance
+
+The SN-Utils tab can be a portal to several ServiceNow instances at once, each
+with its own `g_ck`. Every `/token` push is self-describing — it carries the
+instance URL alongside the token — so the broker stores one session per
+instance, keyed by origin (`scheme://host:port`).
+
+By default a command uses the **most recently active** instance. To pin a
+command to a specific instance, pass the global `--instance` flag with a URL or
+bare host:
+
+```bash
+snow-cli --instance https://dev12345.service-now.com snu query incident --query 'active=true'
+```
+
+When the requested instance has no cached token yet, the command prompts you to
+run `/token` in a tab for that instance and ignores tokens pushed from other
+tabs. `snow-cli snu broker status` lists every instance the broker currently
+holds a live `g_ck` for, with the active one flagged.
+
 ### Broker lifecycle
 
 The broker starts automatically on the first `snu` command that needs it. It
@@ -201,6 +221,17 @@ Usually you do not need to manage it. For debugging:
 snow-cli snu broker status
 snow-cli snu broker stop
 ```
+
+To drop cached browser sessions without stopping the broker — for example after
+logging out of an instance, or to force a fresh `/token` — use `broker clear`:
+
+```bash
+snow-cli snu broker clear                                          # all instances
+snow-cli snu broker clear --instance https://dev12345.service-now.com  # just one
+```
+
+The next command for a cleared instance re-prompts for `/token`. Clearing is
+broker-memory only; it does not affect the ServiceNow session in the browser.
 
 The `sn-scriptsync` VS Code extension and `snow-cli snu` are still mutually
 exclusive because both need the same SN-Utils browser port. Stop `sn-scriptsync`

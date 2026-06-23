@@ -8,7 +8,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
-use crate::snu::protocol::{SnuInstance, SnuMessage};
+use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
 pub const DEFAULT_SNU_WS_ADDR: &str = "127.0.0.1:1978";
 
@@ -76,7 +76,15 @@ impl SnuBridge {
         .await
     }
 
-    pub async fn wait_for_session(&mut self, timeout_secs: u64) -> anyhow::Result<SnuInstance> {
+    /// Wait for SN-Utils to push a `/token`. When `target_origin` is `Some`, only
+    /// a token whose instance URL normalizes to that origin is accepted; tokens
+    /// from other tabs in the same SN-Utils portal are discarded so the caller
+    /// gets the `g_ck` for the instance it actually asked for.
+    pub async fn wait_for_session(
+        &mut self,
+        timeout_secs: u64,
+        target_origin: Option<&str>,
+    ) -> anyhow::Result<SnuInstance> {
         let read_loop = async {
             loop {
                 let msg = self.read_json_message().await?;
@@ -86,6 +94,16 @@ impl SnuBridge {
                         .as_deref()
                         .is_some_and(|token| !token.is_empty())
                 {
+                    if let Some(target) = target_origin
+                        && normalize_origin(&instance.url).as_deref() != Some(target)
+                    {
+                        tracing::debug!(
+                            url = %instance.url,
+                            %target,
+                            "ignoring /token from a non-target instance"
+                        );
+                        continue;
+                    }
                     return Ok(instance);
                 }
             }
@@ -93,7 +111,12 @@ impl SnuBridge {
 
         timeout(Duration::from_secs(timeout_secs), read_loop)
             .await
-            .map_err(|_| anyhow!("timed out waiting {timeout_secs}s for /token from SN-Utils"))?
+            .map_err(|_| match target_origin {
+                Some(target) => {
+                    anyhow!("timed out waiting {timeout_secs}s for /token from SN-Utils for {target}")
+                }
+                None => anyhow!("timed out waiting {timeout_secs}s for /token from SN-Utils"),
+            })?
     }
 
     pub async fn send_action_and_wait(

@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout};
 
 use crate::snu::bridge::SnuBridge;
-use crate::snu::protocol::{SnuInstance, SnuMessage};
+use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
 pub const DEFAULT_SNU_BROKER_ADDR: &str = "127.0.0.1:1979";
 const BROKER_READY_TIMEOUT_SECS: u64 = 5;
@@ -37,6 +37,8 @@ enum BrokerRequest {
     WaitSession {
         timeout_secs: u64,
         fresh: bool,
+        #[serde(default)]
+        origin: Option<String>,
     },
     SendPayload {
         payload: Value,
@@ -54,6 +56,12 @@ enum BrokerRequest {
     },
     RefreshSession {
         timeout_secs: u64,
+        #[serde(default)]
+        origin: Option<String>,
+    },
+    ClearSessions {
+        #[serde(default)]
+        origin: Option<String>,
     },
 }
 
@@ -68,6 +76,8 @@ struct BrokerResponse {
     instance: Option<SnuInstance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     status: Option<BrokerStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cleared: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,7 +87,21 @@ pub struct BrokerStatus {
     pub browser_connected: bool,
     pub session_count: usize,
     pub latest_instance_url: Option<String>,
+    /// Every instance the broker currently holds a browser session for, so the
+    /// caller can see which instances already have a live `g_ck` and which still
+    /// need a `/token`.
+    pub instances: Vec<InstanceSummary>,
     pub idle_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceSummary {
+    pub url: String,
+    pub origin: String,
+    pub has_g_ck: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    pub is_latest: bool,
 }
 
 /// Shared broker handle. The live helper-tab socket lives behind its own mutex,
@@ -126,6 +150,19 @@ impl BrokerState {
     }
 
     fn status(&self, browser_connected: bool) -> BrokerStatus {
+        let mut instances: Vec<InstanceSummary> = self
+            .sessions_by_origin
+            .iter()
+            .map(|(origin, instance)| InstanceSummary {
+                url: instance.url.clone(),
+                origin: origin.clone(),
+                has_g_ck: instance.g_ck.as_deref().is_some_and(|token| !token.is_empty()),
+                scope: instance.scope.clone(),
+                is_latest: self.latest_origin.as_deref() == Some(origin.as_str()),
+            })
+            .collect();
+        instances.sort_by(|a, b| a.origin.cmp(&b.origin));
+
         BrokerStatus {
             version: env!("CARGO_PKG_VERSION").to_string(),
             ipc_addr: DEFAULT_SNU_BROKER_ADDR.to_string(),
@@ -136,6 +173,7 @@ impl BrokerState {
                 .as_ref()
                 .and_then(|origin| self.sessions_by_origin.get(origin))
                 .map(|instance| instance.url.clone()),
+            instances,
             idle_timeout_secs: self.idle_timeout.as_secs(),
         }
     }
@@ -145,7 +183,7 @@ impl BrokerState {
     }
 
     fn remember_session(&mut self, instance: &SnuInstance) {
-        if let Some(origin) = normalize_instance_origin(&instance.url) {
+        if let Some(origin) = normalize_origin(&instance.url) {
             self.sessions_by_origin
                 .insert(origin.clone(), instance.clone());
             self.latest_origin = Some(origin);
@@ -157,6 +195,29 @@ impl BrokerState {
             .as_ref()
             .and_then(|origin| self.sessions_by_origin.get(origin))
             .cloned()
+    }
+
+    fn session_for_origin(&self, origin: &str) -> Option<SnuInstance> {
+        self.sessions_by_origin.get(origin).cloned()
+    }
+
+    /// Drop the cached session for a single origin, repointing `latest_origin`
+    /// at an arbitrary surviving session (or `None`) if it referenced the
+    /// removed entry. Returns `true` when something was actually removed.
+    fn clear_origin(&mut self, origin: &str) -> bool {
+        let removed = self.sessions_by_origin.remove(origin).is_some();
+        if self.latest_origin.as_deref() == Some(origin) {
+            self.latest_origin = self.sessions_by_origin.keys().next().cloned();
+        }
+        removed
+    }
+
+    /// Drop every cached session, returning the origins that were cleared.
+    fn clear_all(&mut self) -> Vec<String> {
+        let cleared = self.sessions_by_origin.keys().cloned().collect();
+        self.sessions_by_origin.clear();
+        self.latest_origin = None;
+        cleared
     }
 }
 
@@ -196,10 +257,12 @@ impl BrokerBridge {
         &self,
         timeout_secs: u64,
         fresh: bool,
+        origin: Option<String>,
     ) -> anyhow::Result<SnuInstance> {
         self.request(BrokerRequest::WaitSession {
             timeout_secs,
             fresh,
+            origin,
         })
         .await?
         .instance
@@ -255,11 +318,29 @@ impl BrokerBridge {
     /// Evict the cached browser session and capture a fresh one (prompting the
     /// user via a helper-tab banner to re-run `/token`). Used by the direct-HTTP
     /// record paths to recover from an expired `g_ck`.
-    pub async fn refresh_session(&self, timeout_secs: u64) -> anyhow::Result<SnuInstance> {
-        self.request(BrokerRequest::RefreshSession { timeout_secs })
+    pub async fn refresh_session(
+        &self,
+        timeout_secs: u64,
+        origin: Option<String>,
+    ) -> anyhow::Result<SnuInstance> {
+        self.request(BrokerRequest::RefreshSession {
+            timeout_secs,
+            origin,
+        })
+        .await?
+        .instance
+        .ok_or_else(|| anyhow!("SN-Utils broker did not return a refreshed session"))
+    }
+
+    /// Drop cached browser sessions from broker memory. `origin = None` clears
+    /// every instance; `Some(origin)` clears just that one. Returns the origins
+    /// that were actually cleared.
+    pub async fn clear_sessions(&self, origin: Option<String>) -> anyhow::Result<Vec<String>> {
+        Ok(self
+            .request(BrokerRequest::ClearSessions { origin })
             .await?
-            .instance
-            .ok_or_else(|| anyhow!("SN-Utils broker did not return a refreshed session"))
+            .cleared
+            .unwrap_or_default())
     }
 
     async fn request(&self, request: BrokerRequest) -> anyhow::Result<BrokerResponse> {
@@ -312,6 +393,15 @@ pub async fn stop_broker() -> anyhow::Result<()> {
         .request(BrokerRequest::Stop)
         .await?;
     Ok(())
+}
+
+/// Clear cached browser sessions from a running broker. Returns the cleared
+/// origins, or an empty list when no broker is running (nothing to clear).
+pub async fn clear_broker_sessions(origin: Option<String>) -> anyhow::Result<Vec<String>> {
+    match BrokerBridge::connect_existing().await {
+        Ok(bridge) => bridge.clear_sessions(origin).await,
+        Err(_) => Ok(Vec::new()),
+    }
 }
 
 pub async fn run_broker_server() -> anyhow::Result<()> {
@@ -399,6 +489,7 @@ async fn handle_client_inner(stream: TcpStream, broker: Arc<Broker>) -> anyhow::
             message: None,
             instance: None,
             status: None,
+            cleared: None,
         },
     };
 
@@ -444,6 +535,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 message: None,
                 instance: None,
                 status: Some(state.status(browser_connected)),
+                cleared: None,
             })
         }
         BrokerRequest::Stop => {
@@ -465,9 +557,14 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
         BrokerRequest::WaitSession {
             timeout_secs,
             fresh,
+            origin,
         } => {
             let cached = if !fresh {
-                broker.state.lock().await.latest_session()
+                let state = broker.state.lock().await;
+                match origin.as_deref() {
+                    Some(origin) => state.session_for_origin(origin),
+                    None => state.latest_session(),
+                }
             } else {
                 None
             };
@@ -477,7 +574,9 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                     let mut guard = broker.bridge.lock().await;
                     let result = {
                         let bridge = ensure_bridge(broker, &mut guard, timeout_secs).await?;
-                        bridge.wait_for_session(timeout_secs).await
+                        bridge
+                            .wait_for_session(timeout_secs, origin.as_deref())
+                            .await
                     };
                     clear_bridge_on_disconnect(broker, &mut guard, result)?
                 }
@@ -489,6 +588,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 message: None,
                 instance: Some(instance),
                 status: None,
+                cleared: None,
             })
         }
         BrokerRequest::SendPayload {
@@ -535,15 +635,41 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             remember_message_session(broker, &message).await;
             Ok(message_response(message))
         }
-        BrokerRequest::RefreshSession { timeout_secs } => {
+        BrokerRequest::RefreshSession {
+            timeout_secs,
+            origin,
+        } => {
             let mut guard = broker.bridge.lock().await;
-            let instance = refresh_session(broker, &mut guard, timeout_secs).await?;
+            let instance =
+                refresh_session(broker, &mut guard, timeout_secs, origin.as_deref()).await?;
             Ok(BrokerResponse {
                 ok: true,
                 error: None,
                 message: None,
                 instance: Some(instance),
                 status: None,
+                cleared: None,
+            })
+        }
+        BrokerRequest::ClearSessions { origin } => {
+            let mut state = broker.state.lock().await;
+            let cleared = match origin.as_deref() {
+                Some(origin) => {
+                    if state.clear_origin(origin) {
+                        vec![origin.to_string()]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                None => state.clear_all(),
+            };
+            Ok(BrokerResponse {
+                ok: true,
+                error: None,
+                message: None,
+                instance: None,
+                status: None,
+                cleared: Some(cleared),
             })
         }
     }
@@ -575,7 +701,16 @@ async fn send_action_with_refresh(
             if is_stale_token_error(&error)
                 && payload.get("instance").and_then(Value::as_object).is_some() =>
         {
-            let fresh = refresh_session(broker, &mut guard, timeout_secs).await?;
+            // Refresh only the instance this action targeted, so a `/token` from
+            // a different tab in the same SN-Utils portal can't silently
+            // redirect the retry to the wrong instance.
+            let target_origin = payload
+                .get("instance")
+                .and_then(|instance| instance.get("url"))
+                .and_then(Value::as_str)
+                .and_then(normalize_origin);
+            let fresh =
+                refresh_session(broker, &mut guard, timeout_secs, target_origin.as_deref()).await?;
             if let Some(object) = payload.as_object_mut() {
                 object.insert("instance".to_string(), serde_json::to_value(&fresh)?);
             }
@@ -591,24 +726,34 @@ async fn send_action_with_refresh(
     }
 }
 
-/// Evict every cached session, prompt the user via a helper-tab banner, and wait
-/// for SN-Utils to push a fresh `/token`. Operates on the caller-held bridge
-/// `guard`.
+/// Evict a cached session, prompt the user via a helper-tab banner, and wait for
+/// SN-Utils to push a fresh `/token`. When `origin` is `Some`, only that
+/// instance's session is evicted and only a matching `/token` is accepted, so
+/// other instances' cached tokens survive and the refresh can't return the wrong
+/// instance. `None` falls back to evicting every session. Operates on the
+/// caller-held bridge `guard`.
 async fn refresh_session(
     broker: &Broker,
     guard: &mut Option<SnuBridge>,
     timeout_secs: u64,
+    origin: Option<&str>,
 ) -> anyhow::Result<SnuInstance> {
     {
         let mut state = broker.state.lock().await;
-        state.sessions_by_origin.clear();
-        state.latest_origin = None;
+        match origin {
+            Some(origin) => {
+                state.clear_origin(origin);
+            }
+            None => {
+                state.clear_all();
+            }
+        }
     }
 
     let result = {
         let bridge = ensure_bridge(broker, guard, timeout_secs).await?;
         let _ = bridge.send_banner(TOKEN_EXPIRED_BANNER).await;
-        bridge.wait_for_session(timeout_secs).await
+        bridge.wait_for_session(timeout_secs, origin).await
     };
     let instance = clear_bridge_on_disconnect(broker, guard, result)?;
     broker.state.lock().await.remember_session(&instance);
@@ -683,6 +828,7 @@ fn ok_response() -> BrokerResponse {
         message: None,
         instance: None,
         status: None,
+        cleared: None,
     }
 }
 
@@ -693,6 +839,7 @@ fn message_response(message: SnuMessage) -> BrokerResponse {
         message: Some(message),
         instance: None,
         status: None,
+        cleared: None,
     }
 }
 
@@ -747,9 +894,88 @@ fn idle_timeout() -> Duration {
         .unwrap_or_else(|| Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS))
 }
 
-fn normalize_instance_origin(url: &str) -> Option<String> {
-    let parsed = reqwest::Url::parse(url).ok()?;
-    let host = parsed.host_str()?;
-    let port = parsed.port_or_known_default()?;
-    Some(format!("{}://{}:{}", parsed.scheme(), host, port))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn instance(url: &str) -> SnuInstance {
+        SnuInstance {
+            name: url.to_string(),
+            url: url.to_string(),
+            g_ck: Some("token".to_string()),
+            scope: None,
+        }
+    }
+
+    fn state() -> BrokerState {
+        BrokerState::new(Duration::from_secs(300))
+    }
+
+    #[test]
+    fn session_for_origin_resolves_specific_instance() {
+        let mut state = state();
+        state.remember_session(&instance("https://a.service-now.com"));
+        state.remember_session(&instance("https://b.service-now.com"));
+
+        let a = state
+            .session_for_origin("https://a.service-now.com:443")
+            .unwrap();
+        assert_eq!(a.url, "https://a.service-now.com");
+        // latest_session points at the most recently remembered instance...
+        assert_eq!(state.latest_session().unwrap().url, "https://b.service-now.com");
+        // ...but origin lookup still returns the one that was asked for.
+        assert!(state.session_for_origin("https://c.service-now.com:443").is_none());
+    }
+
+    #[test]
+    fn clear_origin_keeps_other_sessions_and_fixes_latest() {
+        let mut state = state();
+        state.remember_session(&instance("https://a.service-now.com"));
+        state.remember_session(&instance("https://b.service-now.com"));
+
+        // b was remembered last, so it is the latest; clearing it must not wipe a.
+        assert!(state.clear_origin("https://b.service-now.com:443"));
+        assert!(state.session_for_origin("https://b.service-now.com:443").is_none());
+        assert_eq!(state.latest_session().unwrap().url, "https://a.service-now.com");
+        // clearing a missing origin reports nothing removed.
+        assert!(!state.clear_origin("https://missing.service-now.com:443"));
+    }
+
+    #[test]
+    fn clear_all_empties_cache_and_reports_origins() {
+        let mut state = state();
+        state.remember_session(&instance("https://a.service-now.com"));
+        state.remember_session(&instance("https://b.service-now.com"));
+
+        let mut cleared = state.clear_all();
+        cleared.sort();
+        assert_eq!(
+            cleared,
+            vec![
+                "https://a.service-now.com:443".to_string(),
+                "https://b.service-now.com:443".to_string()
+            ]
+        );
+        assert!(state.latest_session().is_none());
+        assert_eq!(state.status(false).session_count, 0);
+    }
+
+    #[test]
+    fn status_lists_all_instances_with_latest_flag() {
+        let mut state = state();
+        state.remember_session(&instance("https://a.service-now.com"));
+        state.remember_session(&instance("https://b.service-now.com"));
+
+        let status = state.status(true);
+        assert_eq!(status.instances.len(), 2);
+        let latest: Vec<&str> = status
+            .instances
+            .iter()
+            .filter(|i| i.is_latest)
+            .map(|i| i.url.as_str())
+            .collect();
+        assert_eq!(latest, vec!["https://b.service-now.com"]);
+        assert!(status.instances.iter().all(|i| i.has_g_ck));
+    }
 }
+

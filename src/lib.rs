@@ -199,7 +199,9 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             )
             .await
         }
-        cli::args::Commands::Snu(args) => cli::commands::snu::handle(args, &cli.output).await,
+        cli::args::Commands::Snu(args) => {
+            cli::commands::snu::handle(args, cli.instance.as_deref(), &cli.output).await
+        }
         cli::args::Commands::Completions { shell } => cli::commands::completions::handle(shell),
     }
 }
