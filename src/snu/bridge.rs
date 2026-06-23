@@ -113,7 +113,9 @@ impl SnuBridge {
             .await
             .map_err(|_| match target_origin {
                 Some(target) => {
-                    anyhow!("timed out waiting {timeout_secs}s for /token from SN-Utils for {target}")
+                    anyhow!(
+                        "timed out waiting {timeout_secs}s for /token from SN-Utils for {target}"
+                    )
                 }
                 None => anyhow!("timed out waiting {timeout_secs}s for /token from SN-Utils"),
             })?

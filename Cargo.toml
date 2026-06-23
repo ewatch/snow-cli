@@ -63,6 +63,11 @@ tokio-tungstenite = "0.24"
 urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 
+# Detach the SN-Utils broker into its own session so it survives the spawning
+# command's process group (setsid). Unix only; Windows uses creation flags.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # HTTP mocking
 wiremock = "0.6.2"
