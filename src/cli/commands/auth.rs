@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
 use std::io::IsTerminal;
 
-use rand::RngCore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::{Duration, timeout};
@@ -505,8 +504,7 @@ fn generate_pkce_code_verifier() -> String {
 }
 
 fn random_hex_nonce() -> String {
-    let mut bytes = [0_u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
+    let bytes: [u8; 32] = rand::random();
     let mut nonce = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         let _ = write!(&mut nonce, "{byte:02x}");
