@@ -476,6 +476,11 @@ async fn handle_create_record(
                 "action": "createRecord",
                 "agentRequestId": correlation_id,
                 "tableName": table,
+                // SN-Utils' createRecord handler reads the record body from
+                // `payload` (it rejects the message with "Missing payload or
+                // tableName for createRecord" otherwise). `fields` is kept for
+                // compatibility with helper builds that read that key instead.
+                "payload": payload,
                 "fields": payload,
                 "scope": scope,
                 "instance": instance,
