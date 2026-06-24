@@ -1057,7 +1057,7 @@ impl SnowClient {
                 }
                 tracing::debug!(
                     url = %url,
-                    jsessionid = %jsessionid,
+                    has_jsessionid = true,
                     "Captured JSESSIONID from response"
                 );
             }
