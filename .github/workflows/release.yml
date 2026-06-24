@@ -43,10 +43,13 @@ jobs:
             target: x86_64-pc-windows-msvc
 
     steps:
-      - name: Checkout release tag
+      - name: Check out the release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          # On a tag push the tag already exists, so build from it. On
+          # workflow_dispatch the tag does not exist yet (it is created when the
+          # draft release is published), so build from the dispatched commit.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || env.RELEASE_TAG }}
           fetch-depth: 0
 
       - name: Verify Cargo.toml version matches the release tag
@@ -204,10 +207,13 @@ jobs:
     needs:
       - build-archives
     steps:
-      - name: Checkout release tag
+      - name: Check out the release commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          # On a tag push the tag already exists, so build from it. On
+          # workflow_dispatch the tag does not exist yet (it is created when the
+          # draft release is published), so build from the dispatched commit.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || env.RELEASE_TAG }}
           fetch-depth: 0
 
       - name: Download built artifacts
@@ -289,6 +295,10 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          # target_commitish is only used when the tag does not yet exist (the
+          # workflow_dispatch path): the tag is created here, pointing at the
+          # commit we actually built, when the draft is later published.
+          target_commitish: ${{ github.sha }}
           draft: true
           files: release-assets/*
           body_path: release-notes.md
