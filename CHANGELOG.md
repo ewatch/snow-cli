@@ -5,6 +5,27 @@ All notable changes to `snow-cli` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows semantic versioning conventions while it is pre-1.0.
 
+## [0.5.1] - 2026-06-24
+
+### Added
+
+- Added `snu create-record` and `snu app-meta` commands.
+- Routed `g_ck` per instance and added session cache controls.
+
+### Changed
+
+- Migrated the `snu` integration to a persistent broker that stays alive across commands, hardening auth reliability and eliminating repeated `/token` round-trips.
+
+### Fixed
+
+- Fixed the release pipeline so assets are uploaded to a draft GitHub release and the release is published as a final step, which is required now that immutable releases are enabled. Dropped the duplicate `release: published` trigger that raced the tag-push run, and made the workflow build from the dispatched commit so `workflow_dispatch` runs no longer fail when the tag does not yet exist.
+- Fixed `snu create-record` to send the request body under the `payload` key.
+- Capped the helper-tab connection wait so a missing bridge fails fast.
+
+### Security
+
+- Bumped `quinn-proto` to 0.11.15 to address RUSTSEC-2026-0185, plus routine dependency updates (`rand`, `toml`, `sha2`, `toon-format`).
+
 ## [0.4.2] - 2026-06-16
 
 ### Fixed
