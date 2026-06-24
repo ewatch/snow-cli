@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,11 +18,24 @@ pub const DEFAULT_OAUTH_REDIRECT_PATH: &str = "/oauth/callback";
 pub const DEFAULT_OAUTH_SCOPE: &str = "useraccount";
 
 /// Cached OAuth2 token with expiry tracking.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct CachedToken {
     access_token: String,
     refresh_token: Option<String>,
     expires_at: Instant,
+}
+
+impl fmt::Debug for CachedToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CachedToken")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 impl CachedToken {
@@ -32,7 +46,7 @@ impl CachedToken {
 }
 
 /// OAuth token persisted in the keychain for authorization-code profiles.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
 pub struct StoredOAuthToken {
     pub access_token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,6 +57,21 @@ pub struct StoredOAuthToken {
     pub expires_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+}
+
+impl fmt::Debug for StoredOAuthToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StoredOAuthToken")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("token_type", &self.token_type)
+            .field("expires_at", &self.expires_at)
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 impl StoredOAuthToken {
@@ -716,6 +745,40 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // --- Unit tests ---
+
+    #[test]
+    fn stored_oauth_token_debug_redacts_secret_values() {
+        let token = StoredOAuthToken {
+            access_token: "access-secret-value".to_string(),
+            refresh_token: Some("refresh-secret-value".to_string()),
+            token_type: Some("Bearer".to_string()),
+            expires_at: Some(1_725_000_000),
+            scope: Some("useraccount".to_string()),
+        };
+
+        let debug = format!("{token:?}");
+
+        assert!(!debug.contains("access-secret-value"));
+        assert!(!debug.contains("refresh-secret-value"));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("Bearer"));
+        assert!(debug.contains("useraccount"));
+    }
+
+    #[test]
+    fn cached_oauth_token_debug_redacts_secret_values() {
+        let token = CachedToken {
+            access_token: "cached-access-secret".to_string(),
+            refresh_token: Some("cached-refresh-secret".to_string()),
+            expires_at: Instant::now(),
+        };
+
+        let debug = format!("{token:?}");
+
+        assert!(!debug.contains("cached-access-secret"));
+        assert!(!debug.contains("cached-refresh-secret"));
+        assert!(debug.contains("<redacted>"));
+    }
 
     #[test]
     fn test_urlencoded_simple() {

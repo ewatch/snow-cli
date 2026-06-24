@@ -66,7 +66,10 @@ pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
 ///
 /// For OAuth2 password grant, both `--client-secret` and `--password` are required
 /// (two separate keychain entries).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "clap login options are forwarded explicitly until a deeper login request module exists"
+)]
 async fn handle_login(
     profile_name: &str,
     password: Option<String>,

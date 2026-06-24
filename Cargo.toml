@@ -8,6 +8,18 @@ repository = "https://github.com/ewatch/snow-cli"
 homepage = "https://github.com/ewatch/snow-cli"
 categories = ["command-line-utilities"]
 
+[lints.rust]
+future_incompatible = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "warn"
+
 [[bin]]
 name = "snow-cli"
 path = "src/main.rs"

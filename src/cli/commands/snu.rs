@@ -642,7 +642,10 @@ fn resolve_update_fields(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "SNU update-record currently forwards clap fields until mutation requests are modeled"
+)]
 async fn handle_update_record(
     table: String,
     sys_id: String,

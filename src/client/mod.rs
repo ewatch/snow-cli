@@ -1,6 +1,7 @@
 pub mod error;
 pub mod pagination;
 
+use std::fmt;
 use std::time::Duration;
 
 use http::HeaderMap;
@@ -491,11 +492,21 @@ pub(crate) fn extract_g_ck_from_body(body: &str) -> Option<String> {
     None
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct FormSession {
     pub jsessionid: String,
     pub g_ck: String,
     pub cookie_header: String,
+}
+
+impl fmt::Debug for FormSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FormSession")
+            .field("jsessionid", &"<redacted>")
+            .field("g_ck", &"<redacted>")
+            .field("cookie_header", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1226,6 +1237,23 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn form_session_debug_redacts_secret_values() {
+        let session = FormSession {
+            jsessionid: "jsession-secret-value".to_string(),
+            g_ck: "gck-secret-value".to_string(),
+            cookie_header: "JSESSIONID=jsession-secret-value; glide_user_route=route-secret"
+                .to_string(),
+        };
+
+        let debug = format!("{session:?}");
+
+        assert!(!debug.contains("jsession-secret-value"));
+        assert!(!debug.contains("gck-secret-value"));
+        assert!(!debug.contains("route-secret"));
+        assert!(debug.contains("<redacted>"));
+    }
 
     /// A mock authenticator for testing.
     /// Injects a fixed Authorization header.
