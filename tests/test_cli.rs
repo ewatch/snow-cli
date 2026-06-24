@@ -236,7 +236,7 @@ fn test_snow_cli_ro_exposes_snu_read_commands() {
 }
 
 #[test]
-fn test_snow_cli_ro_rejects_snu_update_record_at_parse_time() {
+fn test_snow_cli_ro_rejects_snu_update_record_by_policy() {
     cargo_bin_cmd!("snow-cli-ro")
         .args([
             "snu",
@@ -250,9 +250,8 @@ fn test_snow_cli_ro_rejects_snu_update_record_at_parse_time() {
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "unrecognized subcommand 'update-record'",
-        ));
+        .stderr(predicate::str::contains("POLICY_DENIED"))
+        .stderr(predicate::str::contains("record updates through SN-Utils"));
 }
 
 #[test]
