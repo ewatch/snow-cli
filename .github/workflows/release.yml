@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -17,11 +15,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build-archives:
@@ -284,15 +282,30 @@ jobs:
       - name: List release assets
         run: find release-assets -maxdepth 1 -type f -print | sort
 
-      - name: Upload assets to GitHub Release
+      # Attach assets to a DRAFT release first. This repo has immutable
+      # releases enabled, so a release can only receive assets while it is
+      # still a draft; uploading to an already-published release is rejected.
+      - name: Upload assets to draft GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          draft: true
           files: release-assets/*
           body_path: release-notes.md
           fail_on_unmatched_files: true
           generate_release_notes: true
           overwrite_files: true
+
+      # All assets are attached; publish the draft and mark it latest. After
+      # this the release is immutable, which is fine because nothing else is
+      # uploaded afterwards.
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release edit "${RELEASE_TAG}" --draft=false --latest
 
   notify-homebrew-tap:
     name: Trigger Homebrew tap update
