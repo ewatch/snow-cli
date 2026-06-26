@@ -93,8 +93,9 @@ async fn execute_background_script(
     let script_len = script.len();
 
     tracing::info!(
-        endpoint = options.endpoint,
-        scope = options.scope,
+        event = "script.run",
+        endpoint = %options.endpoint,
+        scope = ?options.scope,
         script_len = script_len,
         "Executing background script"
     );

@@ -729,7 +729,11 @@ impl SnowClient {
 
         if matches!(logged_in_header_value(&response_headers), Some(false)) {
             if let Some((username, password)) = parse_basic_credentials(&auth_headers) {
-                tracing::info!(url = %url, "Form bootstrap returned x-is-logged-in=false; attempting explicit login.do form login");
+                tracing::info!(
+                    event = "http.form_bootstrap.login_required",
+                    url = %url,
+                    "form bootstrap returned x-is-logged-in=false; attempting explicit login.do form login"
+                );
 
                 let cookie_header = self.form_login_cookie_header(&username, &password).await?;
                 return self
@@ -1088,7 +1092,12 @@ impl SnowClient {
 
             // If unauthorized and we haven't retried yet, try refreshing credentials
             if status == reqwest::StatusCode::UNAUTHORIZED && attempt < MAX_AUTH_RETRIES {
-                tracing::info!("Received 401, attempting credential refresh");
+                tracing::info!(
+                    event = "http.auth.refresh",
+                    status = status.as_u16(),
+                    attempt = attempt + 1,
+                    "received 401; attempting credential refresh"
+                );
                 let refreshed = self.authenticator.refresh().await?;
                 if refreshed {
                     tracing::debug!("Credentials refreshed, retrying request");

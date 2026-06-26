@@ -352,7 +352,11 @@ async fn handle_export(
     timeout_secs: Option<u64>,
     export: ExportRequest,
 ) -> anyhow::Result<()> {
-    tracing::info!("Exporting records from table: {}", export.table);
+    tracing::info!(
+        event = "data.export",
+        table = %export.table,
+        "exporting records"
+    );
 
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
     let pagination = PaginationConfig::default().with_limit(export.limit);
