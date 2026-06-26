@@ -11,6 +11,7 @@ enum TokenSource {
     /// Look up token from keychain/env at runtime.
     Keychain { profile_name: String },
     /// Use a directly provided token (for testing).
+    #[cfg(test)]
     Direct { token: String },
 }
 
@@ -45,6 +46,7 @@ impl ApiKeyAuth {
     /// Retrieve the token from the configured source.
     fn get_token(&self) -> anyhow::Result<String> {
         match &self.token_source {
+            #[cfg(test)]
             TokenSource::Direct { token } => Ok(token.clone()),
             TokenSource::Keychain { profile_name } => {
                 credentials::get_credential(profile_name, "api_token")?.ok_or_else(|| {

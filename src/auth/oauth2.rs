@@ -94,6 +94,7 @@ enum CredentialSource {
     /// Look up credentials from keychain/env at runtime.
     Keychain { profile_name: String },
     /// Use directly provided credentials (for testing).
+    #[cfg(test)]
     Direct {
         client_secret: Option<String>,
         password: Option<String>,
@@ -260,6 +261,7 @@ impl OAuth2Auth {
     /// Retrieve the client_secret from the credential source, if one is configured.
     fn get_client_secret_optional(&self) -> anyhow::Result<Option<String>> {
         match &self.credential_source {
+            #[cfg(test)]
             CredentialSource::Direct { client_secret, .. } => Ok(client_secret.clone()),
             CredentialSource::Keychain { profile_name } => {
                 credentials::get_credential(profile_name, "client_secret")
@@ -277,6 +279,7 @@ impl OAuth2Auth {
                     profile_name,
                     profile_name
                 ),
+                #[cfg(test)]
                 CredentialSource::Direct { .. } => anyhow::anyhow!(
                     "No client_secret provided for OAuth2 {:?} grant.",
                     self.grant_type
@@ -290,6 +293,7 @@ impl OAuth2Auth {
             return Ok(None);
         }
         match &self.credential_source {
+            #[cfg(test)]
             CredentialSource::Direct { password, .. } => match password {
                 Some(pw) => Ok(Some(pw.clone())),
                 None => anyhow::bail!("No password provided for OAuth2 password grant."),
@@ -312,6 +316,7 @@ impl OAuth2Auth {
     /// Retrieve the persisted authorization-code OAuth token.
     fn get_stored_oauth_token(&self) -> anyhow::Result<Option<StoredOAuthToken>> {
         match &self.credential_source {
+            #[cfg(test)]
             CredentialSource::Direct { oauth_token, .. } => Ok(oauth_token.clone()),
             CredentialSource::Keychain { profile_name } => {
                 let Some(raw) = credentials::get_credential(profile_name, "oauth_token")? else {
@@ -325,12 +330,16 @@ impl OAuth2Auth {
 
     /// Persist an authorization-code OAuth token after refresh.
     fn store_oauth_token(&self, token: &StoredOAuthToken) -> anyhow::Result<()> {
-        if let CredentialSource::Keychain { profile_name } = &self.credential_source {
-            credentials::store_credential(
-                profile_name,
-                "oauth_token",
-                &serde_json::to_string(token)?,
-            )?;
+        match &self.credential_source {
+            CredentialSource::Keychain { profile_name } => {
+                credentials::store_credential(
+                    profile_name,
+                    "oauth_token",
+                    &serde_json::to_string(token)?,
+                )?;
+            }
+            #[cfg(test)]
+            CredentialSource::Direct { .. } => {}
         }
         Ok(())
     }

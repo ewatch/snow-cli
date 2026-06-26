@@ -11,6 +11,7 @@ enum CredentialSource {
     /// Look up password from keychain/env at runtime.
     Keychain { profile_name: String },
     /// Use a directly provided password (for testing).
+    #[cfg(test)]
     Direct { password: String },
 }
 
@@ -51,6 +52,7 @@ impl BasicAuth {
     /// Retrieve the password from the configured source.
     fn get_password(&self) -> anyhow::Result<String> {
         match &self.credential_source {
+            #[cfg(test)]
             CredentialSource::Direct { password } => Ok(password.clone()),
             CredentialSource::Keychain { profile_name } => credentials::get_credential(
                 profile_name,
