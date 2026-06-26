@@ -17,6 +17,9 @@ use crate::config::credentials;
 use crate::config::now_sdk;
 use crate::config::profile::{AppConfig, AuthMethod, OAuthGrantType, Profile};
 
+/// Browser authorization can include SSO/MFA and a human copy/paste loop. Five
+/// minutes is long enough for that path without leaving CI or unattended shells
+/// waiting indefinitely on the localhost redirect listener.
 const OAUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {

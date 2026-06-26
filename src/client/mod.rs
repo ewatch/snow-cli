@@ -51,7 +51,10 @@ pub fn build_client_with_timeout(
     )
 }
 
-/// Default request timeout in seconds.
+/// Default request timeout in seconds. ServiceNow table, script, and attachment
+/// endpoints can legitimately spend tens of seconds on ACL evaluation, query
+/// planning, or script execution; keep this high enough for those workflows
+/// while still bounding hung network calls for automation.
 const DEFAULT_TIMEOUT_SECS: u64 = 90;
 
 /// Maximum number of retry attempts on 401 (after token refresh).

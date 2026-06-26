@@ -11,6 +11,8 @@ use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
+/// Loopback WebSocket address used by the SN-Utils ScriptSync helper tab. Keep
+/// this stable because the browser-side helper is configured to connect here.
 pub const DEFAULT_SNU_WS_ADDR: &str = "127.0.0.1:1978";
 
 /// Maximum time to wait for the SN-Utils ScriptSync helper tab to *connect* to the

@@ -17,6 +17,16 @@ pub const DEFAULT_OAUTH_REDIRECT_PORT: u16 = 8080;
 pub const DEFAULT_OAUTH_REDIRECT_PATH: &str = "/oauth/callback";
 pub const DEFAULT_OAUTH_SCOPE: &str = "useraccount";
 
+/// Refresh a little early so small local clock differences and request latency
+/// do not make a token expire between the local check and ServiceNow receiving
+/// the next request.
+const OAUTH_EXPIRY_SKEW_SECS: u64 = 30;
+
+/// Older stored authorization-code tokens may predate persisted expiry metadata.
+/// Treat them as short-lived rather than immediately expired so existing users
+/// get one chance to refresh through ServiceNow before being asked to log in.
+const STORED_TOKEN_FALLBACK_TTL_SECS: u64 = 3600;
+
 /// Cached OAuth2 token with expiry tracking.
 #[derive(Clone)]
 struct CachedToken {
@@ -40,8 +50,7 @@ impl fmt::Debug for CachedToken {
 
 impl CachedToken {
     fn is_expired(&self) -> bool {
-        // Consider expired 30 seconds early to avoid edge cases
-        Instant::now() >= self.expires_at - Duration::from_secs(30)
+        Instant::now() >= self.expires_at - Duration::from_secs(OAUTH_EXPIRY_SKEW_SECS)
     }
 }
 
@@ -593,7 +602,7 @@ fn stored_to_cached(stored: &StoredOAuthToken) -> CachedToken {
                 Instant::now() - Duration::from_secs(1)
             }
         })
-        .unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(STORED_TOKEN_FALLBACK_TTL_SECS));
 
     CachedToken {
         access_token: stored.access_token.clone(),
