@@ -1248,7 +1248,6 @@ impl SnowClient {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use http::HeaderMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use wiremock::matchers::{header, method, path, query_param};
