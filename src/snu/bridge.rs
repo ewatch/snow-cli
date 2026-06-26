@@ -1,3 +1,4 @@
+use std::fmt;
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -22,6 +23,14 @@ pub const HELPER_CONNECT_TIMEOUT_SECS: u64 = 20;
 pub struct SnuBridge {
     socket: WebSocketStream<TcpStream>,
     peer_addr: SocketAddr,
+}
+
+impl fmt::Debug for SnuBridge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SnuBridge")
+            .field("peer_addr", &self.peer_addr)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SnuBridge {

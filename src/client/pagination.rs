@@ -8,6 +8,7 @@
 //! as a stream until all records are retrieved or `--limit` is reached.
 
 /// Configuration for pagination behavior.
+#[derive(Debug)]
 pub struct PaginationConfig {
     /// Maximum total records to return. None means fetch all.
     pub limit: Option<usize>,

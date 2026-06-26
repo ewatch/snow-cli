@@ -247,6 +247,7 @@ impl BrokerState {
     }
 }
 
+#[derive(Debug)]
 pub struct BrokerBridge {
     addr: String,
 }

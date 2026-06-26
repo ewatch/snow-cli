@@ -532,7 +532,20 @@ pub struct SnowClient {
     policy: ExecutionPolicy,
 }
 
+impl fmt::Debug for SnowClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SnowClient")
+            .field("base_url", &self.base_url)
+            .field("auth_type", &self.authenticator.auth_type())
+            .field("has_jsessionid", &self.session.jsessionid.is_some())
+            .field("has_form_session", &self.session.form_session.is_some())
+            .field("policy", &self.policy)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Configuration for building a SnowClient.
+#[derive(Debug)]
 pub struct ClientConfig {
     /// Request timeout in seconds.
     pub timeout_secs: u64,
@@ -1310,6 +1323,27 @@ mod tests {
             ClientConfig::default(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn snow_client_debug_redacts_session_values() {
+        let mut client = test_client("https://test.service-now.com", MockAuth::new("token"));
+        client.session.jsessionid = Some("jsession-secret-value".to_string());
+        client.session.form_session = Some(FormSession {
+            jsessionid: "form-jsession-secret".to_string(),
+            g_ck: "gck-secret-value".to_string(),
+            cookie_header: "JSESSIONID=form-jsession-secret; glide_user_route=route-secret"
+                .to_string(),
+        });
+
+        let debug = format!("{client:?}");
+
+        assert!(!debug.contains("jsession-secret-value"));
+        assert!(!debug.contains("form-jsession-secret"));
+        assert!(!debug.contains("gck-secret-value"));
+        assert!(!debug.contains("route-secret"));
+        assert!(debug.contains("has_jsessionid"));
+        assert!(debug.contains("has_form_session"));
     }
 
     /// The read-only policy travels with the client: a client built with a

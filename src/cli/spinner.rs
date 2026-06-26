@@ -9,6 +9,7 @@ const SNOWFLAKE_TICKS: &[&str] = &["❄️", "❅", "❆", "✻", "✼", "✽"];
 /// The spinner is intentionally disabled for non-TTY use and common automation
 /// environments so stdout remains machine-readable and stderr remains clean in
 /// CI/log capture.
+#[derive(Debug)]
 pub struct SnowflakeSpinner {
     progress: Option<ProgressBar>,
 }
