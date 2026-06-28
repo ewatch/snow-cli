@@ -1,8 +1,10 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Browser-session metadata sent by SN-Utils when the user runs `/token`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SnuInstance {
     pub name: String,
     pub url: String,
@@ -10,6 +12,17 @@ pub struct SnuInstance {
     pub g_ck: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+}
+
+impl fmt::Debug for SnuInstance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SnuInstance")
+            .field("name", &self.name)
+            .field("url", &self.url)
+            .field("g_ck", &self.g_ck.as_ref().map(|_| "<redacted>"))
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 /// Loosely-typed SN-Utils WebSocket message. SN-Utils actions are not a stable
@@ -124,6 +137,24 @@ mod tests {
         assert_eq!(out["has_g_ck"], true);
         assert!(out.to_string().contains("has_g_ck"));
         assert!(!out.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn snu_instance_debug_redacts_g_ck() {
+        let instance = SnuInstance {
+            name: "dev".into(),
+            url: "https://dev.service-now.com".into(),
+            g_ck: Some("gck-secret-value".into()),
+            scope: Some("x_app".into()),
+        };
+
+        let debug = format!("{instance:?}");
+
+        assert!(!debug.contains("gck-secret-value"));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("dev"));
+        assert!(debug.contains("https://dev.service-now.com"));
+        assert!(debug.contains("x_app"));
     }
 
     #[test]

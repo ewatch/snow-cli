@@ -17,6 +17,9 @@ use crate::config::credentials;
 use crate::config::now_sdk;
 use crate::config::profile::{AppConfig, AuthMethod, OAuthGrantType, Profile};
 
+/// Browser authorization can include SSO/MFA and a human copy/paste loop. Five
+/// minutes is long enough for that path without leaving CI or unattended shells
+/// waiting indefinitely on the localhost redirect listener.
 const OAUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
@@ -66,7 +69,10 @@ pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
 ///
 /// For OAuth2 password grant, both `--client-secret` and `--password` are required
 /// (two separate keychain entries).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "clap login options are forwarded explicitly until a deeper login request module exists"
+)]
 async fn handle_login(
     profile_name: &str,
     password: Option<String>,

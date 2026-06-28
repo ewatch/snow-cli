@@ -48,7 +48,12 @@ pub async fn handle(
 ) -> anyhow::Result<()> {
     match args.command {
         AttachmentCommands::List { table, sys_id } => {
-            tracing::info!("Listing attachments for {}/{}", table, sys_id);
+            tracing::info!(
+                event = "attachment.list",
+                table = %table,
+                sys_id = %sys_id,
+                "listing attachments"
+            );
             validate_table_name(&table)?;
             validate_path_segment("sys_id", &sys_id)?;
             validate_encoded_query_literal("sys_id", &sys_id)?;
@@ -73,7 +78,11 @@ pub async fn handle(
             Ok(())
         }
         AttachmentCommands::Download { sys_id, out_path } => {
-            tracing::info!("Downloading attachment: {}", sys_id);
+            tracing::info!(
+                event = "attachment.download",
+                sys_id = %sys_id,
+                "downloading attachment"
+            );
             validate_path_segment("attachment sys_id", &sys_id)?;
 
             let mut client =
@@ -115,7 +124,13 @@ pub async fn handle(
                 .into());
             }
 
-            tracing::info!("Uploading {} to {}/{}", file, table, sys_id);
+            tracing::info!(
+                event = "attachment.upload",
+                file = %file,
+                table = %table,
+                sys_id = %sys_id,
+                "uploading attachment"
+            );
             validate_table_name(&table)?;
             validate_path_segment("sys_id", &sys_id)?;
 

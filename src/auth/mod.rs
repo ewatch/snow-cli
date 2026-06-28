@@ -134,7 +134,7 @@ pub fn create_authenticator(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::profile::{AuthMethod, OAuthGrantType, Profile};
+    use crate::config::profile::{OAuthGrantType, Profile};
 
     fn make_profile(auth_method: AuthMethod) -> Profile {
         Profile {

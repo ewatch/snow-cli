@@ -13,7 +13,7 @@ pub async fn handle(
 ) -> anyhow::Result<()> {
     match args.command {
         ApiCommands::Get { path, header } => {
-            tracing::info!("API GET {}", path);
+            tracing::info!(event = "api.raw.get", path = %path, "running raw API GET");
 
             let extra_headers = parse_headers(&header)?;
             crate::policy::ensure_raw_api_get_headers_allowed(&extra_headers)?;
@@ -31,7 +31,7 @@ pub async fn handle(
             print_response(response, format).await
         }
         ApiCommands::Post { path, data, header } => {
-            tracing::info!("API POST {}", path);
+            tracing::info!(event = "api.raw.post", path = %path, "running raw API POST");
 
             let body = read_data(data)?;
             let extra_headers = parse_headers(&header)?;
@@ -55,7 +55,7 @@ pub async fn handle(
             print_response(response, format).await
         }
         ApiCommands::Put { path, data, header } => {
-            tracing::info!("API PUT {}", path);
+            tracing::info!(event = "api.raw.put", path = %path, "running raw API PUT");
 
             let body = read_data(data)?;
             let extra_headers = parse_headers(&header)?;
@@ -79,7 +79,7 @@ pub async fn handle(
             print_response(response, format).await
         }
         ApiCommands::Delete { path, header } => {
-            tracing::info!("API DELETE {}", path);
+            tracing::info!(event = "api.raw.delete", path = %path, "running raw API DELETE");
 
             let extra_headers = parse_headers(&header)?;
             let mut client =

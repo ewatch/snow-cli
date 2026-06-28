@@ -23,7 +23,7 @@ pub async fn handle(
             limit,
             order_by,
         } => {
-            tracing::info!("Listing records from table: {}", table);
+            tracing::info!(event = "table.records.list", table = %table, "listing records");
             validate_table_name(&table)?;
 
             let mut client =
@@ -49,7 +49,12 @@ pub async fn handle(
             sys_id,
             fields,
         } => {
-            tracing::info!("Getting record {} from table: {}", sys_id, table);
+            tracing::info!(
+                event = "table.record.get",
+                table = %table,
+                sys_id = %sys_id,
+                "getting record"
+            );
             validate_table_name(&table)?;
             validate_path_segment("sys_id", &sys_id)?;
 
@@ -73,7 +78,7 @@ pub async fn handle(
         }
 
         TableCommands::Create { table, data } => {
-            tracing::info!("Creating record in table: {}", table);
+            tracing::info!(event = "table.record.create", table = %table, "creating record");
             validate_table_name(&table)?;
 
             let body = read_data(data)?;
@@ -96,7 +101,12 @@ pub async fn handle(
             sys_id,
             data,
         } => {
-            tracing::info!("Updating record {} in table: {}", sys_id, table);
+            tracing::info!(
+                event = "table.record.update",
+                table = %table,
+                sys_id = %sys_id,
+                "updating record"
+            );
             validate_table_name(&table)?;
             validate_path_segment("sys_id", &sys_id)?;
 
@@ -116,7 +126,12 @@ pub async fn handle(
         }
 
         TableCommands::Delete { table, sys_id, yes } => {
-            tracing::info!("Deleting record {} from table: {}", sys_id, table);
+            tracing::info!(
+                event = "table.record.delete",
+                table = %table,
+                sys_id = %sys_id,
+                "deleting record"
+            );
             validate_table_name(&table)?;
             validate_path_segment("sys_id", &sys_id)?;
 
@@ -182,7 +197,7 @@ async fn handle_schema(
     extended: bool,
     include_inherited: bool,
 ) -> anyhow::Result<()> {
-    tracing::info!("Fetching schema for table: {}", table);
+    tracing::info!(event = "table.schema.get", table = %table, "fetching schema");
     validate_table_name(table)?;
 
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;

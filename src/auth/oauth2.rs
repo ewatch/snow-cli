@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -16,23 +17,45 @@ pub const DEFAULT_OAUTH_REDIRECT_PORT: u16 = 8080;
 pub const DEFAULT_OAUTH_REDIRECT_PATH: &str = "/oauth/callback";
 pub const DEFAULT_OAUTH_SCOPE: &str = "useraccount";
 
+/// Refresh a little early so small local clock differences and request latency
+/// do not make a token expire between the local check and ServiceNow receiving
+/// the next request.
+const OAUTH_EXPIRY_SKEW_SECS: u64 = 30;
+
+/// Older stored authorization-code tokens may predate persisted expiry metadata.
+/// Treat them as short-lived rather than immediately expired so existing users
+/// get one chance to refresh through ServiceNow before being asked to log in.
+const STORED_TOKEN_FALLBACK_TTL_SECS: u64 = 3600;
+
 /// Cached OAuth2 token with expiry tracking.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct CachedToken {
     access_token: String,
     refresh_token: Option<String>,
     expires_at: Instant,
 }
 
+impl fmt::Debug for CachedToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CachedToken")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
 impl CachedToken {
     fn is_expired(&self) -> bool {
-        // Consider expired 30 seconds early to avoid edge cases
-        Instant::now() >= self.expires_at - Duration::from_secs(30)
+        Instant::now() >= self.expires_at - Duration::from_secs(OAUTH_EXPIRY_SKEW_SECS)
     }
 }
 
 /// OAuth token persisted in the keychain for authorization-code profiles.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
 pub struct StoredOAuthToken {
     pub access_token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,6 +66,21 @@ pub struct StoredOAuthToken {
     pub expires_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+}
+
+impl fmt::Debug for StoredOAuthToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StoredOAuthToken")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("token_type", &self.token_type)
+            .field("expires_at", &self.expires_at)
+            .field("scope", &self.scope)
+            .finish()
+    }
 }
 
 impl StoredOAuthToken {
@@ -65,6 +103,7 @@ enum CredentialSource {
     /// Look up credentials from keychain/env at runtime.
     Keychain { profile_name: String },
     /// Use directly provided credentials (for testing).
+    #[cfg(test)]
     Direct {
         client_secret: Option<String>,
         password: Option<String>,
@@ -231,6 +270,7 @@ impl OAuth2Auth {
     /// Retrieve the client_secret from the credential source, if one is configured.
     fn get_client_secret_optional(&self) -> anyhow::Result<Option<String>> {
         match &self.credential_source {
+            #[cfg(test)]
             CredentialSource::Direct { client_secret, .. } => Ok(client_secret.clone()),
             CredentialSource::Keychain { profile_name } => {
                 credentials::get_credential(profile_name, "client_secret")
@@ -248,6 +288,7 @@ impl OAuth2Auth {
                     profile_name,
                     profile_name
                 ),
+                #[cfg(test)]
                 CredentialSource::Direct { .. } => anyhow::anyhow!(
                     "No client_secret provided for OAuth2 {:?} grant.",
                     self.grant_type
@@ -261,6 +302,7 @@ impl OAuth2Auth {
             return Ok(None);
         }
         match &self.credential_source {
+            #[cfg(test)]
             CredentialSource::Direct { password, .. } => match password {
                 Some(pw) => Ok(Some(pw.clone())),
                 None => anyhow::bail!("No password provided for OAuth2 password grant."),
@@ -283,6 +325,7 @@ impl OAuth2Auth {
     /// Retrieve the persisted authorization-code OAuth token.
     fn get_stored_oauth_token(&self) -> anyhow::Result<Option<StoredOAuthToken>> {
         match &self.credential_source {
+            #[cfg(test)]
             CredentialSource::Direct { oauth_token, .. } => Ok(oauth_token.clone()),
             CredentialSource::Keychain { profile_name } => {
                 let Some(raw) = credentials::get_credential(profile_name, "oauth_token")? else {
@@ -296,12 +339,16 @@ impl OAuth2Auth {
 
     /// Persist an authorization-code OAuth token after refresh.
     fn store_oauth_token(&self, token: &StoredOAuthToken) -> anyhow::Result<()> {
-        if let CredentialSource::Keychain { profile_name } = &self.credential_source {
-            credentials::store_credential(
-                profile_name,
-                "oauth_token",
-                &serde_json::to_string(token)?,
-            )?;
+        match &self.credential_source {
+            CredentialSource::Keychain { profile_name } => {
+                credentials::store_credential(
+                    profile_name,
+                    "oauth_token",
+                    &serde_json::to_string(token)?,
+                )?;
+            }
+            #[cfg(test)]
+            CredentialSource::Direct { .. } => {}
         }
         Ok(())
     }
@@ -555,7 +602,7 @@ fn stored_to_cached(stored: &StoredOAuthToken) -> CachedToken {
                 Instant::now() - Duration::from_secs(1)
             }
         })
-        .unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
+        .unwrap_or_else(|| Instant::now() + Duration::from_secs(STORED_TOKEN_FALLBACK_TTL_SECS));
 
     CachedToken {
         access_token: stored.access_token.clone(),
@@ -716,6 +763,40 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // --- Unit tests ---
+
+    #[test]
+    fn stored_oauth_token_debug_redacts_secret_values() {
+        let token = StoredOAuthToken {
+            access_token: "access-secret-value".to_string(),
+            refresh_token: Some("refresh-secret-value".to_string()),
+            token_type: Some("Bearer".to_string()),
+            expires_at: Some(1_725_000_000),
+            scope: Some("useraccount".to_string()),
+        };
+
+        let debug = format!("{token:?}");
+
+        assert!(!debug.contains("access-secret-value"));
+        assert!(!debug.contains("refresh-secret-value"));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("Bearer"));
+        assert!(debug.contains("useraccount"));
+    }
+
+    #[test]
+    fn cached_oauth_token_debug_redacts_secret_values() {
+        let token = CachedToken {
+            access_token: "cached-access-secret".to_string(),
+            refresh_token: Some("cached-refresh-secret".to_string()),
+            expires_at: Instant::now(),
+        };
+
+        let debug = format!("{token:?}");
+
+        assert!(!debug.contains("cached-access-secret"));
+        assert!(!debug.contains("cached-refresh-secret"));
+        assert!(debug.contains("<redacted>"));
+    }
 
     #[test]
     fn test_urlencoded_simple() {

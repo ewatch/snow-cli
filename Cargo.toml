@@ -7,6 +7,28 @@ license = "MIT"
 repository = "https://github.com/ewatch/snow-cli"
 homepage = "https://github.com/ewatch/snow-cli"
 categories = ["command-line-utilities"]
+keywords = ["servicenow", "cli", "automation", "agent", "rust"]
+
+[lints.rust]
+future_incompatible = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[lints.clippy]
+complexity = "warn"
+correctness = "warn"
+dbg_macro = "warn"
+perf = "warn"
+style = "warn"
+suspicious = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "warn"
 
 [[bin]]
 name = "snow-cli"

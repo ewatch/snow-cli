@@ -285,7 +285,10 @@ async fn handle_init(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "legacy profile init forwards clap options until profile option plumbing is deepened"
+)]
 async fn handle_init_with_oauth_options(
     config_path: &Path,
     instance: Option<String>,
@@ -356,7 +359,10 @@ async fn handle_init_with_oauth_options(
 }
 
 /// `profile set <name>` — Create or update a named profile (legacy upsert).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test-only legacy profile set adapter mirrors the clap option surface"
+)]
 #[cfg(test)]
 async fn handle_set_profile(
     config_path: &Path,
@@ -389,7 +395,10 @@ async fn handle_set_profile(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "profile add forwards clap options until a profile edit request type exists"
+)]
 async fn handle_add_profile_with_oauth_options(
     config_path: &Path,
     name: String,
@@ -434,7 +443,10 @@ async fn handle_add_profile_with_oauth_options(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "profile edit forwards clap options until a profile edit request type exists"
+)]
 async fn handle_edit_profile_with_oauth_options(
     config_path: &Path,
     name: String,
@@ -479,7 +491,10 @@ async fn handle_edit_profile_with_oauth_options(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "profile upsert merges many optional clap fields until profile edits are modeled as a request"
+)]
 async fn handle_set_profile_with_oauth_options(
     config_path: &Path,
     name: String,

@@ -16,8 +16,19 @@ use tokio::time::{sleep, timeout};
 use crate::snu::bridge::SnuBridge;
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
+/// Loopback-only IPC port for snow-cli commands to talk to the auto-started
+/// broker. This intentionally differs from the SN-Utils browser bridge port so
+/// command clients never compete with the helper tab for the same listener.
 pub const DEFAULT_SNU_BROKER_ADDR: &str = "127.0.0.1:1979";
+
+/// Auto-started brokers should be ready almost immediately after spawn; a short
+/// readiness window keeps normal commands responsive when the child process
+/// fails to bind or exits early.
 const BROKER_READY_TIMEOUT_SECS: u64 = 5;
+
+/// Keep the broker around long enough for a short burst of agent commands to
+/// reuse one helper-tab session, then shut it down so stale `g_ck` state and
+/// loopback listeners do not live for the whole desktop session.
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 1800;
 /// File name for the on-disk session cache under `~/.servicenow/`.
 const SESSIONS_FILE_NAME: &str = "snu-broker-sessions.json";
@@ -247,6 +258,7 @@ impl BrokerState {
     }
 }
 
+#[derive(Debug)]
 pub struct BrokerBridge {
     addr: String,
 }

@@ -61,7 +61,11 @@ pub async fn handle(
             data,
             fail_on_error,
         } => {
-            tracing::info!("Loading data into staging table: {}", table);
+            tracing::info!(
+                event = "import_set.load",
+                table = %table,
+                "loading data into staging table"
+            );
             validate_table_name(&table)?;
 
             let body = read_data(data)?;
@@ -93,7 +97,11 @@ pub async fn handle(
             Ok(())
         }
         crate::cli::args::ImportSetCommands::Transform { sys_id } => {
-            tracing::info!("Transforming import set: {}", sys_id);
+            tracing::info!(
+                event = "import_set.transform",
+                sys_id = %sys_id,
+                "transforming import set"
+            );
             validate_path_segment("import set sys_id", &sys_id)?;
             anyhow::bail!(
                 "`import-set transform` is not implemented yet for import set '{}'. Live validation on the `sprint` instance showed that POST /api/now/import/{{table}} already ran the transform automatically, and a separate supported REST transform trigger has not been wired into the CLI yet.",

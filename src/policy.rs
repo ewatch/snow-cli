@@ -311,10 +311,22 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             | SnuCommands::AppMeta { .. }
             | SnuCommands::Query { .. }
             | SnuCommands::Schema { .. }
-            | SnuCommands::Slash { .. }
-            | SnuCommands::Tab(_)
-            | SnuCommands::Screenshot { .. }
-            | SnuCommands::Broker(_) => PolicyDecision::Allow,
+            | SnuCommands::Screenshot { .. } => PolicyDecision::Allow,
+            SnuCommands::Slash { .. } => deny(
+                "snu slash",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow browser slash-command execution through SN-Utils",
+            ),
+            SnuCommands::Tab(_) => deny(
+                "snu tab",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow browser tab control through SN-Utils",
+            ),
+            SnuCommands::Broker(_) => deny(
+                "snu broker",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow SN-Utils broker management",
+            ),
             SnuCommands::UpdateRecord { .. } => deny(
                 "snu update-record",
                 CommandCapability::RemoteWrite,
@@ -521,6 +533,31 @@ mod tests {
                 code: Some("gs.info('x')".to_string()),
                 timeout_secs: 1,
             },
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::Slash {
+                command: "/tn".to_string(),
+                url: "https://*.service-now.com/*".to_string(),
+                tab_id: None,
+                no_auto_run: false,
+                timeout_secs: 1,
+            },
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::Tab(SnuTabArgs {
+                command: SnuTabCommands::Activate {
+                    url: "https://dev.service-now.com/*".to_string(),
+                    reload: false,
+                    wait_for_load: false,
+                    open_if_not_found: false,
+                    timeout_secs: 1,
+                },
+            }),
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::Broker(SnuBrokerArgs {
+                command: SnuBrokerCommands::Stop,
+            }),
         }));
     }
 
