@@ -9,5 +9,6 @@ pub mod import_set;
 pub mod scope;
 pub mod script;
 pub mod seed;
+pub mod skills;
 pub mod snu;
 pub mod table;

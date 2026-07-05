@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::cli::args::{
     ApiCommands, AttachmentCommands, AuthCommands, CodesearchCommands, Commands, ConfigCommands,
     DataCommands, ImportSetCommands, ProfileSdkCommands, ScopeCommands, ScriptCommands,
-    SeedCommands, SnuCommands, SnuContextCommands, TableCommands,
+    SeedCommands, SkillCommands, SnuCommands, SnuContextCommands, TableCommands,
 };
 
 static ACTIVE_POLICY_MODE: AtomicU8 = AtomicU8::new(PolicyMode::FullAccess as u8);
@@ -347,6 +347,9 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 CommandCapability::RemoteWrite,
                 "read-only policy does not allow attachment uploads",
             ),
+        },
+        Commands::Skill(args) => match &args.command {
+            SkillCommands::Install { .. } => PolicyDecision::Allow,
         },
         Commands::Completions { .. } => PolicyDecision::Allow,
     }
