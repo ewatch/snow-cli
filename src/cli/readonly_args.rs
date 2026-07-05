@@ -28,9 +28,10 @@ pub struct ReadOnlyCli {
     #[arg(long, global = true)]
     pub instance: Option<String>,
 
-    /// Output format
-    #[arg(long, alias = "format", global = true, default_value = "json")]
-    pub output: OutputFormat,
+    /// Output format. When omitted, resolves via SNOW_CLI_OUTPUT, then the
+    /// configured default (`config output`), then falls back to json.
+    #[arg(long, alias = "format", global = true)]
+    pub output: Option<OutputFormat>,
 
     /// Override the HTTP request timeout in seconds
     #[arg(long, global = true)]
@@ -508,7 +509,7 @@ impl ReadOnlyCli {
         crate::cli::args::Cli {
             profile: None,
             instance: None,
-            output: OutputFormat::Json,
+            output: None,
             timeout_secs: None,
             read_only: true,
             verbose: 0,

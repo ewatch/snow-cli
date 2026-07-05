@@ -34,6 +34,7 @@ const API_AFTER_HELP: &str = "Examples:\n  snow-cli api get /api/now/table/incid
 const SCRIPT_RUN_AFTER_HELP: &str = "Examples:\n  snow-cli script run --code 'gs.info(\"hello from snow-cli\")'\n  snow-cli script run --file ./cleanup.js --sandbox\n  printf '%s' 'gs.info(\"from stdin\")' | snow-cli script run --scope x_my_app\n  snow-cli script run --code 'gs.print(\"done\")' --rollback --quota-managed-transaction\n\nNotes:\n  - `script run` executes a background script directly against the ServiceNow instance.\n  - If you are using SN-Utils, the `snu` command family is for browser/session helper actions, not background scripts.";
 
 const SNU_AFTER_HELP: &str = "Examples:\n  snow-cli snu check-connection\n  snow-cli snu get-instance-info\n  snow-cli snu list-tables\n  snow-cli snu create-record incident --data '{\"short_description\":\"Created via snu\"}'\n  snow-cli snu app-meta x_my_app\n  snow-cli snu get-record incident 46d44a1b1b223010d9f2ed7c2e4bcb1 --fields sys_id,number,short_description\n  snow-cli snu update-record sys_script_include 46d44a1b1b223010d9f2ed7c2e4bcb1 --field script --content 'gs.info(\"hello\")'\n  snow-cli snu update-record sp_widget 46d44a1b1b223010d9f2ed7c2e4bcb1 --data '{\"script\":\"data.hello = \\\"world\\\";\",\"css\":\".c1 { color: red; }\"}'\n  snow-cli snu delete-record incident 46d44a1b1b223010d9f2ed7c2e4bcb1\n  snow-cli snu wait-token\n  snow-cli snu query incident --query 'active=true' --fields sys_id,number --limit 10\n  snow-cli snu schema incident\n  snow-cli snu execute-bg-script --code 'gs.info(\"hello from SN-Utils\")'\n  snow-cli snu slash /tn\n  snow-cli snu tab activate 'https://dev12345.service-now.com/incident.do*' --open-if-not-found\n  snow-cli snu context switch application x_my_app --tab-url 'https://dev12345.service-now.com/*'\n  snow-cli snu screenshot --url 'https://dev12345.service-now.com/*' --out incident.png\n  snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png\n  snow-cli --instance https://dev12345.service-now.com snu query incident --query 'active=true'\n  snow-cli snu broker status\n  snow-cli snu broker clear --instance https://dev12345.service-now.com\n\nNotes:\n  - SN-Utils must be installed in the browser and the SN-Utils ScriptSync helper tab must be open. Commands auto-start a local broker that owns the SN-Utils WebSocket port and waits for helper/session metadata as needed; run /token in a ServiceNow tab if prompted.\n  - When the SN-Utils tab is a portal to several instances, pass the global `--instance <url-or-host>` to pick which instance's browser session is used; without it, commands target the most recently active instance. `snu broker status` lists every instance that currently has a live g_ck.\n  - `snu broker clear [--instance <url>]` drops cached browser sessions from broker memory and disk (all instances, or just one); the next command re-prompts for /token.\n  - The g_ck token is treated as live browser-session metadata only. The broker keeps it in memory per instance and, by default, also caches it in a 0600 file under ~/.servicenow/ so a single /token survives across commands and broker restarts (set SNOW_CLI_SNU_BROKER_PERSIST=0 to keep it memory-only). It is never stored in the OS keychain or used as a standalone reusable credential.\n  - `script run` is the direct background-script command; `snu execute-bg-script` runs the same kind of server-side script through the browser helper tab.\n  - `snu check-connection` and `snu get-instance-info` are lightweight diagnostics for the websocket bridge and browser session.\n  - `snu list-tables`, `snu get-record`, `snu create-record`, `snu update-record`, `snu delete-record`, and `snu app-meta` map to SN-Utils helper/browser-session actions.\n  - The broker binds 127.0.0.1:1978, the port hard-coded by SN-Utils scriptsync.html, and shuts down after an idle timeout (default 1800s, override with SNOW_CLI_SNU_BROKER_IDLE_SECS). Use `snu broker status` or `snu broker stop` if something unexpected happens. Stop sn-scriptsync first if it owns that port.";
+const SKILL_AFTER_HELP: &str = "Examples:\n  snow-cli skill install ./skills/snow-cli --target-dir ./.codex/skills --pack table-api\n  snow-cli skill install https://example.com/snow-cli/skill.toml --target codex --all-packs\n\nNotes:\n  - URL sources point to a skill.toml manifest. Listed files are fetched relative to that manifest URL.\n  - Installation validates manifest paths, declared digests, and symlink safety. snow-cli does not run skill scanners or LLM evals.";
 pub const DEFAULT_SNU_TIMEOUT_SECS: u64 = 180;
 /// Default sysparm_fields used by snu record reads (query, get-record).
 pub const DEFAULT_SNU_FIELDS: &str = "sys_id,number,short_description";
@@ -56,9 +57,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub instance: Option<String>,
 
-    /// Output format
-    #[arg(long, alias = "format", global = true, default_value = "json")]
-    pub output: OutputFormat,
+    /// Output format. When omitted, resolves via SNOW_CLI_OUTPUT, then the
+    /// configured default (`config output`), then falls back to json.
+    #[arg(long, alias = "format", global = true)]
+    pub output: Option<OutputFormat>,
 
     /// Override the HTTP request timeout in seconds
     #[arg(long, global = true)]
@@ -76,13 +78,51 @@ pub struct Cli {
     pub command: Commands,
 }
 
-#[derive(Debug, Clone, clap::ValueEnum)]
+#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
 pub enum OutputFormat {
     Json,
     Csv,
     Jsonl,
     Toon,
     Text,
+    /// Pick the most token-efficient lossless format per payload (TOON/JSONL/JSON).
+    Auto,
+}
+
+impl OutputFormat {
+    /// Canonical lowercase name, used for config storage and diagnostics.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OutputFormat::Json => "json",
+            OutputFormat::Csv => "csv",
+            OutputFormat::Jsonl => "jsonl",
+            OutputFormat::Toon => "toon",
+            OutputFormat::Text => "text",
+            OutputFormat::Auto => "auto",
+        }
+    }
+
+    /// Parse a format name leniently, returning `None` for unknown values
+    /// instead of erroring. Used when interpreting env vars and config values
+    /// so a stray value degrades gracefully rather than failing the command.
+    pub fn from_str_opt(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "json" => Some(OutputFormat::Json),
+            "csv" => Some(OutputFormat::Csv),
+            "jsonl" => Some(OutputFormat::Jsonl),
+            "toon" => Some(OutputFormat::Toon),
+            "text" => Some(OutputFormat::Text),
+            "auto" => Some(OutputFormat::Auto),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum SkillTarget {
+    Codex,
+    Claude,
+    Agents,
 }
 
 #[derive(Subcommand, Debug)]
@@ -124,11 +164,52 @@ pub enum Commands {
     /// Use the SN-Utils browser extension helper tab directly (without sn-scriptsync)
     Snu(SnuArgs),
 
+    /// Install agent skills from local bundles or URL-hosted manifests
+    Skill(SkillArgs),
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: Shell,
+    },
+}
+
+// --- Skill ---
+
+#[derive(Args, Debug)]
+#[command(after_help = SKILL_AFTER_HELP)]
+pub struct SkillArgs {
+    #[command(subcommand)]
+    pub command: SkillCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SkillCommands {
+    /// Install a skill bundle from a local path or URL-hosted skill.toml manifest
+    Install {
+        /// Local bundle path, local skill.toml path, file:// URL, or http(s) URL to skill.toml
+        source: String,
+
+        /// Install root directory. The skill is installed under <target-dir>/<skill-name>
+        #[arg(long)]
+        target_dir: Option<std::path::PathBuf>,
+
+        /// Known agent target root (codex, claude, or agents). Use --target-dir for custom paths
+        #[arg(long, value_enum)]
+        target: Option<SkillTarget>,
+
+        /// Override the installed directory name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Install a specific pack under packs/<name>. Repeat to install several packs
+        #[arg(long)]
+        pack: Vec<String>,
+
+        /// Install every pack declared by the bundle
+        #[arg(long)]
+        all_packs: bool,
     },
 }
 
@@ -426,6 +507,18 @@ pub enum ConfigCommands {
         /// New default profile to set when deleting the current default profile
         #[arg(long)]
         new_default: Option<String>,
+    },
+
+    /// Show or set the default output format used when --output is not passed
+    Output {
+        /// Format to persist as the default (json, csv, jsonl, toon, text, auto).
+        /// Omit to show the current setting.
+        #[arg(value_enum)]
+        format: Option<OutputFormat>,
+
+        /// Clear the configured default, reverting to the built-in fallback (json)
+        #[arg(long, conflicts_with = "format")]
+        reset: bool,
     },
 }
 
@@ -1527,16 +1620,23 @@ mod tests {
     #[test]
     fn test_parse_output_format() {
         let cli = Cli::parse_from(["snow-cli", "--output", "csv", "config", "show"]);
-        assert!(matches!(cli.output, OutputFormat::Csv));
+        assert!(matches!(cli.output, Some(OutputFormat::Csv)));
 
         let cli = Cli::parse_from(["snow-cli", "--output", "jsonl", "config", "show"]);
-        assert!(matches!(cli.output, OutputFormat::Jsonl));
+        assert!(matches!(cli.output, Some(OutputFormat::Jsonl)));
 
         let cli = Cli::parse_from(["snow-cli", "--output", "toon", "config", "show"]);
-        assert!(matches!(cli.output, OutputFormat::Toon));
+        assert!(matches!(cli.output, Some(OutputFormat::Toon)));
+
+        let cli = Cli::parse_from(["snow-cli", "--output", "auto", "config", "show"]);
+        assert!(matches!(cli.output, Some(OutputFormat::Auto)));
 
         let cli = Cli::parse_from(["snow-cli", "--format", "jsonl", "config", "show"]);
-        assert!(matches!(cli.output, OutputFormat::Jsonl));
+        assert!(matches!(cli.output, Some(OutputFormat::Jsonl)));
+
+        // Omitting --output leaves it unset so config/env can supply a default.
+        let cli = Cli::parse_from(["snow-cli", "config", "show"]);
+        assert!(cli.output.is_none());
     }
 
     #[test]

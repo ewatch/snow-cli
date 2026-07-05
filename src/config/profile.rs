@@ -23,6 +23,13 @@ pub struct AppConfig {
     /// Name of the default profile to use.
     pub default_profile: String,
 
+    /// Default output format used when `--output` is not passed and
+    /// `SNOW_CLI_OUTPUT` is unset. Stored as a raw string (not the enum) so a
+    /// hand-edited or unknown value degrades gracefully at resolution time
+    /// instead of failing to parse the whole config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_output: Option<String>,
+
     /// Map of profile name to profile configuration.
     #[serde(default)]
     pub profiles: HashMap<String, Profile>,
@@ -389,6 +396,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_output_is_stored_as_raw_string_and_tolerant() {
+        // A known value round-trips.
+        let cfg: AppConfig =
+            toml::from_str("default_profile = \"dev\"\ndefault_output = \"toon\"\n").unwrap();
+        assert_eq!(cfg.default_output.as_deref(), Some("toon"));
+
+        // An unknown value must NOT fail the parse (decision: tolerant field);
+        // it is preserved verbatim and interpreted leniently at resolution time.
+        let cfg: AppConfig =
+            toml::from_str("default_profile = \"dev\"\ndefault_output = \"not_a_format\"\n").unwrap();
+        assert_eq!(cfg.default_output.as_deref(), Some("not_a_format"));
+
+        // Absent field defaults to None and is omitted on serialize.
+        let cfg: AppConfig = toml::from_str("default_profile = \"dev\"\n").unwrap();
+        assert!(cfg.default_output.is_none());
+        let serialized = toml::to_string(&cfg).unwrap();
+        assert!(!serialized.contains("default_output"));
+    }
+
+    #[test]
     fn test_validate_instance_url_accepts_https_and_loopback_http() {
         assert_eq!(
             validate_instance_url("https://dev.service-now.com/").unwrap(),
@@ -420,6 +447,7 @@ mod tests {
     fn test_toml_round_trip() {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
+            default_output: None,
             profiles: HashMap::new(),
         };
         config.profiles.insert(
@@ -454,6 +482,7 @@ mod tests {
     fn test_active_profile_with_override() {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
+            default_output: None,
             profiles: HashMap::new(),
         };
         config.profiles.insert(
@@ -523,6 +552,7 @@ mod tests {
     fn test_resolve_active_profile_name_uses_default() {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
+            default_output: None,
             profiles: HashMap::new(),
         };
         config.profiles.insert(
@@ -551,6 +581,7 @@ mod tests {
     fn test_resolve_active_profile_name_fails_for_unknown_override() {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
+            default_output: None,
             profiles: HashMap::new(),
         };
         config.profiles.insert(
@@ -582,6 +613,7 @@ mod tests {
     fn test_profile_not_found_message_includes_suggestion() {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
+            default_output: None,
             profiles: HashMap::new(),
         };
         config.profiles.insert(

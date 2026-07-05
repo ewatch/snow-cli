@@ -295,7 +295,7 @@ async fn handle_list(
     let payload = list_scopes(profile, instance, timeout_secs, search, kinds).await?;
 
     match format {
-        OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Toon => {
+        OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Toon | OutputFormat::Auto => {
             output::print_output(&payload, format)
         }
         OutputFormat::Csv => output::print_list(&payload.rows, format),
@@ -330,7 +330,7 @@ async fn handle_inspect(
     };
 
     match format {
-        OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Toon => {
+        OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Toon | OutputFormat::Auto => {
             output::print_output(&payload, format)
         }
         OutputFormat::Csv => {
@@ -354,7 +354,7 @@ async fn handle_inventory(
     let rows = collected.to_inventory_rows();
 
     match format {
-        OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Toon => {
+        OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Toon | OutputFormat::Auto => {
             let payload = ScopeInventoryOutput {
                 scope: collected.scope,
                 summary: collected.summary,

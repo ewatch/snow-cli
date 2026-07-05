@@ -1124,6 +1124,10 @@ fn print_background_script_response(
             Ok(json) => print_output(&json, output_format)?,
             Err(_) => println!("{}", data),
         },
+        OutputFormat::Auto => match serde_json::from_str::<Value>(data) {
+            Ok(json) => print_output(&json, output_format)?,
+            Err(_) => println!("{}", data),
+        },
     }
 
     Ok(())
