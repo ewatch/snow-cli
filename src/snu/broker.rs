@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow};
@@ -13,7 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout};
 
-use crate::snu::bridge::SnuBridge;
+use crate::snu::bridge::{BridgeConfig, BridgeError, BridgeManager, Matcher};
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
 pub const DEFAULT_SNU_BROKER_ADDR: &str = "127.0.0.1:1979";
@@ -109,24 +108,21 @@ pub struct InstanceSummary {
     pub is_latest: bool,
 }
 
-/// Shared broker handle. The live helper-tab socket lives behind its own mutex,
-/// separate from the bookkeeping `state`, so a long-running bridge action holds
-/// only the `bridge` lock — control requests (`status`/`stop`/`ping`) and
-/// session bookkeeping take the short `state` lock and never queue behind it.
-/// `bridge_connected` mirrors whether `bridge` holds a live socket so `status`
-/// can report it without ever touching (and blocking on) the `bridge` lock.
+/// Shared broker handle. The helper-tab WebSocket is owned by the
+/// [`BridgeManager`], which runs its own accept/read/heartbeat tasks for the
+/// broker's whole lifetime, so dispatch never serializes on a bridge lock and
+/// control requests (`status`/`stop`/`ping`) only ever take the short `state`
+/// lock.
 struct Broker {
     state: Mutex<BrokerState>,
-    bridge: Mutex<Option<SnuBridge>>,
-    bridge_connected: AtomicBool,
+    manager: BridgeManager,
 }
 
 impl Broker {
-    fn new(idle_timeout: Duration) -> Self {
+    fn new(idle_timeout: Duration, manager: BridgeManager) -> Self {
         Self {
             state: Mutex::new(BrokerState::new(idle_timeout)),
-            bridge: Mutex::new(None),
-            bridge_connected: AtomicBool::new(false),
+            manager,
         }
     }
 }
@@ -437,7 +433,8 @@ pub async fn run_broker_server() -> anyhow::Result<()> {
         .with_context(|| {
             format!("failed to bind SN-Utils broker IPC on {DEFAULT_SNU_BROKER_ADDR}")
         })?;
-    let broker = Arc::new(Broker::new(idle_timeout));
+    let (manager, mut sessions_rx) = BridgeManager::start(BridgeConfig::default());
+    let broker = Arc::new(Broker::new(idle_timeout, manager));
 
     // Reload any persisted browser sessions so a freshly (re)spawned broker
     // doesn't force a new `/token` for instances that already authenticated.
@@ -448,6 +445,21 @@ pub async fn run_broker_server() -> anyhow::Result<()> {
             .await
             .restore_sessions(persisted.sessions, persisted.latest_origin);
     }
+
+    // Cache every session the helper socket ever carries — including a `/token`
+    // pushed while an unrelated request was in flight, which previously was
+    // silently dropped.
+    let session_broker = Arc::clone(&broker);
+    tokio::spawn(async move {
+        while let Some(instance) = sessions_rx.recv().await {
+            session_broker
+                .state
+                .lock()
+                .await
+                .remember_session(&instance);
+            persist_broker_sessions(&session_broker).await;
+        }
+    });
 
     let idle_broker = Arc::clone(&broker);
 
@@ -562,9 +574,9 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
     match request {
         BrokerRequest::Ping => Ok(ok_response()),
         BrokerRequest::Status => {
-            // Read connectivity from the atomic mirror so `status` never blocks
-            // on the bridge lock while a long-running action holds it.
-            let browser_connected = broker.bridge_connected.load(Ordering::Relaxed);
+            // The manager tracks connectivity from its own accept/read loops,
+            // so this reflects the actual socket state, not a guess.
+            let browser_connected = broker.manager.is_connected();
             let state = broker.state.lock().await;
             Ok(BrokerResponse {
                 ok: true,
@@ -581,14 +593,13 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
         }
         BrokerRequest::SendBanner {
             message,
-            timeout_secs,
+            timeout_secs: _,
         } => {
-            let mut guard = broker.bridge.lock().await;
-            let result = {
-                let bridge = ensure_bridge(broker, &mut guard, timeout_secs).await?;
-                bridge.send_banner(&message).await
-            };
-            clear_bridge_on_disconnect(broker, &mut guard, result)?;
+            // Strictly best-effort: shown immediately when a helper tab is
+            // connected, queued for the next connection otherwise. Never waits
+            // for a tab, so commands that can be served from the cached session
+            // no longer stall here.
+            broker.manager.send_banner(&message).await;
             Ok(ok_response())
         }
         BrokerRequest::WaitSession {
@@ -608,14 +619,10 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             let instance = match cached {
                 Some(instance) => instance,
                 None => {
-                    let mut guard = broker.bridge.lock().await;
-                    let result = {
-                        let bridge = ensure_bridge(broker, &mut guard, timeout_secs).await?;
-                        bridge
-                            .wait_for_session(timeout_secs, origin.as_deref())
-                            .await
-                    };
-                    clear_bridge_on_disconnect(broker, &mut guard, result)?
+                    broker
+                        .manager
+                        .wait_for_session(timeout_secs, origin.as_deref())
+                        .await?
                 }
             };
             broker.state.lock().await.remember_session(&instance);
@@ -633,15 +640,14 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             payload,
             timeout_secs,
         } => {
-            let message = {
-                let mut guard = broker.bridge.lock().await;
-                let result = {
-                    let bridge = ensure_bridge(broker, &mut guard, timeout_secs).await?;
-                    bridge.send_payload_and_wait(&payload, timeout_secs).await
-                };
-                clear_bridge_on_disconnect(broker, &mut guard, result)?
-            };
-            remember_message_session(broker, &message).await;
+            // Sessions embedded in replies are cached by the manager's
+            // sessions channel (see `run_broker_server`), which only accepts
+            // instances carrying a non-empty `g_ck` — a token-less instance
+            // echo can no longer clobber a cached token.
+            let message = broker
+                .manager
+                .request(&payload, Matcher::NextMessage, timeout_secs)
+                .await?;
             Ok(message_response(message))
         }
         BrokerRequest::SendAction {
@@ -652,7 +658,6 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             let message =
                 send_action_with_refresh(broker, &mut payload, &correlation_id, timeout_secs)
                     .await?;
-            remember_message_session(broker, &message).await;
             Ok(message_response(message))
         }
         BrokerRequest::SendActionForAction {
@@ -660,26 +665,17 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             expected_action,
             timeout_secs,
         } => {
-            let message = {
-                let mut guard = broker.bridge.lock().await;
-                let result = {
-                    let bridge = ensure_bridge(broker, &mut guard, timeout_secs).await?;
-                    bridge
-                        .send_action_and_wait_for_action(&payload, &expected_action, timeout_secs)
-                        .await
-                };
-                clear_bridge_on_disconnect(broker, &mut guard, result)?
-            };
-            remember_message_session(broker, &message).await;
+            let message = broker
+                .manager
+                .request(&payload, Matcher::Action(expected_action), timeout_secs)
+                .await?;
             Ok(message_response(message))
         }
         BrokerRequest::RefreshSession {
             timeout_secs,
             origin,
         } => {
-            let mut guard = broker.bridge.lock().await;
-            let instance =
-                refresh_session(broker, &mut guard, timeout_secs, origin.as_deref()).await?;
+            let instance = refresh_session(broker, timeout_secs, origin.as_deref()).await?;
             Ok(BrokerResponse {
                 ok: true,
                 error: None,
@@ -718,28 +714,26 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
 
 /// Send a bridge action, and if ServiceNow rejects the embedded `g_ck` as
 /// expired, evict the cached session, prompt the user to re-run `/token`, splice
-/// the fresh session into the payload, and retry exactly once. Holds the bridge
-/// lock for the whole exchange so the single helper socket is used exclusively.
+/// the fresh session into the payload, and retry exactly once.
 async fn send_action_with_refresh(
     broker: &Broker,
     payload: &mut Value,
     correlation_id: &str,
     timeout_secs: u64,
 ) -> anyhow::Result<SnuMessage> {
-    let mut guard = broker.bridge.lock().await;
-
-    let first = {
-        let bridge = ensure_bridge(broker, &mut guard, timeout_secs).await?;
-        bridge
-            .send_action_and_wait(payload, correlation_id, timeout_secs)
-            .await
-    };
-    let first = clear_bridge_on_disconnect(broker, &mut guard, first);
+    let first = broker
+        .manager
+        .request(
+            payload,
+            Matcher::Correlation(correlation_id.to_string()),
+            timeout_secs,
+        )
+        .await;
 
     match first {
         Ok(message) => Ok(message),
-        Err(error)
-            if is_stale_token_error(&error)
+        Err(BridgeError::ActionFailed(text))
+            if is_stale_token_text(&text)
                 && payload.get("instance").and_then(Value::as_object).is_some() =>
         {
             // Refresh only the instance this action targeted, so a `/token` from
@@ -750,20 +744,20 @@ async fn send_action_with_refresh(
                 .and_then(|instance| instance.get("url"))
                 .and_then(Value::as_str)
                 .and_then(normalize_origin);
-            let fresh =
-                refresh_session(broker, &mut guard, timeout_secs, target_origin.as_deref()).await?;
+            let fresh = refresh_session(broker, timeout_secs, target_origin.as_deref()).await?;
             if let Some(object) = payload.as_object_mut() {
                 object.insert("instance".to_string(), serde_json::to_value(&fresh)?);
             }
-            let retry = {
-                let bridge = ensure_bridge(broker, &mut guard, timeout_secs).await?;
-                bridge
-                    .send_action_and_wait(payload, correlation_id, timeout_secs)
-                    .await
-            };
-            clear_bridge_on_disconnect(broker, &mut guard, retry)
+            Ok(broker
+                .manager
+                .request(
+                    payload,
+                    Matcher::Correlation(correlation_id.to_string()),
+                    timeout_secs,
+                )
+                .await?)
         }
-        Err(error) => Err(error),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -771,11 +765,9 @@ async fn send_action_with_refresh(
 /// SN-Utils to push a fresh `/token`. When `origin` is `Some`, only that
 /// instance's session is evicted and only a matching `/token` is accepted, so
 /// other instances' cached tokens survive and the refresh can't return the wrong
-/// instance. `None` falls back to evicting every session. Operates on the
-/// caller-held bridge `guard`.
+/// instance. `None` falls back to evicting every session.
 async fn refresh_session(
     broker: &Broker,
-    guard: &mut Option<SnuBridge>,
     timeout_secs: u64,
     origin: Option<&str>,
 ) -> anyhow::Result<SnuInstance> {
@@ -791,70 +783,19 @@ async fn refresh_session(
         }
     }
 
-    let result = {
-        let bridge = ensure_bridge(broker, guard, timeout_secs).await?;
-        let _ = bridge.send_banner(TOKEN_EXPIRED_BANNER).await;
-        bridge.wait_for_session(timeout_secs, origin).await
-    };
-    let instance = clear_bridge_on_disconnect(broker, guard, result)?;
+    broker.manager.send_banner(TOKEN_EXPIRED_BANNER).await;
+    let instance = broker.manager.wait_for_session(timeout_secs, origin).await?;
     broker.state.lock().await.remember_session(&instance);
+    persist_broker_sessions(broker).await;
     Ok(instance)
 }
 
-async fn ensure_bridge<'a>(
-    broker: &Broker,
-    guard: &'a mut Option<SnuBridge>,
-    timeout_secs: u64,
-) -> anyhow::Result<&'a mut SnuBridge> {
-    if guard.is_none() {
-        *guard = Some(SnuBridge::accept(timeout_secs).await?);
-        broker.bridge_connected.store(true, Ordering::Relaxed);
-    }
-    guard
-        .as_mut()
-        .ok_or_else(|| anyhow!("SN-Utils broker has no active helper bridge"))
-}
-
-/// Drop the cached helper bridge when an operation fails because the socket
-/// itself is gone (the SN-Utils tab reloaded or closed), so the next request
-/// re-`accept`s the freshly reconnected tab instead of reusing a dead socket.
-/// Without this a single tab reload would wedge the broker until its idle
-/// timeout. Logical failures (action rejected, response timeout, expired token)
-/// are deliberately *not* treated as disconnects: clearing a still-connected
-/// bridge would block on an `accept` that never gets a second connection.
-/// `ensure_bridge` failures don't reach here because they never cache a bridge.
-fn clear_bridge_on_disconnect<T>(
-    broker: &Broker,
-    guard: &mut Option<SnuBridge>,
-    result: anyhow::Result<T>,
-) -> anyhow::Result<T> {
-    if let Err(error) = &result
-        && is_bridge_disconnect_error(error)
-    {
-        *guard = None;
-        broker.bridge_connected.store(false, Ordering::Relaxed);
-    }
-    result
-}
-
-/// `true` when an error indicates the helper-tab WebSocket is gone (as opposed
-/// to a logical/application error over a still-live socket).
-fn is_bridge_disconnect_error(error: &anyhow::Error) -> bool {
-    let text = error.to_string().to_lowercase();
-    text.contains("disconnected")
-        || text.contains("connection reset")
-        || text.contains("reset by peer")
-        || text.contains("broken pipe")
-        || text.contains("closed connection")
-        || text.contains("connection closed")
-        || text.contains("not connected")
-        || text.contains("connection refused")
-}
-
-/// `true` when ServiceNow rejected the request because the `g_ck` token is
-/// expired/invalid, meaning we should refresh it from SN-Utils and retry.
-fn is_stale_token_error(error: &anyhow::Error) -> bool {
-    let text = error.to_string().to_lowercase();
+/// `true` when the helper tab's error text says ServiceNow rejected the request
+/// because the `g_ck` token is expired/invalid, meaning we should refresh it
+/// from SN-Utils and retry. This classifies application-level error text, not
+/// socket state — socket death is a typed [`BridgeError`] from the manager.
+fn is_stale_token_text(text: &str) -> bool {
+    let text = text.to_lowercase();
     text.contains("http 401")
         || text.contains("http 403")
         || text.contains("not authenticated")
@@ -884,20 +825,32 @@ fn message_response(message: SnuMessage) -> BrokerResponse {
     }
 }
 
-async fn remember_message_session(broker: &Broker, message: &SnuMessage) {
-    if let Some(instance) = &message.instance {
-        broker.state.lock().await.remember_session(instance);
-        persist_broker_sessions(broker).await;
-    }
-}
-
+/// Probe the broker IPC with a full Ping round-trip. Merely being able to
+/// connect is not enough: any process could own the port, and treating a
+/// foreign listener as a live broker would make every subsequent request fail
+/// confusingly. Requiring a parseable `ok` response also flushes out a stale
+/// broker that accepts but no longer answers.
 async fn connect_once() -> anyhow::Result<()> {
-    let mut stream = TcpStream::connect(DEFAULT_SNU_BROKER_ADDR).await?;
+    let stream = TcpStream::connect(DEFAULT_SNU_BROKER_ADDR).await?;
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+
     let request = serde_json::to_string(&BrokerRequest::Ping)?;
-    stream.write_all(request.as_bytes()).await?;
-    stream.write_all(b"\n").await?;
-    stream.flush().await?;
-    Ok(())
+    write_half.write_all(request.as_bytes()).await?;
+    write_half.write_all(b"\n").await?;
+    write_half.flush().await?;
+
+    let mut line = String::new();
+    timeout(Duration::from_secs(2), reader.read_line(&mut line))
+        .await
+        .map_err(|_| anyhow!("SN-Utils broker did not answer ping"))??;
+    let response: BrokerResponse = serde_json::from_str(&line)
+        .context("unexpected ping response on the SN-Utils broker port")?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(anyhow!("SN-Utils broker rejected ping"))
+    }
 }
 
 fn spawn_broker() -> anyhow::Result<()> {
