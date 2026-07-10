@@ -63,6 +63,11 @@ enum BrokerRequest {
         #[serde(default)]
         origin: Option<String>,
     },
+    VerifySession {
+        timeout_secs: u64,
+        #[serde(default)]
+        origin: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,6 +83,8 @@ struct BrokerResponse {
     status: Option<BrokerStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cleared: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token_valid: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +109,25 @@ pub struct InstanceSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     pub is_latest: bool,
+    /// Epoch seconds the current `g_ck` arrived over the helper socket. `None`
+    /// for sessions restored from the disk cache (age unknown until the next
+    /// `/token` or successful action).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_at: Option<u64>,
+    /// Epoch seconds of the last action ServiceNow accepted with this session.
+    /// `None` means the token has not been proven valid in this broker's
+    /// lifetime — a good moment for `check-connection --verify`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verified_at: Option<u64>,
+}
+
+/// In-memory freshness bookkeeping for one origin's session. Deliberately not
+/// persisted: after a broker restart the session is "cold" (age unknown,
+/// unverified), which is exactly when a validity probe is worth running.
+#[derive(Debug, Clone, Copy, Default)]
+struct SessionMeta {
+    captured_at: Option<u64>,
+    last_verified_at: Option<u64>,
 }
 
 /// Shared broker handle. The helper-tab WebSocket is owned by the
@@ -125,6 +151,7 @@ impl Broker {
 
 struct BrokerState {
     sessions_by_origin: HashMap<String, SnuInstance>,
+    meta_by_origin: HashMap<String, SessionMeta>,
     latest_origin: Option<String>,
     last_activity: Instant,
     active_clients: usize,
@@ -137,6 +164,7 @@ impl BrokerState {
     fn new(idle_timeout: Duration) -> Self {
         Self {
             sessions_by_origin: HashMap::new(),
+            meta_by_origin: HashMap::new(),
             latest_origin: None,
             last_activity: Instant::now(),
             active_clients: 0,
@@ -150,15 +178,20 @@ impl BrokerState {
         let mut instances: Vec<InstanceSummary> = self
             .sessions_by_origin
             .iter()
-            .map(|(origin, instance)| InstanceSummary {
-                url: instance.url.clone(),
-                origin: origin.clone(),
-                has_g_ck: instance
-                    .g_ck
-                    .as_deref()
-                    .is_some_and(|token| !token.is_empty()),
-                scope: instance.scope.clone(),
-                is_latest: self.latest_origin.as_deref() == Some(origin.as_str()),
+            .map(|(origin, instance)| {
+                let meta = self.meta_by_origin.get(origin).copied().unwrap_or_default();
+                InstanceSummary {
+                    url: instance.url.clone(),
+                    origin: origin.clone(),
+                    has_g_ck: instance
+                        .g_ck
+                        .as_deref()
+                        .is_some_and(|token| !token.is_empty()),
+                    scope: instance.scope.clone(),
+                    is_latest: self.latest_origin.as_deref() == Some(origin.as_str()),
+                    captured_at: meta.captured_at,
+                    last_verified_at: meta.last_verified_at,
+                }
             })
             .collect();
         instances.sort_by(|a, b| a.origin.cmp(&b.origin));
@@ -184,9 +217,37 @@ impl BrokerState {
 
     fn remember_session(&mut self, instance: &SnuInstance) {
         if let Some(origin) = normalize_origin(&instance.url) {
+            // Only a *changed* token resets the freshness clock: WaitSession
+            // re-remembers cached sessions on every command, and that must not
+            // make an old token look newly captured (or wipe its verification).
+            let token_changed = self
+                .sessions_by_origin
+                .get(&origin)
+                .is_none_or(|existing| existing.g_ck != instance.g_ck);
+            if token_changed {
+                self.meta_by_origin.insert(
+                    origin.clone(),
+                    SessionMeta {
+                        captured_at: Some(now_epoch_secs()),
+                        last_verified_at: None,
+                    },
+                );
+            }
             self.sessions_by_origin
                 .insert(origin.clone(), instance.clone());
             self.latest_origin = Some(origin);
+        }
+    }
+
+    /// Record that ServiceNow just accepted an action with this origin's
+    /// session, so freshness reporting (and future probe decisions) can tell a
+    /// proven-live token from one that has merely not failed yet.
+    fn mark_verified(&mut self, origin: &str) {
+        if self.sessions_by_origin.contains_key(origin) {
+            self.meta_by_origin
+                .entry(origin.to_string())
+                .or_default()
+                .last_verified_at = Some(now_epoch_secs());
         }
     }
 
@@ -206,6 +267,7 @@ impl BrokerState {
     /// removed entry. Returns `true` when something was actually removed.
     fn clear_origin(&mut self, origin: &str) -> bool {
         let removed = self.sessions_by_origin.remove(origin).is_some();
+        self.meta_by_origin.remove(origin);
         if self.latest_origin.as_deref() == Some(origin) {
             self.latest_origin = self.sessions_by_origin.keys().next().cloned();
         }
@@ -216,6 +278,7 @@ impl BrokerState {
     fn clear_all(&mut self) -> Vec<String> {
         let cleared = self.sessions_by_origin.keys().cloned().collect();
         self.sessions_by_origin.clear();
+        self.meta_by_origin.clear();
         self.latest_origin = None;
         cleared
     }
@@ -334,6 +397,24 @@ impl BrokerBridge {
         .await?
         .instance
         .ok_or_else(|| anyhow!("SN-Utils broker did not return a refreshed session"))
+    }
+
+    /// Actively check whether the cached session's `g_ck` is still accepted by
+    /// ServiceNow, via a cheap probe query through the helper tab. `Ok(true)`
+    /// means the token is proven live; `Ok(false)` means ServiceNow rejected it
+    /// and only then is a `/token` re-run warranted.
+    pub async fn verify_session(
+        &self,
+        timeout_secs: u64,
+        origin: Option<String>,
+    ) -> anyhow::Result<bool> {
+        self.request(BrokerRequest::VerifySession {
+            timeout_secs,
+            origin,
+        })
+        .await?
+        .token_valid
+        .ok_or_else(|| anyhow!("SN-Utils broker did not return a verification result"))
     }
 
     /// Drop cached browser sessions from broker memory. `origin = None` clears
@@ -521,6 +602,7 @@ async fn handle_client_inner(stream: TcpStream, broker: Arc<Broker>) -> anyhow::
             instance: None,
             status: None,
             cleared: None,
+            token_valid: None,
         },
     };
 
@@ -567,6 +649,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 instance: None,
                 status: Some(state.status(browser_connected)),
                 cleared: None,
+                token_valid: None,
             })
         }
         BrokerRequest::Stop => {
@@ -616,6 +699,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 instance: Some(instance),
                 status: None,
                 cleared: None,
+                token_valid: None,
             })
         }
         BrokerRequest::SendAction {
@@ -651,6 +735,37 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 instance: Some(instance),
                 status: None,
                 cleared: None,
+                token_valid: None,
+            })
+        }
+        BrokerRequest::VerifySession {
+            timeout_secs,
+            origin,
+        } => {
+            let session = {
+                let state = broker.state.lock().await;
+                match origin.as_deref() {
+                    Some(origin) => state.session_for_origin(origin),
+                    None => state.latest_session(),
+                }
+            };
+            let Some(instance) = session else {
+                return Err(anyhow!(
+                    "no SN-Utils browser session to verify. Run /token in a ServiceNow tab first."
+                ));
+            };
+            let valid = probe_session(broker, &instance, timeout_secs).await?;
+            if valid && let Some(origin) = normalize_origin(&instance.url) {
+                broker.state.lock().await.mark_verified(&origin);
+            }
+            Ok(BrokerResponse {
+                ok: true,
+                error: None,
+                message: None,
+                instance: None,
+                status: None,
+                cleared: None,
+                token_valid: Some(valid),
             })
         }
         BrokerRequest::ClearSessions { origin } => {
@@ -675,14 +790,32 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 instance: None,
                 status: None,
                 cleared: Some(cleared),
+                token_valid: None,
             })
         }
     }
 }
 
-/// Send a bridge action, and if ServiceNow rejects the embedded `g_ck` as
-/// expired, evict the cached session, prompt the user to re-run `/token`, splice
-/// the fresh session into the payload, and retry exactly once.
+/// Pause before retrying after `/token` or a transient helper error: the tab
+/// re-authenticates asynchronously, and an immediate retry races it (observed
+/// live as `Unexpected end of JSON input` from the helper's own fetch in the
+/// same second the fresh token arrived).
+const HELPER_SETTLE_DELAY: Duration = Duration::from_millis(1200);
+
+/// Cap on how long a validity probe may take: it is a side-quest of the real
+/// request and must not double a long action timeout.
+const PROBE_TIMEOUT_SECS_MAX: u64 = 15;
+
+/// Send a bridge action with resilience, without prompting for `/token` unless
+/// a probe has proven the token dead:
+/// - transient helper-tab errors (empty/unparseable fetch responses) get one
+///   retry after a short pause — never an eviction or a `/token` prompt;
+/// - auth-flavored failures are double-checked with [`probe_session`]: if the
+///   session still works, the original error was a permissions/ACL denial and
+///   is reported as such, keeping the valid session cached;
+/// - only a probe-confirmed dead token evicts the session, prompts the user to
+///   re-run `/token`, splices the fresh session into the payload, waits for the
+///   tab to settle, and retries exactly once.
 async fn send_action_with_refresh(
     broker: &Broker,
     payload: &mut Value,
@@ -698,35 +831,127 @@ async fn send_action_with_refresh(
         )
         .await;
 
-    match first {
-        Ok(message) => Ok(message),
-        Err(BridgeError::ActionFailed(text))
-            if is_stale_token_text(&text)
-                && payload.get("instance").and_then(Value::as_object).is_some() =>
-        {
-            // Refresh only the instance this action targeted, so a `/token` from
-            // a different tab in the same SN-Utils portal can't silently
-            // redirect the retry to the wrong instance.
-            let target_origin = payload
-                .get("instance")
-                .and_then(|instance| instance.get("url"))
-                .and_then(Value::as_str)
-                .and_then(normalize_origin);
-            let fresh = refresh_session(broker, timeout_secs, target_origin.as_deref()).await?;
-            if let Some(object) = payload.as_object_mut() {
-                object.insert("instance".to_string(), serde_json::to_value(&fresh)?);
-            }
-            Ok(broker
-                .manager
-                .request(
-                    payload,
-                    Matcher::Correlation(correlation_id.to_string()),
-                    timeout_secs,
-                )
-                .await?)
+    let text = match first {
+        Ok(message) => {
+            mark_payload_verified(broker, payload).await;
+            return Ok(message);
         }
+        Err(BridgeError::ActionFailed(text)) => text,
+        Err(error) => return Err(error.into()),
+    };
+
+    if is_transient_helper_text(&text) {
+        sleep(HELPER_SETTLE_DELAY).await;
+        let message = broker
+            .manager
+            .request(
+                payload,
+                Matcher::Correlation(correlation_id.to_string()),
+                timeout_secs,
+            )
+            .await?;
+        mark_payload_verified(broker, payload).await;
+        return Ok(message);
+    }
+
+    let instance = payload
+        .get("instance")
+        .and_then(|value| serde_json::from_value::<SnuInstance>(value.clone()).ok());
+    let (Some(instance), true) = (instance, is_stale_token_text(&text)) else {
+        return Err(BridgeError::ActionFailed(text).into());
+    };
+
+    // Auth-flavored failure: probe with the same session before prompting. A
+    // working probe means the token is fine and the failure was an ACL denial
+    // on the target table — re-running /token would not help.
+    if matches!(
+        probe_session(broker, &instance, timeout_secs).await,
+        Ok(true)
+    ) {
+        return Err(anyhow!(
+            "ServiceNow denied this action, but the browser session is still valid — this is a permissions (ACL) problem on the target table, not an expired token, so re-running /token will not help: {text}"
+        ));
+    }
+
+    // Refresh only the instance this action targeted, so a `/token` from a
+    // different tab in the same SN-Utils portal can't silently redirect the
+    // retry to the wrong instance.
+    let target_origin = normalize_origin(&instance.url);
+    let fresh = refresh_session(broker, timeout_secs, target_origin.as_deref()).await?;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("instance".to_string(), serde_json::to_value(&fresh)?);
+    }
+    sleep(HELPER_SETTLE_DELAY).await;
+    let message = broker
+        .manager
+        .request(
+            payload,
+            Matcher::Correlation(correlation_id.to_string()),
+            timeout_secs,
+        )
+        .await?;
+    mark_payload_verified(broker, payload).await;
+    Ok(message)
+}
+
+/// Record a successful round-trip for the session origin the payload used.
+async fn mark_payload_verified(broker: &Broker, payload: &Value) {
+    let origin = payload
+        .get("instance")
+        .and_then(|instance| instance.get("url"))
+        .and_then(Value::as_str)
+        .and_then(normalize_origin);
+    if let Some(origin) = origin {
+        broker.state.lock().await.mark_verified(&origin);
+    }
+}
+
+/// Cheapest known-good round-trip that exercises the session's `g_ck`: a
+/// 1-record, sys_id-only query against `sys_user` (readable by any
+/// authenticated user). `Ok(true)` = ServiceNow accepted the token,
+/// `Ok(false)` = it rejected the session as unauthenticated, `Err` = the probe
+/// could not run at all (e.g. helper tab gone), which callers must treat as
+/// "not proven valid".
+async fn probe_session(
+    broker: &Broker,
+    instance: &SnuInstance,
+    timeout_secs: u64,
+) -> anyhow::Result<bool> {
+    let correlation_id = format!("snow_probe_{}", uuid::Uuid::new_v4().simple());
+    let payload = serde_json::json!({
+        "action": "agentQueryRecords",
+        "agentRequestId": correlation_id,
+        "tableName": "sys_user",
+        "queryString": "sysparm_fields=sys_id&sysparm_limit=1",
+        "instance": instance,
+        "appName": "snow-cli",
+    });
+    let probe_timeout = timeout_secs.clamp(1, PROBE_TIMEOUT_SECS_MAX);
+    match broker
+        .manager
+        .request(
+            &payload,
+            Matcher::Correlation(correlation_id),
+            probe_timeout,
+        )
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(BridgeError::ActionFailed(text)) if is_stale_token_text(&text) => Ok(false),
         Err(error) => Err(error.into()),
     }
+}
+
+/// `true` for helper-tab errors that are transient — its own fetch returned an
+/// empty or unparseable response, typically while the tab re-authenticates or
+/// the instance hiccups. Safe to retry once; never a reason to prompt for
+/// `/token` or evict the session.
+fn is_transient_helper_text(text: &str) -> bool {
+    let text = text.to_lowercase();
+    text.contains("unexpected end of json input")
+        || text.contains("failed to execute 'json'")
+        || text.contains("failed to fetch")
+        || text.contains("networkerror")
 }
 
 /// Evict a cached session, prompt the user via a helper-tab banner, and wait for
@@ -752,7 +977,10 @@ async fn refresh_session(
     }
 
     broker.manager.send_banner(TOKEN_EXPIRED_BANNER).await;
-    let instance = broker.manager.wait_for_session(timeout_secs, origin).await?;
+    let instance = broker
+        .manager
+        .wait_for_session(timeout_secs, origin)
+        .await?;
     broker.state.lock().await.remember_session(&instance);
     persist_broker_sessions(broker).await;
     Ok(instance)
@@ -779,6 +1007,7 @@ fn ok_response() -> BrokerResponse {
         instance: None,
         status: None,
         cleared: None,
+        token_valid: None,
     }
 }
 
@@ -790,6 +1019,7 @@ fn message_response(message: SnuMessage) -> BrokerResponse {
         instance: None,
         status: None,
         cleared: None,
+        token_valid: None,
     }
 }
 
@@ -1081,6 +1311,86 @@ mod tests {
 
     fn state() -> BrokerState {
         BrokerState::new(Duration::from_secs(300))
+    }
+
+    fn instance_with_token(url: &str, token: &str) -> SnuInstance {
+        SnuInstance {
+            name: url.to_string(),
+            url: url.to_string(),
+            g_ck: Some(token.to_string()),
+            scope: None,
+        }
+    }
+
+    #[test]
+    fn remember_session_resets_freshness_only_when_token_changes() {
+        let mut state = state();
+        let origin = "https://a.service-now.com:443";
+        state.remember_session(&instance_with_token("https://a.service-now.com", "t1"));
+        let captured = state.meta_by_origin[origin].captured_at;
+        assert!(captured.is_some());
+        state.mark_verified(origin);
+        assert!(state.meta_by_origin[origin].last_verified_at.is_some());
+
+        // Re-remembering the same token (WaitSession cache hit) keeps the clock.
+        state.remember_session(&instance_with_token("https://a.service-now.com", "t1"));
+        assert_eq!(state.meta_by_origin[origin].captured_at, captured);
+        assert!(state.meta_by_origin[origin].last_verified_at.is_some());
+
+        // A new token resets capture time and clears the verification.
+        state.remember_session(&instance_with_token("https://a.service-now.com", "t2"));
+        assert!(state.meta_by_origin[origin].captured_at.is_some());
+        assert!(state.meta_by_origin[origin].last_verified_at.is_none());
+    }
+
+    #[test]
+    fn mark_verified_ignores_unknown_origin_and_clear_drops_meta() {
+        let mut state = state();
+        state.mark_verified("https://ghost.service-now.com:443");
+        assert!(state.meta_by_origin.is_empty());
+
+        let origin = "https://a.service-now.com:443";
+        state.remember_session(&instance("https://a.service-now.com"));
+        state.mark_verified(origin);
+        assert!(state.meta_by_origin[origin].last_verified_at.is_some());
+
+        state.clear_origin(origin);
+        assert!(state.meta_by_origin.is_empty());
+
+        state.remember_session(&instance("https://a.service-now.com"));
+        state.clear_all();
+        assert!(state.meta_by_origin.is_empty());
+    }
+
+    #[test]
+    fn status_reports_session_freshness() {
+        let mut state = state();
+        let origin = "https://a.service-now.com:443";
+        state.remember_session(&instance("https://a.service-now.com"));
+        let before_verify = state.status(true);
+        assert!(before_verify.instances[0].captured_at.is_some());
+        assert!(before_verify.instances[0].last_verified_at.is_none());
+
+        state.mark_verified(origin);
+        let after_verify = state.status(true);
+        assert!(after_verify.instances[0].last_verified_at.is_some());
+    }
+
+    #[test]
+    fn transient_helper_text_is_retryable_not_stale() {
+        for text in [
+            "Failed to execute 'json' on 'Response': Unexpected end of JSON input",
+            "TypeError: Failed to fetch",
+            "NetworkError when attempting to fetch resource",
+        ] {
+            assert!(
+                is_transient_helper_text(text),
+                "should be transient: {text}"
+            );
+            assert!(!is_stale_token_text(text), "must not read as stale: {text}");
+        }
+        assert!(!is_transient_helper_text("User is not authenticated"));
+        assert!(is_stale_token_text("User is not authenticated"));
     }
 
     #[test]

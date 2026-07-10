@@ -398,6 +398,10 @@ pub enum ReadOnlySnuCommands {
         /// Seconds to wait for helper/session/response
         #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
         timeout_secs: u64,
+        /// Also probe ServiceNow with the cached session to prove the g_ck
+        /// token is still valid (adds `token_valid` to the output)
+        #[arg(long)]
+        verify: bool,
     },
 
     /// Get SN-Utils bridge instance info
@@ -725,7 +729,13 @@ impl ReadOnlyCodesearchCommands {
 impl ReadOnlySnuCommands {
     fn into_full_command(self) -> SnuCommands {
         match self {
-            Self::CheckConnection { timeout_secs } => SnuCommands::CheckConnection { timeout_secs },
+            Self::CheckConnection {
+                timeout_secs,
+                verify,
+            } => SnuCommands::CheckConnection {
+                timeout_secs,
+                verify,
+            },
             Self::GetInstanceInfo { timeout_secs } => SnuCommands::GetInstanceInfo { timeout_secs },
             Self::WaitToken { timeout_secs } => SnuCommands::WaitToken { timeout_secs },
             Self::Query {

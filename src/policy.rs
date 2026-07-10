@@ -449,7 +449,10 @@ mod tests {
     #[test]
     fn read_only_allows_snu_read_commands() {
         assert_allowed(Commands::Snu(SnuArgs {
-            command: SnuCommands::CheckConnection { timeout_secs: 1 },
+            command: SnuCommands::CheckConnection {
+                timeout_secs: 1,
+                verify: false,
+            },
         }));
         assert_allowed(Commands::Snu(SnuArgs {
             command: SnuCommands::GetInstanceInfo { timeout_secs: 1 },

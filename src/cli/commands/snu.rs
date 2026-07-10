@@ -12,9 +12,7 @@ use crate::cli::args::{
 use crate::cli::output::print_output;
 use crate::cli::validation::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::snu::broker::{BrokerBridge, BrokerStatus};
-use crate::snu::protocol::{
-    SnuInstance, SnuMessage, redact_session_for_output, resolve_origin,
-};
+use crate::snu::protocol::{SnuInstance, SnuMessage, redact_session_for_output, resolve_origin};
 
 pub async fn handle(
     args: SnuArgs,
@@ -32,9 +30,10 @@ pub async fn handle(
         None => None,
     };
     match args.command {
-        SnuCommands::CheckConnection { timeout_secs } => {
-            handle_check_connection(timeout_secs, output_format).await
-        }
+        SnuCommands::CheckConnection {
+            timeout_secs,
+            verify,
+        } => handle_check_connection(timeout_secs, verify, target_origin, output_format).await,
         SnuCommands::GetInstanceInfo { timeout_secs: _ } => {
             handle_get_instance_info(target_origin, output_format).await
         }
@@ -428,6 +427,8 @@ async fn connect_and_wait_for_fresh_session(
 /// the broker's own session bookkeeping.
 async fn handle_check_connection(
     timeout_secs: u64,
+    verify: bool,
+    target_origin: Option<String>,
     output_format: &OutputFormat,
 ) -> anyhow::Result<()> {
     let bridge = BrokerBridge::connect_or_spawn().await?;
@@ -442,9 +443,17 @@ async fn handle_check_connection(
         )
         .await
         .is_ok();
+    // `--verify` proves (or disproves) the cached g_ck against ServiceNow with a
+    // cheap probe query. Verification failure is reported in the snapshot, not
+    // propagated, so the connectivity half of the output always arrives.
+    let verification = if verify {
+        Some(bridge.verify_session(timeout_secs, target_origin).await)
+    } else {
+        None
+    };
     let status = crate::snu::broker::broker_status().await?;
     print_output(
-        &build_check_connection_result(&status, browser_responsive),
+        &build_check_connection_result(&status, browser_responsive, verification),
         output_format,
     )
 }
@@ -464,8 +473,12 @@ async fn handle_get_instance_info(
     print_output(&value, output_format)
 }
 
-fn build_check_connection_result(status: &BrokerStatus, browser_responsive: bool) -> Value {
-    json!({
+fn build_check_connection_result(
+    status: &BrokerStatus,
+    browser_responsive: bool,
+    verification: Option<anyhow::Result<bool>>,
+) -> Value {
+    let mut result = json!({
         "connected": browser_responsive,
         "broker_running": true,
         "broker_version": status.version,
@@ -474,7 +487,27 @@ fn build_check_connection_result(status: &BrokerStatus, browser_responsive: bool
         "session_count": status.session_count,
         "latest_instance_url": status.latest_instance_url,
         "instances": status.instances,
-    })
+    });
+    if let (Some(verification), Some(object)) = (verification, result.as_object_mut()) {
+        match verification {
+            Ok(valid) => {
+                object.insert("token_valid".to_string(), Value::Bool(valid));
+                if !valid {
+                    object.insert(
+                        "hint".to_string(),
+                        Value::String(
+                            "ServiceNow rejected the cached session token. Run /token in a ServiceNow tab to refresh it.".to_string(),
+                        ),
+                    );
+                }
+            }
+            Err(error) => {
+                object.insert("token_valid".to_string(), Value::Null);
+                object.insert("verify_error".to_string(), Value::String(error.to_string()));
+            }
+        }
+    }
+    result
 }
 
 fn build_instance_info_result(
@@ -507,6 +540,8 @@ fn build_instance_info_result(
         "scope": instance.scope,
         "is_latest": instance.is_latest,
         "browser_connected": status.browser_connected,
+        "captured_at": instance.captured_at,
+        "last_verified_at": instance.last_verified_at,
     }))
 }
 
@@ -1148,21 +1183,61 @@ async fn run_bg_mutation(
     Ok(result)
 }
 
-/// Extract the JSON result a mutation script printed. Prefers the line that
-/// carries `MUTATION_RESULT_MARKER`; falls back to parsing the whole output as
-/// JSON so a helper that returns only the printed value still works.
+/// Extract the JSON result a mutation script printed. The helper tab forwards
+/// the raw `sys.scripts.do` output, so the marker's JSON can arrive wrapped in
+/// the page's HTML (`{...}<BR/></PRE></BODY></HTML>`) and with HTML-escaped
+/// entities; both are stripped before parsing, and anything after the first
+/// complete JSON value is ignored. A marker-less response that looks like a
+/// login page means ServiceNow no longer honors the browser session.
 fn parse_mutation_result(data: &str) -> anyhow::Result<Value> {
-    if let Some(idx) = data.rfind(MUTATION_RESULT_MARKER) {
-        let after = &data[idx + MUTATION_RESULT_MARKER.len()..];
-        let json_part = after.lines().next().unwrap_or(after).trim();
-        return serde_json::from_str(json_part).with_context(|| {
-            format!("failed to parse SN-Utils mutation result as JSON: {json_part}")
-        });
+    let decoded = decode_html_entities(data);
+    if let Some(idx) = decoded.rfind(MUTATION_RESULT_MARKER) {
+        let after = decoded[idx + MUTATION_RESULT_MARKER.len()..].trim_start();
+        return first_json_value(after)
+            .with_context(|| format!("failed to parse SN-Utils mutation result as JSON: {after}"));
     }
-    let trimmed = data.trim();
-    serde_json::from_str(trimmed).with_context(|| {
+    if looks_like_login_page(&decoded) {
+        anyhow::bail!(
+            "SN-Utils session appears to be logged out: the background script returned a login page instead of a result. Run /token in a ServiceNow tab for this instance and retry."
+        );
+    }
+    let trimmed = decoded.trim();
+    first_json_value(trimmed).with_context(|| {
         format!("SN-Utils background script did not return a parseable mutation result: {trimmed}")
     })
+}
+
+/// Parse the first complete JSON value in `text`, ignoring whatever trails it
+/// (typically the `<BR/></PRE>...` HTML the script output is embedded in).
+fn first_json_value(text: &str) -> anyhow::Result<Value> {
+    let mut stream = serde_json::Deserializer::from_str(text).into_iter::<Value>();
+    match stream.next() {
+        Some(Ok(value)) => Ok(value),
+        Some(Err(error)) => Err(error.into()),
+        None => Err(anyhow!("empty response")),
+    }
+}
+
+/// Minimal decode for the HTML entities `sys.scripts.do` escapes in script
+/// output. `&amp;` is decoded last so double-escaped input cannot re-expand.
+fn decode_html_entities(text: &str) -> String {
+    text.replace("&quot;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+/// Heuristic for a ServiceNow login page returned where script output was
+/// expected — the signature of a browser session ServiceNow no longer accepts.
+fn looks_like_login_page(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    (lower.contains("<html") || lower.contains("<!doctype"))
+        && (lower.contains("login")
+            || lower.contains("logged out")
+            || lower.contains("not authenticated")
+            || lower.contains("user_name"))
 }
 
 fn correlation_id(prefix: &str) -> String {
@@ -1354,6 +1429,8 @@ mod tests {
             has_g_ck: true,
             scope: Some("global".to_string()),
             is_latest,
+            captured_at: Some(1_700_000_000),
+            last_verified_at: None,
         }
     }
 
@@ -1379,24 +1456,45 @@ mod tests {
             vec![instance_summary("https://dev.service-now.com", true)],
             true,
         );
-        let value = build_check_connection_result(&status, true);
+        let value = build_check_connection_result(&status, true, None);
         assert_eq!(value["connected"], true);
         assert_eq!(value["broker_running"], true);
         assert_eq!(value["browser_connected"], true);
         assert_eq!(value["session_count"], 1);
-        assert_eq!(
-            value["latest_instance_url"],
-            "https://dev.service-now.com"
-        );
+        assert_eq!(value["latest_instance_url"], "https://dev.service-now.com");
         assert_eq!(value["instances"].as_array().unwrap().len(), 1);
+        assert!(value.get("token_valid").is_none());
     }
 
     #[test]
     fn check_connection_result_marks_unresponsive_probe_disconnected() {
         let status = broker_status(Vec::new(), false);
-        let value = build_check_connection_result(&status, false);
+        let value = build_check_connection_result(&status, false, None);
         assert_eq!(value["connected"], false);
         assert_eq!(value["session_count"], 0);
+    }
+
+    #[test]
+    fn check_connection_result_reports_token_validity() {
+        let status = broker_status(
+            vec![instance_summary("https://dev.service-now.com", true)],
+            true,
+        );
+        let valid = build_check_connection_result(&status, true, Some(Ok(true)));
+        assert_eq!(valid["token_valid"], true);
+        assert!(valid.get("hint").is_none());
+
+        let dead = build_check_connection_result(&status, true, Some(Ok(false)));
+        assert_eq!(dead["token_valid"], false);
+        assert!(
+            dead["hint"]
+                .as_str()
+                .is_some_and(|hint| hint.contains("/token"))
+        );
+
+        let failed = build_check_connection_result(&status, true, Some(Err(anyhow!("no session"))));
+        assert_eq!(failed["token_valid"], Value::Null);
+        assert_eq!(failed["verify_error"], "no session");
     }
 
     #[test]
@@ -1442,8 +1540,8 @@ mod tests {
             vec![instance_summary("https://a.service-now.com", true)],
             true,
         );
-        let err =
-            build_instance_info_result(&status, Some("https://gone.service-now.com:443")).unwrap_err();
+        let err = build_instance_info_result(&status, Some("https://gone.service-now.com:443"))
+            .unwrap_err();
         assert!(err.to_string().contains("no SN-Utils browser session for"));
     }
 
@@ -1500,7 +1598,10 @@ mod tests {
         // Valid JSON (and thus a valid JS literal) that round-trips exactly.
         let back: Value = serde_json::from_str(&literal).unwrap();
         assert_eq!(back, value);
-        assert!(!literal.contains('\n'), "raw newline must not leak: {literal}");
+        assert!(
+            !literal.contains('\n'),
+            "raw newline must not leak: {literal}"
+        );
     }
 
     #[test]
@@ -1516,8 +1617,14 @@ mod tests {
     #[test]
     fn update_script_embeds_fields_safely() {
         let fields = fields_from(&[
-            ("short_description", Value::String("line1\nline2 \"q\"".into())),
-            ("script", Value::String("gs.info('hi'); var x = \"</y>\";".into())),
+            (
+                "short_description",
+                Value::String("line1\nline2 \"q\"".into()),
+            ),
+            (
+                "script",
+                Value::String("gs.info('hi'); var x = \"</y>\";".into()),
+            ),
             ("count", Value::from(3)),
             ("emoji", Value::String("héllo 🚀".into())),
         ]);
@@ -1574,6 +1681,42 @@ mod tests {
     #[test]
     fn parse_mutation_result_errors_on_garbage() {
         assert!(parse_mutation_result("not json at all").is_err());
+    }
+
+    #[test]
+    fn parse_mutation_result_strips_html_wrapper() {
+        // Live-observed shape: sys.scripts.do wraps the printed line in the
+        // page's HTML, so the JSON is followed by <BR/> and closing tags.
+        let data = format!(
+            "*** Script: {MUTATION_RESULT_MARKER}{{\"success\":true,\"action\":\"update\",\"updated\":1}}<BR/></PRE><HR/></BODY></HTML>"
+        );
+        let value = parse_mutation_result(&data).unwrap();
+        assert_eq!(value["success"], true);
+        assert_eq!(value["updated"], 1);
+    }
+
+    #[test]
+    fn parse_mutation_result_decodes_html_entities() {
+        let data = format!(
+            "{MUTATION_RESULT_MARKER}{{&quot;success&quot;:true,&quot;action&quot;:&quot;delete&quot;,&quot;deleted&quot;:1}}<BR/>"
+        );
+        let value = parse_mutation_result(&data).unwrap();
+        assert_eq!(value["success"], true);
+        assert_eq!(value["deleted"], 1);
+    }
+
+    #[test]
+    fn parse_mutation_result_detects_login_page() {
+        let data = "<html><head><title>Login</title></head><body><form><input name=\"user_name\"/></form></body></html>";
+        let error = parse_mutation_result(data).unwrap_err().to_string();
+        assert!(
+            error.contains("/token"),
+            "error should point at /token: {error}"
+        );
+        assert!(
+            error.contains("logged out"),
+            "error should say the session is logged out: {error}"
+        );
     }
 
     #[test]
