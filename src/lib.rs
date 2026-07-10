@@ -107,10 +107,8 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
     // Resolve the effective output format once (flag > SNOW_CLI_OUTPUT > config
     // default > json) and thread it to every handler. Done after tracing init so
     // any warning about an unknown configured value reaches stderr.
-    let effective_output = cli::output::resolve_output_format(
-        cli.output.as_ref(),
-        config.default_output.as_deref(),
-    );
+    let effective_output =
+        cli::output::resolve_output_format(cli.output.as_ref(), config.default_output.as_deref());
 
     match cli.command {
         cli::args::Commands::Profile(args) => {
@@ -210,7 +208,9 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
         cli::args::Commands::Snu(args) => {
             cli::commands::snu::handle(args, cli.instance.as_deref(), &effective_output).await
         }
-        cli::args::Commands::Skill(args) => cli::commands::skills::handle(args, &effective_output).await,
+        cli::args::Commands::Skill(args) => {
+            cli::commands::skills::handle(args, &effective_output).await
+        }
         cli::args::Commands::Completions { shell } => cli::commands::completions::handle(shell),
     }
 }

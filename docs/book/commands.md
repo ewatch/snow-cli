@@ -28,8 +28,9 @@ Every command supports these top-level flags:
 
 - `--profile <name>`: use a specific saved profile
 - `--instance <url>`: temporarily override the instance URL from the active profile
-- `--output <json|csv|jsonl|toon|text>`: choose the stdout format
+- `--output <json|csv|jsonl|toon|text|auto>`: choose the stdout format; when omitted, `SNOW_CLI_OUTPUT` and then `profile output` are consulted before falling back to JSON
 - `--timeout-secs <seconds>`: override the HTTP timeout for the current command
+- `--read-only`: block commands and HTTP methods that can mutate ServiceNow
 - `-v`, `-vv`, `-vvv`: increase log verbosity on stderr
 
 ## Command pages
@@ -41,13 +42,14 @@ Every command supports these top-level flags:
 | [`table`](./commands/table.md) | CRUD operations and schema inspection for ServiceNow tables |
 | [`data`](./commands/data.md) | Export, validate, and import data artifacts |
 | [`seed`](./commands/seed.md) | Planned test-data workflows |
-| [`scope`](./commands/scope.md) | Inspect scopes, export inventory, and move files between scopes |
+| [`scope`](./commands/scope.md) | List scopes, inspect scopes, export inventory, and move files between scopes |
 | [`attachment`](./commands/attachment.md) | List, download, and upload attachments |
 | [`import-set`](./commands/import-set.md) | Load records into staging tables |
 | [`api`](./commands/api.md) | Send raw REST requests to arbitrary endpoints |
 | [`script`](./commands/script.md) | Run background scripts |
 | [`snu`](./commands/snu.md) | Drive the SN-Utils browser helper tab |
 | [`codesearch`](./commands/codesearch.md) | Search code and metadata on an instance |
+| [`skill`](./commands/skill.md) | Install agent skills from local bundles or URL-hosted manifests |
 | [`completions`](./commands/completions.md) | Generate shell completion scripts |
 
 ## Common patterns

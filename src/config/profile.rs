@@ -405,7 +405,8 @@ mod tests {
         // An unknown value must NOT fail the parse (decision: tolerant field);
         // it is preserved verbatim and interpreted leniently at resolution time.
         let cfg: AppConfig =
-            toml::from_str("default_profile = \"dev\"\ndefault_output = \"not_a_format\"\n").unwrap();
+            toml::from_str("default_profile = \"dev\"\ndefault_output = \"not_a_format\"\n")
+                .unwrap();
         assert_eq!(cfg.default_output.as_deref(), Some("not_a_format"));
 
         // Absent field defaults to None and is omitted on serialize.

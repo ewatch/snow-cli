@@ -18,8 +18,8 @@ Use a **noun-verb** pattern: `snow-cli <noun> <verb> [options]`.
 Examples:
 - `snow-cli table list incident --limit 10`
 - `snow-cli table get sys_user abc123`
-- `snow-cli attachment upload incident INC0010001 --file report.pdf`
-- `snow-cli config set-profile dev`
+- `snow-cli attachment upload incident <sys_id> --file report.pdf`
+- `snow-cli profile default dev`
 
 ## Alternatives Considered
 

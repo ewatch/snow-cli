@@ -32,8 +32,8 @@ You will see a plan like this and be asked to confirm:
 
 ```text
 Plan:
-  Download: https://github.com/ewatch/snow-cli/releases/download/v0.4.0/snow-cli-0.4.0-aarch64-apple-darwin.tar.xz
-  Release:  v0.4.0
+  Download: https://github.com/ewatch/snow-cli/releases/download/v0.5.1/snow-cli-0.5.1-aarch64-apple-darwin.tar.xz
+  Release:  v0.5.1
   Install to: /Users/you/.local/bin
   Binaries: snow-cli, snow-cli-ro
 
@@ -123,8 +123,9 @@ Run:
 For local development, run through Cargo:
 
 ```bash
-cargo run -- --help
-cargo run -- table list --help
+cargo run --bin snow-cli -- --help
+cargo run --bin snow-cli -- table list --help
+cargo run --bin snow-cli-ro -- --help
 ```
 
 ## Verify the project

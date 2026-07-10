@@ -715,7 +715,11 @@ mod tests {
         let payload = json!({ "action": "test", "agentRequestId": correlation_id });
         let matcher = Matcher::Correlation(correlation_id.to_string());
         let handle = tokio::spawn(async move { requester.request(&payload, matcher, 5).await });
-        let outbound = helper.next().await.expect("payload frame").expect("frame ok");
+        let outbound = helper
+            .next()
+            .await
+            .expect("payload frame")
+            .expect("frame ok");
         assert!(
             outbound
                 .to_text()
@@ -729,10 +733,17 @@ mod tests {
     async fn correlation_request_ignores_unrelated_messages() {
         let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
         let mut helper = connect_helper(addr).await;
-        manager.wait_connected(Duration::from_secs(2)).await.unwrap();
+        manager
+            .wait_connected(Duration::from_secs(2))
+            .await
+            .unwrap();
 
         let request = spawn_request(&manager, &mut helper, "abc").await;
-        send_json(&mut helper, json!({ "agentRequestId": "other", "success": true })).await;
+        send_json(
+            &mut helper,
+            json!({ "agentRequestId": "other", "success": true }),
+        )
+        .await;
         send_json(
             &mut helper,
             json!({ "agentRequestId": "abc", "success": true, "data": "hi" }),
@@ -740,14 +751,20 @@ mod tests {
         .await;
 
         let message = request.await.unwrap().unwrap();
-        assert_eq!(message.extra.get("data").and_then(Value::as_str), Some("hi"));
+        assert_eq!(
+            message.extra.get("data").and_then(Value::as_str),
+            Some("hi")
+        );
     }
 
     #[tokio::test]
     async fn helper_reconnect_heals_the_bridge() {
         let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
         let mut helper_a = connect_helper(addr).await;
-        manager.wait_connected(Duration::from_secs(2)).await.unwrap();
+        manager
+            .wait_connected(Duration::from_secs(2))
+            .await
+            .unwrap();
 
         // A request in flight when the tab "reloads" fails with a typed
         // disconnect, not a full response timeout.
@@ -758,9 +775,16 @@ mod tests {
 
         // A fresh tab connection is picked up without any broker restart.
         let mut helper_b = connect_helper(addr).await;
-        manager.wait_connected(Duration::from_secs(2)).await.unwrap();
+        manager
+            .wait_connected(Duration::from_secs(2))
+            .await
+            .unwrap();
         let request = spawn_request(&manager, &mut helper_b, "r2").await;
-        send_json(&mut helper_b, json!({ "agentRequestId": "r2", "success": true })).await;
+        send_json(
+            &mut helper_b,
+            json!({ "agentRequestId": "r2", "success": true }),
+        )
+        .await;
         assert!(request.await.unwrap().is_ok());
     }
 
@@ -768,7 +792,10 @@ mod tests {
     async fn token_pushed_mid_request_is_captured() {
         let (manager, mut sessions, addr) = start_manager(Duration::from_secs(60)).await;
         let mut helper = connect_helper(addr).await;
-        manager.wait_connected(Duration::from_secs(2)).await.unwrap();
+        manager
+            .wait_connected(Duration::from_secs(2))
+            .await
+            .unwrap();
 
         let request = spawn_request(&manager, &mut helper, "q").await;
 
@@ -787,7 +814,11 @@ mod tests {
         assert_eq!(captured.url, "https://dev.service-now.com");
 
         // ...and the request still resolves from its own reply.
-        send_json(&mut helper, json!({ "agentRequestId": "q", "success": true })).await;
+        send_json(
+            &mut helper,
+            json!({ "agentRequestId": "q", "success": true }),
+        )
+        .await;
         assert!(request.await.unwrap().is_ok());
     }
 
@@ -812,7 +843,10 @@ mod tests {
         // Handshake, then never poll the socket again: pings go unanswered,
         // mimicking the half-open socket a crashed tab leaves behind.
         let helper = connect_helper(addr).await;
-        manager.wait_connected(Duration::from_secs(2)).await.unwrap();
+        manager
+            .wait_connected(Duration::from_secs(2))
+            .await
+            .unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(3);
         while manager.is_connected() {
@@ -836,12 +870,22 @@ mod tests {
         sleep(Duration::from_millis(150)).await;
 
         let error = manager
-            .request(&json!({ "agentRequestId": "x" }), Matcher::Correlation("x".into()), 1)
+            .request(
+                &json!({ "agentRequestId": "x" }),
+                Matcher::Correlation("x".into()),
+                1,
+            )
             .await
             .unwrap_err();
-        assert!(matches!(error, BridgeError::PortConflict(_)), "got: {error}");
+        assert!(
+            matches!(error, BridgeError::PortConflict(_)),
+            "got: {error}"
+        );
         let error = manager.wait_for_session(1, None).await.unwrap_err();
-        assert!(matches!(error, BridgeError::PortConflict(_)), "got: {error}");
+        assert!(
+            matches!(error, BridgeError::PortConflict(_)),
+            "got: {error}"
+        );
 
         // Free the port: the retry-bind picks it up without a restart.
         drop(squatter);
@@ -852,9 +896,16 @@ mod tests {
         assert_eq!(bound.port(), addr.port());
 
         let mut helper = connect_helper(addr).await;
-        manager.wait_connected(Duration::from_secs(2)).await.unwrap();
+        manager
+            .wait_connected(Duration::from_secs(2))
+            .await
+            .unwrap();
         let request = spawn_request(&manager, &mut helper, "y").await;
-        send_json(&mut helper, json!({ "agentRequestId": "y", "success": true })).await;
+        send_json(
+            &mut helper,
+            json!({ "agentRequestId": "y", "success": true }),
+        )
+        .await;
         assert!(request.await.unwrap().is_ok());
     }
 }

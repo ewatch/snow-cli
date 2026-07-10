@@ -18,7 +18,7 @@ static binary with no runtime dependencies.
 | CLI framework    | clap v4 + derive macros      | `clap`, `clap_complete`           |
 | HTTP client      | reqwest (async, TLS)         | `reqwest`                         |
 | Async runtime    | tokio (multi-thread)         | `tokio`                           |
-| Serialization    | serde                        | `serde`, `serde_json`, `csv`      |
+| Serialization    | serde                        | `serde`, `serde_json`, `csv`, `toon-format` |
 | Config file      | TOML                         | `toml`                            |
 | Keychain         | OS-native credential store   | `keyring`                         |
 | Logging          | tracing                      | `tracing`, `tracing-subscriber`   |
@@ -37,7 +37,9 @@ snow-cli [GLOBAL FLAGS] <NOUN> <VERB> [OPTIONS]
 |------------------------|------------------------------------------|
 | `--profile <name>`    | Use named profile (otherwise use configured default profile) |
 | `--instance <url>`    | Override instance URL                    |
-| `--output <json|csv>` | Output format (default: json)            |
+| `--output <json|csv|jsonl|toon|text|auto>` | Output format (flag, `SNOW_CLI_OUTPUT`, configured default, then json) |
+| `--timeout-secs <seconds>` | Override the HTTP request timeout for this command |
+| `--read-only`         | Block commands and HTTP methods that can mutate ServiceNow |
 | `-v / -vv / -vvv`     | Verbosity level                          |
 | `--version`           | Print version                            |
 | `--help`              | Print help                               |
@@ -54,6 +56,7 @@ snow-cli profile
   show                            Show current active profile config
   list                            List all profiles
   find --instance <selector>      Find profiles by instance name, host, or URL
+  output [format]                 Show or set default output format
   sdk list                        List saved now-sdk authentication aliases
   sdk import [--alias|--all]      Import now-sdk aliases into snow-cli profiles
   sdk export <profile>            Export a profile into the now-sdk alias store
@@ -85,8 +88,10 @@ snow-cli seed
   cleanup <run_id>                Remove records created by a prior seed run
 
 snow-cli scope
+  list [search]                   List scopes and classify them by origin
   inspect <scope>                 Inspect scope metadata and artifact counts
   inventory <scope>               Export normalized scope artifacts
+  move-file <table> <sys_id>      Move one application file to a different custom scope
 
 snow-cli codesearch
   search <query>                  Search code across the instance
@@ -96,6 +101,10 @@ snow-cli attachment
   download <sys_id>               Download an attachment
   upload <table> <sys_id>         Upload a file as attachment
 
+snow-cli import-set
+  load <table>                    Load data into a staging table
+  transform <sys_id>              Transform staged data
+
 snow-cli api
   get <path>                      GET a custom REST endpoint
   post <path>                     POST to a custom REST endpoint
@@ -104,6 +113,15 @@ snow-cli api
 
 snow-cli script
   run                             Run a background script
+
+snow-cli snu
+  check-connection                Check SN-Utils bridge/browser helper connection
+  query                           Query records through an active browser session
+  get-record/update-record/...    Use the SN-Utils browser session for table-like operations
+  slash/tab/context/screenshot    Drive supported browser-helper actions
+
+snow-cli skill
+  install <source>                Install an agent skill bundle from a path or skill.toml URL
 
 snow-cli completions <shell>      Generate shell completions
 ```
@@ -118,7 +136,7 @@ All auth methods implement a common `Authenticator` trait:
 | OAuth 2.0        | Client credentials, password, or authorization code    |
 | API Key / Token  | Bearer token stored in keychain                        |
 | Browser Session  | Cookie header from an authenticated browser session    |
-| mTLS             | Not yet implemented                                    |
+| mTLS             | Profile metadata exists; authenticator not yet implemented |
 | SSO / SAML       | Not yet implemented (use browser-session as a workaround) |
 
 ## ServiceNow APIs
@@ -132,7 +150,7 @@ All auth methods implement a common `Authenticator` trait:
 
 ## Output
 
-- **stdout:** Structured data (JSON or CSV)
+- **stdout:** Structured data (JSON, CSV, JSONL, TOON, text, or auto-selected lossless format)
 - **stderr:** Structured JSON errors + log output
 
 ### Error Format
@@ -188,7 +206,7 @@ never in the config file.
 
 - [x] Define `Authenticator` trait
 - [x] Implement Basic Auth
-- [x] Implement OAuth 2.0 (client credentials flow)
+- [x] Implement OAuth 2.0 (client credentials, password, authorization code + PKCE flows)
 - [x] Implement API Key/Token auth
 - [x] Implement `auth` commands (login, logout, status)
 - [x] Write tests with wiremock for each auth method
@@ -197,28 +215,31 @@ never in the config file.
 
 - [x] Implement auto-pagination module
 - [x] Implement `table` commands (list, get, create, update, delete)
-- [x] Implement JSON and CSV output formatters
+- [x] Implement JSON, CSV, JSONL, TOON, text, and auto output formatters
 - [x] Write tests for pagination edge cases
 
-### Phase 4 — Domain Commands and APIs (in progress)
+### Phase 4 — Domain Commands and APIs ✓
 
 - [x] Implement `api` raw endpoint commands (get, post, put, delete with --header)
 - [x] Implement `table schema` command (compact, extended, include-inherited)
 - [x] Implement `codesearch` command (search via Code Search API)
 - [x] Implement `script run` command
-  - [x] Implement `attachment` commands (upload/download with streaming)
+- [x] Implement `attachment` commands (upload/download with streaming)
+- [x] Implement `import-set` commands (`load`, `transform`)
+- [x] Implement `scope` analysis and file-move commands
+- [x] Implement SN-Utils browser-helper commands
 - [x] Write tests for each command group
 - ~~Implement `incident` shortcut commands~~ (removed — achievable via `table` commands)
-- ~~Implement `import-set` commands~~ (delayed for later)
 
 ### Phase 5 — Polish and Distribution
 
 - [x] Add shell completions generation
-- [x] Implement `config init` first-time bootstrap
+- [x] Implement profile first-time bootstrap (`profile add`; legacy `config` alias remains hidden)
 - [x] Implement `data export` MVP and command model for `data`
 - [x] Implement dataset packages and reference remapping
+- [x] Add `snow-cli-ro` read-only binary and `--read-only` policy mode
+- [x] Create Homebrew formula / tap install path
 - [ ] Implement `seed` workflows
-- [ ] Set up CI/CD (GitHub Actions) for cross-compilation
-- [ ] Create Homebrew formula
+- [ ] Maintain CI/CD (GitHub Actions) for cross-compilation and releases
 - [ ] Add mTLS auth
-- [ ] Add full SSO/SAML auth (browser-based flow with callback capture)
+- [ ] Add full SSO/SAML auth beyond browser-session cookie support

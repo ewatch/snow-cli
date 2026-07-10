@@ -12,11 +12,11 @@ the HTTP client to be agnostic about which auth method is in use — it simply c
 #[async_trait]
 pub trait Authenticator: Send + Sync {
     /// Returns HTTP headers to attach to a request for authentication.
-    async fn authenticate(&self) -> Result<HeaderMap, AuthError>;
+    async fn authenticate(&self) -> anyhow::Result<HeaderMap>;
 
     /// Refresh credentials if supported (e.g., OAuth token refresh).
     /// Returns Ok(true) if refresh succeeded, Ok(false) if not applicable.
-    async fn refresh(&mut self) -> Result<bool, AuthError>;
+    async fn refresh(&mut self) -> anyhow::Result<bool>;
 
     /// Returns the authentication method type.
     fn auth_type(&self) -> AuthMethod;
@@ -113,6 +113,12 @@ pub trait Authenticator: Send + Sync {
 - Constructs `Authorization: Bearer <token>` header.
 - No refresh capability (user must manually rotate tokens).
 
+### Browser Session
+- Reads a full `Cookie` header value from `SNOW_SESSION_COOKIE` or a one-shot login flag.
+- Constructs a `Cookie: ...` header for requests.
+- Does not store the session cookie in config or keychain.
+- Intended as the practical SSO/SAML workaround when users already have an authenticated browser session.
+
 ## now-sdk Profile Interoperability
 
 `snow-cli` can explicitly copy or sync basic authentication profiles with the
@@ -183,26 +189,29 @@ Legacy `snow-cli config ...` and `snow-cli profile <old-long-name>` forms remain
   on failure so partial writes are not left behind.
 
 ### Mutual TLS (mTLS)
-- Reads certificate and key file paths from config.
-- Configures reqwest client with client certificate.
-- No additional headers needed — TLS handshake handles auth.
+- Profile validation accepts certificate and key file paths in config.
+- The authenticator factory currently fails fast with "mTLS authentication is not yet implemented."
+- A future implementation should configure reqwest with a client certificate.
 
 ### SSO / SAML
-- Spawns a local HTTP server on a random port.
-- Opens browser to ServiceNow SAML login endpoint with redirect to local server.
-- Captures the session token from the callback.
-- Stores token in keychain for subsequent requests.
+- A full SSO/SAML callback-capture authenticator is not implemented.
+- Use `browser-session` profiles with `SNOW_SESSION_COOKIE` as the current workaround.
 
 ## Factory
 
 ```rust
-pub fn create_authenticator(profile: &Profile) -> Result<Box<dyn Authenticator>, AuthError> {
+pub fn create_authenticator(
+    profile_name: &str,
+    profile: &Profile,
+) -> anyhow::Result<Box<dyn Authenticator>> {
+    validate_profile_config(profile_name, profile)?;
+
     match profile.auth_method {
-        AuthMethod::Basic => Ok(Box::new(BasicAuth::new(profile)?)),
-        AuthMethod::OAuth2 => Ok(Box::new(OAuth2Auth::new(profile)?)),
-        AuthMethod::ApiKey => Ok(Box::new(ApiKeyAuth::new(profile)?)),
-        AuthMethod::Mtls => Ok(Box::new(MtlsAuth::new(profile)?)),
-        AuthMethod::Saml => Ok(Box::new(SamlAuth::new(profile)?)),
+        AuthMethod::Basic => Ok(Box::new(BasicAuth::new(profile_name, profile)?)),
+        AuthMethod::Oauth2 => Ok(Box::new(OAuth2Auth::new(profile_name, profile)?)),
+        AuthMethod::ApiKey => Ok(Box::new(ApiKeyAuth::new(profile_name, profile)?)),
+        AuthMethod::Mtls => anyhow::bail!("mTLS authentication is not yet implemented"),
+        AuthMethod::BrowserSession => Ok(Box::new(BrowserSessionAuth::new(profile_name, profile)?)),
     }
 }
 ```
@@ -218,4 +227,4 @@ Auth errors use the standard JSON error format with specific codes:
 | `AUTH_TOKEN_EXPIRED`       | Token expired and refresh failed     |
 | `AUTH_KEYCHAIN_ERROR`      | Failed to access OS keychain         |
 | `AUTH_CERTIFICATE_ERROR`   | Certificate file not found or invalid |
-| `AUTH_SAML_TIMEOUT`        | Browser SAML flow timed out          |
+| `AUTH_SAML_TIMEOUT`        | Browser SAML flow timed out (reserved for future full SSO/SAML support) |

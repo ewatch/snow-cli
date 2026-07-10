@@ -20,6 +20,7 @@
   - [script](./commands/script.md)
   - [snu](./commands/snu.md)
   - [codesearch](./commands/codesearch.md)
+  - [skill](./commands/skill.md)
   - [completions](./commands/completions.md)
 - [Deploying this book to GitHub Pages](./github-pages.md)
 - [Further reading](./reference.md)

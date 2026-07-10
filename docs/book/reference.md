@@ -21,6 +21,7 @@ The repository contains additional Markdown documentation for contributors and m
 - [`docs/design/authentication.md`](https://github.com/ewatch/snow-cli/blob/main/docs/design/authentication.md)
 - [`docs/design/http-client.md`](https://github.com/ewatch/snow-cli/blob/main/docs/design/http-client.md)
 - [`docs/design/data-import-export.md`](https://github.com/ewatch/snow-cli/blob/main/docs/design/data-import-export.md)
+- [`docs/design/read-only-mode.md`](https://github.com/ewatch/snow-cli/blob/main/docs/design/read-only-mode.md)
 
 ## Contributor guides
 

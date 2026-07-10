@@ -1,0 +1,613 @@
+/* snow-cli mdBook theme overlay
+   Mirrors the visual language from landing/index.html while keeping mdBook's
+   built-in navigation, search, print, and keyboard behavior intact. */
+
+:root {
+  --snow-bg: #0a0e14;
+  --snow-bg-soft: #0f141d;
+  --snow-bg-card: #131a25;
+  --snow-border: #1f2937;
+  --snow-border-soft: #1a2230;
+  --snow-text: #e6edf3;
+  --snow-text-dim: #9aa7b8;
+  --snow-text-faint: #6b7888;
+  --snow-accent: #62d27d;
+  --snow-accent-2: #38bdf8;
+  --snow-accent-glow: rgba(98, 210, 125, 0.18);
+  --snow-code-string: #e3c07b;
+  --snow-danger: #f87171;
+  --snow-mono: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
+  --snow-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+
+  /* mdBook theme variables (navy/light both get normalized by this overlay). */
+  --bg: var(--snow-bg);
+  --fg: var(--snow-text);
+  --sidebar-bg: #080c12;
+  --sidebar-fg: var(--snow-text-dim);
+  --sidebar-non-existant: #4d5968;
+  --sidebar-active: var(--snow-accent);
+  --sidebar-spacer: var(--snow-border-soft);
+  --scrollbar: #263244;
+  --icons: var(--snow-text-faint);
+  --icons-hover: var(--snow-text);
+  --links: var(--snow-accent-2);
+  --inline-code-color: var(--snow-accent);
+  --theme-popup-bg: var(--snow-bg-card);
+  --theme-popup-border: var(--snow-border);
+  --theme-hover: var(--snow-border-soft);
+  --quote-bg: rgba(98, 210, 125, 0.08);
+  --quote-border: var(--snow-accent);
+  --table-border-color: var(--snow-border);
+  --table-header-bg: #101722;
+  --table-alternate-bg: rgba(255, 255, 255, 0.018);
+  --searchbar-border-color: var(--snow-border);
+  --searchbar-bg: var(--snow-bg-soft);
+  --searchbar-fg: var(--snow-text);
+  --searchbar-shadow-color: rgba(0, 0, 0, 0.45);
+  --searchresults-header-fg: var(--snow-text-dim);
+  --searchresults-border-color: var(--snow-border-soft);
+  --searchresults-li-bg: var(--snow-bg-card);
+  --search-mark-bg: rgba(98, 210, 125, 0.28);
+}
+
+:root,
+.light,
+.rust,
+.coal,
+.navy,
+.ayu {
+  --bg: var(--snow-bg);
+  --fg: var(--snow-text);
+  --sidebar-bg: #080c12;
+  --sidebar-fg: var(--snow-text-dim);
+  --sidebar-non-existant: #4d5968;
+  --sidebar-active: var(--snow-accent);
+  --sidebar-spacer: var(--snow-border-soft);
+  --scrollbar: #263244;
+  --icons: var(--snow-text-faint);
+  --icons-hover: var(--snow-text);
+  --links: var(--snow-accent-2);
+  --inline-code-color: var(--snow-accent);
+  --theme-popup-bg: var(--snow-bg-card);
+  --theme-popup-border: var(--snow-border);
+  --theme-hover: var(--snow-border-soft);
+  --quote-bg: rgba(98, 210, 125, 0.08);
+  --quote-border: var(--snow-accent);
+  --table-border-color: var(--snow-border);
+  --table-header-bg: #101722;
+  --table-alternate-bg: rgba(255, 255, 255, 0.018);
+  --searchbar-border-color: var(--snow-border);
+  --searchbar-bg: var(--snow-bg-soft);
+  --searchbar-fg: var(--snow-text);
+  --searchbar-shadow-color: rgba(0, 0, 0, 0.45);
+  --searchresults-header-fg: var(--snow-text-dim);
+  --searchresults-border-color: var(--snow-border-soft);
+  --searchresults-li-bg: var(--snow-bg-card);
+  --search-mark-bg: rgba(98, 210, 125, 0.28);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--snow-sans);
+  background:
+    radial-gradient(760px 360px at 50% -120px, var(--snow-accent-glow), transparent 70%),
+    radial-gradient(620px 320px at 86% 2%, rgba(56, 189, 248, 0.10), transparent 72%),
+    var(--snow-bg);
+  color: var(--snow-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--snow-accent-glow);
+  color: var(--snow-text);
+}
+
+/* ---------- mdBook chrome ---------- */
+
+#menu-bar,
+.menu-bar,
+#searchbar-outer {
+  background: rgba(10, 14, 20, 0.72) !important;
+  border-color: var(--snow-border-soft) !important;
+  backdrop-filter: blur(14px);
+}
+
+#menu-bar {
+  box-shadow: none;
+}
+
+.menu-title {
+  color: var(--snow-text) !important;
+  font-size: clamp(1.2rem, 1.6vw, 1.55rem) !important;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  max-width: none !important;
+  width: auto !important;
+  min-width: max-content;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  white-space: nowrap !important;
+}
+
+.menu-title::before {
+  content: "›_";
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 10px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--snow-accent), #2f9d57);
+  color: #06210f;
+  font-family: var(--snow-mono);
+  font-size: 15px;
+  font-weight: 850;
+  box-shadow: 0 0 0 1px rgba(98, 210, 125, 0.25), 0 6px 18px var(--snow-accent-glow);
+  vertical-align: middle;
+}
+
+@media (min-width: 1080px) {
+  .menu-title {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+.icon-button,
+.menu-bar .icon-button,
+.nav-chapters {
+  color: var(--snow-text-faint) !important;
+  transition: color 0.16s ease, background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.icon-button:hover,
+.menu-bar .icon-button:hover,
+.nav-chapters:hover {
+  color: var(--snow-text) !important;
+  background: rgba(255, 255, 255, 0.035) !important;
+}
+
+.sidebar {
+  background: linear-gradient(180deg, #080c12, #0b1119) !important;
+  border-right: 1px solid var(--snow-border-soft);
+}
+
+.sidebar-scrollbox {
+  position: relative;
+  padding-top: 18px;
+}
+
+.sidebar-scrollbox::before {
+  content: "snow-cli Documentation";
+  display: block;
+  margin: 0 18px 22px;
+  padding: 16px 16px 16px 58px;
+  min-height: 58px;
+  border: 1px solid var(--snow-border-soft);
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(98, 210, 125, 0.12), rgba(56, 189, 248, 0.05)),
+    var(--snow-bg-soft);
+  color: var(--snow-text);
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.20);
+  white-space: normal;
+}
+
+.sidebar-scrollbox::after {
+  content: "›_";
+  position: absolute;
+  top: 34px;
+  left: 34px;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--snow-accent), #2f9d57);
+  color: #06210f;
+  display: grid;
+  place-items: center;
+  font-family: var(--snow-mono);
+  font-size: 15px;
+  font-weight: 850;
+  box-shadow: 0 0 0 1px rgba(98, 210, 125, 0.25), 0 6px 18px var(--snow-accent-glow);
+  pointer-events: none;
+}
+
+.chapter {
+  font-size: 1.04rem;
+  line-height: 1.55;
+}
+
+.chapter li.chapter-item {
+  margin: 2px 10px;
+}
+
+.chapter li a,
+.chapter li div {
+  color: var(--snow-text-dim) !important;
+  border-radius: 8px;
+  transition: color 0.16s ease, background-color 0.16s ease;
+}
+
+.chapter li a:hover {
+  color: var(--snow-text) !important;
+  background: rgba(255, 255, 255, 0.035);
+  text-decoration: none;
+}
+
+.chapter li a.active {
+  color: var(--snow-accent) !important;
+  background: rgba(98, 210, 125, 0.09);
+  font-weight: 700;
+}
+
+.chapter li.part-title {
+  color: var(--snow-text-faint) !important;
+  font-family: var(--snow-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  margin-top: 18px;
+}
+
+/* ---------- Content surface ---------- */
+
+.page {
+  background: transparent;
+}
+
+.content {
+  color: var(--snow-text);
+  max-width: 920px;
+}
+
+.content main {
+  margin-inline: auto;
+  padding-top: 44px;
+}
+
+.content main::before {
+  content: "A single Rust binary · no runtime dependencies";
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 24px;
+  border: 1px solid var(--snow-border);
+  background: var(--snow-bg-soft);
+  color: var(--snow-text-dim);
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 999px;
+}
+
+.content main::after {
+  content: "";
+  display: block;
+  height: 80px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: var(--snow-text);
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.12;
+}
+
+h1 {
+  max-width: 16ch;
+  margin-bottom: 22px;
+  font-size: clamp(2.35rem, 5vw, 4rem);
+}
+
+h1::after {
+  content: "";
+  display: block;
+  width: 76px;
+  height: 3px;
+  margin-top: 20px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--snow-accent), var(--snow-accent-2));
+  box-shadow: 0 8px 24px var(--snow-accent-glow);
+}
+
+h2 {
+  margin-top: 2.6em;
+  padding-top: 0.3em;
+  font-size: clamp(1.65rem, 3vw, 2.35rem);
+}
+
+h3 {
+  margin-top: 2em;
+  font-size: 1.25rem;
+}
+
+p,
+li {
+  color: var(--snow-text-dim);
+  line-height: 1.72;
+}
+
+strong,
+b {
+  color: var(--snow-text);
+  font-weight: 700;
+}
+
+a {
+  color: var(--snow-accent-2);
+  text-decoration-color: rgba(56, 189, 248, 0.35);
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  color: var(--snow-text);
+  text-decoration-color: var(--snow-accent);
+}
+
+hr {
+  border: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--snow-border), transparent);
+  margin: 52px 0;
+}
+
+/* ---------- Code / terminal treatment ---------- */
+
+code,
+pre,
+.hljs {
+  font-family: var(--snow-mono) !important;
+}
+
+:not(pre) > code {
+  color: var(--snow-accent);
+  background: rgba(98, 210, 125, 0.08);
+  border: 1px solid rgba(98, 210, 125, 0.12);
+  border-radius: 6px;
+  padding: 0.1em 0.42em;
+  font-size: 0.88em;
+}
+
+pre {
+  position: relative;
+  overflow: hidden;
+  margin: 1.4em 0 1.8em;
+  border: 1px solid var(--snow-border);
+  border-radius: 14px;
+  background: var(--snow-bg-soft) !important;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.36);
+}
+
+pre::before {
+  content: "";
+  display: block;
+  height: 38px;
+  border-bottom: 1px solid var(--snow-border-soft);
+  background:
+    radial-gradient(circle at 20px 50%, #ff5f56 0 6px, transparent 6.5px),
+    radial-gradient(circle at 42px 50%, #ffbd2e 0 6px, transparent 6.5px),
+    radial-gradient(circle at 64px 50%, #27c93f 0 6px, transparent 6.5px),
+    rgba(255, 255, 255, 0.015);
+}
+
+pre code {
+  display: block;
+  padding: 18px 22px 22px;
+  color: var(--snow-text);
+  background: transparent !important;
+  border: 0;
+  overflow-x: auto;
+  line-height: 1.85;
+  font-size: 0.88rem;
+}
+
+.hljs-keyword,
+.hljs-title,
+.hljs-built_in,
+.hljs-name {
+  color: var(--snow-accent-2) !important;
+}
+
+.hljs-string,
+.hljs-attr,
+.hljs-symbol {
+  color: var(--snow-code-string) !important;
+}
+
+.hljs-number,
+.hljs-literal {
+  color: var(--snow-accent) !important;
+}
+
+.hljs-comment {
+  color: #5b6675 !important;
+  font-style: italic;
+}
+
+.copy-button {
+  top: 6px;
+  right: 8px;
+  border: 1px solid var(--snow-border) !important;
+  border-radius: 8px !important;
+  background: var(--snow-bg-card) !important;
+  color: var(--snow-text-dim) !important;
+}
+
+.copy-button:hover {
+  color: var(--snow-text) !important;
+  border-color: var(--snow-accent) !important;
+}
+
+/* ---------- Tables, quotes, lists ---------- */
+
+table {
+  overflow: hidden;
+  width: 100%;
+  margin: 1.4em 0 2em;
+  border: 1px solid var(--snow-border);
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 14px;
+  background: var(--snow-bg-card);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.22);
+}
+
+th {
+  color: var(--snow-text);
+  background: #101722;
+  font-weight: 750;
+}
+
+th,
+td {
+  border-color: var(--snow-border-soft) !important;
+  padding: 12px 14px;
+}
+
+td {
+  color: var(--snow-text-dim);
+}
+
+tr:nth-child(2n) {
+  background: rgba(255, 255, 255, 0.018);
+}
+
+blockquote {
+  margin: 1.5em 0;
+  padding: 18px 22px;
+  border-left: 3px solid var(--snow-accent);
+  border-radius: 0 12px 12px 0;
+  background: rgba(98, 210, 125, 0.08);
+  color: var(--snow-text-dim);
+}
+
+blockquote p {
+  margin: 0.4em 0;
+}
+
+ul,
+ol {
+  padding-left: 1.35em;
+}
+
+li::marker {
+  color: var(--snow-accent);
+}
+
+/* Make command overview tables feel like landing-page cards on wider screens. */
+.content main > table:first-of-type,
+.content main h2 + table {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent),
+    var(--snow-bg-card);
+}
+
+/* ---------- Search ---------- */
+
+#searchbar {
+  border: 1px solid var(--snow-border) !important;
+  border-radius: 10px !important;
+  background: var(--snow-bg-soft) !important;
+  color: var(--snow-text) !important;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.25) !important;
+}
+
+#searchbar:focus {
+  border-color: var(--snow-accent) !important;
+  box-shadow: 0 0 0 3px var(--snow-accent-glow) !important;
+}
+
+#searchresults a {
+  color: var(--snow-text) !important;
+}
+
+#searchresults .teaser {
+  color: var(--snow-text-dim) !important;
+}
+
+.searchresult {
+  border-color: var(--snow-border-soft) !important;
+}
+
+mark {
+  padding: 0.05em 0.2em;
+  border-radius: 4px;
+  background: rgba(98, 210, 125, 0.28);
+  color: var(--snow-text);
+}
+
+/* ---------- Landing-like CTA touches for the intro page ---------- */
+
+.content main > p:first-of-type {
+  max-width: 62ch;
+  font-size: 1.08rem;
+}
+
+.content main > p:first-of-type strong {
+  color: var(--snow-text);
+}
+
+/* ---------- Responsive / print ---------- */
+
+@media (max-width: 768px) {
+  .content main {
+    padding-top: 28px;
+  }
+
+  .content main::before {
+    font-size: 12px;
+  }
+
+  h1 {
+    font-size: clamp(2rem, 12vw, 3rem);
+  }
+
+  pre code {
+    font-size: 0.82rem;
+  }
+}
+
+@media print {
+  body {
+    background: white !important;
+    color: #111827 !important;
+  }
+
+  .content,
+  .content p,
+  .content li,
+  td {
+    color: #111827 !important;
+  }
+
+  a {
+    color: #0369a1 !important;
+  }
+
+  pre,
+  table,
+  blockquote {
+    box-shadow: none !important;
+  }
+
+  .content main::before,
+  .menu-title::before,
+  pre::before {
+    display: none !important;
+  }
+}

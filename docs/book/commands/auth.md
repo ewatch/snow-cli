@@ -27,7 +27,7 @@ snow-cli auth login [options]
 | `oauth2` + `password` | `client_id`, `username` | client secret and password |
 | `oauth2` + `authorization-code` | `client_id`, optional redirect/scope settings | browser login, optional client secret |
 | `api-key` | no extra profile secret fields | API token |
-| `browser-session` | no extra profile fields | session cookie via env var or flag; `auth login` is not used |
+| `browser-session` | no extra profile fields | session cookie via env var or flag; `auth login` can validate/print guidance but does not store it |
 
 ### Secret input options
 
@@ -38,7 +38,7 @@ Important options:
 - `--password` / `--password-stdin`: basic auth password or OAuth password-grant password
 - `--token` / `--token-stdin`: API token for API-key profiles
 - `--client-secret` / `--client-secret-stdin`: OAuth client secret
-- `--session-cookie` / `--session-cookie-stdin`: full authenticated `Cookie` header value for SAML profiles
+- `--session-cookie` / `--session-cookie-stdin`: full authenticated `Cookie` header value for browser-session profiles
 - `--no-browser`: print the OAuth authorization URL instead of trying to open it automatically
 - `--also-now-sdk`: for basic auth, also write the successful login into `now-sdk`
 - `--now-sdk-alias <name>`: destination alias name when using `--also-now-sdk`
@@ -71,7 +71,7 @@ See [OAuth authorization code with PKCE](../oauth-authorization-code-pkce.md).
 
 ### Browser session
 
-For `browser-session` profiles, provide the full authenticated `Cookie` header value via the `SNOW_SESSION_COOKIE` environment variable or the `--session-cookie` / `--session-cookie-stdin` flags. This auth method does not use `auth login`.
+For `browser-session` profiles, provide the full authenticated `Cookie` header value via the `SNOW_SESSION_COOKIE` environment variable or the `--session-cookie` / `--session-cookie-stdin` flags. The cookie is not stored; export it as `SNOW_SESSION_COOKIE` for future requests.
 
 ## `auth status`
 
