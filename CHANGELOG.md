@@ -11,6 +11,7 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 - Bounded `table list` defaults for agent workflows: at most 20 records without `--limit`, a new `--all` flag for full fetches, and a compact table-aware field projection without `--fields` (pass `'*'` for every field). List responses carry `total`/`returned`/`truncated` result metadata in every format except CSV.
 - Per-field content cap for `table list` and `table get`: field values longer than 2,000 characters are cut with an inline `… [truncated N of M chars; use --full]` size hint, list metadata reports `fields_truncated`, and the new `--full` flag disables the cap.
+- Added `table stats` backed by the Aggregate API (`GET /api/now/stats/{table}`): returns record counts by default and supports `--group-by`, `--avg`, `--min`, `--max`, `--sum`, and `--having` for grouped aggregates. Available in `snow-cli-ro` as a read-only command.
 
 ### Changed
 

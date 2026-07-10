@@ -147,6 +147,43 @@ snow-cli table schema incident --extended --include-inherited
 
 This is especially useful before building imports, exports, or scripted automation.
 
+## `table stats <table>`
+
+Count and aggregate records using the ServiceNow Aggregate API
+(`GET /api/now/stats/{table}`).
+
+```bash
+snow-cli table stats <table> [options]
+```
+
+Important options:
+
+- `--query <encoded-query>`: ServiceNow encoded query string
+- `--group-by <a,b>`: comma-separated fields to group by (one result row per group)
+- `--avg <a,b>` / `--min <a,b>` / `--max <a,b>` / `--sum <a,b>`: per-field aggregates
+- `--having <clause>`: filter aggregate rows (e.g. `count>5`)
+
+Without aggregate flags, the command returns the matching record count — a
+cheap way to answer "how many rows match?" without fetching records:
+
+```bash
+snow-cli table stats incident --query 'active=true'
+# {"count":4381}
+```
+
+With `--group-by`, one row per group is returned, including the count and any
+requested aggregates (flattened as `avg_<field>`, `min_<field>`, and so on):
+
+```bash
+snow-cli table stats incident --group-by state --avg priority
+# [{"state":"1","count":8,"avg_priority":2.5}, ...]
+```
+
+Notes:
+
+- Numeric strings in the response are converted to numbers where they parse cleanly.
+- Group values (like `state`) stay strings because they are categorical codes.
+
 ## Common examples
 
 ```bash

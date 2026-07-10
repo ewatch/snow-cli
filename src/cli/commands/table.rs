@@ -189,6 +189,47 @@ pub async fn handle(
             )
             .await
         }
+
+        TableCommands::Stats {
+            table,
+            query,
+            group_by,
+            avg,
+            min,
+            max,
+            sum,
+            having,
+        } => {
+            tracing::info!("Fetching aggregate stats for table: {}", table);
+            validate_table_name(&table)?;
+
+            let mut client =
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+
+            let path = format!("/api/now/stats/{table}");
+            let mut params: Vec<(&str, &str)> = vec![("sysparm_count", "true")];
+            for (key, value) in [
+                ("sysparm_query", &query),
+                ("sysparm_group_by", &group_by),
+                ("sysparm_avg_fields", &avg),
+                ("sysparm_min_fields", &min),
+                ("sysparm_max_fields", &max),
+                ("sysparm_sum_fields", &sum),
+                ("sysparm_having", &having),
+            ] {
+                if let Some(v) = value {
+                    params.push((key, v.as_str()));
+                }
+            }
+
+            let response: serde_json::Value = client.get_json_with_params(&path, &params).await?;
+
+            match flatten_stats_response(&response)? {
+                StatsOutput::Single(record) => output::print_record(&record, format)?,
+                StatsOutput::Grouped(records) => output::print_records(&records, format)?,
+            }
+            Ok(())
+        }
     }
 }
 
@@ -226,6 +267,86 @@ fn resolve_list_fields(table: &str, fields: Option<&str>) -> Option<String> {
         Some(f) => Some(f.to_string()),
         None => Some(default_list_fields(table).to_string()),
     }
+}
+
+/// Flattened Aggregate API output: a single stats row for ungrouped queries,
+/// or one row per group for `--group-by` queries.
+enum StatsOutput {
+    Single(crate::models::record::Record),
+    Grouped(Vec<crate::models::record::Record>),
+}
+
+/// Flatten an Aggregate API response (`GET /api/now/stats/{table}`).
+///
+/// ServiceNow returns `result` as an object for ungrouped queries and as an
+/// array for grouped queries. Each entry is flattened into a single-level row:
+/// groupby field values keep their field names, `stats.count` becomes `count`,
+/// and per-field aggregates become `avg_<field>`, `min_<field>`, `max_<field>`,
+/// and `sum_<field>`. Numeric strings are converted to JSON numbers where they
+/// parse cleanly.
+fn flatten_stats_response(response: &serde_json::Value) -> anyhow::Result<StatsOutput> {
+    match response.get("result") {
+        Some(serde_json::Value::Object(_)) => Ok(StatsOutput::Single(flatten_stats_entry(
+            &response["result"],
+        ))),
+        Some(serde_json::Value::Array(entries)) => Ok(StatsOutput::Grouped(
+            entries.iter().map(flatten_stats_entry).collect(),
+        )),
+        _ => anyhow::bail!("Unexpected Aggregate API response: missing 'result' object or array"),
+    }
+}
+
+/// Flatten one Aggregate API result entry into a flat row.
+fn flatten_stats_entry(entry: &serde_json::Value) -> crate::models::record::Record {
+    let mut fields = std::collections::HashMap::new();
+
+    // Groupby field values keep their raw string values (they are categorical,
+    // e.g. state "1"), so they are inserted as-is.
+    if let Some(groupby) = entry.get("groupby_fields").and_then(|v| v.as_array()) {
+        for pair in groupby {
+            if let (Some(field), Some(value)) = (
+                pair.get("field").and_then(|v| v.as_str()),
+                pair.get("value"),
+            ) {
+                fields.insert(field.to_string(), value.clone());
+            }
+        }
+    }
+
+    if let Some(stats) = entry.get("stats").and_then(|v| v.as_object()) {
+        for (stat, value) in stats {
+            match value {
+                serde_json::Value::Object(per_field) => {
+                    for (field, field_value) in per_field {
+                        fields.insert(format!("{stat}_{field}"), numify(field_value));
+                    }
+                }
+                other => {
+                    fields.insert(stat.clone(), numify(other));
+                }
+            }
+        }
+    }
+
+    crate::models::record::Record { fields }
+}
+
+/// Convert a JSON string that parses cleanly as a number into a JSON number.
+///
+/// Non-string and non-numeric values are returned unchanged.
+fn numify(value: &serde_json::Value) -> serde_json::Value {
+    if let serde_json::Value::String(text) = value {
+        let trimmed = text.trim();
+        if let Ok(int) = trimmed.parse::<i64>() {
+            return serde_json::Value::from(int);
+        }
+        if let Ok(float) = trimmed.parse::<f64>()
+            && float.is_finite()
+        {
+            return serde_json::Value::from(float);
+        }
+    }
+    value.clone()
 }
 
 /// `table schema` — Fetch column metadata from sys_dictionary.
@@ -539,6 +660,125 @@ mod tests {
         // Unknown tables get the conservative fallback
         assert!(default_list_fields("x_custom_table").contains("sys_id"));
         assert!(default_list_fields("x_custom_table").contains("sys_updated_on"));
+    }
+
+    #[test]
+    fn test_flatten_stats_response_ungrouped_count() {
+        let response = serde_json::json!({
+            "result": {
+                "stats": {"count": "4381"}
+            }
+        });
+
+        match flatten_stats_response(&response).unwrap() {
+            StatsOutput::Single(record) => {
+                assert_eq!(
+                    serde_json::to_value(&record).unwrap(),
+                    serde_json::json!({"count": 4381})
+                );
+            }
+            StatsOutput::Grouped(_) => panic!("Expected single stats row"),
+        }
+    }
+
+    #[test]
+    fn test_flatten_stats_response_grouped_with_aggregates() {
+        let response = serde_json::json!({
+            "result": [
+                {
+                    "stats": {
+                        "count": "8",
+                        "avg": {"priority": "2.5"},
+                        "max": {"priority": "4"}
+                    },
+                    "groupby_fields": [{"field": "state", "value": "1"}]
+                },
+                {
+                    "stats": {
+                        "count": "3",
+                        "avg": {"priority": "1.5"},
+                        "max": {"priority": "2"}
+                    },
+                    "groupby_fields": [{"field": "state", "value": "2"}]
+                }
+            ]
+        });
+
+        match flatten_stats_response(&response).unwrap() {
+            StatsOutput::Grouped(records) => {
+                assert_eq!(records.len(), 2);
+                assert_eq!(
+                    serde_json::to_value(&records[0]).unwrap(),
+                    serde_json::json!({
+                        "state": "1",
+                        "count": 8,
+                        "avg_priority": 2.5,
+                        "max_priority": 4
+                    })
+                );
+                assert_eq!(
+                    serde_json::to_value(&records[1]).unwrap(),
+                    serde_json::json!({
+                        "state": "2",
+                        "count": 3,
+                        "avg_priority": 1.5,
+                        "max_priority": 2
+                    })
+                );
+            }
+            StatsOutput::Single(_) => panic!("Expected grouped stats rows"),
+        }
+    }
+
+    #[test]
+    fn test_flatten_stats_response_multiple_groupby_fields() {
+        let response = serde_json::json!({
+            "result": [
+                {
+                    "stats": {"count": "5"},
+                    "groupby_fields": [
+                        {"field": "state", "value": "1"},
+                        {"field": "priority", "value": "3"}
+                    ]
+                }
+            ]
+        });
+
+        match flatten_stats_response(&response).unwrap() {
+            StatsOutput::Grouped(records) => {
+                assert_eq!(
+                    serde_json::to_value(&records[0]).unwrap(),
+                    serde_json::json!({"state": "1", "priority": "3", "count": 5})
+                );
+            }
+            StatsOutput::Single(_) => panic!("Expected grouped stats rows"),
+        }
+    }
+
+    #[test]
+    fn test_flatten_stats_response_rejects_missing_result() {
+        let err = flatten_stats_response(&serde_json::json!({"error": "boom"}))
+            .err()
+            .expect("missing result should be an error")
+            .to_string();
+        assert!(err.contains("Unexpected Aggregate API response"));
+    }
+
+    #[test]
+    fn test_numify_converts_clean_numeric_strings_only() {
+        assert_eq!(numify(&serde_json::json!("8")), serde_json::json!(8));
+        assert_eq!(numify(&serde_json::json!("2.5")), serde_json::json!(2.5));
+        assert_eq!(numify(&serde_json::json!("-4")), serde_json::json!(-4));
+        // Non-numeric, empty, and non-finite strings are left untouched.
+        assert_eq!(
+            numify(&serde_json::json!("high")),
+            serde_json::json!("high")
+        );
+        assert_eq!(numify(&serde_json::json!("")), serde_json::json!(""));
+        assert_eq!(numify(&serde_json::json!("NaN")), serde_json::json!("NaN"));
+        // Non-string values pass through unchanged.
+        assert_eq!(numify(&serde_json::json!(7)), serde_json::json!(7));
+        assert_eq!(numify(&serde_json::Value::Null), serde_json::Value::Null);
     }
 
     #[test]

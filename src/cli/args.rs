@@ -11,7 +11,7 @@ const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login\n  printf '%s' \
 
 const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login\n  printf '%s' \"$SNOW_PASSWORD\" | snow-cli auth login --password-stdin\n  printf '%s' \"$SNOW_API_TOKEN\" | snow-cli auth login --token-stdin\n  printf '%s' \"$SNOW_CLIENT_SECRET\" | snow-cli auth login --client-secret-stdin\n  snow-cli auth login --no-browser\n  snow-cli auth login --session-cookie 'JSESSIONID=...; glide_user_route=...'\n\nTip:\n  Prefer interactive prompts or --*-stdin flags over command-line secret flags, which can leak through shell history and process listings.\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.\n  For OAuth2 authorization-code profiles, snow-cli opens the authorization URL and waits for a local redirect callback. Public PKCE clients can omit --client-secret.\n  For browser-session profiles, provide the full Cookie header value from your authenticated browser session via --session-cookie or the SNOW_SESSION_COOKIE environment variable. The token is not stored.";
 
-const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended";
+const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended\n  snow-cli table stats incident --group-by state";
 
 const DATA_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export sys_user --fields sys_id,user_name,email --out users.json\n  snow-cli data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli data validate --file export.json\n  snow-cli data import --file export.json\n  snow-cli data import --file users.json --import-set-table imp_user";
 
@@ -28,6 +28,8 @@ const SCOPE_AFTER_HELP: &str = "Examples:\n  snow-cli scope list\n  snow-cli sco
 const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --all --fields '*' --full   # everything, uncapped\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - Without --full, field values longer than 2000 chars are cut with an inline '[truncated N of M chars]' size hint, and the metadata carries fields_truncated=true.\n  - Responses include returned/truncated metadata plus the server-reported total, so truncation is always detectable.\n  - For complete data set extraction prefer `data export`.";
 
 const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incident --data '{\"short_description\":\"VPN down\"}'\n  echo '{\"short_description\":\"From stdin\"}' | snow-cli table create incident";
+
+const TABLE_STATS_AFTER_HELP: &str = "Examples:\n  snow-cli table stats incident\n  snow-cli table stats incident --query 'active=true'\n  snow-cli table stats incident --group-by state,priority\n  snow-cli table stats incident --group-by state --avg priority --having 'count>5'";
 
 const API_AFTER_HELP: &str = "Examples:\n  snow-cli api get /api/now/table/incident?sysparm_limit=1\n  snow-cli api post /api/x_myapp/action --data '{\"dry_run\":true}'\n  snow-cli api get /api/x_myapp/status -H 'X-Trace-Id:abc123'";
 
@@ -770,6 +772,41 @@ pub enum TableCommands {
         /// Include fields inherited from parent tables (e.g., incident inherits from task)
         #[arg(long)]
         include_inherited: bool,
+    },
+
+    /// Count and aggregate records via the Aggregate API (Stats endpoint)
+    #[command(after_help = TABLE_STATS_AFTER_HELP)]
+    Stats {
+        /// Table name (e.g., incident, sys_user, cmdb_ci)
+        table: String,
+
+        /// Encoded query string
+        #[arg(long)]
+        query: Option<String>,
+
+        /// Comma-separated fields to group by (one result row per group)
+        #[arg(long)]
+        group_by: Option<String>,
+
+        /// Comma-separated fields to average
+        #[arg(long)]
+        avg: Option<String>,
+
+        /// Comma-separated fields to take the minimum of
+        #[arg(long)]
+        min: Option<String>,
+
+        /// Comma-separated fields to take the maximum of
+        #[arg(long)]
+        max: Option<String>,
+
+        /// Comma-separated fields to sum
+        #[arg(long)]
+        sum: Option<String>,
+
+        /// Aggregate filter clause (e.g., 'count>5')
+        #[arg(long)]
+        having: Option<String>,
     },
 }
 
@@ -1707,6 +1744,49 @@ mod tests {
             Commands::Table(args) => match args.command {
                 TableCommands::Get { full, .. } => assert!(!full),
                 _ => panic!("Expected Table Get command"),
+            },
+            _ => panic!("Expected Table command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_table_stats() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "table",
+            "stats",
+            "incident",
+            "--query",
+            "active=true",
+            "--group-by",
+            "state,priority",
+            "--avg",
+            "priority",
+            "--having",
+            "count>5",
+        ]);
+        match cli.command {
+            Commands::Table(args) => match args.command {
+                TableCommands::Stats {
+                    table,
+                    query,
+                    group_by,
+                    avg,
+                    min,
+                    max,
+                    sum,
+                    having,
+                } => {
+                    assert_eq!(table, "incident");
+                    assert_eq!(query, Some("active=true".to_string()));
+                    assert_eq!(group_by, Some("state,priority".to_string()));
+                    assert_eq!(avg, Some("priority".to_string()));
+                    assert_eq!(min, None);
+                    assert_eq!(max, None);
+                    assert_eq!(sum, None);
+                    assert_eq!(having, Some("count>5".to_string()));
+                }
+                _ => panic!("Expected Table Stats command"),
             },
             _ => panic!("Expected Table command"),
         }

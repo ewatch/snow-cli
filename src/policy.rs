@@ -228,7 +228,8 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
         Commands::Table(args) => match &args.command {
             TableCommands::List { .. }
             | TableCommands::Get { .. }
-            | TableCommands::Schema { .. } => PolicyDecision::Allow,
+            | TableCommands::Schema { .. }
+            | TableCommands::Stats { .. } => PolicyDecision::Allow,
             TableCommands::Create { .. }
             | TableCommands::Update { .. }
             | TableCommands::Delete { .. } => deny(
@@ -428,6 +429,18 @@ mod tests {
                 table: "incident".to_string(),
                 extended: false,
                 include_inherited: false,
+            },
+        }));
+        assert_allowed(Commands::Table(TableArgs {
+            command: TableCommands::Stats {
+                table: "incident".to_string(),
+                query: None,
+                group_by: Some("state".to_string()),
+                avg: None,
+                min: None,
+                max: None,
+                sum: None,
+                having: None,
             },
         }));
         assert_allowed(Commands::Api(ApiArgs {

@@ -39,7 +39,7 @@ Every command supports these top-level flags:
 |---|---|
 | [`profile`](./commands/profile.md) | Create, edit, inspect, and switch connection profiles |
 | [`auth`](./commands/auth.md) | Log in, log out, inspect auth status, and print tokens |
-| [`table`](./commands/table.md) | CRUD operations and schema inspection for ServiceNow tables |
+| [`table`](./commands/table.md) | CRUD operations, schema inspection, and aggregate stats for ServiceNow tables |
 | [`data`](./commands/data.md) | Export, validate, and import data artifacts |
 | [`seed`](./commands/seed.md) | Planned test-data workflows |
 | [`scope`](./commands/scope.md) | List scopes, inspect scopes, export inventory, and move files between scopes |

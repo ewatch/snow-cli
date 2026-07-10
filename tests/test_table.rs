@@ -980,6 +980,162 @@ async fn test_table_schema_csv_output() {
         .stdout(predicate::str::contains("number,string,Number"));
 }
 
+// --- table stats ---
+
+#[tokio::test]
+async fn test_table_stats_ungrouped_count() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/stats/incident"))
+        .and(query_param("sysparm_count", "true"))
+        .and(query_param("sysparm_query", "active=true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"stats": {"count": "4381"}}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "stats",
+            "incident",
+            "--query",
+            "active=true",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#"{"count":4381}"#));
+}
+
+#[tokio::test]
+async fn test_table_stats_grouped_with_aggregates() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/stats/incident"))
+        .and(query_param("sysparm_count", "true"))
+        .and(query_param("sysparm_group_by", "state"))
+        .and(query_param("sysparm_avg_fields", "priority"))
+        .and(query_param("sysparm_having", "count>2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "stats": {"count": "8", "avg": {"priority": "2.5"}},
+                    "groupby_fields": [{"field": "state", "value": "1"}]
+                },
+                {
+                    "stats": {"count": "3", "avg": {"priority": "1.5"}},
+                    "groupby_fields": [{"field": "state", "value": "2"}]
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    let assert = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "stats",
+            "incident",
+            "--group-by",
+            "state",
+            "--avg",
+            "priority",
+            "--having",
+            "count>2",
+        ])
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let rows: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(
+        rows,
+        serde_json::json!([
+            {"state": "1", "count": 8, "avg_priority": 2.5},
+            {"state": "2", "count": 3, "avg_priority": 1.5}
+        ])
+    );
+}
+
+#[tokio::test]
+async fn test_table_stats_grouped_csv_output() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/stats/incident"))
+        .and(query_param("sysparm_count", "true"))
+        .and(query_param("sysparm_group_by", "state"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "stats": {"count": "8"},
+                    "groupby_fields": [{"field": "state", "value": "1"}]
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "csv",
+            "--instance",
+            &server.uri(),
+            "table",
+            "stats",
+            "incident",
+            "--group-by",
+            "state",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("count,state"))
+        .stdout(predicate::str::contains("8,1"));
+}
+
+#[tokio::test]
+async fn test_table_stats_invalid_table_name() {
+    let (_dir, config_path) = api_key_config();
+
+    // No mock needed — the invalid table name is rejected before the HTTP request.
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            "http://localhost:1",
+            "table",
+            "stats",
+            "incident/../oops",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid table name"));
+}
+
 #[tokio::test]
 async fn test_table_schema_empty_result() {
     let server = MockServer::start().await;

@@ -54,7 +54,7 @@ pub enum ReadOnlyCommands {
     /// Authentication operations (login, logout, status)
     Auth(ReadOnlyAuthArgs),
 
-    /// Read Table API records and schema
+    /// Read Table API records, schema, and aggregate stats
     Table(ReadOnlyTableArgs),
 
     /// Portable data export and validation workflows
@@ -218,6 +218,40 @@ pub enum ReadOnlyTableCommands {
         /// Include fields inherited from parent tables
         #[arg(long)]
         include_inherited: bool,
+    },
+
+    /// Count and aggregate records via the Aggregate API (Stats endpoint)
+    Stats {
+        /// Table name (e.g., incident, sys_user, cmdb_ci)
+        table: String,
+
+        /// Encoded query string
+        #[arg(long)]
+        query: Option<String>,
+
+        /// Comma-separated fields to group by (one result row per group)
+        #[arg(long)]
+        group_by: Option<String>,
+
+        /// Comma-separated fields to average
+        #[arg(long)]
+        avg: Option<String>,
+
+        /// Comma-separated fields to take the minimum of
+        #[arg(long)]
+        min: Option<String>,
+
+        /// Comma-separated fields to take the maximum of
+        #[arg(long)]
+        max: Option<String>,
+
+        /// Comma-separated fields to sum
+        #[arg(long)]
+        sum: Option<String>,
+
+        /// Aggregate filter clause (e.g., 'count>5')
+        #[arg(long)]
+        having: Option<String>,
     },
 }
 
@@ -656,6 +690,25 @@ impl ReadOnlyTableCommands {
                 extended,
                 include_inherited,
             },
+            Self::Stats {
+                table,
+                query,
+                group_by,
+                avg,
+                min,
+                max,
+                sum,
+                having,
+            } => TableCommands::Stats {
+                table,
+                query,
+                group_by,
+                avg,
+                min,
+                max,
+                sum,
+                having,
+            },
         }
     }
 }
@@ -836,6 +889,34 @@ mod tests {
         assert!(help.contains("SN-Utils"));
         assert!(!help.contains("Execute background scripts"));
         assert!(!help.contains("Import set operations"));
+    }
+
+    #[test]
+    fn table_stats_maps_to_full_command() {
+        let mapped = ReadOnlyTableCommands::Stats {
+            table: "incident".to_string(),
+            query: Some("active=true".to_string()),
+            group_by: Some("state".to_string()),
+            avg: None,
+            min: None,
+            max: None,
+            sum: None,
+            having: None,
+        }
+        .into_full_command();
+        match mapped {
+            TableCommands::Stats {
+                table,
+                query,
+                group_by,
+                ..
+            } => {
+                assert_eq!(table, "incident");
+                assert_eq!(query, Some("active=true".to_string()));
+                assert_eq!(group_by, Some("state".to_string()));
+            }
+            _ => panic!("Expected Table Stats command"),
+        }
     }
 
     #[test]
