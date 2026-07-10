@@ -44,10 +44,6 @@ enum BrokerRequest {
         #[serde(default)]
         origin: Option<String>,
     },
-    SendPayload {
-        payload: Value,
-        timeout_secs: u64,
-    },
     SendAction {
         payload: Value,
         correlation_id: String,
@@ -289,20 +285,6 @@ impl BrokerBridge {
         .await?
         .instance
         .ok_or_else(|| anyhow!("SN-Utils broker did not return browser session metadata"))
-    }
-
-    pub async fn send_payload_and_wait(
-        &self,
-        payload: &Value,
-        timeout_secs: u64,
-    ) -> anyhow::Result<SnuMessage> {
-        self.request(BrokerRequest::SendPayload {
-            payload: payload.clone(),
-            timeout_secs,
-        })
-        .await?
-        .message
-        .ok_or_else(|| anyhow!("SN-Utils broker did not return a helper message"))
     }
 
     pub async fn send_action_and_wait(
@@ -635,20 +617,6 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 status: None,
                 cleared: None,
             })
-        }
-        BrokerRequest::SendPayload {
-            payload,
-            timeout_secs,
-        } => {
-            // Sessions embedded in replies are cached by the manager's
-            // sessions channel (see `run_broker_server`), which only accepts
-            // instances carrying a non-empty `g_ck` — a token-less instance
-            // echo can no longer clobber a cached token.
-            let message = broker
-                .manager
-                .request(&payload, Matcher::NextMessage, timeout_secs)
-                .await?;
-            Ok(message_response(message))
         }
         BrokerRequest::SendAction {
             mut payload,

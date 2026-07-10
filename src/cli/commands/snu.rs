@@ -11,7 +11,7 @@ use crate::cli::args::{
 };
 use crate::cli::output::print_output;
 use crate::cli::validation::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
-use crate::snu::broker::BrokerBridge;
+use crate::snu::broker::{BrokerBridge, BrokerStatus};
 use crate::snu::protocol::{
     SnuInstance, SnuMessage, redact_session_for_output, resolve_origin,
 };
@@ -33,22 +33,10 @@ pub async fn handle(
     };
     match args.command {
         SnuCommands::CheckConnection { timeout_secs } => {
-            let bridge = connect_bridge(timeout_secs, None).await?;
-            let payload = json!({
-                "id": "0",
-                "command": "check_connection",
-            });
-            let response = bridge.send_payload_and_wait(&payload, timeout_secs).await?;
-            print_response_value(response, output_format)
+            handle_check_connection(timeout_secs, output_format).await
         }
-        SnuCommands::GetInstanceInfo { timeout_secs } => {
-            let bridge = connect_bridge(timeout_secs, None).await?;
-            let payload = json!({
-                "id": "2",
-                "command": "get_instance_info",
-            });
-            let response = bridge.send_payload_and_wait(&payload, timeout_secs).await?;
-            print_response_value(response, output_format)
+        SnuCommands::GetInstanceInfo { timeout_secs: _ } => {
+            handle_get_instance_info(target_origin, output_format).await
         }
         SnuCommands::WaitToken { timeout_secs } => {
             let (_bridge, instance) =
@@ -430,6 +418,96 @@ async fn connect_and_wait_for_fresh_session(
         .wait_for_session(timeout_secs, true, target_origin)
         .await?;
     Ok((bridge, instance))
+}
+
+/// Report bridge/browser connectivity without hanging on the legacy
+/// `{"command":"check_connection"}` payload, which the current SN-Utils
+/// ScriptSync helper never answers. Instead we (1) ensure the broker is running,
+/// (2) probe the helper tab with a live banner round-trip over the WebSocket —
+/// which requires no `/token` and proves the tab is responsive — and (3) fold in
+/// the broker's own session bookkeeping.
+async fn handle_check_connection(
+    timeout_secs: u64,
+    output_format: &OutputFormat,
+) -> anyhow::Result<()> {
+    let bridge = BrokerBridge::connect_or_spawn().await?;
+    // A successful banner send means the helper tab is connected and the socket
+    // accepts writes. Failure (e.g. no helper tab within the connect timeout) is
+    // reported as `connected: false` rather than propagated, so `check-connection`
+    // always returns a useful snapshot instead of erroring out.
+    let browser_responsive = bridge
+        .send_banner(
+            "snow-cli check-connection: SN-Utils bridge is responsive.",
+            timeout_secs,
+        )
+        .await
+        .is_ok();
+    let status = crate::snu::broker::broker_status().await?;
+    print_output(
+        &build_check_connection_result(&status, browser_responsive),
+        output_format,
+    )
+}
+
+/// Report instance metadata from the broker's session state (URL, origin,
+/// captured `g_ck` presence, and scope) instead of the legacy
+/// `{"command":"get_instance_info"}` payload the current helper never answers.
+/// `connect_or_spawn` restarts the broker (reloading any persisted sessions) if
+/// it is not already running.
+async fn handle_get_instance_info(
+    target_origin: Option<String>,
+    output_format: &OutputFormat,
+) -> anyhow::Result<()> {
+    let _bridge = BrokerBridge::connect_or_spawn().await?;
+    let status = crate::snu::broker::broker_status().await?;
+    let value = build_instance_info_result(&status, target_origin.as_deref())?;
+    print_output(&value, output_format)
+}
+
+fn build_check_connection_result(status: &BrokerStatus, browser_responsive: bool) -> Value {
+    json!({
+        "connected": browser_responsive,
+        "broker_running": true,
+        "broker_version": status.version,
+        "ipc_addr": status.ipc_addr,
+        "browser_connected": status.browser_connected,
+        "session_count": status.session_count,
+        "latest_instance_url": status.latest_instance_url,
+        "instances": status.instances,
+    })
+}
+
+fn build_instance_info_result(
+    status: &BrokerStatus,
+    target_origin: Option<&str>,
+) -> anyhow::Result<Value> {
+    let instance = match target_origin {
+        Some(origin) => status
+            .instances
+            .iter()
+            .find(|instance| instance.origin == origin)
+            .ok_or_else(|| {
+                anyhow!(
+                    "no SN-Utils browser session for {origin}. Run /token in a ServiceNow tab for that instance first."
+                )
+            })?,
+        None => status
+            .instances
+            .iter()
+            .find(|instance| instance.is_latest)
+            .or_else(|| status.instances.first())
+            .ok_or_else(|| {
+                anyhow!("no SN-Utils browser session yet. Run /token in a ServiceNow tab first.")
+            })?,
+    };
+    Ok(json!({
+        "url": instance.url,
+        "origin": instance.origin,
+        "has_g_ck": instance.has_g_ck,
+        "scope": instance.scope,
+        "is_latest": instance.is_latest,
+        "browser_connected": status.browser_connected,
+    }))
 }
 
 /// Read a JSON object payload from `--data` or, when absent, from stdin.
@@ -1265,7 +1343,109 @@ fn guess_content_type(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::snu::broker::InstanceSummary;
+    use crate::snu::protocol::normalize_origin;
     use std::io::Cursor;
+
+    fn instance_summary(url: &str, is_latest: bool) -> InstanceSummary {
+        InstanceSummary {
+            url: url.to_string(),
+            origin: normalize_origin(url).unwrap(),
+            has_g_ck: true,
+            scope: Some("global".to_string()),
+            is_latest,
+        }
+    }
+
+    fn broker_status(instances: Vec<InstanceSummary>, browser_connected: bool) -> BrokerStatus {
+        let latest = instances
+            .iter()
+            .find(|i| i.is_latest)
+            .map(|i| i.url.clone());
+        BrokerStatus {
+            version: "0.0.0-test".to_string(),
+            ipc_addr: "127.0.0.1:1979".to_string(),
+            browser_connected,
+            session_count: instances.len(),
+            latest_instance_url: latest,
+            instances,
+            idle_timeout_secs: 1800,
+        }
+    }
+
+    #[test]
+    fn check_connection_result_reflects_probe_and_state() {
+        let status = broker_status(
+            vec![instance_summary("https://dev.service-now.com", true)],
+            true,
+        );
+        let value = build_check_connection_result(&status, true);
+        assert_eq!(value["connected"], true);
+        assert_eq!(value["broker_running"], true);
+        assert_eq!(value["browser_connected"], true);
+        assert_eq!(value["session_count"], 1);
+        assert_eq!(
+            value["latest_instance_url"],
+            "https://dev.service-now.com"
+        );
+        assert_eq!(value["instances"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn check_connection_result_marks_unresponsive_probe_disconnected() {
+        let status = broker_status(Vec::new(), false);
+        let value = build_check_connection_result(&status, false);
+        assert_eq!(value["connected"], false);
+        assert_eq!(value["session_count"], 0);
+    }
+
+    #[test]
+    fn instance_info_result_defaults_to_latest_session() {
+        let status = broker_status(
+            vec![
+                instance_summary("https://a.service-now.com", false),
+                instance_summary("https://b.service-now.com", true),
+            ],
+            true,
+        );
+        let value = build_instance_info_result(&status, None).unwrap();
+        assert_eq!(value["url"], "https://b.service-now.com");
+        assert_eq!(value["has_g_ck"], true);
+        assert_eq!(value["scope"], "global");
+        assert_eq!(value["is_latest"], true);
+    }
+
+    #[test]
+    fn instance_info_result_selects_requested_origin() {
+        let status = broker_status(
+            vec![
+                instance_summary("https://a.service-now.com", false),
+                instance_summary("https://b.service-now.com", true),
+            ],
+            true,
+        );
+        let origin = normalize_origin("https://a.service-now.com").unwrap();
+        let value = build_instance_info_result(&status, Some(&origin)).unwrap();
+        assert_eq!(value["url"], "https://a.service-now.com");
+    }
+
+    #[test]
+    fn instance_info_result_errors_without_session() {
+        let status = broker_status(Vec::new(), false);
+        let err = build_instance_info_result(&status, None).unwrap_err();
+        assert!(err.to_string().contains("Run /token"));
+    }
+
+    #[test]
+    fn instance_info_result_errors_for_unknown_origin() {
+        let status = broker_status(
+            vec![instance_summary("https://a.service-now.com", true)],
+            true,
+        );
+        let err =
+            build_instance_info_result(&status, Some("https://gone.service-now.com:443")).unwrap_err();
+        assert!(err.to_string().contains("no SN-Utils browser session for"));
+    }
 
     #[test]
     fn query_string_encodes_fields_and_query() {
