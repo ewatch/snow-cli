@@ -1196,6 +1196,14 @@ fn parse_mutation_result(data: &str) -> anyhow::Result<Value> {
         return first_json_value(after)
             .with_context(|| format!("failed to parse SN-Utils mutation result as JSON: {after}"));
     }
+    // sys.scripts.do answers a logged-out session with a redirect the helper
+    // forwards as empty output — observed live, so treat it as the auth signal
+    // it is rather than a generic parse failure.
+    if decoded.trim().is_empty() {
+        anyhow::bail!(
+            "SN-Utils returned empty background-script output, which usually means the browser session on the instance has expired. Log in again if needed, run /token in a ServiceNow tab, and retry."
+        );
+    }
     if looks_like_login_page(&decoded) {
         anyhow::bail!(
             "SN-Utils session appears to be logged out: the background script returned a login page instead of a result. Run /token in a ServiceNow tab for this instance and retry."
@@ -1703,6 +1711,19 @@ mod tests {
         let value = parse_mutation_result(&data).unwrap();
         assert_eq!(value["success"], true);
         assert_eq!(value["deleted"], 1);
+    }
+
+    #[test]
+    fn parse_mutation_result_maps_empty_output_to_expired_session() {
+        let error = parse_mutation_result("  \n ").unwrap_err().to_string();
+        assert!(
+            error.contains("/token"),
+            "error should point at /token: {error}"
+        );
+        assert!(
+            error.contains("expired"),
+            "error should mention expiry: {error}"
+        );
     }
 
     #[test]
