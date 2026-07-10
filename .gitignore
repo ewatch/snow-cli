@@ -10,3 +10,8 @@
 
 # Rendered video frames/assets — never commit
 video/
+
+# Local tool caches (codebase-memory / tokensave MCP servers, serena) — never commit
+.codebase-memory/
+.tokensave/
+.serena/
