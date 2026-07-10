@@ -167,13 +167,18 @@ pub enum ReadOnlyTableCommands {
         #[arg(long)]
         query: Option<String>,
 
-        /// Comma-separated list of fields to return
+        /// Comma-separated list of fields to return. Defaults to a compact
+        /// table-aware projection; pass "*" for all fields.
         #[arg(long)]
         fields: Option<String>,
 
-        /// Maximum number of records to return
-        #[arg(long)]
+        /// Maximum number of records to return (default: 20)
+        #[arg(long, conflicts_with = "all")]
         limit: Option<usize>,
+
+        /// Fetch every matching record instead of the bounded default
+        #[arg(long)]
+        all: bool,
 
         /// Field to order results by
         #[arg(long)]
@@ -611,12 +616,14 @@ impl ReadOnlyTableCommands {
                 query,
                 fields,
                 limit,
+                all,
                 order_by,
             } => TableCommands::List {
                 table,
                 query,
                 fields,
                 limit,
+                all,
                 order_by,
             },
             Self::Get {

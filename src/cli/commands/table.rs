@@ -21,26 +21,34 @@ pub async fn handle(
             query,
             fields,
             limit,
+            all,
             order_by,
         } => {
             tracing::info!("Listing records from table: {}", table);
             validate_table_name(&table)?;
 
+            let effective_limit = if all {
+                None
+            } else {
+                Some(limit.unwrap_or(DEFAULT_LIST_LIMIT))
+            };
+            let effective_fields = resolve_list_fields(&table, fields.as_deref());
+
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
-            let pagination = PaginationConfig::default().with_limit(limit);
+            let pagination = PaginationConfig::default().with_limit(effective_limit);
 
-            let records = client
-                .get_table_records(
+            let result = client
+                .get_table_records_with_meta(
                     &table,
                     query.as_deref(),
-                    fields.as_deref(),
+                    effective_fields.as_deref(),
                     &pagination,
                     order_by.as_deref(),
                 )
                 .await?;
 
-            output::print_records(&records, format)?;
+            output::print_table_list(&result, format)?;
             Ok(())
         }
 
@@ -164,6 +172,42 @@ pub async fn handle(
             )
             .await
         }
+    }
+}
+
+/// Bounded default record count when `--limit` and `--all` are both omitted.
+pub(crate) const DEFAULT_LIST_LIMIT: usize = 20;
+
+/// Compact default field projection for `table list` when `--fields` is omitted.
+///
+/// ServiceNow silently drops field names a table does not have, so the
+/// fallback set for unknown tables is safe: it only narrows the response
+/// to whichever of these common identifying fields exist.
+fn default_list_fields(table: &str) -> &'static str {
+    match table {
+        "task" | "incident" | "problem" | "change_request" | "change_task" | "sc_task"
+        | "sc_req_item" | "sc_request" => {
+            "sys_id,number,short_description,state,priority,assigned_to,sys_updated_on"
+        }
+        "sys_user" => "sys_id,user_name,name,email,active,sys_updated_on",
+        "sys_user_group" => "sys_id,name,description,manager,active",
+        "kb_knowledge" => "sys_id,number,short_description,workflow_state,sys_updated_on",
+        t if t == "cmdb_ci" || t.starts_with("cmdb_ci_") => {
+            "sys_id,name,sys_class_name,operational_status,sys_updated_on"
+        }
+        _ => "sys_id,number,name,short_description,state,sys_updated_on",
+    }
+}
+
+/// Resolve the effective `sysparm_fields` for `table list`.
+///
+/// Caller-supplied `--fields` is authoritative; `"*"` requests every field
+/// (no projection); omission falls back to the compact default set.
+fn resolve_list_fields(table: &str, fields: Option<&str>) -> Option<String> {
+    match fields {
+        Some("*") => None,
+        Some(f) => Some(f.to_string()),
+        None => Some(default_list_fields(table).to_string()),
     }
 }
 
@@ -445,6 +489,39 @@ mod tests {
         let input = "{\n  \"key\": \"value\"\n}";
         let data = read_data_from(None, Cursor::new(input.as_bytes()), false).unwrap();
         assert_eq!(data, input);
+    }
+
+    #[test]
+    fn test_resolve_list_fields_explicit_fields_are_authoritative() {
+        assert_eq!(
+            resolve_list_fields("incident", Some("sys_id,number")),
+            Some("sys_id,number".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_list_fields_star_requests_all_fields() {
+        assert_eq!(resolve_list_fields("incident", Some("*")), None);
+    }
+
+    #[test]
+    fn test_resolve_list_fields_defaults_to_compact_projection() {
+        let fields = resolve_list_fields("incident", None).unwrap();
+        assert!(fields.contains("sys_id"));
+        assert!(fields.contains("number"));
+        assert!(fields.contains("short_description"));
+        // Compact: a handful of columns, not the whole record
+        assert!(fields.split(',').count() <= 8);
+    }
+
+    #[test]
+    fn test_default_list_fields_table_aware() {
+        assert!(default_list_fields("sys_user").contains("user_name"));
+        assert!(default_list_fields("cmdb_ci_server").contains("sys_class_name"));
+        assert!(default_list_fields("change_request").contains("number"));
+        // Unknown tables get the conservative fallback
+        assert!(default_list_fields("x_custom_table").contains("sys_id"));
+        assert!(default_list_fields("x_custom_table").contains("sys_updated_on"));
     }
 
     #[test]

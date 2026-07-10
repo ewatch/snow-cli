@@ -9,7 +9,9 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
-use wiremock::matchers::{body_string_contains, header, method, path, query_param};
+use wiremock::matchers::{
+    body_string_contains, header, method, path, query_param, query_param_is_missing,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Create a temp config file for api_key auth and return (dir, config_path).
@@ -130,13 +132,17 @@ async fn test_table_list_jsonl_output() {
 
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     let lines: Vec<&str> = stdout.trim().split('\n').collect();
-    assert_eq!(lines.len(), 2);
+    assert_eq!(lines.len(), 3);
+    // Leading meta line carries returned/truncated state for streaming consumers
+    let meta: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(meta["meta"]["returned"], 2);
+    assert_eq!(meta["meta"]["truncated"], false);
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(lines[0]).unwrap(),
+        serde_json::from_str::<serde_json::Value>(lines[1]).unwrap(),
         serde_json::json!({"number": "INC001", "sys_id": "abc123"})
     );
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(lines[1]).unwrap(),
+        serde_json::from_str::<serde_json::Value>(lines[2]).unwrap(),
         serde_json::json!({"number": "INC002", "sys_id": "def456"})
     );
 }
@@ -243,7 +249,145 @@ async fn test_table_list_empty_result() {
         .args(["--instance", &server.uri(), "table", "list", "incident"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("[]"));
+        .stdout(predicate::str::contains("\"records\":[]"))
+        .stdout(predicate::str::contains("\"returned\":0"))
+        .stdout(predicate::str::contains("\"truncated\":false"));
+}
+
+#[tokio::test]
+async fn test_table_list_default_is_bounded_with_compact_fields() {
+    let server = MockServer::start().await;
+
+    // Omitting --limit/--fields must request a bounded page with the
+    // compact incident projection — never an unbounded full-field fetch.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_limit", "20"))
+        .and(query_param(
+            "sysparm_fields",
+            "sys_id,number,short_description,state,priority,assigned_to,sys_updated_on",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "4381")
+                .set_body_json(serde_json::json!({
+                    "result": [
+                        {"sys_id": "abc123", "number": "INC001"}
+                    ]
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "json",
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"total\":4381"))
+        .stdout(predicate::str::contains("\"returned\":1"))
+        .stdout(predicate::str::contains("\"truncated\":true"));
+}
+
+#[tokio::test]
+async fn test_table_list_all_fetches_every_record() {
+    let server = MockServer::start().await;
+
+    // --all removes the bounded default: full page size, auto-pagination.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_limit", "100"))
+        .and(query_param("sysparm_offset", "0"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "2")
+                .set_body_json(serde_json::json!({
+                    "result": [
+                        {"sys_id": "abc123", "number": "INC001"},
+                        {"sys_id": "def456", "number": "INC002"}
+                    ]
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "json",
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+            "--all",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"returned\":2"))
+        .stdout(predicate::str::contains("\"truncated\":false"));
+}
+
+#[tokio::test]
+async fn test_table_list_fields_star_requests_all_fields() {
+    let server = MockServer::start().await;
+
+    // --fields '*' opts out of the compact projection entirely.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param_is_missing("sysparm_fields"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"sys_id": "abc123", "number": "INC001"}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            "*",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("INC001"));
+}
+
+#[tokio::test]
+async fn test_table_list_limit_conflicts_with_all() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["table", "list", "incident", "--limit", "5", "--all"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 #[tokio::test]

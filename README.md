@@ -35,12 +35,31 @@ snow-cli table schema incident --extended | head -20
 # Export records to a portable file
 snow-cli data export incident --fields number,short_description --limit 50 --out incidents.json
 
+# Fetch every matching record with every field (bypasses the bounded defaults)
+snow-cli table list incident --all --fields '*'
+
 # Handle slow instances
 snow-cli --timeout-secs 60 table list incident --limit 5
 
 # Pipe credentials for CI (see auth docs for all env vars)
 SNOW_CLI_PASSWORD='<password>' snow-cli table get incident <sys_id>
 ```
+
+### Bounded list defaults and result metadata
+
+`table list` is tuned for agent workflows. Without `--limit` or `--all` it
+returns at most 20 records, and without `--fields` it returns a compact
+table-aware field projection (pass `--fields '*'` for every field). Except in
+CSV output, list responses carry result metadata so truncation is always
+detectable:
+
+```json
+{ "total": 4381, "returned": 20, "truncated": true, "records": [ ... ] }
+```
+
+`total` comes from the server's `X-Total-Count` header and is omitted when the
+server does not report one. For complete data set extraction, use
+`snow-cli data export`, which keeps its explicit full-export semantics.
 
 ## Agent-safe read-only access
 

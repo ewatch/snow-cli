@@ -1,4 +1,5 @@
 use crate::cli::args::OutputFormat;
+use crate::client::pagination::TableListResult;
 use crate::models::record::Record;
 use serde::Serialize;
 use serde_json::Value;
@@ -121,6 +122,79 @@ pub fn print_records(records: &[Record], format: &OutputFormat) -> anyhow::Resul
         }
         OutputFormat::Auto => {
             emit_auto(&serde_json::to_value(records)?, &mut std::io::stdout())?;
+        }
+    }
+    Ok(())
+}
+
+/// Table-list result metadata emitted alongside the records.
+#[derive(Serialize)]
+struct TableListMeta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total: Option<usize>,
+    returned: usize,
+    truncated: bool,
+}
+
+impl TableListMeta {
+    fn from_result(result: &TableListResult) -> Self {
+        Self {
+            total: result.total,
+            returned: result.returned(),
+            truncated: result.truncated,
+        }
+    }
+}
+
+/// Table-list envelope: metadata first, then the records themselves.
+#[derive(Serialize)]
+struct TableListEnvelope<'a> {
+    #[serde(flatten)]
+    meta: TableListMeta,
+    records: &'a [Record],
+}
+
+/// Write a table-list result with totals and truncation metadata to stdout.
+///
+/// CSV stays a plain record table (metadata would corrupt the tabular
+/// shape); every other format wraps the records in an envelope carrying
+/// `total` (when the server reported one), `returned`, and `truncated`.
+pub fn print_table_list(result: &TableListResult, format: &OutputFormat) -> anyhow::Result<()> {
+    write_table_list(result, format, &mut std::io::stdout())
+}
+
+pub(crate) fn write_table_list<W: Write>(
+    result: &TableListResult,
+    format: &OutputFormat,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    let envelope = TableListEnvelope {
+        meta: TableListMeta::from_result(result),
+        records: &result.records,
+    };
+    match format {
+        OutputFormat::Json => {
+            writeln!(writer, "{}", serde_json::to_string(&envelope)?)?;
+        }
+        OutputFormat::Csv => {
+            write_records_csv(&result.records, writer)?;
+        }
+        OutputFormat::Jsonl => {
+            // Leading meta line so streaming consumers see totals before records.
+            let meta = serde_json::json!({ "meta": TableListMeta::from_result(result) });
+            writeln!(writer, "{}", serde_json::to_string(&meta)?)?;
+            for record in &result.records {
+                writeln!(writer, "{}", serde_json::to_string(record)?)?;
+            }
+        }
+        OutputFormat::Toon => {
+            write_toon(&envelope, writer)?;
+        }
+        OutputFormat::Text => {
+            writeln!(writer, "{}", serde_json::to_string_pretty(&envelope)?)?;
+        }
+        OutputFormat::Auto => {
+            emit_auto(&serde_json::to_value(&envelope)?, writer)?;
         }
     }
     Ok(())
@@ -548,6 +622,133 @@ mod tests {
         assert!(csv_str.contains("'-1+2"));
         assert!(csv_str.contains("'@cmd"));
         assert!(csv_str.contains("hello"));
+    }
+
+    fn sample_list_result(total: Option<usize>, truncated: bool) -> TableListResult {
+        TableListResult {
+            records: vec![
+                Record {
+                    fields: HashMap::from([
+                        ("sys_id".to_string(), serde_json::json!("abc123")),
+                        ("number".to_string(), serde_json::json!("INC001")),
+                    ]),
+                },
+                Record {
+                    fields: HashMap::from([
+                        ("sys_id".to_string(), serde_json::json!("def456")),
+                        ("number".to_string(), serde_json::json!("INC002")),
+                    ]),
+                },
+            ],
+            total,
+            truncated,
+        }
+    }
+
+    #[test]
+    fn test_write_table_list_json_envelope() {
+        let result = sample_list_result(Some(4381), true);
+
+        let mut output = Vec::new();
+        write_table_list(&result, &OutputFormat::Json, &mut output).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+        assert_eq!(value["total"], 4381);
+        assert_eq!(value["returned"], 2);
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["records"].as_array().unwrap().len(), 2);
+        assert_eq!(value["records"][0]["number"], "INC001");
+    }
+
+    #[test]
+    fn test_write_table_list_json_omits_unknown_total() {
+        let result = sample_list_result(None, false);
+
+        let mut output = Vec::new();
+        write_table_list(&result, &OutputFormat::Json, &mut output).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+        assert!(value.get("total").is_none());
+        assert_eq!(value["returned"], 2);
+        assert_eq!(value["truncated"], false);
+    }
+
+    #[test]
+    fn test_write_table_list_jsonl_meta_line_first() {
+        let result = sample_list_result(Some(10), true);
+
+        let mut output = Vec::new();
+        write_table_list(&result, &OutputFormat::Jsonl, &mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = text.trim().split('\n').collect();
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines[0]).unwrap(),
+            serde_json::json!({"meta": {"total": 10, "returned": 2, "truncated": true}})
+        );
+        let first: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(first["number"], "INC001");
+    }
+
+    #[test]
+    fn test_write_table_list_csv_stays_plain_records() {
+        let result = sample_list_result(Some(10), true);
+
+        let mut output = Vec::new();
+        write_table_list(&result, &OutputFormat::Csv, &mut output).unwrap();
+        let csv_str = String::from_utf8(output).unwrap();
+
+        assert!(csv_str.starts_with("number,sys_id\n"));
+        assert!(!csv_str.contains("truncated"));
+        assert!(!csv_str.contains("total"));
+    }
+
+    #[test]
+    fn test_write_table_list_toon_includes_meta() {
+        let result = sample_list_result(Some(10), true);
+
+        let mut output = Vec::new();
+        write_table_list(&result, &OutputFormat::Toon, &mut output).unwrap();
+        let toon = String::from_utf8(output).unwrap();
+
+        assert!(toon.contains("total"));
+        assert!(toon.contains("returned"));
+        assert!(toon.contains("truncated"));
+        assert!(toon.contains("INC001"));
+    }
+
+    #[test]
+    fn test_write_table_list_auto_keeps_meta() {
+        let result = sample_list_result(Some(10), true);
+
+        let mut output = Vec::new();
+        write_table_list(&result, &OutputFormat::Auto, &mut output).unwrap();
+        let text = String::from_utf8(output).unwrap();
+
+        // Whichever encoding wins, the metadata must survive.
+        assert!(text.contains("total"));
+        assert!(text.contains("returned"));
+        assert!(text.contains("truncated"));
+        assert!(text.contains("INC001"));
+    }
+
+    #[test]
+    fn test_write_table_list_empty_is_definitive() {
+        let result = TableListResult {
+            records: Vec::new(),
+            total: Some(0),
+            truncated: false,
+        };
+
+        let mut output = Vec::new();
+        write_table_list(&result, &OutputFormat::Json, &mut output).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+        assert_eq!(value["total"], 0);
+        assert_eq!(value["returned"], 0);
+        assert_eq!(value["truncated"], false);
+        assert_eq!(value["records"], serde_json::json!([]));
     }
 
     #[test]

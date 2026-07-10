@@ -25,7 +25,7 @@ const SEED_AFTER_HELP: &str = "Examples:\n  snow-cli seed plan --file qa-fixture
 
 const SCOPE_AFTER_HELP: &str = "Examples:\n  snow-cli scope list\n  snow-cli scope list incident\n  snow-cli scope list sn_ot_incident_mgmt\n  snow-cli scope inspect x_my_app\n  snow-cli scope inspect 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --details full\n  snow-cli scope move-file sys_script_include 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --target-scope x_target_app --dry-run\n  snow-cli scope move-file sys_script_include 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --target-scope x_target_app --yes";
 
-const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name";
+const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --all --fields '*'   # every record, every field\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - Responses include returned/truncated metadata plus the server-reported total, so truncation is always detectable.\n  - For complete data set extraction prefer `data export`.";
 
 const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incident --data '{\"short_description\":\"VPN down\"}'\n  echo '{\"short_description\":\"From stdin\"}' | snow-cli table create incident";
 
@@ -682,13 +682,18 @@ pub enum TableCommands {
         #[arg(long)]
         query: Option<String>,
 
-        /// Comma-separated list of fields to return
+        /// Comma-separated list of fields to return. Defaults to a compact
+        /// table-aware projection; pass "*" for all fields.
         #[arg(long)]
         fields: Option<String>,
 
-        /// Maximum number of records to return
-        #[arg(long)]
+        /// Maximum number of records to return (default: 20)
+        #[arg(long, conflicts_with = "all")]
         limit: Option<usize>,
+
+        /// Fetch every matching record instead of the bounded default
+        #[arg(long)]
+        all: bool,
 
         /// Field to order results by
         #[arg(long)]

@@ -262,6 +262,7 @@ mod tests {
                 query: None,
                 fields: None,
                 limit: None,
+                all: false,
                 order_by: None,
             },
         })));

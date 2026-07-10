@@ -410,6 +410,7 @@ mod tests {
                 query: None,
                 fields: None,
                 limit: Some(1),
+                all: false,
                 order_by: None,
             },
         }));

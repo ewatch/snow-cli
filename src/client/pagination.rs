@@ -7,6 +7,31 @@
 //! The paginator fetches pages automatically, yielding records
 //! as a stream until all records are retrieved or `--limit` is reached.
 
+/// Outcome of a table-list fetch, preserving Table API result metadata.
+///
+/// Lets callers distinguish "these are all the matching records" from
+/// "this is a bounded subset", instead of guessing from a bare `Vec`.
+#[derive(Debug)]
+pub struct TableListResult {
+    pub records: Vec<crate::models::record::Record>,
+
+    /// Total matching records reported by `X-Total-Count`, when the server
+    /// sent the header. Never invented client-side.
+    pub total: Option<usize>,
+
+    /// Whether `records` is an incomplete subset of the matching rows.
+    /// When the server reports no total, a limit-bounded fetch whose final
+    /// page came back full is conservatively reported as truncated.
+    pub truncated: bool,
+}
+
+impl TableListResult {
+    /// Number of records actually returned to the caller.
+    pub fn returned(&self) -> usize {
+        self.records.len()
+    }
+}
+
 /// Configuration for pagination behavior.
 pub struct PaginationConfig {
     /// Maximum total records to return. None means fetch all.
