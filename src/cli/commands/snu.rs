@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow};
 use base64::Engine;
-use reqwest::{Client, Method};
 use serde_json::{Map, Value, json};
 
 use crate::cli::args::{
@@ -14,7 +13,7 @@ use crate::cli::output::print_output;
 use crate::cli::validation::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::snu::broker::BrokerBridge;
 use crate::snu::protocol::{
-    SnuInstance, SnuMessage, normalize_origin, redact_session_for_output, resolve_origin,
+    SnuInstance, SnuMessage, redact_session_for_output, resolve_origin,
 };
 
 pub async fn handle(
@@ -656,23 +655,15 @@ async fn handle_update_record(
 ) -> anyhow::Result<()> {
     let fields_object = resolve_update_fields(data, field, content)?;
     let requested_fields: Vec<String> = fields_object.keys().cloned().collect();
-    // The bridge is used only for the optional read-back below: SN-Utils'
-    // `updateRecord` helper sends no correlated success response over the
-    // WebSocket, so the mutating PUT itself goes out over direct HTTP using the
-    // browser session's `g_ck` that the broker captured.
-    let (bridge, mut instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
-    let mut refreshed = false;
-    let path = format!("/api/now/table/{table}/{sys_id}");
-    let response = snu_http_request_with_refresh(
-        &bridge,
-        &mut instance,
-        &mut refreshed,
-        timeout_secs,
-        Method::PUT,
-        &path,
-        Some(Value::Object(fields_object.clone())),
-    )
-    .await?;
+    // Mutations run as a server-side background script over the SN-Utils bridge
+    // (the same `executeBackgroundScript` channel that `execute-bg-script` uses).
+    // A direct `X-UserToken` REST call cannot work because the broker only
+    // captures the `g_ck`, not the session cookies ServiceNow validates it
+    // against, so the request is always rejected. The generated GlideRecord
+    // script prints a machine-parseable JSON result we parse for success.
+    let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
+    let script = build_update_script(&table, &sys_id, &fields_object);
+    let response = run_bg_mutation(&bridge, &instance, &script, timeout_secs).await?;
 
     if !await_confirmation {
         return print_output(
@@ -728,8 +719,7 @@ async fn handle_delete_record(
     target_origin: Option<String>,
     output_format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let (bridge, mut instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
-    let mut refreshed = false;
+    let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
 
     if let Some(sys_id) = request.sys_id {
         if request.dry_run {
@@ -753,17 +743,8 @@ async fn handle_delete_record(
             );
         }
 
-        let path = format!("/api/now/table/{}/{}", request.table, sys_id);
-        let response = snu_http_request_with_refresh(
-            &bridge,
-            &mut instance,
-            &mut refreshed,
-            timeout_secs,
-            Method::DELETE,
-            &path,
-            None,
-        )
-        .await?;
+        let script = build_delete_script(&request.table, &sys_id);
+        let response = run_bg_mutation(&bridge, &instance, &script, timeout_secs).await?;
         return print_output(
             &json!({
                 "deleted": true,
@@ -821,29 +802,33 @@ async fn handle_delete_record(
         );
     }
 
-    let mut deleted = Vec::new();
-    let mut failed = Vec::new();
-    for record in records {
-        let Some(record_sys_id) = record.get("sys_id").and_then(Value::as_str) else {
-            failed.push(json!({"record": record, "error": "missing sys_id"}));
-            continue;
-        };
-        let record_path = format!("/api/now/table/{}/{}", request.table, record_sys_id);
-        match snu_http_request_with_refresh(
-            &bridge,
-            &mut instance,
-            &mut refreshed,
-            timeout_secs,
-            Method::DELETE,
-            &record_path,
-            None,
-        )
-        .await
-        {
-            Ok(_) => deleted.push(record_sys_id.to_string()),
-            Err(error) => failed.push(json!({"sys_id": record_sys_id, "error": error.to_string()})),
-        }
-    }
+    // Delete the matching records in a single server-side background script so we
+    // get one real acknowledgement instead of N cookie-less REST calls. The
+    // script re-runs the same encoded query under the same limit and reports the
+    // sys_ids it actually deleted; anything the preview matched but the script
+    // did not delete is surfaced as a failure.
+    let matched_sys_ids: Vec<String> = records
+        .iter()
+        .filter_map(|record| record.get("sys_id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    let script = build_bulk_delete_script(&request.table, &query, limit);
+    let result = run_bg_mutation(&bridge, &instance, &script, timeout_secs).await?;
+    let deleted: Vec<String> = result
+        .get("deleted")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let failed: Vec<Value> = matched_sys_ids
+        .iter()
+        .filter(|sys_id| !deleted.contains(*sys_id))
+        .map(|sys_id| json!({"sys_id": sys_id, "error": "not deleted by server script"}))
+        .collect();
 
     print_output(
         &json!({
@@ -960,103 +945,146 @@ async fn query_records_via_bridge(
         .await
 }
 
-/// Perform a direct ServiceNow REST call authenticated with the browser
-/// session's `g_ck` (replayed as `X-UserToken`).
-///
-/// Mutating record operations use this rather than the WebSocket bridge because
-/// SN-Utils' ScriptSync helper does not give us a usable acknowledgement for
-/// them: its `updateRecord` handler sends no correlated success response, and it
-/// has no `deleteRecord` handler at all (the message falls through to
-/// `updateRecord`). Both would therefore hang until the command timed out.
-/// Reads/queries still go over the bridge, where SN-Utils does reply with a
-/// matching `agentRequestId`.
-async fn snu_http_request(
-    instance: &SnuInstance,
-    timeout_secs: u64,
-    method: Method,
-    path: &str,
-    body: Option<Value>,
-) -> anyhow::Result<Value> {
-    let token = instance
-        .g_ck
-        .as_deref()
-        .ok_or_else(|| anyhow!("SN-Utils session is missing a g_ck token"))?;
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(timeout_secs))
-        .build()?;
-    let url = reqwest::Url::parse(&format!("{}{}", instance.url.trim_end_matches('/'), path))?;
-    let mut request = client
-        .request(method, url)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .header("X-UserToken", token);
-    if let Some(body) = body {
-        request = request
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .json(&body);
-    }
+/// Marker prefix the generated mutation scripts print in front of their JSON
+/// result line, so we can pick it out of the background-script output regardless
+/// of any other logging the server emits around it.
+const MUTATION_RESULT_MARKER: &str = "__SNOW_CLI_RESULT__:";
 
-    let response = request.send().await?;
-    let status = response.status();
-    let text = response.text().await?;
-
-    if !status.is_success() {
-        return Err(anyhow!(
-            "ServiceNow request failed with HTTP {}: {}",
-            status,
-            if text.trim().is_empty() {
-                "<empty response>"
-            } else {
-                &text
-            }
-        ));
-    }
-
-    if text.trim().is_empty() {
-        return Ok(Value::Null);
-    }
-
-    serde_json::from_str(&text).with_context(|| format!("invalid JSON from ServiceNow: {text}"))
+/// Serialize a JSON value into a form that is safe to embed as a literal inside
+/// generated JavaScript. `serde_json` already escapes quotes, backslashes and
+/// control characters; we additionally escape U+2028/U+2029, which are valid in
+/// JSON strings but are line terminators in JavaScript and would otherwise break
+/// a string literal in the Rhino engine ServiceNow runs.
+fn js_json_literal(value: &Value) -> String {
+    serde_json::to_string(value)
+        .unwrap_or_else(|_| "null".to_string())
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
 }
 
-/// `true` when a direct-HTTP error looks like an expired/rejected `g_ck`.
-fn is_stale_token_error(error: &anyhow::Error) -> bool {
-    let text = error.to_string().to_lowercase();
-    text.contains("http 401")
-        || text.contains("http 403")
-        || text.contains("not authenticated")
-        || text.contains("unauthorized")
-        || text.contains("forbidden")
+/// Build a server-side background script that updates a single record via
+/// `GlideRecord` and prints a machine-parseable JSON result. User-supplied
+/// values are embedded as a JSON literal (never string-concatenated) so quotes,
+/// backslashes, newlines and unicode cannot break out of the script.
+fn build_update_script(table: &str, sys_id: &str, fields: &Map<String, Value>) -> String {
+    let table_lit = js_json_literal(&Value::String(table.to_string()));
+    let sys_id_lit = js_json_literal(&Value::String(sys_id.to_string()));
+    let fields_lit = js_json_literal(&Value::Object(fields.clone()));
+    format!(
+        r#"(function() {{
+  var __table = {table_lit};
+  var __sysId = {sys_id_lit};
+  var __fields = {fields_lit};
+  var __gr = new GlideRecord(__table);
+  if (!__gr.get(__sysId)) {{
+    gs.print("{MUTATION_RESULT_MARKER}" + JSON.stringify({{ success: false, action: "update", table: __table, sys_id: __sysId, updated: 0, error: "record not found" }}));
+    return;
+  }}
+  for (var __key in __fields) {{
+    if (__fields.hasOwnProperty(__key)) {{ __gr.setValue(__key, __fields[__key]); }}
+  }}
+  __gr.update();
+  gs.print("{MUTATION_RESULT_MARKER}" + JSON.stringify({{ success: true, action: "update", table: __table, sys_id: __gr.getUniqueValue(), updated: 1 }}));
+}})();"#
+    )
 }
 
-/// Run a mutating direct-HTTP request, and if ServiceNow rejects the session's
-/// `g_ck` as expired, ask the broker to capture a fresh one (which prompts the
-/// user to re-run `/token`) and retry exactly once. `instance` is updated in
-/// place so any follow-up call in the same command reuses the refreshed token,
-/// and `refreshed` guards against refresh loops.
-async fn snu_http_request_with_refresh(
+/// Build a server-side background script that deletes a single record by sys_id.
+fn build_delete_script(table: &str, sys_id: &str) -> String {
+    let table_lit = js_json_literal(&Value::String(table.to_string()));
+    let sys_id_lit = js_json_literal(&Value::String(sys_id.to_string()));
+    format!(
+        r#"(function() {{
+  var __table = {table_lit};
+  var __sysId = {sys_id_lit};
+  var __gr = new GlideRecord(__table);
+  if (!__gr.get(__sysId)) {{
+    gs.print("{MUTATION_RESULT_MARKER}" + JSON.stringify({{ success: false, action: "delete", table: __table, sys_id: __sysId, deleted: 0, error: "record not found" }}));
+    return;
+  }}
+  __gr.deleteRecord();
+  gs.print("{MUTATION_RESULT_MARKER}" + JSON.stringify({{ success: true, action: "delete", table: __table, sys_id: __sysId, deleted: 1 }}));
+}})();"#
+    )
+}
+
+/// Build a server-side background script that deletes every record matching an
+/// encoded query, capped by `limit`, and prints the sys_ids it removed.
+fn build_bulk_delete_script(table: &str, query: &str, limit: u32) -> String {
+    let table_lit = js_json_literal(&Value::String(table.to_string()));
+    let query_lit = js_json_literal(&Value::String(query.to_string()));
+    let limit_lit = js_json_literal(&Value::from(limit));
+    format!(
+        r#"(function() {{
+  var __table = {table_lit};
+  var __query = {query_lit};
+  var __limit = {limit_lit};
+  var __gr = new GlideRecord(__table);
+  __gr.addEncodedQuery(__query);
+  __gr.setLimit(__limit);
+  __gr.query();
+  var __deleted = [];
+  while (__gr.next()) {{
+    var __id = __gr.getUniqueValue();
+    if (__gr.deleteRecord()) {{ __deleted.push(__id); }}
+  }}
+  gs.print("{MUTATION_RESULT_MARKER}" + JSON.stringify({{ success: true, action: "deleteBulk", table: __table, query: __query, limit: __limit, deleted_count: __deleted.length, deleted: __deleted }}));
+}})();"#
+    )
+}
+
+/// Run a generated mutation script over the SN-Utils `executeBackgroundScript`
+/// bridge (the proven channel) and return the parsed JSON result the script
+/// printed. Errors out when the script reported `success: false`.
+async fn run_bg_mutation(
     bridge: &BrokerBridge,
-    instance: &mut SnuInstance,
-    refreshed: &mut bool,
+    instance: &SnuInstance,
+    script: &str,
     timeout_secs: u64,
-    method: Method,
-    path: &str,
-    body: Option<Value>,
 ) -> anyhow::Result<Value> {
-    match snu_http_request(instance, timeout_secs, method.clone(), path, body.clone()).await {
-        Ok(value) => Ok(value),
-        Err(error) if !*refreshed && is_stale_token_error(&error) => {
-            tracing::info!(
-                "ServiceNow rejected the cached SN-Utils token; refreshing it via the helper tab"
-            );
-            // Scope the refresh to this instance's own origin so a `/token` from
-            // another tab can't redirect the retry to a different instance.
-            let origin = normalize_origin(&instance.url);
-            *instance = bridge.refresh_session(timeout_secs, origin).await?;
-            *refreshed = true;
-            snu_http_request(instance, timeout_secs, method, path, body).await
-        }
-        Err(error) => Err(error),
+    let response = bridge
+        .send_action_and_wait_for_action(
+            &json!({
+                "action": "executeBackgroundScript",
+                "content": script,
+                "instance": instance,
+                "appName": "snow-cli",
+            }),
+            "responseFromBackgroundScript",
+            timeout_secs,
+        )
+        .await?;
+    let data = response
+        .extra
+        .get("data")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("SN-Utils background script response did not contain data"))?;
+    let result = parse_mutation_result(data)?;
+    if result.get("success").and_then(Value::as_bool) == Some(false) {
+        let error = result
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("mutation reported failure");
+        return Err(anyhow!("ServiceNow mutation failed: {error}"));
     }
+    Ok(result)
+}
+
+/// Extract the JSON result a mutation script printed. Prefers the line that
+/// carries `MUTATION_RESULT_MARKER`; falls back to parsing the whole output as
+/// JSON so a helper that returns only the printed value still works.
+fn parse_mutation_result(data: &str) -> anyhow::Result<Value> {
+    if let Some(idx) = data.rfind(MUTATION_RESULT_MARKER) {
+        let after = &data[idx + MUTATION_RESULT_MARKER.len()..];
+        let json_part = after.lines().next().unwrap_or(after).trim();
+        return serde_json::from_str(json_part).with_context(|| {
+            format!("failed to parse SN-Utils mutation result as JSON: {json_part}")
+        });
+    }
+    let trimmed = data.trim();
+    serde_json::from_str(trimmed).with_context(|| {
+        format!("SN-Utils background script did not return a parseable mutation result: {trimmed}")
+    })
 }
 
 fn correlation_id(prefix: &str) -> String {
@@ -1276,6 +1304,96 @@ mod tests {
     fn resolve_script_from_tty_no_input_errors() {
         let err = resolve_script_from(None, None, Cursor::new(b""), true).unwrap_err();
         assert!(err.to_string().contains("No script provided"));
+    }
+
+    fn fields_from(pairs: &[(&str, Value)]) -> Map<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn js_json_literal_escapes_quotes_backslashes_and_newlines() {
+        let value = Value::String("a\"b\\c\nd\tE".to_string());
+        let literal = js_json_literal(&value);
+        // Valid JSON (and thus a valid JS literal) that round-trips exactly.
+        let back: Value = serde_json::from_str(&literal).unwrap();
+        assert_eq!(back, value);
+        assert!(!literal.contains('\n'), "raw newline must not leak: {literal}");
+    }
+
+    #[test]
+    fn js_json_literal_escapes_js_line_separators() {
+        let value = Value::String("a\u{2028}b\u{2029}c".to_string());
+        let literal = js_json_literal(&value);
+        assert!(!literal.contains('\u{2028}'));
+        assert!(!literal.contains('\u{2029}'));
+        assert!(literal.contains("\\u2028"));
+        assert!(literal.contains("\\u2029"));
+    }
+
+    #[test]
+    fn update_script_embeds_fields_safely() {
+        let fields = fields_from(&[
+            ("short_description", Value::String("line1\nline2 \"q\"".into())),
+            ("script", Value::String("gs.info('hi'); var x = \"</y>\";".into())),
+            ("count", Value::from(3)),
+            ("emoji", Value::String("héllo 🚀".into())),
+        ]);
+        let script = build_update_script("incident", "abc'123\\", &fields);
+        // No raw newline from user data should appear outside the template lines.
+        assert!(script.contains("new GlideRecord(__table)"));
+        assert!(script.contains(MUTATION_RESULT_MARKER));
+        assert!(script.contains("__gr.update()"));
+        // The embedded fields literal must be valid JSON round-tripping the input.
+        let start = script.find("var __fields = ").unwrap() + "var __fields = ".len();
+        let rest = &script[start..];
+        let end = rest.find(";\n").unwrap();
+        let parsed: Value = serde_json::from_str(rest[..end].trim()).unwrap();
+        assert_eq!(parsed, Value::Object(fields));
+    }
+
+    #[test]
+    fn delete_scripts_are_generated() {
+        let single = build_delete_script("incident", "abc123");
+        assert!(single.contains("__gr.deleteRecord()"));
+        assert!(single.contains(MUTATION_RESULT_MARKER));
+
+        let bulk = build_bulk_delete_script("incident", "active=true^ORDERBYnumber", 25);
+        assert!(bulk.contains("addEncodedQuery(__query)"));
+        assert!(bulk.contains("setLimit(__limit)"));
+        assert!(bulk.contains("var __limit = 25;"));
+    }
+
+    #[test]
+    fn parse_mutation_result_extracts_marked_line() {
+        let data = format!(
+            "*** Script: running\n{MUTATION_RESULT_MARKER}{{\"success\":true,\"updated\":1}}\ndone\n"
+        );
+        let result = parse_mutation_result(&data).unwrap();
+        assert_eq!(result["success"], true);
+        assert_eq!(result["updated"], 1);
+    }
+
+    #[test]
+    fn parse_mutation_result_uses_last_marker() {
+        let data = format!(
+            "{MUTATION_RESULT_MARKER}{{\"success\":false}}\n{MUTATION_RESULT_MARKER}{{\"success\":true}}"
+        );
+        let result = parse_mutation_result(&data).unwrap();
+        assert_eq!(result["success"], true);
+    }
+
+    #[test]
+    fn parse_mutation_result_falls_back_to_whole_output() {
+        let result = parse_mutation_result("  {\"success\":true,\"deleted\":1}  ").unwrap();
+        assert_eq!(result["deleted"], 1);
+    }
+
+    #[test]
+    fn parse_mutation_result_errors_on_garbage() {
+        assert!(parse_mutation_result("not json at all").is_err());
     }
 
     #[test]
