@@ -45,10 +45,6 @@ enum BrokerRequest {
         #[serde(default)]
         origin: Option<String>,
     },
-    SendPayload {
-        payload: Value,
-        timeout_secs: u64,
-    },
     SendAction {
         payload: Value,
         correlation_id: String,
@@ -293,20 +289,6 @@ impl BrokerBridge {
         .await?
         .instance
         .ok_or_else(|| anyhow!("SN-Utils broker did not return browser session metadata"))
-    }
-
-    pub async fn send_payload_and_wait(
-        &self,
-        payload: &Value,
-        timeout_secs: u64,
-    ) -> anyhow::Result<SnuMessage> {
-        self.request(BrokerRequest::SendPayload {
-            payload: payload.clone(),
-            timeout_secs,
-        })
-        .await?
-        .message
-        .ok_or_else(|| anyhow!("SN-Utils broker did not return a helper message"))
     }
 
     pub async fn send_action_and_wait(
@@ -628,21 +610,6 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 status: None,
                 cleared: None,
             })
-        }
-        BrokerRequest::SendPayload {
-            payload,
-            timeout_secs,
-        } => {
-            let message = {
-                let mut guard = broker.bridge.lock().await;
-                let result = {
-                    let bridge = ensure_bridge(broker, &mut guard, timeout_secs).await?;
-                    bridge.send_payload_and_wait(&payload, timeout_secs).await
-                };
-                clear_bridge_on_disconnect(broker, &mut guard, result)?
-            };
-            remember_message_session(broker, &message).await;
-            Ok(message_response(message))
         }
         BrokerRequest::SendAction {
             mut payload,

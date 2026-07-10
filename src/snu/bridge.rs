@@ -184,20 +184,6 @@ impl SnuBridge {
             })?
     }
 
-    pub async fn send_payload_and_wait(
-        &mut self,
-        payload: &Value,
-        timeout_secs: u64,
-    ) -> anyhow::Result<SnuMessage> {
-        self.send_json(payload).await?;
-
-        let read_loop = async { self.read_json_message().await };
-
-        timeout(Duration::from_secs(timeout_secs), read_loop)
-            .await
-            .map_err(|_| anyhow!("timed out waiting {timeout_secs}s for SN-Utils response"))?
-    }
-
     async fn send_json(&mut self, value: &Value) -> anyhow::Result<()> {
         self.socket
             .send(Message::Text(serde_json::to_string(value)?))
