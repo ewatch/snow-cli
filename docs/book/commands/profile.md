@@ -19,9 +19,9 @@ A profile can contain:
 - the username for basic auth or OAuth password grant,
 - OAuth client settings,
 - mTLS certificate paths,
-- SAML/SSO login URL.
+- browser-session / SSO entry-point metadata.
 
-Secrets are stored separately in the OS keychain.
+The same config file also stores global settings such as the default profile and the default stdout format. Secrets are stored separately in the OS keychain.
 
 ## `profile add <name>`
 
@@ -34,7 +34,7 @@ snow-cli profile add <name> [options]
 Important options:
 
 - `--instance <url>`: instance URL such as `https://dev.service-now.com`
-- `--auth-method <basic|oauth2|api-key|mtls|saml>`
+- `--auth-method <basic|oauth2|api-key|mtls|browser-session>` (`saml` is accepted as a legacy alias)
 - `--username <user>`: used for basic auth or OAuth password grant
 - `--client-id <id>`: required for OAuth2 profiles
 - `--oauth-grant-type <client-credentials|password|authorization-code>`
@@ -42,8 +42,8 @@ Important options:
 - `--oauth-redirect-host <host>`
 - `--oauth-redirect-port <port>`
 - `--oauth-redirect-path <path>`
-- `--cert-path <path>` and `--key-path <path>`: for mTLS profiles
-- `--sso-login-url <url>`: for SAML/SSO profiles
+- `--cert-path <path>` and `--key-path <path>`: metadata for future mTLS support
+- `--sso-login-url <url>`: browser entry point for SSO/SAML login
 
 Examples:
 
@@ -60,11 +60,10 @@ snow-cli profile add user-scope \
   --oauth-grant-type authorization-code \
   --oauth-scope useraccount
 
-snow-cli profile add mtls-dev \
+snow-cli profile add browser-dev \
   --instance https://dev.service-now.com \
-  --auth-method mtls \
-  --cert-path ./client.crt \
-  --key-path ./client.key
+  --auth-method browser-session \
+  --sso-login-url https://dev.service-now.com/login_with_sso.do
 ```
 
 Notes:
@@ -72,6 +71,7 @@ Notes:
 - When you create the first profile, `snow-cli` makes it the default automatically.
 - If the profile already exists, use `profile edit` instead.
 - For authorization-code OAuth2, see the dedicated [PKCE guide](../oauth-authorization-code-pkce.md).
+- `mtls` profile metadata is accepted, but the mTLS authenticator is not implemented yet.
 
 ## `profile edit <name>`
 
@@ -186,6 +186,19 @@ snow-cli profile show
 ```
 
 Compared with `profile current`, this also includes the config path and profile details.
+
+## `profile output [format]`
+
+Show or set the global default output format used when `--output` is not passed.
+
+```bash
+snow-cli profile output
+snow-cli profile output toon
+snow-cli profile output --reset
+```
+
+Supported persisted formats are `json`, `csv`, `jsonl`, `toon`, `text`, and `auto`.
+`--reset` clears the configured default and returns to the built-in JSON fallback.
 
 ## `profile remove <name>`
 

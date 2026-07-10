@@ -22,6 +22,35 @@ untrusted. GitHub still adds its standard `Source code (zip)` and
 
 ## Creating a release
 
+### Validation gates
+
+Complete these gates for the release candidate before creating a tag or GitHub
+release:
+
+1. Run the reviewer against the release fixed point, specification, and
+   repository standards.
+2. Run the E2E command matrix and save sanitized evidence under
+   `artifacts/e2e/<version>/`. Each scenario records the exact command,
+   arguments, exit code, sanitized stdout and stderr, assertion result, and
+   harness/model metadata.
+3. Update user documentation from successful E2E artifacts only. Examples must
+   not contain credentials, instance URLs, sys_ids, or unstable generated
+   values.
+4. Verify the final candidate's version metadata, release notes, cargo-dist
+   configuration, build, tests, formatting, and lint checks.
+
+The local SN-Utils bridge protocol tests are required. Live ServiceNow or
+browser-helper smoke tests are reported separately as passed, failed, or
+unavailable; an unavailable test does not count as a pass.
+
+Any code or behavior change after review restarts review, E2E testing, and
+documentation for the new candidate.
+
+### Publish after approval
+
+After the release manager declares the candidate ready and a human explicitly
+approves publication:
+
 1. Update the package version in `Cargo.toml`.
 2. Commit the version change.
 3. Create and push a matching `v*` tag:

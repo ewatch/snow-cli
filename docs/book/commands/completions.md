@@ -20,6 +20,7 @@ Print a completion script to stdout:
 
 ```bash
 snow-cli completions zsh
+snow-cli-ro completions zsh
 ```
 
 Save it to a file:
@@ -47,4 +48,5 @@ snow-cli completions fish > ~/.config/fish/completions/snow-cli.fish
 
 - The command writes the generated completion script to stdout.
 - Unlike most commands, the useful output here is the shell script itself, not structured JSON.
+- `snow-cli-ro completions <shell>` generates completions for the read-only binary.
 - Re-run the command after upgrading the CLI if the command surface changed.

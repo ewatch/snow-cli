@@ -4,15 +4,15 @@ authors = ["snow-cli contributors"]
 description = "Documentation for snow-cli, a ServiceNow CLI for humans and coding agents."
 src = "docs/book"
 language = "en"
-multilingual = false
 
 [build]
 build-dir = "book"
 create-missing = false
 
 [output.html]
-default-theme = "light"
+default-theme = "navy"
 preferred-dark-theme = "navy"
+additional-css = ["docs/book/theme/snow.css"]
 git-repository-url = "https://github.com/ewatch/snow-cli"
 edit-url-template = "https://github.com/ewatch/snow-cli/edit/main/{path}"
 site-url = "/snow-cli/"

@@ -65,9 +65,9 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
                 })
                 .unwrap_or_else(|| "default".to_string()),
         },
-        cli::args::Commands::Completions { .. } | cli::args::Commands::Snu(_) => {
-            "default".to_string()
-        }
+        cli::args::Commands::Completions { .. }
+        | cli::args::Commands::Skill(_)
+        | cli::args::Commands::Snu(_) => "default".to_string(),
         _ => config.resolve_active_profile_name(cli.profile.as_deref())?,
     };
 
@@ -104,16 +104,22 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
         eprintln!("\x1b[32mUsing profile: {}\x1b[0m", active_profile);
     }
 
+    // Resolve the effective output format once (flag > SNOW_CLI_OUTPUT > config
+    // default > json) and thread it to every handler. Done after tracing init so
+    // any warning about an unknown configured value reaches stderr.
+    let effective_output =
+        cli::output::resolve_output_format(cli.output.as_ref(), config.default_output.as_deref());
+
     match cli.command {
         cli::args::Commands::Profile(args) => {
-            cli::commands::config::handle(args, &active_profile, &cli.output).await
+            cli::commands::config::handle(args, &active_profile, &effective_output).await
         }
         cli::args::Commands::Auth(args) => cli::commands::auth::handle(args, &active_profile).await,
         cli::args::Commands::Table(args) => {
             cli::commands::table::handle(
                 args,
                 &active_profile,
-                &cli.output,
+                &effective_output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
             )
@@ -123,7 +129,7 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             cli::commands::data::handle(
                 args,
                 &active_profile,
-                &cli.output,
+                &effective_output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
             )
@@ -133,7 +139,7 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             cli::commands::seed::handle(
                 args,
                 &active_profile,
-                &cli.output,
+                &effective_output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
             )
@@ -143,7 +149,7 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             cli::commands::scope::handle(
                 args,
                 &active_profile,
-                &cli.output,
+                &effective_output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
             )
@@ -153,7 +159,7 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             cli::commands::attachment::handle(
                 args,
                 &active_profile,
-                &cli.output,
+                &effective_output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
             )
@@ -163,7 +169,7 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             cli::commands::import_set::handle(
                 args,
                 &active_profile,
-                &cli.output,
+                &effective_output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
             )
@@ -173,7 +179,7 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             cli::commands::api::handle(
                 args,
                 &active_profile,
-                &cli.output,
+                &effective_output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
             )
@@ -183,7 +189,7 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             cli::commands::script::handle(
                 args,
                 &active_profile,
-                &cli.output,
+                &effective_output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
             )
@@ -193,14 +199,17 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             cli::commands::codesearch::handle(
                 args,
                 &active_profile,
-                &cli.output,
+                &effective_output,
                 cli.instance.as_deref(),
                 cli.timeout_secs,
             )
             .await
         }
         cli::args::Commands::Snu(args) => {
-            cli::commands::snu::handle(args, cli.instance.as_deref(), &cli.output).await
+            cli::commands::snu::handle(args, cli.instance.as_deref(), &effective_output).await
+        }
+        cli::args::Commands::Skill(args) => {
+            cli::commands::skills::handle(args, &effective_output).await
         }
         cli::args::Commands::Completions { shell } => cli::commands::completions::handle(shell),
     }

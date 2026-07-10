@@ -7,3 +7,6 @@
 .env
 .env.*
 !.env.example
+
+# Rendered video frames/assets — never commit
+video/

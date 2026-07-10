@@ -183,6 +183,10 @@ async fn print_response(response: reqwest::Response, format: &OutputFormat) -> a
             Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
             Err(_) => println!("{}", body),
         },
+        OutputFormat::Auto => match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(json) => output::emit_auto(&json, &mut std::io::stdout())?,
+            Err(_) => println!("{}", body),
+        },
     }
 
     Ok(())

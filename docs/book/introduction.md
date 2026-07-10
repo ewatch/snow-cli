@@ -22,8 +22,15 @@ With `snow-cli`, you can:
 - call raw REST API endpoints,
 - run background scripts,
 - search ServiceNow code,
-- move data through export/import and seed workflows,
+- list, upload, and download attachments,
+- load records through import sets,
+- move data through export/import workflows,
+- use the SN-Utils browser helper for browser-session operations,
+- install agent skill bundles,
+- use `snow-cli-ro` or `--read-only` for a reduced read-only policy,
 - generate shell completions.
+
+The `seed` command surface exists for declarative test-data workflows, but its implementation is still planned.
 
 ## Command style
 

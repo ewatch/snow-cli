@@ -312,6 +312,10 @@ async fn handle_run(
             Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
             Err(_) => println!("{}", response_body),
         },
+        OutputFormat::Auto => match serde_json::from_str::<serde_json::Value>(&response_body) {
+            Ok(json) => output::emit_auto(&json, &mut std::io::stdout())?,
+            Err(_) => println!("{}", response_body),
+        },
     }
 
     Ok(())

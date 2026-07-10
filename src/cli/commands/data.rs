@@ -354,6 +354,18 @@ async fn handle_export(
 ) -> anyhow::Result<()> {
     tracing::info!("Exporting records from table: {}", export.table);
 
+    // Export artifacts are designed to be re-imported, and `data import` reads
+    // JSON only. The token-efficient `auto` format therefore degrades to JSON
+    // here so an export never produces an un-importable file. An explicit
+    // `--output toon` still forces TOON for a user who really wants it.
+    let coerced_export_format;
+    let format = if matches!(format, OutputFormat::Auto) {
+        coerced_export_format = OutputFormat::Json;
+        &coerced_export_format
+    } else {
+        format
+    };
+
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
     let pagination = PaginationConfig::default().with_limit(export.limit);
 
@@ -396,7 +408,8 @@ async fn handle_export(
     }
 
     match format {
-        OutputFormat::Json => output::print_output(&artifact, format),
+        // `format` is coerced away from Auto above; the arm keeps the match total.
+        OutputFormat::Json | OutputFormat::Auto => output::print_output(&artifact, format),
         OutputFormat::Csv => output::print_records(&artifact.records, format),
         OutputFormat::Jsonl | OutputFormat::Toon => output::print_output(&artifact, format),
         OutputFormat::Text => output::print_output(&artifact, format),
@@ -1814,7 +1827,8 @@ fn write_export_file(
 ) -> anyhow::Result<()> {
     let mut file = File::create(out_path)?;
     match format {
-        OutputFormat::Json => {
+        // Auto is coerced to Json before export; this arm keeps the match total.
+        OutputFormat::Json | OutputFormat::Auto => {
             serde_json::to_writer(&mut file, artifact)?;
             file.write_all(b"\n")?;
         }
@@ -1860,7 +1874,8 @@ fn output_format_name(format: &OutputFormat) -> &'static str {
         OutputFormat::Csv => "csv",
         OutputFormat::Jsonl => "jsonl",
         OutputFormat::Toon => "toon",
-        OutputFormat::Text => "json",
+        // Text and (export-coerced) Auto both serialize as JSON on disk.
+        OutputFormat::Text | OutputFormat::Auto => "json",
     }
 }
 

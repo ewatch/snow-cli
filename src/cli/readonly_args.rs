@@ -28,9 +28,10 @@ pub struct ReadOnlyCli {
     #[arg(long, global = true)]
     pub instance: Option<String>,
 
-    /// Output format
-    #[arg(long, alias = "format", global = true, default_value = "json")]
-    pub output: OutputFormat,
+    /// Output format. When omitted, resolves via SNOW_CLI_OUTPUT, then the
+    /// configured default (`config output`), then falls back to json.
+    #[arg(long, alias = "format", global = true)]
+    pub output: Option<OutputFormat>,
 
     /// Override the HTTP request timeout in seconds
     #[arg(long, global = true)]
@@ -397,6 +398,10 @@ pub enum ReadOnlySnuCommands {
         /// Seconds to wait for helper/session/response
         #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
         timeout_secs: u64,
+        /// Also probe ServiceNow with the cached session to prove the g_ck
+        /// token is still valid (adds `token_valid` to the output)
+        #[arg(long)]
+        verify: bool,
     },
 
     /// Get SN-Utils bridge instance info
@@ -508,7 +513,7 @@ impl ReadOnlyCli {
         crate::cli::args::Cli {
             profile: None,
             instance: None,
-            output: OutputFormat::Json,
+            output: None,
             timeout_secs: None,
             read_only: true,
             verbose: 0,
@@ -724,7 +729,13 @@ impl ReadOnlyCodesearchCommands {
 impl ReadOnlySnuCommands {
     fn into_full_command(self) -> SnuCommands {
         match self {
-            Self::CheckConnection { timeout_secs } => SnuCommands::CheckConnection { timeout_secs },
+            Self::CheckConnection {
+                timeout_secs,
+                verify,
+            } => SnuCommands::CheckConnection {
+                timeout_secs,
+                verify,
+            },
             Self::GetInstanceInfo { timeout_secs } => SnuCommands::GetInstanceInfo { timeout_secs },
             Self::WaitToken { timeout_secs } => SnuCommands::WaitToken { timeout_secs },
             Self::Query {

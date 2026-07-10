@@ -49,13 +49,12 @@ Create `src/cli/commands/change.rs`:
 
 ```rust
 use crate::client::SnowClient;
-use crate::error::CliError;
 
 pub async fn handle_list(
     client: &SnowClient,
     limit: Option<usize>,
     query: Option<String>,
-) -> Result<(), CliError> {
+) -> anyhow::Result<()> {
     // Implementation here
     Ok(())
 }
@@ -63,7 +62,7 @@ pub async fn handle_list(
 pub async fn handle_get(
     client: &SnowClient,
     number: &str,
-) -> Result<(), CliError> {
+) -> anyhow::Result<()> {
     // Implementation here
     Ok(())
 }
@@ -73,9 +72,9 @@ pub async fn handle_get(
 
 Add `pub mod change;` to `src/cli/commands/mod.rs`.
 
-### 4. Wire up in main dispatch
+### 4. Wire up in CLI dispatch
 
-In `src/main.rs` (or wherever command dispatch happens), add the match arm:
+In `src/lib.rs`, add the match arm in `run_parsed_cli`:
 
 ```rust
 Commands::Change(args) => match args.command {

@@ -7,9 +7,9 @@ understand, navigate, build, test, and contribute to the snow-cli project.
 
 **snow-cli** is a cross-platform CLI written in Rust that serves as the primary
 gateway for LLMs, coding agents, and humans to interact with ServiceNow instances.
-It compiles to a single static binary with no runtime dependencies.
+It compiles to two cross-platform binaries with no runtime dependencies.
 
-- **Binary name:** `snow-cli`
+- **Binary names:** `snow-cli` and `snow-cli-ro` (read-only mode)
 - **Language:** Rust (latest stable, edition 2024)
 - **Config file:** `~/.servicenow/config.toml`
 - **License:** MIT
@@ -32,8 +32,8 @@ cargo test --lib
 # Run only integration tests
 cargo test --test '*'
 
-# Check code quality
-cargo clippy -- -D warnings
+# Check code quality, including test targets
+cargo clippy --all-targets -- -D warnings
 
 # Format code
 cargo fmt
@@ -42,123 +42,42 @@ cargo fmt
 cargo fmt -- --check
 
 # Run the CLI
-cargo run -- --help
-cargo run -- config --help
-cargo run -- table list --help
+cargo run --bin snow-cli -- --help
+cargo run --bin snow-cli -- profile --help
+cargo run --bin snow-cli -- table list --help
+cargo run --bin snow-cli-ro -- --help
 ```
 
-## Project Structure
+## Navigation And Sources Of Truth
 
-```
-snow-cli/
-├── Cargo.toml                 # Dependencies and project metadata
-├── LICENSE                    # MIT license
-├── AGENTS.md                  # This file — agent onboarding
-├── docs/
-│   ├── PLAN.md                # Project plan, phases, command reference
-│   ├── adr/                   # Architecture Decision Records
-│   │   ├── README.md          # ADR index and template
-│   │   ├── 0001-use-rust.md
-│   │   ├── 0002-noun-verb-commands.md
-│   │   ├── 0003-os-keychain-credentials.md
-│   │   ├── 0004-toml-config-format.md
-│   │   └── 0005-json-error-output.md
-│   ├── design/                # Technical design documents
-│   │   ├── README.md
-│   │   ├── authentication.md  # Auth architecture and trait design
-│   │   └── http-client.md     # HTTP client, pagination, error handling
-│   ├── backlog/               # Work items organized by phase
-│   │   ├── README.md          # Phase index
-│   │   ├── phase-1-foundation.md
-│   │   ├── phase-2-auth.md
-│   │   ├── phase-3-table-api.md
-│   │   ├── phase-4-commands.md
-│   │   └── phase-5-distribution.md
-│   └── guides/                # Developer guides
-│       ├── README.md
-│       ├── testing.md         # How to write and run tests
-│       └── adding-commands.md # How to add a new CLI command
-├── src/
-│   ├── main.rs                # Entry point — CLI parsing, tracing init, dispatch
-│   ├── error.rs               # CliError enum, JSON error output to stderr
-│   ├── cli/
-│   │   ├── mod.rs
-│   │   ├── args.rs            # clap derive definitions for all commands
-│   │   ├── output.rs          # JSON/CSV output formatting
-│   │   └── commands/
-│   │       ├── mod.rs
-│   │       ├── config.rs      # config subcommands
-│   │       ├── auth.rs        # auth subcommands
-│   │       ├── table.rs       # table API commands + schema
-│   │       ├── api.rs         # raw REST API commands
-│   │       ├── script.rs      # background script execution
-│   │       ├── codesearch.rs   # code search commands
-│   │       └── completions.rs # shell completions generation
-│   ├── auth/
-│   │   ├── mod.rs             # Authenticator trait + factory
-│   │   └── basic.rs           # Basic auth implementation
-│   ├── client/
-│   │   ├── mod.rs             # SnowClient — HTTP client wrapper
-│   │   ├── pagination.rs      # Auto-pagination for Table API
-│   │   └── error.rs           # API error types and HTTP status mapping
-│   ├── config/
-│   │   ├── mod.rs
-│   │   ├── profile.rs         # AppConfig, Profile, AuthMethod (TOML serde)
-│   │   └── credentials.rs     # OS keychain integration via keyring crate
-│   └── models/
-│       ├── mod.rs
-│       ├── record.rs          # Generic table record (HashMap-based)
-│       ├── incident.rs        # Typed incident fields
-│       └── attachment.rs      # Attachment metadata
-└── tests/
-    ├── common/
-    │   └── mod.rs             # Shared test helpers
-    ├── test_cli.rs            # End-to-end CLI invocation tests
-    ├── test_table.rs          # Table API + schema wiremock integration tests
-    ├── test_api_script.rs     # API + script integration tests
-    └── test_codesearch.rs     # Code search integration tests
-```
+- `Cargo.toml` defines package metadata, supported binaries, and dependencies.
+- `src/` contains the implementation. Start at `src/main.rs` or `src/lib.rs`; CLI definitions and handlers are under `src/cli/`.
+- `tests/` contains integration tests; colocated `#[cfg(test)]` modules contain unit tests.
+- `docs/adr/README.md` indexes accepted architectural decisions. Read relevant ADRs before changing an established design.
+- `docs/design/` contains technical designs, `docs/guides/` contains contributor workflows, and `docs/book/` is user-facing documentation.
+- `cargo run --bin snow-cli -- --help` and `cargo run --bin snow-cli-ro -- --help` are the authoritative command surfaces.
 
-## Key Architectural Decisions
+Keep this file limited to durable contributor rules and entry points. Do not add dependency inventories, complete file trees, command inventories, test counts, implementation-status lists, or roadmaps here; they drift. Update their authoritative source instead.
 
-Read `docs/adr/` for full context. Summary:
+## Architectural Invariants
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Language | Rust | Single binary, no runtime dependency, strong types |
-| Command pattern | Noun-verb (`snow-cli table list incident`) | Discoverable, natural for humans and agents |
-| Config format | TOML (`~/.servicenow/config.toml`) | Human-readable, comments, Rust-native |
-| Credentials | OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager) | Secure, no plaintext secrets |
-| Error output | Structured JSON on stderr | Machine-parseable for agents |
-| Data output | JSON (default) or CSV on stdout | Agent-friendly, pipeable |
-
-## Command Structure
-
-The CLI follows a **noun-verb** pattern:
-
-```
-snow-cli [GLOBAL FLAGS] <NOUN> <VERB> [OPTIONS]
-```
-
-See `docs/PLAN.md` for the complete command reference.
+- Preserve the noun-verb CLI model unless an ADR changes it.
+- Keep credentials out of plaintext configuration; use the OS keychain integration.
+- Send structured command results to stdout and logs or errors to stderr.
 
 ## How to Pick Up Work
 
-1. Read `docs/backlog/README.md` for the current phase.
-2. Open the current phase file (e.g., `docs/backlog/phase-1-foundation.md`).
-3. Find the next unchecked `[ ]` item.
-4. Implement it, write tests, ensure `cargo test` and `cargo clippy` pass.
-5. Mark the item as `[x]` when done.
+1. Run `bd ready --json` to find unblocked work.
+2. Claim an issue with `bd update <id> --status in_progress --json`.
+3. Implement it, write tests, ensure `cargo test` and `cargo clippy --all-targets -- -D warnings` pass.
+4. Close the issue with `bd close <id> --reason "Done" --json`.
+5. Commit `.beads/issues.jsonl` together with code changes so issue state stays in sync.
+
+The historical Markdown phase backlog remains under `docs/backlog/`, but active tracking uses `bd`.
 
 ## How to Add a New Command
 
-See `docs/guides/adding-commands.md` for a step-by-step guide:
-
-1. Define the clap subcommand in `src/cli/args.rs`
-2. Create a handler in `src/cli/commands/<noun>.rs`
-3. Register the module in `src/cli/commands/mod.rs`
-4. Wire up the dispatch in `src/main.rs`
-5. Write unit tests in the handler file and integration tests in `tests/`
+Follow `docs/guides/adding-commands.md`; it is the authoritative command-extension workflow.
 
 ## Testing
 
@@ -168,12 +87,11 @@ See `docs/guides/testing.md` for full details.
 cargo test              # All tests
 cargo test --lib        # Unit tests only
 cargo test --test '*'   # Integration tests only
-cargo clippy            # Lint check
+cargo clippy --all-targets -- -D warnings # Lint check, including test targets
 cargo fmt -- --check    # Format check
 ```
 
-**Testing approach:** Mock-based (no real ServiceNow instance required).
-Uses `wiremock` for HTTP mocking and `assert_cmd` for CLI invocation tests.
+**Testing approach:** Mock-based; no real ServiceNow instance is required.
 
 **Convention:** Tests go in `#[cfg(test)] mod tests` blocks within source files
 (unit tests) or in `tests/test_*.rs` files (integration tests).
@@ -186,60 +104,12 @@ Uses `wiremock` for HTTP mocking and `assert_cmd` for CLI invocation tests.
   `async fn handle(...) -> anyhow::Result<()>`.
 - **Logging:** Use `tracing::{info, debug, warn, error}` macros.
   All log output goes to stderr. Never print logs to stdout.
-- **Output:** Structured data (JSON/CSV) goes to stdout via `src/cli/output.rs`.
+- **Output:** Structured data goes to stdout via `src/cli/output.rs`.
   Errors go to stderr as JSON via `src/error.rs`.
 - **No `unwrap()` in production code.** Use `?` operator or explicit error handling.
   `unwrap()` is acceptable in tests.
-- **Run `cargo clippy -- -D warnings` before committing.** All warnings are errors.
+- **Run `cargo clippy --all-targets -- -D warnings` before committing.** All warnings are errors.
 - **Run `cargo fmt` before committing.** Code must be formatted.
-
-## Dependencies
-
-Key crates and their purposes:
-
-| Crate | Purpose |
-|-------|---------|
-| `clap` + `clap_complete` | CLI argument parsing, shell completions |
-| `tokio` | Async runtime |
-| `reqwest` | HTTP client (with rustls for TLS) |
-| `serde` + `serde_json` + `toml` + `csv` | Serialization (JSON, TOML, CSV) |
-| `keyring` | OS-native credential storage |
-| `tracing` + `tracing-subscriber` | Structured logging |
-| `thiserror` + `anyhow` | Error handling |
-| `async-trait` | Async trait support |
-| `http` | HTTP types (HeaderMap, etc.) |
-| `base64` | Base64 encoding for Basic auth |
-| `wiremock` | HTTP mocking (dev) |
-| `assert_cmd` + `predicates` | CLI testing (dev) |
-| `tempfile` | Temporary files for tests (dev) |
-
-## Current Status
-
-Phases 1 (Foundation), 2 (Authentication), and 3 (Table API) are **complete**.
-Phase 4 (Commands) is **in progress** — most commands are done, `attachment` remains.
-
-What's implemented and working:
-- Full CLI structure with clap, profile management (add, edit, remove, default, current, list, find, sdk, show)
-- All auth commands (login, logout, status, token)
-- Basic Auth, OAuth2 (client_credentials + password grant), and API Key authenticators
-- HTTP client with auto-pagination, 401 retry, and error mapping
-- OS keychain credential storage with env var fallback
-- Table API CRUD: list (auto-paginated), get, create, update (PATCH), delete (with --yes confirmation)
-- Table schema command: query sys_dictionary for column metadata (compact/extended/inherited)
-- Code search command: search via /api/sn_codesearch/code_search/search endpoint
-- Raw API commands: get, post, put, delete with custom headers
-- Script run command
-- Client builder helper (`build_client`) for config profile → authenticated SnowClient
-- JSON and CSV output for dynamic Record fields (sorted column headers, missing field handling)
-- Stdin reading for create/update when --data not provided
-- Shell completions generation (bash, zsh, fish, powershell, elvish)
-- 210 tests (141 unit + 69 integration), zero clippy warnings
-
-Next up: `attachment` commands (Phase 4), then Phase 5 (polish and distribution).
-
-## Task Tracking
-
-The project was started with the docs folder which is still valid. However from now on we can use 'bd' for task tracking (see Issue Tracking with bd).
 
 ## Issue Tracking with bd (beads)
 

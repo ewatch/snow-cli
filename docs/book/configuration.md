@@ -16,8 +16,10 @@ The config file contains non-secret settings such as:
 - authentication method,
 - username,
 - OAuth client ID and grant settings,
-- mTLS certificate paths (not yet implemented),
-- default profile name.
+- mTLS certificate paths (metadata only; authenticator not yet implemented),
+- browser-session / SSO entry-point metadata,
+- default profile name,
+- default output format.
 
 Secrets such as passwords, API tokens, OAuth client secrets, and stored OAuth tokens are kept outside the TOML file.
 
@@ -152,11 +154,14 @@ Common top-level flags:
 ```bash
 snow-cli --profile dev <command>
 snow-cli --instance https://override.service-now.com <command>
-snow-cli --output json|csv|jsonl|toon|text <command>
+snow-cli --output json|csv|jsonl|toon|text|auto <command>
 snow-cli --timeout-secs 30 <command>
+snow-cli --read-only <command>
 snow-cli -v <command>
 snow-cli -vv <command>
 ```
+
+When `--output` is omitted, output format resolution is: command-line flag, `SNOW_CLI_OUTPUT`, `profile output`, then JSON.
 
 ## Discover more
 

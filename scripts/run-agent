@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf '%s\n' \
+    'Usage: scripts/run-agent <claude|codex|opencode|pi> <agent> [--model MODEL] -- <task>' \
+    '' \
+    'Agents: reviewer, e2e-tester, release-manager, documentation-maintainer'
+}
+
+if [[ $# -lt 3 ]]; then
+  usage >&2
+  exit 2
+fi
+
+harness=$1
+agent=$2
+shift 2
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd -- "$script_dir/.." && pwd)
+cd "$repo_root"
+
+model=""
+if [[ ${1:-} == "--model" ]]; then
+  if [[ $# -lt 2 ]]; then
+    usage >&2
+    exit 2
+  fi
+  model=$2
+  shift 2
+fi
+
+if [[ ${1:-} == "--" ]]; then
+  shift
+fi
+
+if [[ $# -eq 0 ]]; then
+  usage >&2
+  exit 2
+fi
+
+prompt_file="$repo_root/prompts/agents/${agent}.md"
+if [[ ! -f $prompt_file ]]; then
+  printf 'Unknown agent: %s\n' "$agent" >&2
+  usage >&2
+  exit 2
+fi
+
+role_prompt=$(<"$prompt_file")
+task=$*
+
+case $harness in
+  claude)
+    args=(--append-system-prompt "$role_prompt" --print)
+    [[ -n $model ]] && args+=(--model "$model")
+    [[ $agent == "reviewer" ]] && args+=(--permission-mode plan)
+    claude "${args[@]}" "$task"
+    ;;
+  codex)
+    args=(exec)
+    [[ -n $model ]] && args+=(--model "$model")
+    [[ $agent == "reviewer" ]] && args+=(--sandbox read-only)
+    codex "${args[@]}" "$role_prompt
+
+# Task
+$task"
+    ;;
+  opencode)
+    args=(run)
+    [[ -n $model ]] && args+=(--model "$model")
+    [[ $agent == "reviewer" ]] && args+=(--agent plan)
+    opencode "${args[@]}" "$role_prompt
+
+# Task
+$task"
+    ;;
+  pi)
+    args=(--system-prompt "$role_prompt" --print)
+    [[ -n $model ]] && args+=(--model "$model")
+    [[ $agent == "reviewer" ]] && args+=(--tools read,grep,find,ls)
+    pi "${args[@]}" "$task"
+    ;;
+  *)
+    printf 'Unknown harness: %s\n' "$harness" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
