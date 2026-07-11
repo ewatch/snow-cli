@@ -4,4 +4,5 @@ pub mod commands;
 pub mod output;
 pub mod readonly_args;
 pub mod spinner;
+pub(crate) mod truncation;
 pub mod validation;

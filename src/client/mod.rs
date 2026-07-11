@@ -1260,6 +1260,7 @@ impl SnowClient {
             records: all_records,
             total,
             truncated,
+            fields_truncated: false,
         })
     }
 }

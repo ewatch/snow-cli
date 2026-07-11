@@ -264,6 +264,7 @@ mod tests {
                 limit: None,
                 all: false,
                 order_by: None,
+                full: false,
             },
         })));
     }

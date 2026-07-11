@@ -23,6 +23,11 @@ pub struct TableListResult {
     /// When the server reports no total, a limit-bounded fetch whose final
     /// page came back full is conservatively reported as truncated.
     pub truncated: bool,
+
+    /// Whether any field *values* were shortened by the CLI's per-field
+    /// content cap. Always `false` at fetch time; the presentation layer
+    /// sets it after applying the cap so metadata reflects what is printed.
+    pub fields_truncated: bool,
 }
 
 impl TableListResult {

@@ -183,6 +183,10 @@ pub enum ReadOnlyTableCommands {
         /// Field to order results by
         #[arg(long)]
         order_by: Option<String>,
+
+        /// Return complete field content instead of capping long values
+        #[arg(long)]
+        full: bool,
     },
 
     /// Get a single record by sys_id
@@ -196,6 +200,10 @@ pub enum ReadOnlyTableCommands {
         /// Comma-separated list of fields to return
         #[arg(long)]
         fields: Option<String>,
+
+        /// Return complete field content instead of capping long values
+        #[arg(long)]
+        full: bool,
     },
 
     /// Show table schema (columns, types, labels) from sys_dictionary
@@ -618,6 +626,7 @@ impl ReadOnlyTableCommands {
                 limit,
                 all,
                 order_by,
+                full,
             } => TableCommands::List {
                 table,
                 query,
@@ -625,15 +634,18 @@ impl ReadOnlyTableCommands {
                 limit,
                 all,
                 order_by,
+                full,
             },
             Self::Get {
                 table,
                 sys_id,
                 fields,
+                full,
             } => TableCommands::Get {
                 table,
                 sys_id,
                 fields,
+                full,
             },
             Self::Schema {
                 table,
@@ -843,5 +855,33 @@ mod tests {
         assert!(!help.contains("attachment-upload"));
         assert!(!help.contains("slash"));
         assert!(!help.contains("context"));
+    }
+
+    #[test]
+    fn table_full_flag_maps_to_full_commands() {
+        let list = ReadOnlyCli::parse_from(["snow-cli-ro", "table", "list", "incident", "--full"]);
+        match list.command {
+            ReadOnlyCommands::Table(args) => match args.command.into_full_command() {
+                TableCommands::List { full, .. } => assert!(full),
+                _ => panic!("expected table list command"),
+            },
+            _ => panic!("expected table command"),
+        }
+
+        let get = ReadOnlyCli::parse_from([
+            "snow-cli-ro",
+            "table",
+            "get",
+            "incident",
+            "abc123",
+            "--full",
+        ]);
+        match get.command {
+            ReadOnlyCommands::Table(args) => match args.command.into_full_command() {
+                TableCommands::Get { full, .. } => assert!(full),
+                _ => panic!("expected table get command"),
+            },
+            _ => panic!("expected table command"),
+        }
     }
 }

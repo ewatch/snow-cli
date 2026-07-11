@@ -134,6 +134,10 @@ struct TableListMeta {
     total: Option<usize>,
     returned: usize,
     truncated: bool,
+    /// Present only when field values were shortened by the per-field content
+    /// cap; omitted when `false` so the common case stays compact.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    fields_truncated: bool,
 }
 
 impl TableListMeta {
@@ -142,6 +146,7 @@ impl TableListMeta {
             total: result.total,
             returned: result.returned(),
             truncated: result.truncated,
+            fields_truncated: result.fields_truncated,
         }
     }
 }
@@ -642,6 +647,7 @@ mod tests {
             ],
             total,
             truncated,
+            fields_truncated: false,
         }
     }
 
@@ -671,6 +677,24 @@ mod tests {
         assert!(value.get("total").is_none());
         assert_eq!(value["returned"], 2);
         assert_eq!(value["truncated"], false);
+    }
+
+    #[test]
+    fn test_write_table_list_fields_truncated_flag() {
+        // Omitted entirely when false…
+        let result = sample_list_result(Some(10), false);
+        let mut output = Vec::new();
+        write_table_list(&result, &OutputFormat::Json, &mut output).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert!(value.get("fields_truncated").is_none());
+
+        // …and surfaced when the content cap shortened field values.
+        let mut result = sample_list_result(Some(10), false);
+        result.fields_truncated = true;
+        let mut output = Vec::new();
+        write_table_list(&result, &OutputFormat::Json, &mut output).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value["fields_truncated"], true);
     }
 
     #[test]
@@ -739,6 +763,7 @@ mod tests {
             records: Vec::new(),
             total: Some(0),
             truncated: false,
+            fields_truncated: false,
         };
 
         let mut output = Vec::new();

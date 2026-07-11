@@ -19,20 +19,26 @@ snow-cli table list <table> [options]
 Important options:
 
 - `--query <encoded-query>`: ServiceNow encoded query string
-- `--fields <a,b,c>`: comma-separated field list
-- `--limit <n>`: maximum number of records to return
+- `--fields <a,b,c>`: comma-separated field list (default: a compact table-aware projection; pass `'*'` for all fields)
+- `--limit <n>`: maximum number of records to return (default: 20)
+- `--all`: fetch every matching record instead of the bounded default
 - `--order-by <field>`: sort by a field
+- `--full`: return complete field content instead of capping long values
 
 Examples:
 
 ```bash
 snow-cli table list incident --query 'active=true' --limit 20
 snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name
+snow-cli table list incident --all --fields '*' --full   # everything, uncapped
 ```
 
 Notes:
 
 - `table list` auto-paginates until it reaches the requested limit or exhausts the result set.
+- Output is bounded by default: at most 20 records without `--limit`/`--all`, a compact field projection without `--fields`, and field values capped at 2,000 characters without `--full`. Capped values end in an inline `… [truncated N of M chars; use --full]` size hint.
+- Except in CSV output, responses carry `total` (when the server reports `X-Total-Count`), `returned`, `truncated`, and — when the content cap fired — `fields_truncated` metadata, so truncation is always detectable.
+- For complete data set extraction prefer `data export`, which keeps full-export semantics.
 - Use `--output csv` when you want tabular export.
 
 ## `table get <table> <sys_id>`
@@ -46,6 +52,7 @@ snow-cli table get <table> <sys_id> [options]
 Important options:
 
 - `--fields <a,b,c>`: restrict the returned fields
+- `--full`: return complete field content instead of capping long values at 2,000 characters
 
 Example:
 

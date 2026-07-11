@@ -25,7 +25,7 @@ const SEED_AFTER_HELP: &str = "Examples:\n  snow-cli seed plan --file qa-fixture
 
 const SCOPE_AFTER_HELP: &str = "Examples:\n  snow-cli scope list\n  snow-cli scope list incident\n  snow-cli scope list sn_ot_incident_mgmt\n  snow-cli scope inspect x_my_app\n  snow-cli scope inspect 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --details full\n  snow-cli scope move-file sys_script_include 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --target-scope x_target_app --dry-run\n  snow-cli scope move-file sys_script_include 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --target-scope x_target_app --yes";
 
-const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --all --fields '*'   # every record, every field\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - Responses include returned/truncated metadata plus the server-reported total, so truncation is always detectable.\n  - For complete data set extraction prefer `data export`.";
+const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --all --fields '*' --full   # everything, uncapped\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - Without --full, field values longer than 2000 chars are cut with an inline '[truncated N of M chars]' size hint, and the metadata carries fields_truncated=true.\n  - Responses include returned/truncated metadata plus the server-reported total, so truncation is always detectable.\n  - For complete data set extraction prefer `data export`.";
 
 const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incident --data '{\"short_description\":\"VPN down\"}'\n  echo '{\"short_description\":\"From stdin\"}' | snow-cli table create incident";
 
@@ -698,6 +698,10 @@ pub enum TableCommands {
         /// Field to order results by
         #[arg(long)]
         order_by: Option<String>,
+
+        /// Return complete field content instead of capping long values
+        #[arg(long)]
+        full: bool,
     },
 
     /// Get a single record by sys_id
@@ -711,6 +715,10 @@ pub enum TableCommands {
         /// Comma-separated list of fields to return
         #[arg(long)]
         fields: Option<String>,
+
+        /// Return complete field content instead of capping long values
+        #[arg(long)]
+        full: bool,
     },
 
     /// Create a new record
@@ -1676,6 +1684,27 @@ mod tests {
                     assert_eq!(limit, Some(10));
                 }
                 _ => panic!("Expected Table List command"),
+            },
+            _ => panic!("Expected Table command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_table_list_and_get_full_flag() {
+        let cli = Cli::parse_from(["snow-cli", "table", "list", "incident", "--full"]);
+        match cli.command {
+            Commands::Table(args) => match args.command {
+                TableCommands::List { full, .. } => assert!(full),
+                _ => panic!("Expected Table List command"),
+            },
+            _ => panic!("Expected Table command"),
+        }
+
+        let cli = Cli::parse_from(["snow-cli", "table", "get", "incident", "abc"]);
+        match cli.command {
+            Commands::Table(args) => match args.command {
+                TableCommands::Get { full, .. } => assert!(!full),
+                _ => panic!("Expected Table Get command"),
             },
             _ => panic!("Expected Table command"),
         }

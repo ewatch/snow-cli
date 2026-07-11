@@ -2,6 +2,7 @@ use std::io::IsTerminal;
 
 use crate::cli::args::{OutputFormat, TableArgs, TableCommands};
 use crate::cli::output;
+use crate::cli::truncation;
 use crate::cli::validation::{
     DEFAULT_MAX_STDIN_BYTES, read_to_string_limited, validate_path_segment, validate_table_name,
 };
@@ -23,6 +24,7 @@ pub async fn handle(
             limit,
             all,
             order_by,
+            full,
         } => {
             tracing::info!("Listing records from table: {}", table);
             validate_table_name(&table)?;
@@ -38,7 +40,7 @@ pub async fn handle(
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
             let pagination = PaginationConfig::default().with_limit(effective_limit);
 
-            let result = client
+            let mut result = client
                 .get_table_records_with_meta(
                     &table,
                     query.as_deref(),
@@ -48,6 +50,13 @@ pub async fn handle(
                 )
                 .await?;
 
+            if !full {
+                result.fields_truncated = truncation::truncate_record_fields(
+                    &mut result.records,
+                    truncation::DEFAULT_FIELD_CHAR_LIMIT,
+                );
+            }
+
             output::print_table_list(&result, format)?;
             Ok(())
         }
@@ -56,6 +65,7 @@ pub async fn handle(
             table,
             sys_id,
             fields,
+            full,
         } => {
             tracing::info!("Getting record {} from table: {}", sys_id, table);
             validate_table_name(&table)?;
@@ -70,11 +80,18 @@ pub async fn handle(
                 params.push(("sysparm_fields", f.as_str()));
             }
 
-            let response: SingleRecordResponse = if params.is_empty() {
+            let mut response: SingleRecordResponse = if params.is_empty() {
                 client.get_json(&path).await?
             } else {
                 client.get_json_with_params(&path, &params).await?
             };
+
+            if !full {
+                truncation::truncate_record_fields(
+                    std::slice::from_mut(&mut response.result),
+                    truncation::DEFAULT_FIELD_CHAR_LIMIT,
+                );
+            }
 
             output::print_record(&response.result, format)?;
             Ok(())

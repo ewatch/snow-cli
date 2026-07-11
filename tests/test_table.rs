@@ -60,6 +60,44 @@ async fn test_table_list_json_output() {
 }
 
 #[tokio::test]
+async fn test_table_list_truncates_long_fields_unless_full() {
+    let server = MockServer::start().await;
+    let long_description = "x".repeat(2_001);
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "abc123", "description": long_description}]
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let run = |full: bool| {
+        let mut command = cargo_bin_cmd!("snow-cli");
+        command
+            .env("SNOW_CLI_CONFIG", &config_path)
+            .env("SNOW_CLI_API_TOKEN", "test-api-token")
+            .args(["--instance", &server.uri(), "table", "list", "incident"]);
+        if full {
+            command.arg("--full");
+        }
+        command.assert().success().get_output().stdout.clone()
+    };
+
+    let truncated: serde_json::Value = serde_json::from_slice(&run(false)).unwrap();
+    assert_eq!(truncated["fields_truncated"], true);
+    let description = truncated["records"][0]["description"].as_str().unwrap();
+    assert!(description.starts_with(&"x".repeat(2_000)));
+    assert!(description.ends_with("[truncated 2000 of 2001 chars; use --full]"));
+
+    let full: serde_json::Value = serde_json::from_slice(&run(true)).unwrap();
+    assert!(full.get("fields_truncated").is_none());
+    assert_eq!(full["records"][0]["description"], "x".repeat(2_001));
+}
+
+#[tokio::test]
 async fn test_table_list_csv_output() {
     let server = MockServer::start().await;
 
@@ -478,6 +516,49 @@ async fn test_table_get_with_fields() {
         .success()
         .stdout(predicate::str::contains("abc123"))
         .stdout(predicate::str::contains("INC001"));
+}
+
+#[tokio::test]
+async fn test_table_get_truncates_long_fields_unless_full() {
+    let server = MockServer::start().await;
+    let long_description = "x".repeat(2_001);
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident/abc123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"sys_id": "abc123", "description": long_description}
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let run = |full: bool| {
+        let mut command = cargo_bin_cmd!("snow-cli");
+        command
+            .env("SNOW_CLI_CONFIG", &config_path)
+            .env("SNOW_CLI_API_TOKEN", "test-api-token")
+            .args([
+                "--instance",
+                &server.uri(),
+                "table",
+                "get",
+                "incident",
+                "abc123",
+            ]);
+        if full {
+            command.arg("--full");
+        }
+        command.assert().success().get_output().stdout.clone()
+    };
+
+    let truncated: serde_json::Value = serde_json::from_slice(&run(false)).unwrap();
+    let description = truncated["description"].as_str().unwrap();
+    assert!(description.starts_with(&"x".repeat(2_000)));
+    assert!(description.ends_with("[truncated 2000 of 2001 chars; use --full]"));
+
+    let full: serde_json::Value = serde_json::from_slice(&run(true)).unwrap();
+    assert_eq!(full["description"], "x".repeat(2_001));
 }
 
 // --- table create ---

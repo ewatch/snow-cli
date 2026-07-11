@@ -412,6 +412,7 @@ mod tests {
                 limit: Some(1),
                 all: false,
                 order_by: None,
+                full: false,
             },
         }));
         assert_allowed(Commands::Table(TableArgs {
@@ -419,6 +420,7 @@ mod tests {
                 table: "incident".to_string(),
                 sys_id: "abc".to_string(),
                 fields: None,
+                full: false,
             },
         }));
         assert_allowed(Commands::Table(TableArgs {

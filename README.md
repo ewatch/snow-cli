@@ -35,8 +35,8 @@ snow-cli table schema incident --extended | head -20
 # Export records to a portable file
 snow-cli data export incident --fields number,short_description --limit 50 --out incidents.json
 
-# Fetch every matching record with every field (bypasses the bounded defaults)
-snow-cli table list incident --all --fields '*'
+# Fetch every matching record with every field, uncapped (bypasses the bounded defaults)
+snow-cli table list incident --all --fields '*' --full
 
 # Handle slow instances
 snow-cli --timeout-secs 60 table list incident --limit 5
@@ -60,6 +60,17 @@ detectable:
 `total` comes from the server's `X-Total-Count` header and is omitted when the
 server does not report one. For complete data set extraction, use
 `snow-cli data export`, which keeps its explicit full-export semantics.
+
+Field content is bounded too: unless `--full` is passed, `table list` and
+`table get` cap each field value at 2,000 characters. Oversized values are cut
+with an inline size hint so the truncation is self-describing:
+
+```json
+{ "script": "var gr = new GlideRecord('incident');… [truncated 2000 of 48213 chars; use --full]" }
+```
+
+When any field was capped, list metadata additionally carries
+`"fields_truncated": true` (omitted otherwise).
 
 ## Agent-safe read-only access
 
