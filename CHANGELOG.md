@@ -12,6 +12,10 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 - Bounded `table list` defaults for agent workflows: at most 20 records without `--limit`, a new `--all` flag for full fetches, and a compact table-aware field projection without `--fields` (pass `'*'` for every field). List responses carry `total`/`returned`/`truncated` result metadata in every format except CSV.
 - Per-field content cap for `table list` and `table get`: field values longer than 2,000 characters are cut with an inline `… [truncated N of M chars; use --full]` size hint, list metadata reports `fields_truncated`, and the new `--full` flag disables the cap.
 
+### Changed
+
+- Condensed the `snu` after-help from ~4.3 KB to ~1.3 KB for token economy; the operational detail it carried (broker env vars, `check-connection --verify` semantics, mutation channel) moved to the book's `snu` page, which the help now links.
+
 ## [0.5.1] - 2026-06-24
 
 ### Added

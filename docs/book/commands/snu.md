@@ -54,7 +54,15 @@ Check whether the bridge and helper are connected.
 
 ```bash
 snow-cli snu check-connection
+snow-cli snu check-connection --verify
 ```
+
+`--verify` additionally probes ServiceNow with the cached session and reports
+`token_valid`, so you can tell a dead `g_ck` from a healthy one before starting
+work. Session freshness (`captured_at`, `last_verified_at`) is included per
+instance. A `/token` prompt is only issued when a probe has confirmed the token
+is dead; permission (ACL) denials on a valid session are reported as such, and
+transient helper-tab errors are retried automatically.
 
 ## `snu get-instance-info`
 
@@ -99,6 +107,12 @@ Delete a record or delete a limited query result set.
 snow-cli snu delete-record incident <sys_id>
 snow-cli snu delete-record incident --query 'active=false' --limit 50 --confirm
 ```
+
+`snu update-record` and `snu delete-record` run their mutation as a server-side
+background script over the SN-Utils bridge (the same channel as
+`snu execute-bg-script`) and parse a JSON result for success/affected count;
+they do not make a direct REST call. `snu delete-record --dry-run` only
+previews the matching record(s) and never deletes.
 
 ## `snu wait-token`
 
@@ -213,7 +227,15 @@ holds a live `g_ck` for, with the active one flagged.
 The broker starts automatically on the first `snu` command that needs it. It
 owns the port hard-coded by SN-Utils (`127.0.0.1:1978`) and accepts foreground
 CLI requests on a local broker IPC port. When no clients or requests are active,
-it exits after the idle timeout.
+it exits after the idle timeout (default 1800 seconds, override with
+`SNOW_CLI_SNU_BROKER_IDLE_SECS`).
+
+The `g_ck` token is treated as live browser-session metadata only. The broker
+keeps it in memory per instance and, by default, also caches it in a `0600`
+file under `~/.servicenow/` so a single `/token` survives across commands and
+broker restarts (set `SNOW_CLI_SNU_BROKER_PERSIST=0` to keep it memory-only).
+It is never stored in the OS keychain or used as a standalone reusable
+credential.
 
 Usually you do not need to manage it. For debugging:
 
