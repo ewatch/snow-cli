@@ -31,3 +31,5 @@ The reviewer is launched with each harness's read-only policy where supported. O
 For releases, run `reviewer`, `e2e-tester`, `documentation-maintainer`, then
 `release-manager`. See `docs/guides/releasing.md` for the evidence and re-run
 requirements.
+
+Run `marketing-manager` on demand after release readiness for evidence-based landing-page updates and LinkedIn draft proposals.

@@ -1,0 +1,25 @@
+name = "profile-add"
+description = "Create a named profile pointing at the E2E instance (auth/profile setup)"
+requires = ["credentials"]
+
+[command]
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+capture = { profile_name = ".profile" }
+
+[expect]
+exit_code = 0
+stdout_contains = ["created", "e2e-scenario"]
+json_field_present = [".profile"]
+
+[[fuzzy]]
+expectation = "The command reports the profile was created (not merely updated) and echoes the instance URL and username we supplied when the profile is subsequently shown."
+
+# Cleanup runs against an isolated SNOW_CLI_CONFIG scratch file created per
+# `scripts/e2e-run` invocation (see tests/e2e/README.md), so a failure here is
+# harmless in normal use: the scratch file is discarded when the run exits.
+# It is included so this scenario is still correct if pointed at a persistent
+# config via an explicit SNOW_CLI_CONFIG override.
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

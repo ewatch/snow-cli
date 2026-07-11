@@ -30,6 +30,24 @@ gaps or assumptions.
 - command reference with easily understandable examples
 - examples must come from successful, sanitized E2E artifacts
 
+## Documentation layout
+
+- follow the Diataxis framework: tutorials, how-to guides, reference, explanation
+- each page belongs to exactly one Diataxis type
+- do not mix tutorial and reference content on one page
+- organize navigation by user journey, not internal code structure
+- use the order: Getting Started, Guides, Command Reference
+- begin each page with a short introduction covering its scope and importance
+- follow with a minimal working example, then variations and caveats or notes
+- show the common path in quickstarts and guides
+- reserve exhaustive flags and edge cases for the command reference
+- include at least one runnable example on every command-reference page
+- source command-reference examples from successful, sanitized E2E artifacts
+- cross-link related pages instead of duplicating content
+- keep a deliberate previous/next reading order in `SUMMARY.md`
+- use the Vue.js guide for tone and page structure: https://vuejs.org/guide/
+- use the GitHub CLI manual as the closest CLI domain match: https://cli.github.com/manual/
+
 ## Disallowed content for the documentation
 
 - how the documentation is deployed or build

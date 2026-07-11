@@ -1,0 +1,47 @@
+name = "attachment-upload"
+description = "Upload a local file as an attachment on a record"
+requires = ["credentials"]
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[[setup]]
+description = "Create a throwaway record to attach to"
+args = ["table", "create", "incident", "--profile", "e2e-scenario", "--output", "json", "--data", "{\"short_description\":\"snow-cli e2e scenario: attachment-upload\"}"]
+capture = { sys_id = ".sys_id" }
+
+[[setup]]
+description = "Create a small local fixture file to upload"
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-attach.XXXXXX\"); printf 'snow-cli e2e attachment fixture\\n' > \"$f\"; printf '%s' \"$f\""
+capture = { file_path = "raw" }
+
+[command]
+args = ["attachment", "upload", "incident", "{{sys_id}}", "--file", "{{file_path}}", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["sys_id", "file_name"]
+json_field_present = [".sys_id", ".file_name"]
+
+[[fuzzy]]
+expectation = "The response is a single attachment record whose table_sys_id matches the incident we created, whose file_name matches the uploaded fixture, and whose size is nonzero."
+
+[[cleanup]]
+description = "Delete the record (cascades to its attachments)"
+args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the local fixture file"
+shell = "rm -f \"{{file_path}}\""
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

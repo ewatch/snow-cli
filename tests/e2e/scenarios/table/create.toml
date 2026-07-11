@@ -1,0 +1,33 @@
+name = "table-create"
+description = "Create an incident record (table CRUD: create leg)"
+requires = ["credentials"]
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["table", "create", "incident", "--profile", "e2e-scenario", "--output", "json", "--data", "{\"short_description\":\"snow-cli e2e scenario: table-create\"}"]
+capture = { sys_id = ".sys_id" }
+
+[expect]
+exit_code = 0
+stdout_contains = ["sys_id", "snow-cli e2e scenario: table-create"]
+json_field_present = [".sys_id", ".number"]
+
+[[fuzzy]]
+expectation = "The response is a single incident record whose short_description matches what we sent and whose sys_id is a 32-character hex GUID."
+
+[[cleanup]]
+description = "Delete the record this scenario created"
+args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

@@ -1,0 +1,378 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf '%s\n' \
+    'Usage: scripts/e2e-run [PATH...]' \
+    '' \
+    'Runs declarative E2E scenarios (tests/e2e/scenarios/**/*.toml, see' \
+    'tests/e2e/README.md for the format). PATH may be scenario files or' \
+    'directories; defaults to all of tests/e2e/scenarios/.' \
+    '' \
+    'A scenario whose `requires` tags are unmet (missing credentials, no' \
+    'SN-Utils bridge) is SKIPPED and reported — never faked as a pass.' \
+    'Deterministic assertions (exit code, stdout/stderr substrings, JSON' \
+    'field presence) are checked automatically. `fuzzy` natural-language' \
+    'expectations are recorded as pending LLM verification, not executed.' \
+    '' \
+    'Environment:' \
+    '  SNOW_E2E_INSTANCE_URL, SNOW_E2E_USERNAME, SNOW_E2E_PASSWORD' \
+    '      Unlock scenarios tagged requires = ["credentials"].' \
+    '  SNOW_E2E_SN_UTILS=1' \
+    '      Unlock scenarios tagged requires = ["sn-utils-bridge"].' \
+    '  SNOW_CLI_BIN' \
+    '      Override the snow-cli binary path (default: target/release/snow-cli,' \
+    '      built automatically if missing).' \
+    '  SNOW_E2E_HARNESS, SNOW_E2E_MODEL' \
+    '      Recorded in each result for provenance (default: this script name).' \
+    '' \
+    'Every run gets an isolated SNOW_CLI_CONFIG (a fresh temp file), so' \
+    'scenarios never touch your real profiles or OS keychain entries under' \
+    'your normal profile names — see the "Isolation" section of the README.' \
+    '' \
+    'Results are written to artifacts/e2e/<version>/. Exit status is nonzero' \
+    'if any scenario FAILED (skipped scenarios do not fail the run).'
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd -- "$script_dir/.." && pwd)
+cd "$repo_root"
+
+lib="$script_dir/lib/e2e_scenario.py"
+scenarios_root="tests/e2e/scenarios"
+
+export SNOW_CLI_BIN=${SNOW_CLI_BIN:-"$repo_root/target/release/snow-cli"}
+if [[ ! -x $SNOW_CLI_BIN ]]; then
+  echo "Release binary not found at $SNOW_CLI_BIN — building..." >&2
+  cargo build --release --bin snow-cli
+fi
+
+harness=${SNOW_E2E_HARNESS:-"scripts/e2e-run"}
+model=${SNOW_E2E_MODEL:-"n/a (deterministic runner)"}
+
+version=$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' Cargo.toml)
+artifacts_dir="$repo_root/artifacts/e2e/$version"
+mkdir -p "$artifacts_dir"
+
+# Isolate every run from the caller's real profiles/keychain entries. Scratch
+# dir is removed on exit; scenarios that create profiles named "e2e-scenario"
+# never touch anything persistent.
+scratch_dir=$(mktemp -d "${TMPDIR:-/tmp}/snow-cli-e2e.XXXXXX")
+trap 'rm -rf "$scratch_dir"' EXIT
+export SNOW_CLI_CONFIG="$scratch_dir/config.toml"
+
+# Collect scenario files from the given paths (files or directories),
+# defaulting to the whole scenarios root.
+scenario_files=()
+if [[ $# -eq 0 ]]; then
+  set -- "$scenarios_root"
+fi
+for arg in "$@"; do
+  if [[ -d $arg ]]; then
+    while IFS= read -r f; do
+      scenario_files+=("$f")
+    done < <(find "$arg" -type f -name '*.toml' | sort)
+  elif [[ -f $arg ]]; then
+    scenario_files+=("$arg")
+  else
+    printf 'Not found: %s\n' "$arg" >&2
+    exit 2
+  fi
+done
+
+if [[ ${#scenario_files[@]} -eq 0 ]]; then
+  echo "No scenario files found under: $*" >&2
+  exit 2
+fi
+
+# Redact known secrets (literal substring match, not regex) from captured
+# stdout/stderr text before it is written to disk. Best-effort — see the
+# README's "known gaps" section.
+sanitize() {
+  local text=$1
+  jq -Rnr \
+    --arg t "$text" --arg pw "${SNOW_E2E_PASSWORD:-}" \
+    --arg un "${SNOW_E2E_USERNAME:-}" --arg url "${SNOW_E2E_INSTANCE_URL:-}" \
+    '
+    def redact($s; $needle): if $needle != "" then ($s | split($needle) | join("[REDACTED]")) else $s end;
+    $t | redact(.; $pw) | redact(.; $un) | redact(.; $url)
+    '
+}
+
+# Same redaction, applied element-wise to a JSON array of argv strings.
+sanitize_argv() {
+  local argv_json=$1
+  jq -c \
+    --arg pw "${SNOW_E2E_PASSWORD:-}" --arg un "${SNOW_E2E_USERNAME:-}" --arg url "${SNOW_E2E_INSTANCE_URL:-}" \
+    '
+    def redact($s; $needle): if $needle != "" then ($s | split($needle) | join("[REDACTED]")) else $s end;
+    [ .[] | redact(.; $pw) | redact(.; $un) | redact(.; $url) ]
+    ' <<<"$argv_json"
+}
+
+# Runs one resolved step (JSON on stdin via $1) and sets STEP_EXIT,
+# STEP_STDOUT, STEP_STDERR.
+run_resolved_step() {
+  local step_json=$1
+  local kind
+  kind=$(jq -r '.kind' <<<"$step_json")
+
+  local out_file err_file
+  out_file=$(mktemp "$scratch_dir/step-out.XXXXXX")
+  err_file=$(mktemp "$scratch_dir/step-err.XXXXXX")
+
+  STEP_EXIT=0
+  if [[ $kind == shell ]]; then
+    local shell_cmd
+    shell_cmd=$(jq -r '.shell' <<<"$step_json")
+    bash -c "$shell_cmd" >"$out_file" 2>"$err_file" || STEP_EXIT=$?
+  else
+    local argv=()
+    while IFS= read -r line; do
+      argv+=("$line")
+    done < <(jq -r '.argv[]?' <<<"$step_json")
+    "$SNOW_CLI_BIN" "${argv[@]}" >"$out_file" 2>"$err_file" || STEP_EXIT=$?
+  fi
+
+  STEP_STDOUT=$(cat "$out_file")
+  STEP_STDERR=$(cat "$err_file")
+  rm -f "$out_file" "$err_file"
+}
+
+# Applies a step's `capture` map to STEP_STDOUT and merges results into the
+# captured_json variable named by $1 (nameref-free: prints new JSON on stdout).
+apply_capture() {
+  local step_json=$1 captured_json=$2
+  local cap_map
+  cap_map=$(jq -c '.capture // {}' <<<"$step_json")
+  if [[ $cap_map == "{}" || $cap_map == "null" ]]; then
+    printf '%s' "$captured_json"
+    return 0
+  fi
+  local key path_expr val
+  while IFS=$'\t' read -r key path_expr; do
+    [[ -z $key ]] && continue
+    if [[ $path_expr == "raw" ]]; then
+      val=$STEP_STDOUT
+    else
+      val=$(jq -r "$path_expr" <<<"$STEP_STDOUT" 2>/dev/null || printf '')
+    fi
+    if [[ -n $val && $val != "null" ]]; then
+      captured_json=$(jq -c --arg k "$key" --arg v "$val" '. + {($k): $v}' <<<"$captured_json")
+    fi
+  done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<<"$cap_map")
+  printf '%s' "$captured_json"
+}
+
+pass_count=0
+fail_count=0
+skip_count=0
+: >"$artifacts_dir/results.jsonl"
+
+for file in "${scenario_files[@]}"; do
+  rel_file=${file#"$repo_root/"}
+  scenario_json=$(python3 "$lib" parse "$file")
+  name=$(jq -r '.name' <<<"$scenario_json")
+  description=$(jq -r '.description // ""' <<<"$scenario_json")
+
+  echo "=== $name ($rel_file) ==="
+
+  # --- availability gate ---
+  skip_reason=""
+  requires=()
+  while IFS= read -r r; do
+    [[ -n $r ]] && requires+=("$r")
+  done < <(jq -r '.requires[]? // empty' <<<"$scenario_json")
+  for r in ${requires[@]+"${requires[@]}"}; do
+    case $r in
+      none) ;;
+      credentials)
+        if [[ -z ${SNOW_E2E_INSTANCE_URL:-} || -z ${SNOW_E2E_USERNAME:-} || -z ${SNOW_E2E_PASSWORD:-} ]]; then
+          skip_reason="missing credentials (SNOW_E2E_INSTANCE_URL/SNOW_E2E_USERNAME/SNOW_E2E_PASSWORD)"
+        fi
+        ;;
+      sn-utils-bridge)
+        if [[ ${SNOW_E2E_SN_UTILS:-0} != "1" ]]; then
+          skip_reason="sn-utils bridge unavailable (set SNOW_E2E_SN_UTILS=1 to enable)"
+        fi
+        ;;
+      *)
+        skip_reason="unknown requirement tag: $r"
+        ;;
+    esac
+    [[ -n $skip_reason ]] && break
+  done
+
+  if [[ -n $skip_reason ]]; then
+    echo "SKIP: $skip_reason"
+    skip_count=$((skip_count + 1))
+    jq -n --arg name "$name" --arg file "$rel_file" --arg reason "$skip_reason" \
+      --arg harness "$harness" --arg model "$model" \
+      '{name: $name, file: $file, status: "skipped", skip_reason: $reason, harness: $harness, model: $model}' \
+      >>"$artifacts_dir/results.jsonl"
+    continue
+  fi
+
+  # --- run setup steps (abort scenario on a hard failure) ---
+  captured_json="{}"
+  setup_failure=""
+  setup_count=$(python3 "$lib" step-count "$file" setup)
+  for ((i = 0; i < setup_count; i++)); do
+    step=$(python3 "$lib" resolve-step "$file" setup "$i" "$captured_json")
+    run_resolved_step "$step"
+    allow_failure=$(jq -r '.allow_failure' <<<"$step")
+    if [[ $STEP_EXIT -ne 0 && $allow_failure != "true" ]]; then
+      setup_failure="setup[$i] ($(jq -r '.description' <<<"$step")) exited $STEP_EXIT"
+      break
+    fi
+    captured_json=$(apply_capture "$step" "$captured_json")
+  done
+
+  command_ran=false
+  cmd_exit=""
+  cmd_stdout=""
+  cmd_stderr=""
+  cmd_argv="[]"
+  status="pass"
+  failure_reasons=()
+  assertions="{}"
+
+  if [[ -n $setup_failure ]]; then
+    status="fail"
+    failure_reasons+=("$setup_failure")
+  else
+    step=$(python3 "$lib" resolve-step "$file" command 0 "$captured_json")
+    cmd_argv=$(jq -c '.argv' <<<"$step")
+    run_resolved_step "$step"
+    command_ran=true
+    cmd_exit=$STEP_EXIT
+    cmd_stdout=$STEP_STDOUT
+    cmd_stderr=$STEP_STDERR
+    captured_json=$(apply_capture "$step" "$captured_json")
+
+    expected_exit=$(jq -r '.expect.exit_code // 0' <<<"$scenario_json")
+    exit_ok=true
+    [[ "$cmd_exit" != "$expected_exit" ]] && exit_ok=false && status="fail" && failure_reasons+=("exit code $cmd_exit != $expected_exit")
+    assertions=$(jq -c --argjson exp "$expected_exit" --argjson act "$cmd_exit" --argjson ok "$exit_ok" \
+      '. + {exit_code: {expected: $exp, actual: $act, ok: $ok}}' <<<"$assertions")
+
+    stdout_checks="[]"
+    while IFS= read -r needle; do
+      [[ -z $needle ]] && continue
+      if [[ $cmd_stdout == *"$needle"* ]]; then
+        ok=true
+      else
+        ok=false
+        status="fail"
+        failure_reasons+=("stdout missing: $needle")
+      fi
+      stdout_checks=$(jq -c --arg n "$needle" --argjson ok "$ok" '. + [{needle: $n, ok: $ok}]' <<<"$stdout_checks")
+    done < <(jq -r '.expect.stdout_contains[]? // empty' <<<"$scenario_json")
+    assertions=$(jq -c --argjson v "$stdout_checks" '. + {stdout_contains: $v}' <<<"$assertions")
+
+    stderr_checks="[]"
+    while IFS= read -r needle; do
+      [[ -z $needle ]] && continue
+      if [[ $cmd_stderr == *"$needle"* ]]; then
+        ok=true
+      else
+        ok=false
+        status="fail"
+        failure_reasons+=("stderr missing: $needle")
+      fi
+      stderr_checks=$(jq -c --arg n "$needle" --argjson ok "$ok" '. + [{needle: $n, ok: $ok}]' <<<"$stderr_checks")
+    done < <(jq -r '.expect.stderr_contains[]? // empty' <<<"$scenario_json")
+    assertions=$(jq -c --argjson v "$stderr_checks" '. + {stderr_contains: $v}' <<<"$assertions")
+
+    json_checks="[]"
+    while IFS= read -r path_expr; do
+      [[ -z $path_expr ]] && continue
+      if jq -e "$path_expr" >/dev/null 2>&1 <<<"$cmd_stdout"; then
+        ok=true
+      else
+        ok=false
+        status="fail"
+        failure_reasons+=("json field missing: $path_expr")
+      fi
+      json_checks=$(jq -c --arg p "$path_expr" --argjson ok "$ok" '. + [{path: $p, ok: $ok}]' <<<"$json_checks")
+    done < <(jq -r '.expect.json_field_present[]? // empty' <<<"$scenario_json")
+    assertions=$(jq -c --argjson v "$json_checks" '. + {json_field_present: $v}' <<<"$assertions")
+  fi
+
+  # --- cleanup (always runs, never gates status, warnings only) ---
+  cleanup_warnings=()
+  cleanup_count=$(python3 "$lib" step-count "$file" cleanup)
+  for ((i = 0; i < cleanup_count; i++)); do
+    step=$(python3 "$lib" resolve-step "$file" cleanup "$i" "$captured_json")
+    run_resolved_step "$step"
+    if [[ $STEP_EXIT -ne 0 ]]; then
+      cleanup_warnings+=("cleanup[$i] ($(jq -r '.description' <<<"$step")) exited $STEP_EXIT")
+    fi
+  done
+
+  fuzzy_pending=$(jq -c '[.fuzzy[]? // empty]' <<<"$scenario_json")
+
+  reason_json="[]"
+  for r in ${failure_reasons[@]+"${failure_reasons[@]}"}; do
+    reason_json=$(jq -c --arg r "$r" '. + [$r]' <<<"$reason_json")
+  done
+  warn_json="[]"
+  for w in ${cleanup_warnings[@]+"${cleanup_warnings[@]}"}; do
+    warn_json=$(jq -c --arg w "$w" '. + [$w]' <<<"$warn_json")
+  done
+
+  sanitized_stdout=$(sanitize "$cmd_stdout")
+  sanitized_stderr=$(sanitize "$cmd_stderr")
+  sanitized_argv=$(sanitize_argv "$cmd_argv")
+
+  jq -n \
+    --arg name "$name" --arg file "$rel_file" --arg description "$description" \
+    --arg status "$status" --arg harness "$harness" --arg model "$model" \
+    --argjson argv "$sanitized_argv" --arg exit "${cmd_exit:-null}" \
+    --arg stdout "$sanitized_stdout" --arg stderr "$sanitized_stderr" \
+    --argjson assertions "$assertions" --argjson failure_reasons "$reason_json" \
+    --argjson cleanup_warnings "$warn_json" --argjson fuzzy_pending "$fuzzy_pending" \
+    --argjson command_ran "$command_ran" \
+    '{
+      name: $name, file: $file, description: $description, status: $status,
+      harness: $harness, model: $model, command_ran: $command_ran,
+      command: {argv: $argv, exit_code: (if $exit == "null" then null else ($exit | tonumber) end)},
+      stdout: $stdout, stderr: $stderr,
+      assertions: $assertions, failure_reasons: $failure_reasons,
+      cleanup_warnings: $cleanup_warnings, fuzzy_pending: $fuzzy_pending
+    }' >"$artifacts_dir/$(echo "$name" | tr '/' '-').json"
+
+  jq -c . "$artifacts_dir/$(echo "$name" | tr '/' '-').json" >>"$artifacts_dir/results.jsonl"
+
+  if [[ $status == pass ]]; then
+    echo "PASS"
+    pass_count=$((pass_count + 1))
+  else
+    echo "FAIL: $(printf '%s; ' "${failure_reasons[@]+"${failure_reasons[@]}"}")"
+    fail_count=$((fail_count + 1))
+  fi
+  for w in ${cleanup_warnings[@]+"${cleanup_warnings[@]}"}; do
+    echo "  cleanup warning: $w"
+  done
+done
+
+{
+  echo "# E2E run summary — snow-cli $version"
+  echo ""
+  echo "- pass: $pass_count"
+  echo "- fail: $fail_count"
+  echo "- skipped: $skip_count"
+  echo "- harness: $harness"
+  echo "- model: $model"
+} >"$artifacts_dir/summary.md"
+
+echo ""
+echo "=== Summary: $pass_count passed, $fail_count failed, $skip_count skipped ==="
+echo "Results written to $artifacts_dir"
+
+[[ $fail_count -eq 0 ]]

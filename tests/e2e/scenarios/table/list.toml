@@ -1,0 +1,27 @@
+name = "table-list"
+description = "List records from a table with a limit, JSON output (table list + output formats)"
+requires = ["credentials"]
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["table", "list", "incident", "--profile", "e2e-scenario", "--limit", "1", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["returned", "records"]
+json_field_present = [".returned", ".records"]
+
+[[fuzzy]]
+expectation = "`.records` has at most 1 entry, each entry looks like a real incident record (sys_id is a 32-char hex string, number matches INCxxxxxxx), and `.returned` matches the array length."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true
