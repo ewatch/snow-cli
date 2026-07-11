@@ -123,6 +123,11 @@ exits non-zero if any scenario **failed**; skipped scenarios are reported but
 do not fail the run, matching the release guide's rule that an unavailable
 test never counts as a pass (`docs/guides/releasing.md`).
 
+> **`artifacts/` is git-ignored on purpose.** Redaction is best-effort
+> (see "known gaps"), so these files may still contain instance-specific
+> values. Review any artifact before copying its content into committed
+> docs or examples, and never force-add the `artifacts/` tree.
+
 ## Isolation
 
 Every `scripts/e2e-run` invocation points `SNOW_CLI_CONFIG` at a fresh temp
@@ -147,11 +152,15 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
   don't appear in `--help` output, so the gate can't require a scenario for
   them. Unhide + add a scenario together when a hidden command ships.
 - **Redaction is literal-substring, not structural.** `scripts/e2e-run`
-  redacts known `SNOW_E2E_*` env var values wherever they appear verbatim in
-  captured stdout/stderr/argv. It does not redact `sys_id`s or other
-  generated values — `docs/guides/releasing.md` step 3 (turning successful
-  E2E artifacts into doc examples) still needs a human/agent pass to strip
-  those before publishing.
+  redacts the known `SNOW_E2E_*` env var values (URL, username, password) and
+  the derived HTTP Basic auth token (`base64(user:pass)`) wherever they appear
+  verbatim in captured stdout/stderr/argv. It does **not** redact `g_ck`
+  session tokens, cookies, `sys_id`s, or other generated values — these are
+  left intact (sys_ids are often wanted in doc examples). Because artifacts
+  are git-ignored, this is a review-before-publish gap, not a commit gap:
+  `docs/guides/releasing.md` step 3 (turning successful E2E artifacts into doc
+  examples) still needs a human/agent pass to strip anything sensitive before
+  publishing.
 - **`sn-utils-bridge` scenarios aren't seeded yet.** The tag and skip logic
   exist, but none of the 6 seed scenarios exercise the `snu` command family
   (see `.claude/e2e-task-b.md` for the prose version of that flow).

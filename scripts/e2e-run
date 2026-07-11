@@ -90,6 +90,15 @@ if [[ ${#scenario_files[@]} -eq 0 ]]; then
   exit 2
 fi
 
+# The HTTP Basic auth token (base64 of "user:pass") can surface in verbose
+# output (e.g. an Authorization header echo), so redact it alongside the raw
+# credential values. Empty when creds are unset, in which case redact is a
+# no-op. Computed once here rather than per-call.
+basic_auth_token=""
+if [[ -n ${SNOW_E2E_USERNAME:-} && -n ${SNOW_E2E_PASSWORD:-} ]]; then
+  basic_auth_token=$(printf '%s:%s' "$SNOW_E2E_USERNAME" "$SNOW_E2E_PASSWORD" | base64 | tr -d '\n')
+fi
+
 # Redact known secrets (literal substring match, not regex) from captured
 # stdout/stderr text before it is written to disk. Best-effort — see the
 # README's "known gaps" section.
@@ -98,9 +107,10 @@ sanitize() {
   jq -Rnr \
     --arg t "$text" --arg pw "${SNOW_E2E_PASSWORD:-}" \
     --arg un "${SNOW_E2E_USERNAME:-}" --arg url "${SNOW_E2E_INSTANCE_URL:-}" \
+    --arg basic "$basic_auth_token" \
     '
     def redact($s; $needle): if $needle != "" then ($s | split($needle) | join("[REDACTED]")) else $s end;
-    $t | redact(.; $pw) | redact(.; $un) | redact(.; $url)
+    $t | redact(.; $pw) | redact(.; $un) | redact(.; $url) | redact(.; $basic)
     '
 }
 
@@ -109,9 +119,10 @@ sanitize_argv() {
   local argv_json=$1
   jq -c \
     --arg pw "${SNOW_E2E_PASSWORD:-}" --arg un "${SNOW_E2E_USERNAME:-}" --arg url "${SNOW_E2E_INSTANCE_URL:-}" \
+    --arg basic "$basic_auth_token" \
     '
     def redact($s; $needle): if $needle != "" then ($s | split($needle) | join("[REDACTED]")) else $s end;
-    [ .[] | redact(.; $pw) | redact(.; $un) | redact(.; $url) ]
+    [ .[] | redact(.; $pw) | redact(.; $un) | redact(.; $url) | redact(.; $basic) ]
     ' <<<"$argv_json"
 }
 
