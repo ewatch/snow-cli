@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf '%s\n' \
+    'Usage: scripts/e2e-coverage' \
+    '' \
+    'Recursively enumerates every snow-cli subcommand (via --help output,' \
+    'building the release binary first if needed) and checks that each leaf' \
+    'subcommand has a matching scenario file under tests/e2e/scenarios/.' \
+    '' \
+    'A leaf subcommand "foo bar baz" must have tests/e2e/scenarios/foo/bar/baz.toml' \
+    '(and a top-level leaf "foo" must have tests/e2e/scenarios/foo.toml).' \
+    '' \
+    'Exits non-zero and lists every subcommand missing a scenario file. This' \
+    'is the CI coverage gate for the E2E scenario suite.'
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd -- "$script_dir/.." && pwd)
+cd "$repo_root"
+
+scenarios_dir="tests/e2e/scenarios"
+binary=${SNOW_CLI_BIN:-"$repo_root/target/release/snow-cli"}
+
+if [[ ! -x $binary ]]; then
+  echo "Release binary not found at $binary — building..." >&2
+  cargo build --release --bin snow-cli
+fi
+
+total=0
+missing_count=0
+missing_report=""
+
+# Extract the first column of the "Commands:" section from a --help block,
+# excluding the auto-generated "help" subcommand and blank lines.
+list_subcommands() {
+  awk '/^Commands:/{flag=1; next} /^Options:/{flag=0} flag' <<<"$1" \
+    | awk '{print $1}' \
+    | while IFS= read -r sub; do
+        [[ -n $sub && $sub != "help" ]] && printf '%s\n' "$sub"
+      done || true
+}
+
+# Recursively walk the command tree. $1.. are the path segments seen so far
+# (e.g. "snu" "tab" for `snow-cli snu tab`).
+walk() {
+  local help_out
+  help_out=$("$binary" "$@" --help 2>&1) || true
+
+  if ! grep -q '^Commands:' <<<"$help_out"; then
+    total=$((total + 1))
+    local rel file
+    rel=$(IFS=/; echo "$*")
+    file="$scenarios_dir/$rel.toml"
+    if [[ ! -f $file ]]; then
+      missing_count=$((missing_count + 1))
+      local entry
+      printf -v entry '  %-55s (snow-cli %s)\n' "$file" "$*"
+      missing_report+="$entry"
+    fi
+    return
+  fi
+
+  local subs
+  subs=$(list_subcommands "$help_out")
+  while IFS= read -r sub; do
+    [[ -z $sub ]] && continue
+    walk "$@" "$sub"
+  done <<<"$subs"
+}
+
+top_help=$("$binary" --help 2>&1)
+top_subs=$(list_subcommands "$top_help")
+while IFS= read -r sub; do
+  [[ -z $sub ]] && continue
+  walk "$sub"
+done <<<"$top_subs"
+
+echo "Checked $total leaf subcommand(s) against $scenarios_dir/"
+
+if [[ $missing_count -gt 0 ]]; then
+  echo ""
+  echo "Missing scenario files ($missing_count):"
+  printf '%s' "$missing_report"
+  echo ""
+  echo "FAIL: every subcommand needs at least one scenario file. See tests/e2e/README.md."
+  exit 1
+fi
+
+echo "PASS: every subcommand has scenario coverage."

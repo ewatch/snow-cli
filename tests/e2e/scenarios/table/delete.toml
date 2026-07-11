@@ -1,0 +1,37 @@
+name = "table-delete"
+description = "Delete a record by sys_id (table CRUD: delete leg)"
+requires = ["credentials"]
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[[setup]]
+description = "Create a throwaway record to delete"
+args = ["table", "create", "incident", "--profile", "e2e-scenario", "--output", "json", "--data", "{\"short_description\":\"snow-cli e2e scenario: table-delete\"}"]
+capture = { sys_id = ".sys_id" }
+
+[command]
+args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["success", "deleted"]
+json_field_present = [".status", ".message"]
+
+[[fuzzy]]
+expectation = "A subsequent `table get incident {{sys_id}}` fails or returns no record, confirming the delete took effect on the instance."
+
+[[cleanup]]
+description = "Best-effort re-delete in case the command step failed before deleting"
+args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

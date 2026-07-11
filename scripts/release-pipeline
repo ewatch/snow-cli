@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf '%s\n' \
+    'Usage: scripts/release-pipeline <version> [options]' \
+    '' \
+    'Options:' \
+    '  --harness-<role> <harness>  Override a role harness.' \
+    '  --model-<role> <model>      Override a role model.' \
+    '  --from <role>               Resume from reviewer, e2e-tester, documentation-maintainer, or release-manager.' \
+    '' \
+    'Roles run in order: reviewer, e2e-tester, documentation-maintainer, release-manager.' \
+    'Default harnesses: claude, opencode, pi, claude.'
+}
+
+role_index() {
+  case $1 in
+    reviewer) printf '%s\n' 0 ;;
+    e2e-tester) printf '%s\n' 1 ;;
+    documentation-maintainer) printf '%s\n' 2 ;;
+    release-manager) printf '%s\n' 3 ;;
+    *) return 1 ;;
+  esac
+}
+
+if [[ ${1:-} == '--help' || ${1:-} == '-h' ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -lt 1 ]]; then
+  usage >&2
+  exit 2
+fi
+
+version=$1
+shift
+
+if [[ -z $version || $version == */* || $version == .* ]]; then
+  printf 'Invalid version: %s\n' "$version" >&2
+  exit 2
+fi
+
+roles=(reviewer e2e-tester documentation-maintainer release-manager)
+harnesses=(claude opencode pi claude)
+models=("" "" "" "")
+start_index=0
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --from)
+      if [[ $# -lt 2 ]] || ! start_index=$(role_index "$2"); then
+        printf 'Invalid --from role: %s\n' "${2:-}" >&2
+        usage >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --harness-*)
+      role=${1#--harness-}
+      if [[ $# -lt 2 ]] || ! index=$(role_index "$role"); then
+        printf 'Invalid harness option: %s\n' "$1" >&2
+        usage >&2
+        exit 2
+      fi
+      harnesses[index]=$2
+      shift 2
+      ;;
+    --model-*)
+      role=${1#--model-}
+      if [[ $# -lt 2 ]] || ! index=$(role_index "$role"); then
+        printf 'Invalid model option: %s\n' "$1" >&2
+        usage >&2
+        exit 2
+      fi
+      models[index]=$2
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'Unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd -- "$script_dir/.." && pwd)
+run_agent="$script_dir/run-agent"
+log_dir="$repo_root/artifacts/release/$version/logs"
+
+mkdir -p "$log_dir"
+cd "$repo_root"
+
+statuses=(skipped skipped skipped skipped)
+log_paths=("-" "-" "-" "-")
+
+print_summary() {
+  local index
+
+  printf '\nRelease gate summary for %s:\n' "$version"
+  for index in "${!roles[@]}"; do
+    printf '  %s: %s (%s)\n' "${roles[index]}" "${statuses[index]}" "${log_paths[index]}"
+  done
+}
+
+for index in "${!roles[@]}"; do
+  if (( index < start_index )); then
+    statuses[index]='skipped (--from)'
+    continue
+  fi
+
+  role=${roles[index]}
+  log_path="$log_dir/$(printf '%02d' "$((index + 1))")-$role.log"
+  log_paths[index]=$log_path
+
+  case $role in
+    reviewer)
+      task="Review the release candidate for version $version on the current branch against main."
+      ;;
+    e2e-tester)
+      task="Run the release command matrix for version $version."
+      ;;
+    documentation-maintainer)
+      task="Update the installation guide using artifacts/e2e/$version/."
+      ;;
+    release-manager)
+      task="Prepare a release-readiness report for version $version."
+      ;;
+  esac
+
+  printf '\nRunning %s gate with %s. Log: %s\n' "$role" "${harnesses[index]}" "$log_path"
+  run_args=("$run_agent" "${harnesses[index]}" "$role")
+  if [[ -n ${models[index]} ]]; then
+    run_args+=(--model "${models[index]}")
+  fi
+
+  if "${run_args[@]}" -- "$task" 2>&1 | tee "$log_path"; then
+    statuses[index]=passed
+  else
+    statuses[index]=failed
+    printf '\nRelease gate failed: %s\n' "$role" >&2
+    print_summary >&2
+    exit 1
+  fi
+done
+
+print_summary
+printf '\nAll release gates passed. Publishing still requires explicit human approval; see docs/guides/releasing.md.\n'

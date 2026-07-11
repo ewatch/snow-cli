@@ -1,0 +1,13 @@
+name = "completions"
+description = "Generate bash shell completions (no instance required)"
+requires = ["none"]
+
+[command]
+args = ["completions", "bash"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["_snow-cli()", "COMPREPLY"]
+
+[[fuzzy]]
+expectation = "The generated script is a syntactically plausible bash completion function (defines a function, references COMPREPLY, mentions the snow-cli subcommand names like table/profile/auth)."
