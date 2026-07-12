@@ -1,8 +1,8 @@
 # E2E scenarios
 
-Declarative, per-subcommand test scenarios for `snow-cli`, replacing prose
-task prompts (`.claude/e2e-task-*.md`) with files a deterministic runner can
-execute and a coverage gate can check.
+Declarative, per-subcommand test scenarios for `snow-cli`: files a
+deterministic runner can execute and a coverage gate can check. They replace
+the prose task prompts formerly kept in `.claude/e2e-task-*.md` (now removed).
 
 - `tests/e2e/scenarios/**/*.toml` — one scenario file per leaf subcommand.
 - `scripts/e2e-coverage` — CI gate: fails if any subcommand has no scenario file.
@@ -162,8 +162,7 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
   examples) still needs a human/agent pass to strip anything sensitive before
   publishing.
 - **`sn-utils-bridge` scenarios aren't seeded yet.** The tag and skip logic
-  exist, but none of the 6 seed scenarios exercise the `snu` command family
-  (see `.claude/e2e-task-b.md` for the prose version of that flow).
+  exist, but none of the 6 seed scenarios exercise the `snu` command family.
 - **No parallelism.** Scenarios run sequentially in one isolated config; two
   concurrent `scripts/e2e-run` invocations would race on the same
   `e2e-scenario` profile name if pointed at the same real instance.
