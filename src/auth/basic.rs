@@ -11,6 +11,7 @@ enum CredentialSource {
     /// Look up password from keychain/env at runtime.
     Keychain { profile_name: String },
     /// Use a directly provided password (for testing).
+    #[allow(dead_code)]
     Direct { password: String },
 }
 

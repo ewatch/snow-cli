@@ -11,6 +11,7 @@ enum TokenSource {
     /// Look up token from keychain/env at runtime.
     Keychain { profile_name: String },
     /// Use a directly provided token (for testing).
+    #[allow(dead_code)]
     Direct { token: String },
 }
 

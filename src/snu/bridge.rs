@@ -499,7 +499,9 @@ async fn detach_connection(inner: &Arc<Inner>, generation: u64) {
         let mut conn = inner.conn.lock().await;
         match conn.as_ref() {
             Some(current) if current.generation == generation => {
-                let current = conn.take().expect("checked above");
+                // Safe: we just checked as_ref() above; the Option is guaranteed to be Some
+                #[allow(clippy::unwrap_used)]
+                let current = conn.take().unwrap();
                 current.reader.abort();
                 current.writer.abort();
             }
