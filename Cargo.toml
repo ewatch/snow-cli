@@ -85,3 +85,6 @@ tokio-test = "0.4"
 [workspace]
 members = ["."]
 resolver = "3"
+
+[lints.rust]
+unused = { level = "warn", priority = -1 }

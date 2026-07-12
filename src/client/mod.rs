@@ -698,7 +698,7 @@ impl SnowClient {
         }
 
         let auth_headers = self.authenticator.authenticate().await?;
-        let url = self.url(bootstrap_path);
+        let url = self.url(bootstrap_path)?;
 
         tracing::debug!(url = %url, "Bootstrapping form session context");
 
@@ -779,7 +779,7 @@ impl SnowClient {
         username: &str,
         password: &str,
     ) -> anyhow::Result<String> {
-        let login_url = reqwest::Url::parse(&self.url("/login.do"))?;
+        let login_url = reqwest::Url::parse(&self.url("/login.do")?)?;
 
         tracing::debug!(url = %login_url, "Performing login.do form login");
 
@@ -871,7 +871,7 @@ impl SnowClient {
         bootstrap_path: &str,
         login_cookie_header: &str,
     ) -> anyhow::Result<FormSession> {
-        let url = self.url(bootstrap_path);
+        let url = self.url(bootstrap_path)?;
         let request = self
             .http
             .get(&url)
@@ -937,9 +937,8 @@ impl SnowClient {
     ///
     /// If the path starts with `/`, it's treated as absolute on the instance.
     /// Otherwise it's appended to the base URL.
-    fn url(&self, path: &str) -> String {
+    fn url(&self, path: &str) -> anyhow::Result<String> {
         self.authenticated_url(path)
-            .expect("internal URL construction should use same-origin paths")
     }
 
     pub(crate) fn authenticated_url(&self, path: &str) -> anyhow::Result<String> {
@@ -1424,7 +1423,7 @@ mod tests {
         let auth = MockAuth::new("test");
         let client = test_client("https://test.service-now.com", auth);
         assert_eq!(
-            client.url("/api/now/table/incident"),
+            client.url("/api/now/table/incident").unwrap(),
             "https://test.service-now.com/api/now/table/incident"
         );
     }
@@ -1434,7 +1433,7 @@ mod tests {
         let auth = MockAuth::new("test");
         let client = test_client("https://test.service-now.com", auth);
         assert_eq!(
-            client.url("api/now/table/incident"),
+            client.url("api/now/table/incident").unwrap(),
             "https://test.service-now.com/api/now/table/incident"
         );
     }
