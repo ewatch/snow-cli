@@ -258,7 +258,7 @@ mod tests {
         })));
         assert!(command_uses_connection(&Commands::Table(TableArgs {
             command: TableCommands::List {
-                table: "incident".to_string(),
+                table: "incident".parse().unwrap(),
                 query: None,
                 fields: None,
                 limit: None,

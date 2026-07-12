@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::args::{DataArgs, DataCommands, OutputFormat};
 use crate::cli::output;
-use crate::cli::validation::validate_table_name;
 use crate::client::pagination::PaginationConfig;
+use crate::models::identifiers::TableName;
 use crate::models::record::{Record, SingleRecordResponse};
 
 const LONG_RUNNING_TIMEOUT_SECS: u64 = 180;
@@ -63,7 +63,7 @@ pub async fn handle(
                 &file,
                 ImportExecutionOptions {
                     dry_run,
-                    import_set_table: import_set_table.as_deref(),
+                    import_set_table: import_set_table.as_ref(),
                     fail_on_error,
                 },
             )
@@ -159,7 +159,7 @@ struct ImportSetApiResult {
 #[derive(Debug, Clone, Copy)]
 struct ImportExecutionOptions<'a> {
     dry_run: bool,
-    import_set_table: Option<&'a str>,
+    import_set_table: Option<&'a TableName>,
     fail_on_error: bool,
 }
 
@@ -337,7 +337,7 @@ struct ReferenceMarker {
 
 #[derive(Debug)]
 struct ExportRequest {
-    table: String,
+    table: TableName,
     query: Option<String>,
     fields: Option<String>,
     limit: Option<usize>,
@@ -384,7 +384,7 @@ async fn handle_export(
         kind: "table-export".to_string(),
         command: default_export_command(),
         instance: client.base_url().to_string(),
-        table: export.table,
+        table: export.table.to_string(),
         query: export.query,
         fields: split_csv_fields(export.fields.as_deref()),
         exported_at_unix_s: current_unix_timestamp(),
@@ -453,9 +453,10 @@ async fn handle_export_package(
             .ok_or_else(|| anyhow::anyhow!("Missing dataset spec for table '{}'", table_name))?;
         let fetch_fields = package_fetch_fields(table_spec, &required_source_keys);
         let pagination = PaginationConfig::default().with_limit(table_spec.limit);
+        let table_spec_name: TableName = table_spec.name.parse()?;
         let records = client
             .get_table_records(
-                &table_spec.name,
+                &table_spec_name,
                 table_spec.query.as_deref(),
                 fetch_fields.as_deref(),
                 &pagination,
@@ -770,10 +771,9 @@ async fn handle_import_flat(
     }
 
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
-    validate_table_name(&artifact.table)?;
+    let _: TableName = artifact.table.parse()?;
     let use_import_set = options.import_set_table.is_some();
     let path = if let Some(staging_table) = options.import_set_table {
-        validate_table_name(staging_table)?;
         format!("/api/now/import/{staging_table}")
     } else {
         format!("/api/now/table/{}", artifact.table)
@@ -1077,7 +1077,7 @@ async fn handle_import_package(
         let manifest_table = manifest_tables
             .get(table_name)
             .ok_or_else(|| anyhow::anyhow!("Missing manifest table '{}'", table_name))?;
-        validate_table_name(&manifest_table.name)?;
+        let _: TableName = manifest_table.name.parse()?;
         let artifact =
             read_dataset_table_artifact(&package_file_path(&base_dir, &manifest_table.file)?)?;
         let path = format!("/api/now/table/{}", manifest_table.name);
@@ -1182,9 +1182,10 @@ async fn fetch_table_schema(
         .with_page_size(500)
         .with_limit(None);
 
+    let sys_dictionary: TableName = "sys_dictionary".parse().expect("valid table name literal");
     let records = client
         .get_table_records(
-            "sys_dictionary",
+            &sys_dictionary,
             Some(&query),
             Some("element,internal_type,mandatory,read_only,default_value"),
             &pagination,
@@ -1281,9 +1282,10 @@ async fn fetch_table_definition(
     query: &str,
 ) -> anyhow::Result<Option<TableDefinition>> {
     let pagination = PaginationConfig::default().with_limit(Some(1));
+    let sys_db_object: TableName = "sys_db_object".parse().expect("valid table name literal");
     let records = client
         .get_table_records(
-            "sys_db_object",
+            &sys_db_object,
             Some(query),
             Some("name,super_class"),
             &pagination,

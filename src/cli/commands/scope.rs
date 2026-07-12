@@ -3,10 +3,8 @@ use std::fmt::Write as _;
 
 use crate::cli::args::{OutputFormat, ScopeArgs, ScopeCommands, ScopeDetailLevel, ScopeListKind};
 use crate::cli::output;
-use crate::cli::validation::{
-    validate_encoded_query_literal, validate_path_segment, validate_table_name,
-};
 use crate::client::pagination::PaginationConfig;
+use crate::models::identifiers::{EncodedQueryValue, SysId, TableName};
 use crate::models::record::Record;
 
 struct ArtifactDefinition {
@@ -18,8 +16,8 @@ struct ArtifactDefinition {
 }
 
 struct MoveFileRequest<'a> {
-    table: &'a str,
-    sys_id: &'a str,
+    table: &'a TableName,
+    sys_id: &'a SysId,
     target_scope: &'a str,
     dry_run: bool,
     yes: bool,
@@ -243,7 +241,7 @@ pub async fn handle(
                 format,
                 instance,
                 timeout_secs,
-                search.as_deref(),
+                search.as_ref(),
                 &kind,
                 ScopeListTextOptions {
                     show_source_table,
@@ -288,7 +286,7 @@ async fn handle_list(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    search: Option<&str>,
+    search: Option<&EncodedQueryValue>,
     kinds: &[ScopeListKind],
     text_options: ScopeListTextOptions,
 ) -> anyhow::Result<()> {
@@ -308,7 +306,7 @@ async fn handle_inspect(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    scope_input: &str,
+    scope_input: &EncodedQueryValue,
     details: ScopeDetailLevel,
 ) -> anyhow::Result<()> {
     let collected = collect_scope_data(profile, instance, timeout_secs, scope_input).await?;
@@ -348,7 +346,7 @@ async fn handle_inventory(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    scope_input: &str,
+    scope_input: &EncodedQueryValue,
 ) -> anyhow::Result<()> {
     let collected = collect_scope_data(profile, instance, timeout_secs, scope_input).await?;
     let rows = collected.to_inventory_rows();
@@ -383,11 +381,9 @@ async fn handle_move_file(
     timeout_secs: Option<u64>,
     request: MoveFileRequest<'_>,
 ) -> anyhow::Result<()> {
-    validate_table_name(request.table)?;
-    validate_path_segment("sys_id", request.sys_id)?;
     let script = build_move_file_script(
-        request.table,
-        request.sys_id,
+        request.table.as_str(),
+        request.sys_id.as_str(),
         request.target_scope,
         request.dry_run,
         request.yes,
@@ -763,16 +759,16 @@ async fn collect_scope_data(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    scope_input: &str,
+    scope_input: &EncodedQueryValue,
 ) -> anyhow::Result<CollectedScopeData> {
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
-    validate_encoded_query_literal("scope", scope_input)?;
     let pagination = PaginationConfig::default();
 
     let scope_query = format!("scope={scope_input}^ORsys_id={scope_input}");
+    let sys_scope: TableName = "sys_scope".parse().expect("valid table name literal");
     let scopes = client
         .get_table_records(
-            "sys_scope",
+            &sys_scope,
             Some(&scope_query),
             Some("sys_id,scope,name,version"),
             &pagination,
@@ -886,8 +882,11 @@ async fn fetch_records_for_scope(
     let query = format!("sys_scope={scope_sys_id}");
     let fields = format!("{fields},sys_scope");
     let pagination = PaginationConfig::default();
+    let table_name: TableName = table
+        .parse()
+        .expect("ARTIFACT_DEFINITIONS table names are valid literals");
     match client
-        .get_table_records(table, Some(&query), Some(&fields), &pagination, None)
+        .get_table_records(&table_name, Some(&query), Some(&fields), &pagination, None)
         .await
     {
         Ok(records) => {
@@ -937,7 +936,7 @@ async fn fetch_dictionary_records(
     }
 
     for table_name in table_names {
-        if let Err(err) = validate_table_name(table_name) {
+        if let Err(err) = table_name.parse::<TableName>() {
             warnings.push(format!(
                 "Skipped sys_dictionary query for invalid table name '{table_name}': {err}"
             ));
@@ -947,10 +946,11 @@ async fn fetch_dictionary_records(
 
     let query = build_dictionary_query(table_names);
     let pagination = PaginationConfig::default().with_page_size(200);
+    let sys_dictionary: TableName = "sys_dictionary".parse().expect("valid table name literal");
 
     match client
         .get_table_records(
-            "sys_dictionary",
+            &sys_dictionary,
             Some(&query),
             Some("sys_id,name,element,column_label,internal_type,reference"),
             &pagination,
@@ -976,7 +976,7 @@ async fn fetch_choice_records(
     }
 
     for table_name in table_names {
-        if let Err(err) = validate_table_name(table_name) {
+        if let Err(err) = table_name.parse::<TableName>() {
             warnings.push(format!(
                 "Skipped sys_choice query for invalid table name '{table_name}': {err}"
             ));
@@ -986,10 +986,11 @@ async fn fetch_choice_records(
 
     let query = format!("nameIN{}", table_names.join(","));
     let pagination = PaginationConfig::default().with_page_size(200);
+    let sys_choice: TableName = "sys_choice".parse().expect("valid table name literal");
 
     match client
         .get_table_records(
-            "sys_choice",
+            &sys_choice,
             Some(&query),
             Some("sys_id,name,element,value,label,inactive"),
             &pagination,
@@ -1014,9 +1015,10 @@ async fn fetch_other_metadata_rows(
 ) -> Vec<ScopeInventoryRow> {
     let query = format!("sys_scope={scope_sys_id}");
     let pagination = PaginationConfig::default();
+    let sys_metadata: TableName = "sys_metadata".parse().expect("valid table name literal");
     let metadata_records = match client
         .get_table_records(
-            "sys_metadata",
+            &sys_metadata,
             Some(&query),
             Some("sys_id,name,sys_class_name"),
             &pagination,
@@ -1090,7 +1092,7 @@ async fn list_scopes(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    search: Option<&str>,
+    search: Option<&EncodedQueryValue>,
     kinds: &[ScopeListKind],
 ) -> anyhow::Result<ScopeListOutput> {
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -1098,9 +1100,10 @@ async fn list_scopes(
     let scope_query = build_scope_search_query(search)?;
     let plugin_query = build_plugin_search_query(search)?;
 
+    let sys_scope: TableName = "sys_scope".parse().expect("valid table name literal");
     let scopes = client
         .get_table_records(
-            "sys_scope",
+            &sys_scope,
             scope_query.as_deref(),
             Some("sys_id,scope,name,version"),
             &pagination,
@@ -1109,17 +1112,19 @@ async fn list_scopes(
         .await?;
 
     let mut warnings = Vec::new();
+    let sys_store_app: TableName = "sys_store_app".parse().expect("valid table name literal");
     let store_apps = query_optional_table(
         &mut client,
-        "sys_store_app",
+        &sys_store_app,
         scope_query.as_deref(),
         "sys_id,scope,name,version,vendor",
         &mut warnings,
     )
     .await;
+    let v_plugin: TableName = "v_plugin".parse().expect("valid table name literal");
     let plugins = query_optional_table(
         &mut client,
-        "v_plugin",
+        &v_plugin,
         plugin_query.as_deref(),
         "sys_id,id,name,active",
         &mut warnings,
@@ -1154,7 +1159,7 @@ fn filter_scope_list_rows(rows: Vec<ScopeListRow>, kinds: &[ScopeListKind]) -> V
 
 async fn query_optional_table(
     client: &mut crate::client::SnowClient,
-    table: &str,
+    table: &TableName,
     query: Option<&str>,
     fields: &str,
     warnings: &mut Vec<String>,
@@ -1172,24 +1177,14 @@ async fn query_optional_table(
     }
 }
 
-fn build_scope_search_query(search: Option<&str>) -> anyhow::Result<Option<String>> {
-    search
-        .map(|search| {
-            validate_encoded_query_literal("search", search)?;
-            Ok(format!(
-                "scope={search}^ORsys_id={search}^ORscopeLIKE{search}^ORnameLIKE{search}"
-            ))
-        })
-        .transpose()
+fn build_scope_search_query(search: Option<&EncodedQueryValue>) -> anyhow::Result<Option<String>> {
+    Ok(search.map(|search| {
+        format!("scope={search}^ORsys_id={search}^ORscopeLIKE{search}^ORnameLIKE{search}")
+    }))
 }
 
-fn build_plugin_search_query(search: Option<&str>) -> anyhow::Result<Option<String>> {
-    search
-        .map(|search| {
-            validate_encoded_query_literal("search", search)?;
-            Ok(format!("id={search}^ORidLIKE{search}^ORnameLIKE{search}"))
-        })
-        .transpose()
+fn build_plugin_search_query(search: Option<&EncodedQueryValue>) -> anyhow::Result<Option<String>> {
+    Ok(search.map(|search| format!("id={search}^ORidLIKE{search}^ORnameLIKE{search}")))
 }
 
 fn build_scope_list_rows(
@@ -1670,12 +1665,15 @@ mod tests {
 
     #[test]
     fn test_build_scope_search_query() {
+        let global: EncodedQueryValue = "global".parse().unwrap();
         assert_eq!(
-            build_scope_search_query(Some("global")).unwrap(),
+            build_scope_search_query(Some(&global)).unwrap(),
             Some("scope=global^ORsys_id=global^ORscopeLIKEglobal^ORnameLIKEglobal".to_string())
         );
         assert_eq!(build_scope_search_query(None).unwrap(), None);
-        assert!(build_scope_search_query(Some("global^ORactive=true")).is_err());
+        // Invalid characters are now rejected at construction time, before
+        // `build_scope_search_query` is ever called.
+        assert!("global^ORactive=true".parse::<EncodedQueryValue>().is_err());
     }
 
     #[test]
