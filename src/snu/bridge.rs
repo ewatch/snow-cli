@@ -10,7 +10,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, timeout};
-use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
+use tokio_tungstenite::{
+    WebSocketStream, accept_async,
+    tungstenite::{Bytes, Message},
+};
 
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
@@ -296,7 +299,7 @@ impl BridgeManager {
                 tx,
             });
             conn.outbound
-                .send(Message::Text(text))
+                .send(Message::Text(text.into()))
                 .map_err(|_| BridgeError::Disconnected)?;
             rx
         };
@@ -392,7 +395,8 @@ fn banner_message(message: &str) -> Message {
             "message": message,
             "class": "alert alert-primary",
         })
-        .to_string(),
+        .to_string()
+        .into(),
     )
 }
 
@@ -653,7 +657,7 @@ async fn heartbeat_loop(inner: Arc<Inner>) {
             detach_connection(&inner, generation).await;
             continue;
         }
-        let _ = outbound.send(Message::Ping(Vec::new()));
+        let _ = outbound.send(Message::Ping(Bytes::new()));
     }
 }
 
@@ -699,7 +703,7 @@ mod tests {
 
     async fn send_json(helper: &mut HelperSocket, value: Value) {
         helper
-            .send(Message::Text(value.to_string()))
+            .send(Message::Text(value.to_string().into()))
             .await
             .expect("helper send");
     }
