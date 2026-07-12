@@ -5,9 +5,7 @@ use reqwest::multipart::{Form, Part};
 
 use crate::cli::args::{AttachmentArgs, AttachmentCommands, OutputFormat};
 use crate::cli::output;
-use crate::cli::validation::{
-    validate_encoded_query_literal, validate_path_segment, validate_table_name,
-};
+use crate::models::identifiers::EncodedQueryValue;
 
 const MAX_ATTACHMENT_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
@@ -49,9 +47,11 @@ pub async fn handle(
     match args.command {
         AttachmentCommands::List { table, sys_id } => {
             tracing::info!("Listing attachments for {}/{}", table, sys_id);
-            validate_table_name(&table)?;
-            validate_path_segment("sys_id", &sys_id)?;
-            validate_encoded_query_literal("sys_id", &sys_id)?;
+            // sys_id is also embedded in an encoded query below, so it must
+            // additionally satisfy the (stricter, operator-character-free)
+            // encoded-query rules on top of the path-segment rules already
+            // enforced by the `SysId` clap type.
+            let _: EncodedQueryValue = sys_id.as_str().parse()?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -74,7 +74,6 @@ pub async fn handle(
         }
         AttachmentCommands::Download { sys_id, out_path } => {
             tracing::info!("Downloading attachment: {}", sys_id);
-            validate_path_segment("attachment sys_id", &sys_id)?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -116,8 +115,6 @@ pub async fn handle(
             }
 
             tracing::info!("Uploading {} to {}/{}", file, table, sys_id);
-            validate_table_name(&table)?;
-            validate_path_segment("sys_id", &sys_id)?;
 
             let path = PathBuf::from(&file);
             let file_name = path
@@ -152,8 +149,8 @@ pub async fn handle(
 
             let file_part = Part::bytes(file_bytes).file_name(file_name.clone());
             let form = Form::new()
-                .text("table_name", table.clone())
-                .text("table_sys_id", sys_id.clone())
+                .text("table_name", table.to_string())
+                .text("table_sys_id", sys_id.to_string())
                 .text("file_name", file_name.clone())
                 .part("file", file_part);
 
@@ -309,8 +306,8 @@ mod tests {
         crate::policy::set_active_policy(crate::policy::ExecutionPolicy::read_only());
         let args = AttachmentArgs {
             command: AttachmentCommands::Upload {
-                table: "incident".to_string(),
-                sys_id: "abc123".to_string(),
+                table: "incident".parse().unwrap(),
+                sys_id: "abc123".parse().unwrap(),
                 file: "/dev/null".to_string(),
             },
         };

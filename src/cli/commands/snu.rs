@@ -9,8 +9,8 @@ use crate::cli::args::{
     DEFAULT_SNU_FIELDS, OutputFormat, SnuArgs, SnuBrokerCommands, SnuCommands, SnuContextCommands,
     SnuTabCommands,
 };
+use crate::cli::io::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::cli::output::print_output;
-use crate::cli::validation::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::snu::broker::{BrokerBridge, BrokerStatus};
 use crate::snu::protocol::{SnuInstance, SnuMessage, redact_session_for_output, resolve_origin};
 

@@ -1,6 +1,8 @@
 use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
 
+use crate::models::identifiers::{EncodedQueryValue, SysId, TableName};
+
 const TOP_LEVEL_AFTER_HELP: &str = "Common workflows:\n  1) First-time setup\n     snow-cli profile add default --instance https://mycompany.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli auth login\n\n  3) List recent incidents\n     snow-cli table list incident --query 'active=true' --limit 20\n\n  4) Create and update records\n     snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n     snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n\n  5) Call a custom API\n     snow-cli api get /api/x_myapp/status";
 
 const PROFILE_AFTER_HELP: &str = "Examples:\n  snow-cli profile add dev --instance https://dev.service-now.com --auth-method basic --username admin\n  snow-cli profile edit dev --username new-admin\n  snow-cli profile add prod --instance https://prod.service-now.com --auth-method oauth2 --client-id abc123\n  snow-cli profile default prod\n  snow-cli profile current\n  snow-cli profile remove old-dev\n  snow-cli profile list\n  snow-cli profile find --instance dev123466\n  snow-cli profile sdk list\n  snow-cli profile sdk import --alias dev\n  snow-cli profile sdk export prod --alias prod-sdk\n  snow-cli profile show";
@@ -678,7 +680,7 @@ pub enum TableCommands {
     #[command(after_help = TABLE_LIST_AFTER_HELP)]
     List {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
-        table: String,
+        table: TableName,
 
         /// Encoded query string
         #[arg(long)]
@@ -709,10 +711,10 @@ pub enum TableCommands {
     /// Get a single record by sys_id
     Get {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// Comma-separated list of fields to return
         #[arg(long)]
@@ -727,7 +729,7 @@ pub enum TableCommands {
     #[command(after_help = TABLE_CREATE_AFTER_HELP)]
     Create {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// JSON data for the record
         #[arg(long)]
@@ -737,10 +739,10 @@ pub enum TableCommands {
     /// Update an existing record
     Update {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// JSON data for the update
         #[arg(long)]
@@ -750,10 +752,10 @@ pub enum TableCommands {
     /// Delete a record
     Delete {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// Skip confirmation prompt
         #[arg(long)]
@@ -763,7 +765,7 @@ pub enum TableCommands {
     /// Show table schema (columns, types, labels) from sys_dictionary
     Schema {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
-        table: String,
+        table: TableName,
 
         /// Show extended field metadata (required, read-only, max length, default, reference table)
         #[arg(long)]
@@ -778,7 +780,7 @@ pub enum TableCommands {
     #[command(after_help = TABLE_STATS_AFTER_HELP)]
     Stats {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
-        table: String,
+        table: TableName,
 
         /// Encoded query string
         #[arg(long)]
@@ -825,7 +827,7 @@ pub enum DataCommands {
     #[command(after_help = DATA_EXPORT_AFTER_HELP)]
     Export {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
-        table: String,
+        table: TableName,
 
         /// Encoded query string
         #[arg(long)]
@@ -879,7 +881,7 @@ pub enum DataCommands {
 
         /// Staging table to use for flat Import Set API loads
         #[arg(long)]
-        import_set_table: Option<String>,
+        import_set_table: Option<TableName>,
 
         /// Exit non-zero when Import Set API responses contain row-level errors
         #[arg(long)]
@@ -941,7 +943,7 @@ pub enum ScopeCommands {
     /// List scopes and classify them by origin
     List {
         /// Optional search term for partial name matches or exact scope names
-        search: Option<String>,
+        search: Option<EncodedQueryValue>,
 
         /// Restrict results to one or more scope kinds
         #[arg(long, value_enum)]
@@ -959,7 +961,7 @@ pub enum ScopeCommands {
     /// Inspect scope metadata and artifact counts
     Inspect {
         /// Scope name (e.g., x_my_app) or scope sys_id
-        scope: String,
+        scope: EncodedQueryValue,
 
         /// Detail level for output payload
         #[arg(long, value_enum, default_value = "basic")]
@@ -969,16 +971,16 @@ pub enum ScopeCommands {
     /// Export normalized scope artifacts for analysis
     Inventory {
         /// Scope name (e.g., x_my_app) or scope sys_id
-        scope: String,
+        scope: EncodedQueryValue,
     },
 
     /// Move one application file to a different custom scope without changing sys_id
     MoveFile {
         /// Source table name for the application file
-        table: String,
+        table: TableName,
 
         /// Source record sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// Target scope name (e.g., x_my_app) or scope sys_id
         #[arg(long = "target-scope")]
@@ -1034,16 +1036,16 @@ pub enum AttachmentCommands {
     /// List attachments for a record
     List {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
     },
 
     /// Download an attachment
     Download {
         /// Attachment sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// Output file path (defaults to original filename)
         #[arg(long = "out", short = 'o')]
@@ -1053,10 +1055,10 @@ pub enum AttachmentCommands {
     /// Upload a file as an attachment
     Upload {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// Path to the file to upload
         #[arg(long, short)]
@@ -1078,7 +1080,7 @@ pub enum ImportSetCommands {
     /// Load data into a staging table
     Load {
         /// Staging table name
-        table: String,
+        table: TableName,
 
         /// JSON data to load
         #[arg(long)]
@@ -1092,7 +1094,7 @@ pub enum ImportSetCommands {
     /// Transform staged data
     Transform {
         /// Import set sys_id
-        sys_id: String,
+        sys_id: SysId,
     },
 }
 
@@ -1718,7 +1720,7 @@ mod tests {
                     limit,
                     ..
                 } => {
-                    assert_eq!(table, "incident");
+                    assert_eq!(table.as_str(), "incident");
                     assert_eq!(query, Some("active=true".to_string()));
                     assert_eq!(limit, Some(10));
                 }
@@ -1777,7 +1779,7 @@ mod tests {
                     sum,
                     having,
                 } => {
-                    assert_eq!(table, "incident");
+                    assert_eq!(table.as_str(), "incident");
                     assert_eq!(query, Some("active=true".to_string()));
                     assert_eq!(group_by, Some("state,priority".to_string()));
                     assert_eq!(avg, Some("priority".to_string()));
@@ -1881,7 +1883,7 @@ mod tests {
                 SnuCommands::CreateRecord {
                     table, data, scope, ..
                 } => {
-                    assert_eq!(table, "incident");
+                    assert_eq!(table.as_str(), "incident");
                     assert_eq!(data.as_deref(), Some("{\"short_description\":\"hi\"}"));
                     assert_eq!(scope.as_deref(), Some("x_app"));
                 }
@@ -1930,8 +1932,8 @@ mod tests {
                     fields,
                     ..
                 } => {
-                    assert_eq!(table, "incident");
-                    assert_eq!(sys_id, "abc123");
+                    assert_eq!(table.as_str(), "incident");
+                    assert_eq!(sys_id.as_str(), "abc123");
                     assert_eq!(fields, Some("sys_id,number".to_string()));
                 }
                 _ => panic!("Expected Snu GetRecord command"),
@@ -1964,7 +1966,7 @@ mod tests {
                     ..
                 } => {
                     assert_eq!(table, "sp_widget");
-                    assert_eq!(sys_id, "abc123");
+                    assert_eq!(sys_id.as_str(), "abc123");
                     assert_eq!(
                         data.as_deref(),
                         Some("{\"script\":\"gs.info('x')\",\"css\":\".a{}\"}")
@@ -2039,7 +2041,7 @@ mod tests {
         match cli.command {
             Commands::Scope(args) => match args.command {
                 ScopeCommands::Inspect { scope, details } => {
-                    assert_eq!(scope, "x_my_app");
+                    assert_eq!(scope.as_str(), "x_my_app");
                     assert!(matches!(details, ScopeDetailLevel::Basic));
                 }
                 _ => panic!("Expected Scope Inspect command"),
@@ -2069,7 +2071,7 @@ mod tests {
                     show_source_table,
                     show_sys_id,
                 } => {
-                    assert_eq!(search, Some("global".to_string()));
+                    assert_eq!(search.map(|v| v.to_string()), Some("global".to_string()));
                     assert_eq!(kind, vec![ScopeListKind::Plugin, ScopeListKind::StoreApp]);
                     assert!(!show_source_table);
                     assert!(!show_sys_id);
@@ -2099,7 +2101,7 @@ mod tests {
                     show_sys_id,
                     ..
                 } => {
-                    assert_eq!(search, Some("incident".to_string()));
+                    assert_eq!(search.map(|v| v.to_string()), Some("incident".to_string()));
                     assert!(show_source_table);
                     assert!(show_sys_id);
                 }
@@ -2138,7 +2140,7 @@ mod tests {
         match cli.command {
             Commands::Scope(args) => match args.command {
                 ScopeCommands::Inventory { scope } => {
-                    assert_eq!(scope, "x_my_app");
+                    assert_eq!(scope.as_str(), "x_my_app");
                 }
                 _ => panic!("Expected Scope Inventory command"),
             },
@@ -2169,8 +2171,8 @@ mod tests {
                     dry_run,
                     yes,
                 } => {
-                    assert_eq!(table, "sys_script_include");
-                    assert_eq!(sys_id, "abc123");
+                    assert_eq!(table.as_str(), "sys_script_include");
+                    assert_eq!(sys_id.as_str(), "abc123");
                     assert_eq!(target_scope, "x_target_app");
                     assert!(dry_run);
                     assert!(yes);
@@ -2205,7 +2207,7 @@ mod tests {
                     out_path,
                     ..
                 } => {
-                    assert_eq!(table, "incident");
+                    assert_eq!(table.as_str(), "incident");
                     assert_eq!(query, Some("active=true".to_string()));
                     assert_eq!(fields, Some("sys_id,number".to_string()));
                     assert_eq!(out_path, Some("incident.json".to_string()));

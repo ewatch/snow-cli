@@ -7,6 +7,7 @@ use crate::cli::args::{
     DataCommands, OutputFormat, ScopeArgs, ScopeCommands, ScopeDetailLevel, ScopeListKind, SnuArgs,
     SnuCommands, TableArgs, TableCommands,
 };
+use crate::models::identifiers::{EncodedQueryValue, SysId, TableName};
 
 const READ_ONLY_AFTER_HELP: &str = "First-time setup (standalone):\n  1) Create a profile\n     snow-cli-ro profile add default --instance https://dev123.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli-ro auth login --password '<password>'\n\n  3) Verify\n     snow-cli-ro auth status\n\nRead-only workflows:\n  1) List recent incidents\n     snow-cli-ro table list incident --query 'active=true' --limit 20\n\n  2) Fetch a record\n     snow-cli-ro table get incident <sys_id>\n\n  3) Inspect schema or app metadata\n     snow-cli-ro table schema incident --extended\n     snow-cli-ro scope inspect x_my_app\n\n  4) Call a read-oriented custom API\n     snow-cli-ro api get /api/x_myapp/status\n\nNotes:\n  - snow-cli-ro runs with a locked read-only policy for remote access.\n  - Local profile and credential management is allowed so it can be used standalone.\n  - Remote write commands and `auth token` (credential export) are blocked.\n  - Raw API access is limited to GET.\n  - GET is allowed by HTTP convention; use read-only ServiceNow credentials for stronger guarantees.";
 
@@ -161,7 +162,7 @@ pub enum ReadOnlyTableCommands {
     /// List records from a table (auto-paginated)
     List {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
-        table: String,
+        table: TableName,
 
         /// Encoded query string
         #[arg(long)]
@@ -192,10 +193,10 @@ pub enum ReadOnlyTableCommands {
     /// Get a single record by sys_id
     Get {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// Comma-separated list of fields to return
         #[arg(long)]
@@ -209,7 +210,7 @@ pub enum ReadOnlyTableCommands {
     /// Show table schema (columns, types, labels) from sys_dictionary
     Schema {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
-        table: String,
+        table: TableName,
 
         /// Show extended field metadata
         #[arg(long)]
@@ -223,7 +224,7 @@ pub enum ReadOnlyTableCommands {
     /// Count and aggregate records via the Aggregate API (Stats endpoint)
     Stats {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
-        table: String,
+        table: TableName,
 
         /// Encoded query string
         #[arg(long)]
@@ -266,7 +267,7 @@ pub enum ReadOnlyDataCommands {
     /// Export records from a single table
     Export {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
-        table: String,
+        table: TableName,
 
         /// Encoded query string
         #[arg(long)]
@@ -319,7 +320,7 @@ pub enum ReadOnlyScopeCommands {
     /// List scopes and classify them by origin
     List {
         /// Optional search term for partial name matches or exact scope names
-        search: Option<String>,
+        search: Option<EncodedQueryValue>,
 
         /// Restrict results to one or more scope kinds
         #[arg(long, value_enum)]
@@ -337,7 +338,7 @@ pub enum ReadOnlyScopeCommands {
     /// Inspect scope metadata and artifact counts
     Inspect {
         /// Scope name (e.g., x_my_app) or scope sys_id
-        scope: String,
+        scope: EncodedQueryValue,
 
         /// Detail level for output payload
         #[arg(long, value_enum, default_value = "basic")]
@@ -347,7 +348,7 @@ pub enum ReadOnlyScopeCommands {
     /// Export normalized scope artifacts for analysis
     Inventory {
         /// Scope name (e.g., x_my_app) or scope sys_id
-        scope: String,
+        scope: EncodedQueryValue,
     },
 }
 
@@ -362,16 +363,16 @@ pub enum ReadOnlyAttachmentCommands {
     /// List attachments for a record
     List {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
     },
 
     /// Download an attachment
     Download {
         /// Attachment sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// Output file path (defaults to original filename)
         #[arg(long = "out", short = 'o')]
@@ -894,7 +895,7 @@ mod tests {
     #[test]
     fn table_stats_maps_to_full_command() {
         let mapped = ReadOnlyTableCommands::Stats {
-            table: "incident".to_string(),
+            table: "incident".parse().unwrap(),
             query: Some("active=true".to_string()),
             group_by: Some("state".to_string()),
             avg: None,
@@ -911,7 +912,7 @@ mod tests {
                 group_by,
                 ..
             } => {
-                assert_eq!(table, "incident");
+                assert_eq!(table.as_str(), "incident");
                 assert_eq!(query, Some("active=true".to_string()));
                 assert_eq!(group_by, Some("state".to_string()));
             }
