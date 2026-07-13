@@ -21,6 +21,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Secret-field guard
+        # Fails if a new secret-named field is stored as a raw String instead of
+        # crate::models::secret::Secret. Pure shell, so it runs before the build
+        # for a fast fail.
+        run: ./scripts/check-secret-fields.sh
+
       - name: Install system dependencies
         # libdbus-1-dev is required to build libdbus-sys (pulled in transitively
         # via the secret-store/keyring path); it is not present on the runner by
