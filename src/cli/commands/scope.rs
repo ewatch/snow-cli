@@ -765,7 +765,7 @@ async fn collect_scope_data(
     let pagination = PaginationConfig::default();
 
     let scope_query = format!("scope={scope_input}^ORsys_id={scope_input}");
-    let sys_scope: TableName = "sys_scope".parse().expect("valid table name literal");
+    let sys_scope = TableName::from_static("sys_scope");
     let scopes = client
         .get_table_records(
             &sys_scope,
@@ -875,16 +875,14 @@ async fn collect_scope_data(
 async fn fetch_records_for_scope(
     client: &mut crate::client::SnowClient,
     scope_sys_id: &str,
-    table: &str,
+    table: &'static str,
     fields: &str,
     warnings: &mut Vec<String>,
 ) -> Vec<Record> {
     let query = format!("sys_scope={scope_sys_id}");
     let fields = format!("{fields},sys_scope");
     let pagination = PaginationConfig::default();
-    let table_name: TableName = table
-        .parse()
-        .expect("ARTIFACT_DEFINITIONS table names are valid literals");
+    let table_name = TableName::from_static(table);
     match client
         .get_table_records(&table_name, Some(&query), Some(&fields), &pagination, None)
         .await
@@ -946,7 +944,7 @@ async fn fetch_dictionary_records(
 
     let query = build_dictionary_query(table_names);
     let pagination = PaginationConfig::default().with_page_size(200);
-    let sys_dictionary: TableName = "sys_dictionary".parse().expect("valid table name literal");
+    let sys_dictionary = TableName::from_static("sys_dictionary");
 
     match client
         .get_table_records(
@@ -986,7 +984,7 @@ async fn fetch_choice_records(
 
     let query = format!("nameIN{}", table_names.join(","));
     let pagination = PaginationConfig::default().with_page_size(200);
-    let sys_choice: TableName = "sys_choice".parse().expect("valid table name literal");
+    let sys_choice = TableName::from_static("sys_choice");
 
     match client
         .get_table_records(
@@ -1015,7 +1013,7 @@ async fn fetch_other_metadata_rows(
 ) -> Vec<ScopeInventoryRow> {
     let query = format!("sys_scope={scope_sys_id}");
     let pagination = PaginationConfig::default();
-    let sys_metadata: TableName = "sys_metadata".parse().expect("valid table name literal");
+    let sys_metadata = TableName::from_static("sys_metadata");
     let metadata_records = match client
         .get_table_records(
             &sys_metadata,
@@ -1100,7 +1098,7 @@ async fn list_scopes(
     let scope_query = build_scope_search_query(search)?;
     let plugin_query = build_plugin_search_query(search)?;
 
-    let sys_scope: TableName = "sys_scope".parse().expect("valid table name literal");
+    let sys_scope = TableName::from_static("sys_scope");
     let scopes = client
         .get_table_records(
             &sys_scope,
@@ -1112,7 +1110,7 @@ async fn list_scopes(
         .await?;
 
     let mut warnings = Vec::new();
-    let sys_store_app: TableName = "sys_store_app".parse().expect("valid table name literal");
+    let sys_store_app = TableName::from_static("sys_store_app");
     let store_apps = query_optional_table(
         &mut client,
         &sys_store_app,
@@ -1121,7 +1119,7 @@ async fn list_scopes(
         &mut warnings,
     )
     .await;
-    let v_plugin: TableName = "v_plugin".parse().expect("valid table name literal");
+    let v_plugin = TableName::from_static("v_plugin");
     let plugins = query_optional_table(
         &mut client,
         &v_plugin,

@@ -95,6 +95,23 @@ impl TryFrom<String> for TableName {
     }
 }
 
+impl TableName {
+    /// Construct a `TableName` from a compile-time-constant name that is known
+    /// to be valid, such as an internal ServiceNow system table
+    /// (`sys_dictionary`, `sys_scope`, ...). This is for string literals baked
+    /// into the binary only: a bad literal is a programming error, so it panics
+    /// rather than returning a `Result` the caller cannot meaningfully handle.
+    /// The panic is unreachable in practice and is covered by tests.
+    #[expect(
+        clippy::expect_used,
+        reason = "input is a trusted compile-time constant; a typo is a bug that fails fast and is caught by tests"
+    )]
+    pub fn from_static(name: &'static str) -> Self {
+        name.parse()
+            .expect("compile-time-constant table name must be valid")
+    }
+}
+
 fn validate_path_segment_chars(value: &str) -> Result<(), IdentifierError> {
     if value.is_empty() {
         return Err(err("Value must not be empty."));
@@ -185,6 +202,21 @@ mod tests {
     fn table_names_reject_empty() {
         let err = "".parse::<TableName>().unwrap_err().to_string();
         assert!(err.contains("must not be empty"));
+    }
+
+    #[test]
+    fn from_static_accepts_valid_constant() {
+        assert_eq!(
+            TableName::from_static("sys_dictionary").as_str(),
+            "sys_dictionary"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "must be valid")]
+    fn from_static_panics_on_invalid_constant() {
+        // Guards the infallibility assumption: a typo in a literal fails fast.
+        let _ = TableName::from_static("bad/table");
     }
 
     #[test]

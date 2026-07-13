@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 #[tokio::main]
 async fn main() {
     if let Err(error) = snow_cli::run_read_only_cli().await {

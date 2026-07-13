@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Wiremock-backed integration tests for table CRUD commands.
 //!
 //! These tests exercise the full CLI binary through `assert_cmd`, with

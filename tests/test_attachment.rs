@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Wiremock-backed integration tests for `attachment` commands.
 
 mod common;

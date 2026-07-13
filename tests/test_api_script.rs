@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Wiremock-backed integration tests for `api` and `script` commands.
 //!
 //! Uses `assert_cmd` with wiremock `MockServer` and api_key auth

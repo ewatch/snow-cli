@@ -1,3 +1,7 @@
+// Tests legitimately use panicking helpers (unwrap/expect/panic) that are
+// denied in production by the workspace `[lints.clippy]` table.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 pub mod auth;
 pub mod cli;
 pub mod client;
