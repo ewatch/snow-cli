@@ -208,7 +208,13 @@ async fn test_import_set_load_fail_on_error_returns_failure() {
 
 #[test]
 fn test_import_set_transform_still_fails_gracefully() {
+    // Isolate from ambient config so the command reaches the "not implemented
+    // yet" branch instead of failing earlier at profile resolution in a clean
+    // environment (e.g. CI).
+    let (_dir, config_path) = api_key_config();
+
     cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
         .args(["import-set", "transform", "abc123"])
         .assert()
         .failure()
