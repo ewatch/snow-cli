@@ -827,7 +827,11 @@ async fn handle_import_now_sdk(
                     sso_login_url: None,
                 },
             );
-            credentials::store_credential(&imported.alias, "password", &imported.password)?;
+            credentials::store_credential(
+                &imported.alias,
+                "password",
+                imported.password.expose_secret(),
+            )?;
             imported_profiles.push(ImportedProfileSummary {
                 profile: imported.alias.clone(),
                 source_alias: imported.alias.clone(),

@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::keychain;
+use crate::models::secret::Secret;
 
 pub const NOW_SDK_SERVICE_NAME: &str = "ServiceNow";
 pub const NOW_SDK_ACCOUNT_NAME: &str = "now-sdk";
@@ -25,15 +26,15 @@ pub enum NowSdkCredentials {
         #[serde(rename = "instanceUrl")]
         instance_url: String,
         username: String,
-        password: String,
+        password: Secret<String>,
     },
     #[serde(rename = "oauth")]
     OAuth {
         #[serde(rename = "instanceUrl")]
         instance_url: String,
-        access_token: String,
+        access_token: Secret<String>,
         token_type: String,
-        refresh_token: String,
+        refresh_token: Secret<String>,
         expires_at: i64,
     },
 }
@@ -54,7 +55,7 @@ pub struct BasicProfile {
     pub alias: String,
     pub instance: String,
     pub username: String,
-    pub password: String,
+    pub password: Secret<String>,
     pub is_default: bool,
 }
 
@@ -178,7 +179,7 @@ pub fn upsert_basic_alias(
         creds: NowSdkCredentials::Basic {
             instance_url: instance.to_string(),
             username: username.to_string(),
-            password: password.to_string(),
+            password: Secret::new(password.to_string()),
         },
     };
     store.insert(alias.to_string(), entry);
@@ -202,7 +203,7 @@ mod tests {
             creds: NowSdkCredentials::Basic {
                 instance_url: "https://dev.service-now.com".to_string(),
                 username: "admin".to_string(),
-                password: "secret".to_string(),
+                password: Secret::new("secret".to_string()),
             },
         };
 
@@ -222,9 +223,9 @@ mod tests {
             alias: "prod".to_string(),
             creds: NowSdkCredentials::OAuth {
                 instance_url: "https://prod.service-now.com".to_string(),
-                access_token: "token".to_string(),
+                access_token: Secret::new("token".to_string()),
                 token_type: "Bearer".to_string(),
-                refresh_token: "refresh".to_string(),
+                refresh_token: Secret::new("refresh".to_string()),
                 expires_at: 12345,
             },
         };
@@ -233,6 +234,45 @@ mod tests {
         assert_eq!(summary.auth_type, "oauth");
         assert!(!summary.supported);
         assert_eq!(summary.username, None);
+    }
+
+    #[test]
+    fn debug_does_not_leak_credentials() {
+        let basic = NowSdkCredentials::Basic {
+            instance_url: "https://dev.service-now.com".to_string(),
+            username: "admin".to_string(),
+            password: Secret::new("hunter2-password".to_string()),
+        };
+        let oauth = NowSdkCredentials::OAuth {
+            instance_url: "https://prod.service-now.com".to_string(),
+            access_token: Secret::new("access-token-value".to_string()),
+            token_type: "Bearer".to_string(),
+            refresh_token: Secret::new("refresh-token-value".to_string()),
+            expires_at: 12345,
+        };
+
+        let basic_debug = format!("{basic:?}");
+        assert!(!basic_debug.contains("hunter2-password"));
+        assert!(basic_debug.contains("admin")); // non-secret fields still shown
+
+        let oauth_debug = format!("{oauth:?}");
+        assert!(!oauth_debug.contains("access-token-value"));
+        assert!(!oauth_debug.contains("refresh-token-value"));
+    }
+
+    #[test]
+    fn credentials_still_serialize_transparently() {
+        // Persisted keychain payloads must be unchanged by the Secret wrapper.
+        let basic = NowSdkCredentials::Basic {
+            instance_url: "https://dev.service-now.com".to_string(),
+            username: "admin".to_string(),
+            password: Secret::new("plaintext".to_string()),
+        };
+        let json = serde_json::to_string(&basic).unwrap();
+        assert!(json.contains(r#""password":"plaintext""#));
+
+        let parsed: NowSdkCredentials = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, basic);
     }
 
     #[test]
@@ -245,7 +285,7 @@ mod tests {
                 creds: NowSdkCredentials::Basic {
                     instance_url: "https://default.service-now.com".to_string(),
                     username: "admin".to_string(),
-                    password: "secret".to_string(),
+                    password: Secret::new("secret".to_string()),
                 },
             },
         )]);
@@ -273,7 +313,7 @@ mod tests {
                 creds: NowSdkCredentials::Basic {
                     instance_url: "https://default.service-now.com".to_string(),
                     username: "admin".to_string(),
-                    password: "secret".to_string(),
+                    password: Secret::new("secret".to_string()),
                 },
             },
         )]);
