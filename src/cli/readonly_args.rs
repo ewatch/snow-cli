@@ -955,7 +955,7 @@ mod tests {
             "table",
             "get",
             "incident",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--full",
         ]);
         match get.command {

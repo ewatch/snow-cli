@@ -419,7 +419,7 @@ mod tests {
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::Get {
                 table: "incident".parse().unwrap(),
-                sys_id: "abc".parse().unwrap(),
+                sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 fields: None,
                 full: false,
             },
@@ -628,7 +628,7 @@ mod tests {
         assert_denied(Commands::Table(TableArgs {
             command: TableCommands::Update {
                 table: "incident".parse().unwrap(),
-                sys_id: "abc".parse().unwrap(),
+                sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 data: Some("{}".to_string()),
             },
         }));

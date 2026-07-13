@@ -307,7 +307,7 @@ mod tests {
         let args = AttachmentArgs {
             command: AttachmentCommands::Upload {
                 table: "incident".parse().unwrap(),
-                sys_id: "abc123".parse().unwrap(),
+                sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 file: "/dev/null".to_string(),
             },
         };

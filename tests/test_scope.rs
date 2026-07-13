@@ -370,11 +370,11 @@ async fn test_scope_move_file_dry_run_returns_preview() {
         .and(header("Cookie", "JSESSIONID=move-file-session"))
         .and(header("X-UserToken", "move-file-gck"))
         .and(body_string_contains("sys_script_include"))
-        .and(body_string_contains("abc123"))
+        .and(body_string_contains("6816f79cc0a8016401c5a33be04be441"))
         .and(body_string_contains("x_target_app"))
         .and(body_string_contains("%22dryRun%22%3Atrue"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"<HTML><BODY>{"ok":true,"dry_run":true,"table":"sys_script_include","sys_id":"abc123","changed_fields":["sys_scope","sys_package","sys_name","sys_update_name","api_name","path"],"warnings":["Field script contains source scope identifiers and was not rewritten automatically."],"requires_confirmation":true,"before":{"sys_scope":"scope-old","sys_package":"scope-old","sys_name":"x_source_app_demo","sys_update_name":"x_source_app_demo","api_name":"x_source_app.Demo","path":"/x_source_app/demo"},"after":{"sys_scope":"scope-new","sys_package":"scope-new","sys_name":"x_target_app_demo","sys_update_name":"x_target_app_demo","api_name":"x_target_app.Demo","path":"/x_target_app/demo"},"source_scope":{"sys_id":"scope-old","scope":"x_source_app","name":"Source App","version":"1.0.0"},"target_scope":{"sys_id":"scope-new","scope":"x_target_app","name":"Target App","version":"1.0.0"}}</BODY></HTML>"#,
+            r#"<HTML><BODY>{"ok":true,"dry_run":true,"table":"sys_script_include","sys_id":"6816f79cc0a8016401c5a33be04be441","changed_fields":["sys_scope","sys_package","sys_name","sys_update_name","api_name","path"],"warnings":["Field script contains source scope identifiers and was not rewritten automatically."],"requires_confirmation":true,"before":{"sys_scope":"scope-old","sys_package":"scope-old","sys_name":"x_source_app_demo","sys_update_name":"x_source_app_demo","api_name":"x_source_app.Demo","path":"/x_source_app/demo"},"after":{"sys_scope":"scope-new","sys_package":"scope-new","sys_name":"x_target_app_demo","sys_update_name":"x_target_app_demo","api_name":"x_target_app.Demo","path":"/x_target_app/demo"},"source_scope":{"sys_id":"scope-old","scope":"x_source_app","name":"Source App","version":"1.0.0"},"target_scope":{"sys_id":"scope-new","scope":"x_target_app","name":"Target App","version":"1.0.0"}}</BODY></HTML>"#,
         ))
         .expect(1)
         .mount(&server)
@@ -391,7 +391,7 @@ async fn test_scope_move_file_dry_run_returns_preview() {
             "scope",
             "move-file",
             "sys_script_include",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--target-scope",
             "x_target_app",
             "--dry-run",
@@ -423,11 +423,11 @@ async fn test_scope_move_file_dry_run_parses_real_script_wrapper() {
         .and(header("Cookie", "JSESSIONID=wrapped-session"))
         .and(header("X-UserToken", "wrapped-gck"))
         .and(body_string_contains("sys_script_include"))
-        .and(body_string_contains("abc123"))
+        .and(body_string_contains("6816f79cc0a8016401c5a33be04be441"))
         .and(body_string_contains("x_target_app"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
             r#"<HTML><BODY>[0:00:00.013] Script completed in scope global: script
-*** Script: {"ok":true,"dry_run":true,"table":"sys_script_include","sys_id":"abc123","changed_fields":["sys_scope"],"warnings":[],"requires_confirmation":false,"before":{"sys_scope":"scope-old"},"after":{"sys_scope":"scope-new"},"source_scope":{"sys_id":"scope-old","scope":"x_source_app","name":"Source App","version":"1.0.0"},"target_scope":{"sys_id":"scope-new","scope":"x_target_app","name":"Target App","version":"1.0.0"}}
+*** Script: {"ok":true,"dry_run":true,"table":"sys_script_include","sys_id":"6816f79cc0a8016401c5a33be04be441","changed_fields":["sys_scope"],"warnings":[],"requires_confirmation":false,"before":{"sys_scope":"scope-old"},"after":{"sys_scope":"scope-new"},"source_scope":{"sys_id":"scope-old","scope":"x_source_app","name":"Source App","version":"1.0.0"},"target_scope":{"sys_id":"scope-new","scope":"x_target_app","name":"Target App","version":"1.0.0"}}
 </BODY></HTML>"#,
         ))
         .expect(1)
@@ -445,7 +445,7 @@ async fn test_scope_move_file_dry_run_parses_real_script_wrapper() {
             "scope",
             "move-file",
             "sys_script_include",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--target-scope",
             "x_target_app",
             "--dry-run",
@@ -479,10 +479,10 @@ async fn test_scope_move_file_requires_yes_for_risky_records() {
         .and(header("Cookie", "JSESSIONID=warn-session"))
         .and(header("X-UserToken", "warn-gck"))
         .and(body_string_contains("sys_script_include"))
-        .and(body_string_contains("abc123"))
+        .and(body_string_contains("6816f79cc0a8016401c5a33be04be441"))
         .and(body_string_contains("x_target_app"))
         .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"<HTML><BODY>{"ok":false,"dry_run":false,"table":"sys_script_include","sys_id":"abc123","warnings":["Field script contains source scope identifiers and was not rewritten automatically."],"requires_confirmation":true,"error":"Risky record contains additional scope-coupled values. Re-run with --yes after reviewing warnings."}</BODY></HTML>"#,
+            r#"<HTML><BODY>{"ok":false,"dry_run":false,"table":"sys_script_include","sys_id":"6816f79cc0a8016401c5a33be04be441","warnings":["Field script contains source scope identifiers and was not rewritten automatically."],"requires_confirmation":true,"error":"Risky record contains additional scope-coupled values. Re-run with --yes after reviewing warnings."}</BODY></HTML>"#,
         ))
         .expect(1)
         .mount(&server)
@@ -499,7 +499,7 @@ async fn test_scope_move_file_requires_yes_for_risky_records() {
             "scope",
             "move-file",
             "sys_script_include",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--target-scope",
             "x_target_app",
         ])
@@ -559,7 +559,7 @@ async fn test_scope_move_file_custom_scope_to_custom_scope_dry_run() {
         "ok": true,
         "dry_run": true,
         "table": "sys_script_include",
-        "sys_id": "file001",
+        "sys_id": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
         "changed_fields": ["sys_scope", "sys_package", "sys_name", "api_name"],
         "warnings": [],
         "requires_confirmation": false,
@@ -603,7 +603,7 @@ async fn test_scope_move_file_custom_scope_to_custom_scope_dry_run() {
             "scope",
             "move-file",
             "sys_script_include",
-            "file001",
+            "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
             "--target-scope",
             "x_target",
             "--dry-run",
@@ -627,7 +627,7 @@ async fn test_scope_move_file_global_to_named_scope_dry_run() {
         "ok": true,
         "dry_run": true,
         "table": "sys_script_include",
-        "sys_id": "global_file_001",
+        "sys_id": "0102030405060708090a0b0c0d0e0f10",
         "changed_fields": ["sys_scope", "sys_package"],
         "warnings": [
             "Field script contains source scope identifiers and was not rewritten automatically."
@@ -673,7 +673,7 @@ async fn test_scope_move_file_global_to_named_scope_dry_run() {
             "scope",
             "move-file",
             "sys_script_include",
-            "global_file_001",
+            "0102030405060708090a0b0c0d0e0f10",
             "--target-scope",
             "x_myapp",
             "--dry-run",
@@ -699,7 +699,7 @@ async fn test_scope_move_file_named_to_global_scope_dry_run() {
         "ok": true,
         "dry_run": true,
         "table": "sys_script_include",
-        "sys_id": "custom_file_001",
+        "sys_id": "1112131415161718191a1b1c1d1e1f20",
         "changed_fields": ["sys_scope", "sys_package", "sys_name", "api_name"],
         "warnings": [],
         "requires_confirmation": false,
@@ -743,7 +743,7 @@ async fn test_scope_move_file_named_to_global_scope_dry_run() {
             "scope",
             "move-file",
             "sys_script_include",
-            "custom_file_001",
+            "1112131415161718191a1b1c1d1e1f20",
             "--target-scope",
             "global",
             "--dry-run",
@@ -768,7 +768,7 @@ async fn test_scope_move_file_global_to_global_rejected() {
         "ok": false,
         "dry_run": true,
         "table": "sys_script_include",
-        "sys_id": "global_file_001",
+        "sys_id": "0102030405060708090a0b0c0d0e0f10",
         "warnings": [],
         "requires_confirmation": false,
         "error": "Source and target scope are the same."
@@ -788,7 +788,7 @@ async fn test_scope_move_file_global_to_global_rejected() {
             "scope",
             "move-file",
             "sys_script_include",
-            "global_file_001",
+            "0102030405060708090a0b0c0d0e0f10",
             "--target-scope",
             "global",
             "--dry-run",

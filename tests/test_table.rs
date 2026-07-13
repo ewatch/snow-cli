@@ -38,7 +38,7 @@ async fn test_table_list_json_output() {
         .and(header("Authorization", "Bearer test-api-token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
-                {"sys_id": "abc123", "number": "INC001", "short_description": "Test incident 1"},
+                {"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC001", "short_description": "Test incident 1"},
                 {"sys_id": "def456", "number": "INC002", "short_description": "Test incident 2"}
             ]
         })))
@@ -56,7 +56,7 @@ async fn test_table_list_json_output() {
         .success()
         .stdout(predicate::str::contains("INC001"))
         .stdout(predicate::str::contains("INC002"))
-        .stdout(predicate::str::contains("abc123"));
+        .stdout(predicate::str::contains("6816f79cc0a8016401c5a33be04be441"));
 }
 
 #[tokio::test]
@@ -67,7 +67,7 @@ async fn test_table_list_truncates_long_fields_unless_full() {
     Mock::given(method("GET"))
         .and(path("/api/now/table/incident"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": [{"sys_id": "abc123", "description": long_description}]
+            "result": [{"sys_id": "6816f79cc0a8016401c5a33be04be441", "description": long_description}]
         })))
         .expect(2)
         .mount(&server)
@@ -105,7 +105,7 @@ async fn test_table_list_csv_output() {
         .and(path("/api/now/table/incident"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
-                {"sys_id": "abc123", "number": "INC001"},
+                {"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC001"},
                 {"sys_id": "def456", "number": "INC002"}
             ]
         })))
@@ -143,7 +143,7 @@ async fn test_table_list_jsonl_output() {
         .and(path("/api/now/table/incident"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
-                {"sys_id": "abc123", "number": "INC001"},
+                {"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC001"},
                 {"sys_id": "def456", "number": "INC002"}
             ]
         })))
@@ -177,7 +177,7 @@ async fn test_table_list_jsonl_output() {
     assert_eq!(meta["meta"]["truncated"], false);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(lines[1]).unwrap(),
-        serde_json::json!({"number": "INC001", "sys_id": "abc123"})
+        serde_json::json!({"number": "INC001", "sys_id": "6816f79cc0a8016401c5a33be04be441"})
     );
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(lines[2]).unwrap(),
@@ -193,7 +193,7 @@ async fn test_table_list_toon_output() {
         .and(path("/api/now/table/incident"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
-                {"sys_id": "abc123", "number": "INC001"},
+                {"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC001"},
                 {"sys_id": "def456", "number": "INC002"}
             ]
         })))
@@ -236,7 +236,7 @@ async fn test_table_list_with_query_params() {
         .and(query_param("sysparm_offset", "0"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
-                {"sys_id": "abc123", "number": "INC001"}
+                {"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC001"}
             ]
         })))
         .expect(1)
@@ -310,7 +310,7 @@ async fn test_table_list_default_is_bounded_with_compact_fields() {
                 .insert_header("X-Total-Count", "4381")
                 .set_body_json(serde_json::json!({
                     "result": [
-                        {"sys_id": "abc123", "number": "INC001"}
+                        {"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC001"}
                     ]
                 })),
         )
@@ -353,7 +353,7 @@ async fn test_table_list_all_fetches_every_record() {
                 .insert_header("X-Total-Count", "2")
                 .set_body_json(serde_json::json!({
                     "result": [
-                        {"sys_id": "abc123", "number": "INC001"},
+                        {"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC001"},
                         {"sys_id": "def456", "number": "INC002"}
                     ]
                 })),
@@ -393,7 +393,7 @@ async fn test_table_list_fields_star_requests_all_fields() {
         .and(query_param_is_missing("sysparm_fields"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
-                {"sys_id": "abc123", "number": "INC001"}
+                {"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC001"}
             ]
         })))
         .expect(1)
@@ -456,9 +456,9 @@ async fn test_table_get_single_record() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/api/now/table/incident/abc123"))
+        .and(path("/api/now/table/incident/6816f79cc0a8016401c5a33be04be441"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"sys_id": "abc123", "number": "INC001", "state": "1"}
+            "result": {"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC001", "state": "1"}
         })))
         .expect(1)
         .mount(&server)
@@ -475,11 +475,11 @@ async fn test_table_get_single_record() {
             "table",
             "get",
             "incident",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("abc123"))
+        .stdout(predicate::str::contains("6816f79cc0a8016401c5a33be04be441"))
         .stdout(predicate::str::contains("INC001"));
 }
 
@@ -488,10 +488,12 @@ async fn test_table_get_with_fields() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/api/now/table/incident/abc123"))
+        .and(path(
+            "/api/now/table/incident/6816f79cc0a8016401c5a33be04be441",
+        ))
         .and(query_param("sysparm_fields", "sys_id,number"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"sys_id": "abc123", "number": "INC001"}
+            "result": {"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC001"}
         })))
         .expect(1)
         .mount(&server)
@@ -508,13 +510,13 @@ async fn test_table_get_with_fields() {
             "table",
             "get",
             "incident",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--fields",
             "sys_id,number",
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("abc123"))
+        .stdout(predicate::str::contains("6816f79cc0a8016401c5a33be04be441"))
         .stdout(predicate::str::contains("INC001"));
 }
 
@@ -524,9 +526,9 @@ async fn test_table_get_truncates_long_fields_unless_full() {
     let long_description = "x".repeat(2_001);
 
     Mock::given(method("GET"))
-        .and(path("/api/now/table/incident/abc123"))
+        .and(path("/api/now/table/incident/6816f79cc0a8016401c5a33be04be441"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {"sys_id": "abc123", "description": long_description}
+            "result": {"sys_id": "6816f79cc0a8016401c5a33be04be441", "description": long_description}
         })))
         .expect(2)
         .mount(&server)
@@ -544,7 +546,7 @@ async fn test_table_get_truncates_long_fields_unless_full() {
                 "table",
                 "get",
                 "incident",
-                "abc123",
+                "6816f79cc0a8016401c5a33be04be441",
             ]);
         if full {
             command.arg("--full");
@@ -640,12 +642,14 @@ async fn test_table_update_with_data_flag() {
     let server = MockServer::start().await;
 
     Mock::given(method("PATCH"))
-        .and(path("/api/now/table/incident/abc123"))
+        .and(path(
+            "/api/now/table/incident/6816f79cc0a8016401c5a33be04be441",
+        ))
         .and(header("Content-Type", "application/json"))
         .and(body_string_contains("state"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": {
-                "sys_id": "abc123",
+                "sys_id": "6816f79cc0a8016401c5a33be04be441",
                 "number": "INC001",
                 "state": "2"
             }
@@ -665,13 +669,13 @@ async fn test_table_update_with_data_flag() {
             "table",
             "update",
             "incident",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--data",
             r#"{"state":"2"}"#,
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("abc123"))
+        .stdout(predicate::str::contains("6816f79cc0a8016401c5a33be04be441"))
         .stdout(predicate::str::contains("\"state\""));
 }
 
@@ -682,7 +686,9 @@ async fn test_table_delete_with_yes() {
     let server = MockServer::start().await;
 
     Mock::given(method("DELETE"))
-        .and(path("/api/now/table/incident/abc123"))
+        .and(path(
+            "/api/now/table/incident/6816f79cc0a8016401c5a33be04be441",
+        ))
         .and(header("Authorization", "Bearer test-api-token"))
         .respond_with(ResponseTemplate::new(204))
         .expect(1)
@@ -700,7 +706,7 @@ async fn test_table_delete_with_yes() {
             "table",
             "delete",
             "incident",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--yes",
         ])
         .assert()

@@ -1741,7 +1741,13 @@ mod tests {
             _ => panic!("Expected Table command"),
         }
 
-        let cli = Cli::parse_from(["snow-cli", "table", "get", "incident", "abc"]);
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "table",
+            "get",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+        ]);
         match cli.command {
             Commands::Table(args) => match args.command {
                 TableCommands::Get { full, .. } => assert!(!full),
@@ -1919,7 +1925,7 @@ mod tests {
             "snu",
             "get-record",
             "incident",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--fields",
             "sys_id,number",
         ]);
@@ -1933,7 +1939,7 @@ mod tests {
                     ..
                 } => {
                     assert_eq!(table.as_str(), "incident");
-                    assert_eq!(sys_id.as_str(), "abc123");
+                    assert_eq!(sys_id.as_str(), "6816f79cc0a8016401c5a33be04be441");
                     assert_eq!(fields, Some("sys_id,number".to_string()));
                 }
                 _ => panic!("Expected Snu GetRecord command"),
@@ -1949,7 +1955,7 @@ mod tests {
             "snu",
             "update-record",
             "sp_widget",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--data",
             "{\"script\":\"gs.info('x')\",\"css\":\".a{}\"}",
         ]);
@@ -1966,7 +1972,7 @@ mod tests {
                     ..
                 } => {
                     assert_eq!(table, "sp_widget");
-                    assert_eq!(sys_id.as_str(), "abc123");
+                    assert_eq!(sys_id.as_str(), "6816f79cc0a8016401c5a33be04be441");
                     assert_eq!(
                         data.as_deref(),
                         Some("{\"script\":\"gs.info('x')\",\"css\":\".a{}\"}")
@@ -1988,7 +1994,7 @@ mod tests {
             "snu",
             "update-record",
             "incident",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--field",
             "state",
             "--content",
@@ -2020,7 +2026,7 @@ mod tests {
             "snu",
             "update-record",
             "incident",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--data",
             "{\"state\":\"2\"}",
             "--field",
@@ -2155,7 +2161,7 @@ mod tests {
             "scope",
             "move-file",
             "sys_script_include",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--target-scope",
             "x_target_app",
             "--dry-run",
@@ -2172,7 +2178,7 @@ mod tests {
                     yes,
                 } => {
                     assert_eq!(table.as_str(), "sys_script_include");
-                    assert_eq!(sys_id.as_str(), "abc123");
+                    assert_eq!(sys_id.as_str(), "6816f79cc0a8016401c5a33be04be441");
                     assert_eq!(target_scope, "x_target_app");
                     assert!(dry_run);
                     assert!(yes);

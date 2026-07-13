@@ -99,12 +99,23 @@ fn validate_path_segment_chars(value: &str) -> Result<(), IdentifierError> {
     if value.is_empty() {
         return Err(err("Value must not be empty."));
     }
+    // `.` and `..` are relative path segments that WHATWG URL normalization
+    // resolves during `Url::join`, which could walk the request to a different
+    // resource. Reject them outright.
+    if value == "." || value == ".." {
+        return Err(err(format!(
+            "Invalid value '{value}'. Relative path segments ('.' and '..') are not allowed."
+        )));
+    }
+    // Reject `\` as well as `/`: on http(s) URLs the WHATWG parser treats a
+    // backslash as a path separator, so a value like `..\other` would break
+    // out of its intended segment.
     if value
         .chars()
-        .any(|ch| ch == '/' || ch == '?' || ch == '#' || ch.is_control())
+        .any(|ch| ch == '/' || ch == '\\' || ch == '?' || ch == '#' || ch.is_control())
     {
         return Err(err(format!(
-            "Invalid value '{value}'. Values used in API paths must not contain '/', '?', '#', or control characters."
+            "Invalid value '{value}'. Values used in API paths must not contain '/', '\\', '?', '#', or control characters."
         )));
     }
     Ok(())
@@ -113,10 +124,16 @@ fn validate_path_segment_chars(value: &str) -> Result<(), IdentifierError> {
 impl TryFrom<String> for SysId {
     type Error = IdentifierError;
 
-    /// Validates ServiceNow path-segment rules: non-empty, no `/`, `?`, `#`,
-    /// or control characters. Used for `sys_id` values embedded in API paths.
+    /// Validates the ServiceNow `sys_id` format: exactly 32 hexadecimal
+    /// characters. This is stricter than generic path-segment safety, and
+    /// because hex digits exclude `/`, `\`, and `.`, it also guarantees a
+    /// `sys_id` cannot alter the request path it is embedded in.
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        validate_path_segment_chars(&value)?;
+        if value.len() != 32 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(err(format!(
+                "Invalid sys_id '{value}'. A sys_id must be exactly 32 hexadecimal characters."
+            )));
+        }
         Ok(Self(value))
     }
 }
@@ -124,7 +141,9 @@ impl TryFrom<String> for SysId {
 impl TryFrom<String> for PathSegment {
     type Error = IdentifierError;
 
-    /// Same rules as [`SysId`], for non-`sys_id` path components.
+    /// Validates generic path-segment safety (non-empty, no `/`, `\`, `?`,
+    /// `#`, control characters, or `.`/`..` segments) for non-`sys_id` path
+    /// components. Unlike [`SysId`] this does not require a hexadecimal format.
     fn try_from(value: String) -> Result<Self, Self::Error> {
         validate_path_segment_chars(&value)?;
         Ok(Self(value))
@@ -178,10 +197,10 @@ mod tests {
 
     #[test]
     fn path_segments_reject_path_breakout_characters() {
-        assert!("abc123".parse::<SysId>().is_ok());
-        assert!("abc/123".parse::<SysId>().is_err());
-        assert!("abc?x=1".parse::<SysId>().is_err());
-        assert!("abc#frag".parse::<SysId>().is_err());
+        assert!("abc123".parse::<PathSegment>().is_ok());
+        assert!("abc/123".parse::<PathSegment>().is_err());
+        assert!("abc?x=1".parse::<PathSegment>().is_err());
+        assert!("abc#frag".parse::<PathSegment>().is_err());
     }
 
     #[test]
@@ -190,8 +209,9 @@ mod tests {
     }
 
     #[test]
-    fn path_segment_shares_sys_id_rules() {
+    fn path_segment_allows_non_hex_but_rejects_slash() {
         assert!("abc123".parse::<PathSegment>().is_ok());
+        assert!("not-a-hex-id".parse::<PathSegment>().is_ok());
         assert!("abc/123".parse::<PathSegment>().is_err());
     }
 
@@ -222,5 +242,41 @@ mod tests {
         assert_eq!(table.as_str(), "incident");
         assert_eq!(table.to_string(), "incident");
         assert_eq!(AsRef::<str>::as_ref(&table), "incident");
+    }
+
+    // Regression: review finding #1 (path traversal). A backslash is
+    // normalized to `/` by WHATWG URL parsing on http(s), and `.`/`..`
+    // segments are resolved during `Url::join`, either of which can retarget
+    // a request (e.g. `table delete incident '..\sys_user\<id>'` hitting
+    // `sys_user`). These must be rejected before a value reaches a URL.
+    #[test]
+    fn path_segment_rejects_backslash_and_dot_segments() {
+        assert!(r"a\b".parse::<PathSegment>().is_err());
+        assert!(r"..\etc".parse::<PathSegment>().is_err());
+        assert!("..".parse::<PathSegment>().is_err());
+        assert!(".".parse::<PathSegment>().is_err());
+    }
+
+    // Regression: review finding #2. A `sys_id` is exactly 32 hexadecimal
+    // characters; enforcing that both gives the newtype a real invariant and
+    // (because hex excludes `/`, `\`, `.`) closes the finding #1 traversal for
+    // the `sys_id` path position used by `table get/update/delete`.
+    #[test]
+    fn sys_id_requires_32_char_hex() {
+        assert!("6816f79cc0a8016401c5a33be04be441".parse::<SysId>().is_ok());
+        assert!("6816F79CC0A8016401C5A33BE04BE441".parse::<SysId>().is_ok());
+        assert!("abc123".parse::<SysId>().is_err()); // too short
+        assert!("6816f79cc0a8016401c5a33be04be44".parse::<SysId>().is_err()); // 31
+        assert!(
+            "6816f79cc0a8016401c5a33be04be4411"
+                .parse::<SysId>()
+                .is_err()
+        ); // 33
+        assert!("g816f79cc0a8016401c5a33be04be441".parse::<SysId>().is_err()); // non-hex
+        assert!(
+            r"..\sys_user\aaaaaaaaaaaaaaaaaaaa"
+                .parse::<SysId>()
+                .is_err()
+        );
     }
 }
