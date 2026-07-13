@@ -35,12 +35,12 @@ pub enum CliError {
 }
 
 /// JSON-serializable error format written to stderr.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ErrorOutput {
     pub error: ErrorBody,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ErrorBody {
     pub code: String,
     pub message: String,

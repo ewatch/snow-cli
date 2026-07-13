@@ -38,6 +38,7 @@ impl TableListResult {
 }
 
 /// Configuration for pagination behavior.
+#[derive(Debug)]
 pub struct PaginationConfig {
     /// Maximum total records to return. None means fetch all.
     pub limit: Option<usize>,
