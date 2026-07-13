@@ -959,7 +959,8 @@ fn selected_now_sdk_aliases(
         return Ok(store.keys().cloned().collect());
     }
 
-    let alias = alias.expect("alias must be present when --all is false");
+    let alias =
+        alias.ok_or_else(|| anyhow::anyhow!("alias must be present when --all is false"))?;
     if !store.contains_key(alias) {
         anyhow::bail!("now-sdk alias '{}' not found.", alias);
     }
