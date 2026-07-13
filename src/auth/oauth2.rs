@@ -1,4 +1,3 @@
-use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -11,6 +10,7 @@ use tokio::sync::RwLock;
 use crate::auth::Authenticator;
 use crate::config::credentials;
 use crate::config::profile::{AuthMethod, OAuthGrantType, Profile};
+use crate::models::secret::Secret;
 
 pub const DEFAULT_OAUTH_REDIRECT_HOST: &str = "127.0.0.1";
 pub const DEFAULT_OAUTH_REDIRECT_PORT: u16 = 8080;
@@ -28,24 +28,14 @@ const OAUTH_EXPIRY_SKEW_SECS: u64 = 30;
 const STORED_TOKEN_FALLBACK_TTL_SECS: u64 = 3600;
 
 /// Cached OAuth2 token with expiry tracking.
-#[derive(Clone)]
+///
+/// Secret fields are wrapped in [`Secret`], so the derived `Debug` redacts them
+/// automatically — no hand-written impl to keep in sync.
+#[derive(Debug, Clone)]
 struct CachedToken {
-    access_token: String,
-    refresh_token: Option<String>,
+    access_token: Secret<String>,
+    refresh_token: Option<Secret<String>>,
     expires_at: Instant,
-}
-
-impl fmt::Debug for CachedToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CachedToken")
-            .field("access_token", &"<redacted>")
-            .field(
-                "refresh_token",
-                &self.refresh_token.as_ref().map(|_| "<redacted>"),
-            )
-            .field("expires_at", &self.expires_at)
-            .finish()
-    }
 }
 
 impl CachedToken {
@@ -55,32 +45,20 @@ impl CachedToken {
 }
 
 /// OAuth token persisted in the keychain for authorization-code profiles.
-#[derive(Clone, serde::Deserialize, serde::Serialize)]
+///
+/// `Secret`'s serialization is transparent, so persisted payloads are
+/// unchanged; only `Debug` is redacted (via the derive).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct StoredOAuthToken {
-    pub access_token: String,
+    pub access_token: Secret<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
+    pub refresh_token: Option<Secret<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-}
-
-impl fmt::Debug for StoredOAuthToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StoredOAuthToken")
-            .field("access_token", &"<redacted>")
-            .field(
-                "refresh_token",
-                &self.refresh_token.as_ref().map(|_| "<redacted>"),
-            )
-            .field("token_type", &self.token_type)
-            .field("expires_at", &self.expires_at)
-            .field("scope", &self.scope)
-            .finish()
-    }
 }
 
 impl StoredOAuthToken {
@@ -134,8 +112,8 @@ pub struct OAuth2Auth {
 /// ServiceNow OAuth token response.
 #[derive(Debug, serde::Deserialize)]
 struct TokenResponse {
-    access_token: String,
-    refresh_token: Option<String>,
+    access_token: Secret<String>,
+    refresh_token: Option<Secret<String>>,
     token_type: Option<String>,
     expires_in: u64,
     scope: Option<String>,
@@ -395,7 +373,11 @@ impl OAuth2Auth {
 
         let token = if !stored_token.is_expired() {
             stored_to_cached(&stored_token)
-        } else if let Some(refresh_token) = stored_token.refresh_token.as_deref() {
+        } else if let Some(refresh_token) = stored_token
+            .refresh_token
+            .as_ref()
+            .map(|s| s.expose_secret().as_str())
+        {
             tracing::debug!("Stored OAuth2 access token expired; refreshing with refresh_token");
             let refreshed = self.refresh_token(refresh_token).await?;
             self.store_oauth_token(&refreshed.stored)?;
@@ -406,7 +388,7 @@ impl OAuth2Auth {
             );
         };
 
-        let headers = bearer_headers(&token.access_token)?;
+        let headers = bearer_headers(token.access_token.expose_secret())?;
         let mut cached = self.cached_token.write().await;
         *cached = Some(token);
         Ok(headers)
@@ -417,7 +399,7 @@ impl OAuth2Auth {
         if let Some(ref token) = *cached
             && !token.is_expired()
         {
-            return Ok(Some(bearer_headers(&token.access_token)?));
+            return Ok(Some(bearer_headers(token.access_token.expose_secret())?));
         }
         Ok(None)
     }
@@ -693,7 +675,7 @@ impl Authenticator for OAuth2Auth {
 
         // Token missing or expired — fetch a new one
         let token = self.fetch_token().await?;
-        let headers = bearer_headers(&token.access_token)?;
+        let headers = bearer_headers(token.access_token.expose_secret())?;
 
         // Cache the token
         {
@@ -723,7 +705,7 @@ impl Authenticator for OAuth2Auth {
 
         let new_token = if let Some(ref rt) = refresh_tok {
             tracing::debug!("Attempting OAuth2 token refresh");
-            match self.refresh_token(rt).await {
+            match self.refresh_token(rt.expose_secret()).await {
                 Ok(token_set) => {
                     if self.grant_type == OAuthGrantType::AuthorizationCode {
                         self.store_oauth_token(&token_set.stored)?;
@@ -767,8 +749,8 @@ mod tests {
     #[test]
     fn stored_oauth_token_debug_redacts_secret_values() {
         let token = StoredOAuthToken {
-            access_token: "access-secret-value".to_string(),
-            refresh_token: Some("refresh-secret-value".to_string()),
+            access_token: Secret::new("access-secret-value".to_string()),
+            refresh_token: Some(Secret::new("refresh-secret-value".to_string())),
             token_type: Some("Bearer".to_string()),
             expires_at: Some(1_725_000_000),
             scope: Some("useraccount".to_string()),
@@ -786,8 +768,8 @@ mod tests {
     #[test]
     fn cached_oauth_token_debug_redacts_secret_values() {
         let token = CachedToken {
-            access_token: "cached-access-secret".to_string(),
-            refresh_token: Some("cached-refresh-secret".to_string()),
+            access_token: Secret::new("cached-access-secret".to_string()),
+            refresh_token: Some(Secret::new("cached-refresh-secret".to_string())),
             expires_at: Instant::now(),
         };
 
@@ -888,7 +870,7 @@ mod tests {
     #[test]
     fn test_stored_oauth_token_expiry_buffer() {
         let valid = StoredOAuthToken {
-            access_token: "access".to_string(),
+            access_token: Secret::new("access".to_string()),
             refresh_token: None,
             token_type: Some("Bearer".to_string()),
             expires_at: Some(now_epoch_secs() + 3600),
@@ -1110,14 +1092,14 @@ mod tests {
     #[test]
     fn test_cached_token_expiry() {
         let token = CachedToken {
-            access_token: "test".to_string(),
+            access_token: Secret::new("test".to_string()),
             refresh_token: None,
             expires_at: Instant::now() + Duration::from_secs(1800),
         };
         assert!(!token.is_expired());
 
         let expired_token = CachedToken {
-            access_token: "test".to_string(),
+            access_token: Secret::new("test".to_string()),
             refresh_token: None,
             expires_at: Instant::now() - Duration::from_secs(1),
         };
@@ -1223,8 +1205,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(token.access_token, "auth_code_access");
-        assert_eq!(token.refresh_token, Some("refresh_auth_code".to_string()));
+        assert_eq!(token.access_token.expose_secret(), "auth_code_access");
+        assert_eq!(
+            token.refresh_token,
+            Some(Secret::new("refresh_auth_code".to_string()))
+        );
         assert!(!token.is_expired());
     }
 
@@ -1274,10 +1259,13 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(token.access_token, "auth_code_access_public");
+        assert_eq!(
+            token.access_token.expose_secret(),
+            "auth_code_access_public"
+        );
         assert_eq!(
             token.refresh_token,
-            Some("refresh_auth_code_public".to_string())
+            Some(Secret::new("refresh_auth_code_public".to_string()))
         );
         assert!(!token.is_expired());
     }
@@ -1289,8 +1277,8 @@ mod tests {
             "test_client_id".to_string(),
             Some("test_client_secret".to_string()),
             StoredOAuthToken {
-                access_token: "stored_access".to_string(),
-                refresh_token: Some("stored_refresh".to_string()),
+                access_token: Secret::new("stored_access".to_string()),
+                refresh_token: Some(Secret::new("stored_refresh".to_string())),
                 token_type: Some("Bearer".to_string()),
                 expires_at: Some(now_epoch_secs() + 3600),
                 scope: Some("useraccount".to_string()),
@@ -1325,8 +1313,8 @@ mod tests {
             "test_client_id".to_string(),
             Some("test_client_secret".to_string()),
             StoredOAuthToken {
-                access_token: "expired_access".to_string(),
-                refresh_token: Some("stored_refresh".to_string()),
+                access_token: Secret::new("expired_access".to_string()),
+                refresh_token: Some(Secret::new("stored_refresh".to_string())),
                 token_type: Some("Bearer".to_string()),
                 expires_at: Some(now_epoch_secs().saturating_sub(60)),
                 scope: Some("useraccount".to_string()),
@@ -1363,8 +1351,8 @@ mod tests {
             "test_client_id".to_string(),
             Option::<String>::None,
             StoredOAuthToken {
-                access_token: "expired_access".to_string(),
-                refresh_token: Some("stored_refresh".to_string()),
+                access_token: Secret::new("expired_access".to_string()),
+                refresh_token: Some(Secret::new("stored_refresh".to_string())),
                 token_type: Some("Bearer".to_string()),
                 expires_at: Some(now_epoch_secs().saturating_sub(60)),
                 scope: Some("useraccount".to_string()),
