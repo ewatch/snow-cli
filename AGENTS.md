@@ -98,6 +98,13 @@ cargo fmt -- --check    # Format check
 
 ## Code Conventions
 
+- **Rust guidelines:** Follow the Microsoft Pragmatic Rust
+  [Universal Guidelines](https://microsoft.github.io/rust-guidelines/guidelines/universal/index.html)
+  when making changes. Prefer adopting these practices early in each slice:
+  keep lint overrides narrow and justified with `#[expect(..., reason = "...")]`,
+  keep sensitive values out of `Debug` and logs, document production constants
+  whose values encode external behavior, use structured `tracing` fields for
+  operational events, and keep module interfaces small and purposeful.
 - **Error handling:** Use `anyhow::Result` for functions that can fail.
   Use `thiserror` for defining error enum variants in `src/error.rs`.
 - **Async:** All I/O operations are async (tokio). Command handlers are

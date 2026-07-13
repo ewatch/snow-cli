@@ -1,6 +1,7 @@
 pub mod error;
 pub mod pagination;
 
+use std::fmt;
 use std::time::Duration;
 
 use http::HeaderMap;
@@ -50,7 +51,10 @@ pub fn build_client_with_timeout(
     )
 }
 
-/// Default request timeout in seconds.
+/// Default request timeout in seconds. ServiceNow table, script, and attachment
+/// endpoints can legitimately spend tens of seconds on ACL evaluation, query
+/// planning, or script execution; keep this high enough for those workflows
+/// while still bounding hung network calls for automation.
 const DEFAULT_TIMEOUT_SECS: u64 = 90;
 
 /// Maximum number of retry attempts on 401 (after token refresh).
@@ -491,11 +495,21 @@ pub(crate) fn extract_g_ck_from_body(body: &str) -> Option<String> {
     None
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct FormSession {
     pub jsessionid: String,
     pub g_ck: String,
     pub cookie_header: String,
+}
+
+impl fmt::Debug for FormSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FormSession")
+            .field("jsessionid", &"<redacted>")
+            .field("g_ck", &"<redacted>")
+            .field("cookie_header", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -521,7 +535,20 @@ pub struct SnowClient {
     policy: ExecutionPolicy,
 }
 
+impl fmt::Debug for SnowClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SnowClient")
+            .field("base_url", &self.base_url)
+            .field("auth_type", &self.authenticator.auth_type())
+            .field("has_jsessionid", &self.session.jsessionid.is_some())
+            .field("has_form_session", &self.session.form_session.is_some())
+            .field("policy", &self.policy)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Configuration for building a SnowClient.
+#[derive(Debug)]
 pub struct ClientConfig {
     /// Request timeout in seconds.
     pub timeout_secs: u64,
@@ -1046,7 +1073,7 @@ impl SnowClient {
                 }
                 tracing::debug!(
                     url = %url,
-                    jsessionid = %jsessionid,
+                    has_jsessionid = true,
                     "Captured JSESSIONID from response"
                 );
             }
@@ -1274,6 +1301,23 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn form_session_debug_redacts_secret_values() {
+        let session = FormSession {
+            jsessionid: "jsession-secret-value".to_string(),
+            g_ck: "gck-secret-value".to_string(),
+            cookie_header: "JSESSIONID=jsession-secret-value; glide_user_route=route-secret"
+                .to_string(),
+        };
+
+        let debug = format!("{session:?}");
+
+        assert!(!debug.contains("jsession-secret-value"));
+        assert!(!debug.contains("gck-secret-value"));
+        assert!(!debug.contains("route-secret"));
+        assert!(debug.contains("<redacted>"));
+    }
 
     /// A mock authenticator for testing.
     /// Injects a fixed Authorization header.
