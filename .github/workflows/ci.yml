@@ -21,6 +21,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Install system dependencies
+        # libdbus-1-dev is required to build libdbus-sys (pulled in transitively
+        # via the secret-store/keyring path); it is not present on the runner by
+        # default and its absence fails the build before fmt/clippy/test run.
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
