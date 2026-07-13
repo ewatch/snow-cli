@@ -39,11 +39,6 @@ impl<T> Secret<T> {
     pub fn expose_secret(&self) -> &T {
         &self.0
     }
-
-    /// Consume the wrapper and return the owned secret.
-    pub fn into_inner(self) -> T {
-        self.0
-    }
 }
 
 impl<T> fmt::Debug for Secret<T> {
@@ -129,7 +124,6 @@ mod tests {
     fn expose_secret_returns_the_real_value() {
         let secret = Secret::new("real".to_string());
         assert_eq!(secret.expose_secret(), "real");
-        assert_eq!(secret.into_inner(), "real");
     }
 
     #[test]
