@@ -1655,7 +1655,22 @@ auth_method = "api_key"
 
 #[test]
 fn test_import_set_transform_fails_gracefully_not_panic() {
+    // Use an isolated config with a default profile so the command reaches the
+    // "not implemented yet" branch deterministically. Without this, a clean
+    // environment (e.g. CI) fails earlier at profile resolution with a
+    // different error, and the assertions below never match.
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "default"
+
+[profiles.default]
+instance = "https://test.service-now.com"
+auth_method = "api_key"
+"#,
+    );
+
     cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
         .args(["import-set", "transform", "abc123"])
         .assert()
         .failure()
