@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 //! Wiremock-backed integration tests for the codesearch command.
 //!
 //! Tests exercise the full CLI binary against a wiremock MockServer.

@@ -377,7 +377,7 @@ async fn handle_schema(
         .with_page_size(500)
         .with_limit(None);
 
-    let sys_dictionary: TableName = "sys_dictionary".parse().expect("valid table name literal");
+    let sys_dictionary = TableName::from_static("sys_dictionary");
     let records = client
         .get_table_records(
             &sys_dictionary,

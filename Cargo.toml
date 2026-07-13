@@ -88,3 +88,18 @@ resolver = "3"
 
 [lints.rust]
 unused = { level = "warn", priority = -1 }
+
+[lints.clippy]
+# Placeholders and debug leftovers must never reach main. These have zero
+# occurrences today; denying them keeps it that way.
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+# Panicking constructs are banned in production code. Production currently has
+# zero `unwrap`/`panic` and only justified `expect` (see TableName::from_static).
+# Tests legitimately use these, so each test crate re-allows them at its root
+# (`#![cfg_attr(test, allow(...))]` in lib/bin roots, `#![allow(...)]` in
+# integration tests).
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"

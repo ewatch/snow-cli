@@ -1182,7 +1182,7 @@ async fn fetch_table_schema(
         .with_page_size(500)
         .with_limit(None);
 
-    let sys_dictionary: TableName = "sys_dictionary".parse().expect("valid table name literal");
+    let sys_dictionary = TableName::from_static("sys_dictionary");
     let records = client
         .get_table_records(
             &sys_dictionary,
@@ -1282,7 +1282,7 @@ async fn fetch_table_definition(
     query: &str,
 ) -> anyhow::Result<Option<TableDefinition>> {
     let pagination = PaginationConfig::default().with_limit(Some(1));
-    let sys_db_object: TableName = "sys_db_object".parse().expect("valid table name literal");
+    let sys_db_object = TableName::from_static("sys_db_object");
     let records = client
         .get_table_records(
             &sys_db_object,
