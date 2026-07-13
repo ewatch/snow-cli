@@ -1,9 +1,7 @@
 use std::io::IsTerminal;
 
 use crate::cli::args::{ImportSetArgs, OutputFormat};
-use crate::cli::validation::{
-    DEFAULT_MAX_STDIN_BYTES, read_to_string_limited, validate_path_segment, validate_table_name,
-};
+use crate::cli::io::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 
 #[derive(Debug, serde::Deserialize)]
 struct ImportSetLoadResponse {
@@ -62,7 +60,6 @@ pub async fn handle(
             fail_on_error,
         } => {
             tracing::info!("Loading data into staging table: {}", table);
-            validate_table_name(&table)?;
 
             let body = read_data(data)?;
             let _: serde_json::Value = serde_json::from_str(&body)
@@ -94,7 +91,6 @@ pub async fn handle(
         }
         crate::cli::args::ImportSetCommands::Transform { sys_id } => {
             tracing::info!("Transforming import set: {}", sys_id);
-            validate_path_segment("import set sys_id", &sys_id)?;
             anyhow::bail!(
                 "`import-set transform` is not implemented yet for import set '{}'. Live validation on the `sprint` instance showed that POST /api/now/import/{{table}} already ran the transform automatically, and a separate supported REST transform trigger has not been wired into the CLI yet.",
                 sys_id

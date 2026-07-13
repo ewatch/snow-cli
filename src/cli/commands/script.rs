@@ -1,8 +1,8 @@
 use std::io::IsTerminal;
 
 use crate::cli::args::{OutputFormat, ScriptArgs, ScriptCommands};
+use crate::cli::io::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::cli::output;
-use crate::cli::validation::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use http::HeaderMap;
 
 const FORM_SCRIPT_ENDPOINT: &str = "/sys.scripts.do";

@@ -407,7 +407,7 @@ mod tests {
         }));
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::List {
-                table: "incident".to_string(),
+                table: "incident".parse().unwrap(),
                 query: None,
                 fields: None,
                 limit: Some(1),
@@ -418,22 +418,22 @@ mod tests {
         }));
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::Get {
-                table: "incident".to_string(),
-                sys_id: "abc".to_string(),
+                table: "incident".parse().unwrap(),
+                sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 fields: None,
                 full: false,
             },
         }));
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::Schema {
-                table: "incident".to_string(),
+                table: "incident".parse().unwrap(),
                 extended: false,
                 include_inherited: false,
             },
         }));
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::Stats {
-                table: "incident".to_string(),
+                table: "incident".parse().unwrap(),
                 query: None,
                 group_by: Some("state".to_string()),
                 avg: None,
@@ -627,8 +627,8 @@ mod tests {
         }));
         assert_denied(Commands::Table(TableArgs {
             command: TableCommands::Update {
-                table: "incident".to_string(),
-                sys_id: "abc".to_string(),
+                table: "incident".parse().unwrap(),
+                sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 data: Some("{}".to_string()),
             },
         }));

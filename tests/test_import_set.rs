@@ -215,7 +215,11 @@ fn test_import_set_transform_still_fails_gracefully() {
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["import-set", "transform", "abc123"])
+        .args([
+            "import-set",
+            "transform",
+            "6816f79cc0a8016401c5a33be04be441",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("not implemented yet"))

@@ -1176,7 +1176,7 @@ impl SnowClient {
     /// until all records are fetched or the configured limit is reached.
     pub async fn get_table_records(
         &mut self,
-        table: &str,
+        table: &crate::models::identifiers::TableName,
         query: Option<&str>,
         fields: Option<&str>,
         pagination: &pagination::PaginationConfig,
@@ -1195,13 +1195,12 @@ impl SnowClient {
     /// a truncated subset of all matching rows.
     pub async fn get_table_records_with_meta(
         &mut self,
-        table: &str,
+        table: &crate::models::identifiers::TableName,
         query: Option<&str>,
         fields: Option<&str>,
         pagination: &pagination::PaginationConfig,
         order_by: Option<&str>,
     ) -> anyhow::Result<pagination::TableListResult> {
-        crate::cli::validation::validate_table_name(table)?;
         let path = format!("/api/now/table/{table}");
         let mut all_records = Vec::new();
         let mut offset: usize = 0;
@@ -1251,7 +1250,7 @@ impl SnowClient {
 
             let count = page.result.len();
             tracing::debug!(
-                table = table,
+                table = %table,
                 offset = offset,
                 fetched = count,
                 total_so_far = all_records.len() + count,
@@ -1373,6 +1372,10 @@ mod tests {
             ClientConfig::default(),
         )
         .unwrap()
+    }
+
+    fn incident_table() -> crate::models::identifiers::TableName {
+        "incident".parse().unwrap()
     }
 
     /// The read-only policy travels with the client: a client built with a
@@ -2039,7 +2042,7 @@ mod tests {
         let mut client = test_client(&server.uri(), MockAuth::new("token"));
         let pagination = pagination::PaginationConfig::default();
         let records = client
-            .get_table_records("incident", None, None, &pagination, None)
+            .get_table_records(&incident_table(), None, None, &pagination, None)
             .await
             .unwrap();
 
@@ -2066,7 +2069,7 @@ mod tests {
         let pagination = pagination::PaginationConfig::default();
         let records = client
             .get_table_records(
-                "incident",
+                &incident_table(),
                 Some("active=true"),
                 Some("sys_id,number"),
                 &pagination,
@@ -2112,7 +2115,7 @@ mod tests {
         let mut client = test_client(&server.uri(), MockAuth::new("token"));
         let pagination = pagination::PaginationConfig::default().with_page_size(2);
         let records = client
-            .get_table_records("incident", None, None, &pagination, None)
+            .get_table_records(&incident_table(), None, None, &pagination, None)
             .await
             .unwrap();
 
@@ -2145,7 +2148,7 @@ mod tests {
             .with_limit(Some(2));
 
         let records = client
-            .get_table_records("incident", None, None, &pagination, None)
+            .get_table_records(&incident_table(), None, None, &pagination, None)
             .await
             .unwrap();
 
@@ -2169,7 +2172,7 @@ mod tests {
         let mut client = test_client(&server.uri(), MockAuth::new("token"));
         let pagination = pagination::PaginationConfig::default();
         let records = client
-            .get_table_records("incident", None, None, &pagination, None)
+            .get_table_records(&incident_table(), None, None, &pagination, None)
             .await
             .unwrap();
 
@@ -2198,7 +2201,7 @@ mod tests {
         let mut client = test_client(&server.uri(), MockAuth::new("token"));
         let pagination = pagination::PaginationConfig::default();
         let result = client
-            .get_table_records_with_meta("incident", None, None, &pagination, None)
+            .get_table_records_with_meta(&incident_table(), None, None, &pagination, None)
             .await
             .unwrap();
 
@@ -2233,7 +2236,7 @@ mod tests {
         let mut client = test_client(&server.uri(), MockAuth::new("token"));
         let pagination = pagination::PaginationConfig::default().with_limit(Some(2));
         let result = client
-            .get_table_records_with_meta("incident", None, None, &pagination, None)
+            .get_table_records_with_meta(&incident_table(), None, None, &pagination, None)
             .await
             .unwrap();
 
@@ -2264,7 +2267,7 @@ mod tests {
         let mut client = test_client(&server.uri(), MockAuth::new("token"));
         let pagination = pagination::PaginationConfig::default().with_limit(Some(2));
         let result = client
-            .get_table_records_with_meta("incident", None, None, &pagination, None)
+            .get_table_records_with_meta(&incident_table(), None, None, &pagination, None)
             .await
             .unwrap();
 
@@ -2293,7 +2296,7 @@ mod tests {
         let mut client = test_client(&server.uri(), MockAuth::new("token"));
         let pagination = pagination::PaginationConfig::default().with_limit(Some(2));
         let result = client
-            .get_table_records_with_meta("incident", None, None, &pagination, None)
+            .get_table_records_with_meta(&incident_table(), None, None, &pagination, None)
             .await
             .unwrap();
 
@@ -2321,7 +2324,7 @@ mod tests {
         let mut client = test_client(&server.uri(), MockAuth::new("token"));
         let pagination = pagination::PaginationConfig::default();
         let result = client
-            .get_table_records_with_meta("incident", None, None, &pagination, None)
+            .get_table_records_with_meta(&incident_table(), None, None, &pagination, None)
             .await
             .unwrap();
 
@@ -2347,7 +2350,7 @@ mod tests {
         let mut client = test_client(&server.uri(), MockAuth::new("token"));
         let pagination = pagination::PaginationConfig::default().with_limit(Some(20));
         let result = client
-            .get_table_records_with_meta("incident", None, None, &pagination, None)
+            .get_table_records_with_meta(&incident_table(), None, None, &pagination, None)
             .await
             .unwrap();
 
@@ -2401,7 +2404,7 @@ mod tests {
             .with_page_size(2)
             .with_limit(Some(3));
         let result = client
-            .get_table_records_with_meta("incident", None, None, &pagination, None)
+            .get_table_records_with_meta(&incident_table(), None, None, &pagination, None)
             .await
             .unwrap();
 

@@ -27,7 +27,7 @@ async fn test_attachment_list() {
         .and(path("/api/now/attachment"))
         .and(query_param(
             "sysparm_query",
-            "table_name=incident^table_sys_id=abc123",
+            "table_name=incident^table_sys_id=6816f79cc0a8016401c5a33be04be441",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
@@ -37,7 +37,7 @@ async fn test_attachment_list() {
                     "content_type": "text/plain",
                     "size_bytes": "42",
                     "table_name": "incident",
-                    "table_sys_id": "abc123",
+                    "table_sys_id": "6816f79cc0a8016401c5a33be04be441",
                     "download_link": "/api/now/attachment/att1/file"
                 }
             ]
@@ -57,7 +57,7 @@ async fn test_attachment_list() {
             "attachment",
             "list",
             "incident",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
         ])
         .assert()
         .success()
@@ -69,16 +69,16 @@ async fn test_attachment_download_to_explicit_path() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/api/now/attachment/att42"))
+        .and(path("/api/now/attachment/615ea769c0a80166001cf5f2367302f5"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": {
-                "sys_id": "att42",
+                "sys_id": "615ea769c0a80166001cf5f2367302f5",
                 "file_name": "from_server.txt",
-                "download_link": "/api/now/attachment/att42/file",
+                "download_link": "/api/now/attachment/615ea769c0a80166001cf5f2367302f5/file",
                 "content_type": "text/plain",
                 "size_bytes": "12",
                 "table_name": "incident",
-                "table_sys_id": "abc123"
+                "table_sys_id": "6816f79cc0a8016401c5a33be04be441"
             }
         })))
         .expect(1)
@@ -86,7 +86,9 @@ async fn test_attachment_download_to_explicit_path() {
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/api/now/attachment/att42/file"))
+        .and(path(
+            "/api/now/attachment/615ea769c0a80166001cf5f2367302f5/file",
+        ))
         .and(header("Authorization", "Bearer test-api-token"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello world\n".to_vec()))
         .expect(1)
@@ -105,7 +107,7 @@ async fn test_attachment_download_to_explicit_path() {
             &server.uri(),
             "attachment",
             "download",
-            "att42",
+            "615ea769c0a80166001cf5f2367302f5",
             "--out",
             &out_path.to_string_lossy(),
         ])
@@ -124,7 +126,10 @@ async fn test_attachment_upload() {
     Mock::given(method("POST"))
         .and(path("/api/now/attachment/upload"))
         .and(query_param("table_name", "incident"))
-        .and(query_param("table_sys_id", "abc123"))
+        .and(query_param(
+            "table_sys_id",
+            "6816f79cc0a8016401c5a33be04be441",
+        ))
         .and(query_param("file_name", "upload.txt"))
         .and(header("Authorization", "Bearer test-api-token"))
         .and(header_regex(
@@ -134,7 +139,7 @@ async fn test_attachment_upload() {
         .and(body_string_contains("name=\"table_name\""))
         .and(body_string_contains("incident"))
         .and(body_string_contains("name=\"table_sys_id\""))
-        .and(body_string_contains("abc123"))
+        .and(body_string_contains("6816f79cc0a8016401c5a33be04be441"))
         .and(body_string_contains("name=\"file_name\""))
         .and(body_string_contains("name=\"file\""))
         .and(body_string_contains("filename=\"upload.txt\""))
@@ -146,7 +151,7 @@ async fn test_attachment_upload() {
                 "content_type": "application/octet-stream",
                 "size_bytes": "11",
                 "table_name": "incident",
-                "table_sys_id": "abc123",
+                "table_sys_id": "6816f79cc0a8016401c5a33be04be441",
                 "download_link": "/api/now/attachment/newatt/file"
             }
         })))
@@ -169,7 +174,7 @@ async fn test_attachment_upload() {
             "attachment",
             "upload",
             "incident",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--file",
             &upload_path.to_string_lossy(),
         ])

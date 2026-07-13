@@ -1,12 +1,11 @@
 use std::io::IsTerminal;
 
 use crate::cli::args::{OutputFormat, TableArgs, TableCommands};
+use crate::cli::io::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::cli::output;
 use crate::cli::truncation;
-use crate::cli::validation::{
-    DEFAULT_MAX_STDIN_BYTES, read_to_string_limited, validate_path_segment, validate_table_name,
-};
 use crate::client::pagination::PaginationConfig;
+use crate::models::identifiers::TableName;
 use crate::models::record::SingleRecordResponse;
 
 pub async fn handle(
@@ -27,14 +26,13 @@ pub async fn handle(
             full,
         } => {
             tracing::info!("Listing records from table: {}", table);
-            validate_table_name(&table)?;
 
             let effective_limit = if all {
                 None
             } else {
                 Some(limit.unwrap_or(DEFAULT_LIST_LIMIT))
             };
-            let effective_fields = resolve_list_fields(&table, fields.as_deref());
+            let effective_fields = resolve_list_fields(table.as_str(), fields.as_deref());
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -68,8 +66,6 @@ pub async fn handle(
             full,
         } => {
             tracing::info!("Getting record {} from table: {}", sys_id, table);
-            validate_table_name(&table)?;
-            validate_path_segment("sys_id", &sys_id)?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -99,7 +95,6 @@ pub async fn handle(
 
         TableCommands::Create { table, data } => {
             tracing::info!("Creating record in table: {}", table);
-            validate_table_name(&table)?;
 
             let body = read_data(data)?;
             // Validate that the body is valid JSON
@@ -122,8 +117,6 @@ pub async fn handle(
             data,
         } => {
             tracing::info!("Updating record {} in table: {}", sys_id, table);
-            validate_table_name(&table)?;
-            validate_path_segment("sys_id", &sys_id)?;
 
             let body = read_data(data)?;
             // Validate that the body is valid JSON
@@ -142,8 +135,6 @@ pub async fn handle(
 
         TableCommands::Delete { table, sys_id, yes } => {
             tracing::info!("Deleting record {} from table: {}", sys_id, table);
-            validate_table_name(&table)?;
-            validate_path_segment("sys_id", &sys_id)?;
 
             if !yes {
                 let stdin = std::io::stdin();
@@ -201,7 +192,6 @@ pub async fn handle(
             having,
         } => {
             tracing::info!("Fetching aggregate stats for table: {}", table);
-            validate_table_name(&table)?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -360,12 +350,11 @@ async fn handle_schema(
     format: &OutputFormat,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
-    table: &str,
+    table: &TableName,
     extended: bool,
     include_inherited: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Fetching schema for table: {}", table);
-    validate_table_name(table)?;
 
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
@@ -388,9 +377,10 @@ async fn handle_schema(
         .with_page_size(500)
         .with_limit(None);
 
+    let sys_dictionary: TableName = "sys_dictionary".parse().expect("valid table name literal");
     let records = client
         .get_table_records(
-            "sys_dictionary",
+            &sys_dictionary,
             Some(&query),
             Some(fields),
             &pagination,

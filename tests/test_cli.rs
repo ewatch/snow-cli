@@ -181,7 +181,7 @@ fn test_read_only_denies_mutating_command_before_config_load() {
             "table",
             "update",
             "incident",
-            "abc123",
+            "6816f79cc0a8016401c5a33be04be441",
             "--data",
             r#"{"state":"2"}"#,
         ])
@@ -1598,7 +1598,12 @@ auth_method = "api_key"
     // Without --yes, and stdin piped (non-TTY), should fail with confirmation error
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["table", "delete", "incident", "abc123"])
+        .args([
+            "table",
+            "delete",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+        ])
         .pipe_stdin("tests/common/mod.rs") // pipe something to make stdin non-TTY
         .unwrap()
         .assert()
@@ -1620,7 +1625,12 @@ auth_method = "api_key"
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["attachment", "list", "incident", "abc123"])
+        .args([
+            "attachment",
+            "list",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("No API token found"));
@@ -1671,7 +1681,11 @@ auth_method = "api_key"
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
-        .args(["import-set", "transform", "abc123"])
+        .args([
+            "import-set",
+            "transform",
+            "6816f79cc0a8016401c5a33be04be441",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("import-set transform"))
