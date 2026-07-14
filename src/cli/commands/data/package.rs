@@ -1,422 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::fs::File;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use super::*;
 
-use serde::{Deserialize, Serialize};
-
-use crate::cli::args::{DataArgs, DataCommands, OutputFormat};
-use crate::cli::output;
-use crate::client::pagination::PaginationConfig;
-use crate::models::identifiers::TableName;
-use crate::models::record::{Record, SingleRecordResponse};
-
-const LONG_RUNNING_TIMEOUT_SECS: u64 = 180;
-
-pub async fn handle(
-    args: DataArgs,
-    profile: &str,
-    format: &OutputFormat,
-    instance: Option<&str>,
-    timeout_secs: Option<u64>,
-) -> anyhow::Result<()> {
-    match args.command {
-        DataCommands::Export {
-            table,
-            query,
-            fields,
-            limit,
-            order_by,
-            out_path,
-        } => {
-            let export = ExportRequest {
-                table,
-                query,
-                fields,
-                limit,
-                order_by,
-                out_path,
-            };
-            handle_export(profile, format, instance, timeout_secs, export).await
-        }
-        DataCommands::ExportPackage { file, out_dir } => {
-            ensure_json_output(format, "data export-package")?;
-            handle_export_package(profile, format, instance, timeout_secs, &file, &out_dir).await
-        }
-        DataCommands::Validate { file } => {
-            ensure_json_output(format, "data validate")?;
-            handle_validate(profile, format, instance, timeout_secs, &file).await
-        }
-        DataCommands::Import {
-            file,
-            dry_run,
-            import_set_table,
-            fail_on_error,
-        } => {
-            ensure_json_output(format, "data import")?;
-            handle_import(
-                profile,
-                format,
-                instance,
-                timeout_secs,
-                &file,
-                ImportExecutionOptions {
-                    dry_run,
-                    import_set_table: import_set_table.as_ref(),
-                    fail_on_error,
-                },
-            )
-            .await
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct TableExportArtifact {
-    version: u8,
-    kind: String,
-    #[serde(default = "default_export_command")]
-    command: String,
-    instance: String,
-    table: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    query: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    fields: Option<Vec<String>>,
-    #[serde(default)]
-    exported_at_unix_s: u64,
-    #[serde(default)]
-    record_count: usize,
-    records: Vec<Record>,
-}
-
-#[derive(Debug, Serialize)]
-struct ExportSummary {
-    kind: &'static str,
-    command: &'static str,
-    output_format: &'static str,
-    instance: String,
-    table: String,
-    record_count: usize,
-    out_path: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ValidationReport {
-    kind: &'static str,
-    command: &'static str,
-    dataset_kind: String,
-    table: String,
-    ready: bool,
-    record_count: usize,
-    field_count: usize,
-    errors: Vec<ValidationIssue>,
-    warnings: Vec<ValidationIssue>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ValidationIssue {
-    kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    field: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    record_index: Option<usize>,
-    message: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ImportReport {
-    kind: &'static str,
-    command: &'static str,
-    strategy: &'static str,
-    strategy_reason: &'static str,
-    table: String,
-    record_count: usize,
-    created: usize,
-    failed: usize,
-    skipped: usize,
-    validation: ImportValidationSummary,
-    failures: Vec<ImportFailure>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ImportSetApiResponse {
-    #[serde(default)]
-    result: Vec<ImportSetApiResult>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ImportSetApiResult {
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    error_message: Option<String>,
-    #[serde(default)]
-    status_message: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ImportExecutionOptions<'a> {
-    dry_run: bool,
-    import_set_table: Option<&'a TableName>,
-    fail_on_error: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct ImportValidationSummary {
-    ready: bool,
-    error_count: usize,
-    warning_count: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct ImportFailure {
-    record_index: usize,
-    message: String,
-}
-
-#[derive(Debug, Clone)]
-struct SchemaField {
-    name: String,
-    internal_type: String,
-    mandatory: bool,
-    read_only: bool,
-    default_value: Option<String>,
-}
-
-#[derive(Debug)]
-struct TableDefinition {
-    name: String,
-    super_class_sys_id: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct DatasetExportSpec {
-    version: u8,
-    kind: String,
-    tables: Vec<DatasetTableSpec>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct DatasetTableSpec {
-    name: String,
-    #[serde(default)]
-    file: Option<String>,
-    #[serde(default)]
-    query: Option<String>,
-    #[serde(default)]
-    fields: Option<Vec<String>>,
-    #[serde(default)]
-    limit: Option<usize>,
-    #[serde(default)]
-    order_by: Option<String>,
-    #[serde(default)]
-    depends_on: Vec<String>,
-    #[serde(default)]
-    references: Vec<DatasetReferenceSpec>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct DatasetReferenceSpec {
-    field: String,
-    target_table: String,
-    source_key: String,
-    target_key: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct DatasetManifest {
-    version: u8,
-    kind: String,
-    command: String,
-    instance: String,
-    exported_at_unix_s: u64,
-    tables: Vec<DatasetManifestTable>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct DatasetManifestTable {
-    name: String,
-    file: String,
-    #[serde(default)]
-    query: Option<String>,
-    #[serde(default)]
-    fields: Option<Vec<String>>,
-    record_count: usize,
-    #[serde(default)]
-    depends_on: Vec<String>,
-    #[serde(default)]
-    references: Vec<DatasetReferenceSpec>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct DatasetTableArtifact {
-    version: u8,
-    kind: String,
-    table: String,
-    #[serde(default)]
-    source_key_fields: Vec<String>,
-    records: Vec<DatasetTableRecord>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct DatasetTableRecord {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_sys_id: Option<String>,
-    data: Record,
-}
-
-#[derive(Debug, Serialize)]
-struct DatasetExportSummary {
-    kind: &'static str,
-    command: &'static str,
-    instance: String,
-    table_count: usize,
-    tables: Vec<DatasetTableSummary>,
-    out_dir: String,
-    manifest_path: String,
-}
-
-#[derive(Debug, Serialize)]
-struct DatasetTableSummary {
-    table: String,
-    record_count: usize,
-    file: String,
-}
-
-#[derive(Debug, Serialize)]
-struct DatasetValidationReport {
-    kind: &'static str,
-    command: &'static str,
-    dataset_kind: String,
-    ready: bool,
-    table_count: usize,
-    import_order: Vec<String>,
-    tables: Vec<ValidationReport>,
-    errors: Vec<ValidationIssue>,
-    warnings: Vec<ValidationIssue>,
-}
-
-#[derive(Debug, Serialize)]
-struct DatasetImportReport {
-    kind: &'static str,
-    command: &'static str,
-    strategy: &'static str,
-    strategy_reason: &'static str,
-    table_count: usize,
-    import_order: Vec<String>,
-    created: usize,
-    failed: usize,
-    skipped: usize,
-    tables: Vec<TableImportResult>,
-}
-
-#[derive(Debug, Serialize)]
-struct TableImportResult {
-    table: String,
-    created: usize,
-    failed: usize,
-    skipped: usize,
-    failures: Vec<ImportFailure>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReferencePlaceholder {
-    #[serde(rename = "__reference")]
-    reference: ReferenceMarker,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct ReferenceMarker {
-    target_table: String,
-    source_key: String,
-    target_key: String,
-    source_value: String,
-}
-
-#[derive(Debug)]
-struct ExportRequest {
-    table: TableName,
-    query: Option<String>,
-    fields: Option<String>,
-    limit: Option<usize>,
-    order_by: Option<String>,
-    out_path: Option<String>,
-}
-
-async fn handle_export(
-    profile: &str,
-    format: &OutputFormat,
-    instance: Option<&str>,
-    timeout_secs: Option<u64>,
-    export: ExportRequest,
-) -> anyhow::Result<()> {
-    tracing::info!("Exporting records from table: {}", export.table);
-
-    // Export artifacts are designed to be re-imported, and `data import` reads
-    // JSON only. The token-efficient `auto` format therefore degrades to JSON
-    // here so an export never produces an un-importable file. An explicit
-    // `--output toon` still forces TOON for a user who really wants it.
-    let coerced_export_format;
-    let format = if matches!(format, OutputFormat::Auto) {
-        coerced_export_format = OutputFormat::Json;
-        &coerced_export_format
-    } else {
-        format
-    };
-
-    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
-    let pagination = PaginationConfig::default().with_limit(export.limit);
-
-    let records = client
-        .get_table_records(
-            &export.table,
-            export.query.as_deref(),
-            export.fields.as_deref(),
-            &pagination,
-            export.order_by.as_deref(),
-        )
-        .await?;
-
-    let artifact = TableExportArtifact {
-        version: 1,
-        kind: "table-export".to_string(),
-        command: default_export_command(),
-        instance: client.base_url().to_string(),
-        table: export.table.to_string(),
-        query: export.query,
-        fields: split_csv_fields(export.fields.as_deref()),
-        exported_at_unix_s: current_unix_timestamp(),
-        record_count: records.len(),
-        records,
-    };
-
-    if let Some(out_path) = export.out_path {
-        write_export_file(&artifact, format, &out_path)?;
-
-        let summary = ExportSummary {
-            kind: "export-result",
-            command: "data export",
-            output_format: output_format_name(format),
-            instance: artifact.instance,
-            table: artifact.table,
-            record_count: artifact.record_count,
-            out_path,
-        };
-        return output::print_output(&summary, format);
-    }
-
-    match format {
-        // `format` is coerced away from Auto above; the arm keeps the match total.
-        OutputFormat::Json | OutputFormat::Auto => output::print_output(&artifact, format),
-        OutputFormat::Csv => output::print_records(&artifact.records, format),
-        OutputFormat::Jsonl | OutputFormat::Toon => output::print_output(&artifact, format),
-        OutputFormat::Text => output::print_output(&artifact, format),
-    }
-}
-
-async fn handle_export_package(
+pub(super) async fn handle_export_package(
     profile: &str,
     format: &OutputFormat,
     instance: Option<&str>,
@@ -530,356 +114,7 @@ async fn handle_export_package(
     output::print_output(&summary, format)
 }
 
-async fn handle_validate(
-    profile: &str,
-    format: &OutputFormat,
-    instance: Option<&str>,
-    timeout_secs: Option<u64>,
-    file: &str,
-) -> anyhow::Result<()> {
-    match read_dataset_input(file)? {
-        DatasetInput::Flat(artifact) => {
-            let report =
-                build_flat_validation_report(profile, instance, timeout_secs, &artifact).await?;
-            output::print_output(&report, format)
-        }
-        DatasetInput::Package(manifest) => {
-            let report = build_package_validation_report(
-                profile,
-                instance,
-                Some(long_running_timeout_secs(timeout_secs)),
-                file,
-                &manifest,
-            )
-            .await?;
-            output::print_output(&report, format)
-        }
-    }
-}
-
-async fn handle_import(
-    profile: &str,
-    format: &OutputFormat,
-    instance: Option<&str>,
-    timeout_secs: Option<u64>,
-    file: &str,
-    options: ImportExecutionOptions<'_>,
-) -> anyhow::Result<()> {
-    match read_dataset_input(file)? {
-        DatasetInput::Flat(artifact) => {
-            handle_import_flat(profile, format, instance, timeout_secs, &artifact, options).await
-        }
-        DatasetInput::Package(manifest) => {
-            if options.import_set_table.is_some() {
-                anyhow::bail!(
-                    "--import-set-table is currently only supported for flat table-export artifacts, not dataset package imports"
-                );
-            }
-
-            handle_import_package(
-                profile,
-                format,
-                instance,
-                Some(long_running_timeout_secs(timeout_secs)),
-                file,
-                &manifest,
-                options.dry_run,
-            )
-            .await
-        }
-    }
-}
-
-async fn build_flat_validation_report(
-    profile: &str,
-    instance: Option<&str>,
-    timeout_secs: Option<u64>,
-    artifact: &TableExportArtifact,
-) -> anyhow::Result<ValidationReport> {
-    build_table_validation_report(
-        profile,
-        instance,
-        timeout_secs,
-        &artifact.kind,
-        &artifact.table,
-        artifact.fields.as_deref(),
-        &artifact.records,
-    )
-    .await
-}
-
-async fn build_table_validation_report(
-    profile: &str,
-    instance: Option<&str>,
-    timeout_secs: Option<u64>,
-    dataset_kind: &str,
-    table: &str,
-    fields: Option<&[String]>,
-    records: &[Record],
-) -> anyhow::Result<ValidationReport> {
-    let schema_fields = fetch_table_schema(profile, instance, timeout_secs, table).await?;
-    let mut errors = Vec::new();
-    let mut warnings = Vec::new();
-
-    if dataset_kind != "table-export" && dataset_kind != "dataset-table" {
-        errors.push(ValidationIssue {
-            kind: "dataset_kind",
-            field: None,
-            record_index: None,
-            message: format!(
-                "Unsupported dataset kind '{}'; only 'table-export' and 'dataset-table' are supported in v1",
-                dataset_kind
-            ),
-        });
-    }
-
-    if schema_fields.is_empty() {
-        errors.push(ValidationIssue {
-            kind: "table",
-            field: None,
-            record_index: None,
-            message: format!(
-                "Table '{}' could not be resolved via sys_dictionary or has no readable columns",
-                table
-            ),
-        });
-    }
-
-    let field_names = record_field_names(fields, records);
-    let schema_by_name = schema_fields
-        .iter()
-        .map(|field| (field.name.as_str(), field))
-        .collect::<std::collections::HashMap<_, _>>();
-
-    for field_name in &field_names {
-        match schema_by_name.get(field_name.as_str()) {
-            Some(field) => {
-                if field.read_only || is_system_managed_field(field_name) {
-                    errors.push(ValidationIssue {
-                        kind: "field_not_writable",
-                        field: Some(field_name.clone()),
-                        record_index: None,
-                        message: format!(
-                            "Field '{}' is read-only or system-managed and cannot be imported with create-only Table API writes",
-                            field_name
-                        ),
-                    });
-                } else if is_unsupported_field_type(&field.internal_type) {
-                    warnings.push(ValidationIssue {
-                        kind: "unsupported_field_type",
-                        field: Some(field_name.clone()),
-                        record_index: None,
-                        message: format!(
-                            "Field '{}' uses internal type '{}' which may not import cleanly in v1",
-                            field_name, field.internal_type
-                        ),
-                    });
-                }
-            }
-            None => errors.push(ValidationIssue {
-                kind: "unknown_field",
-                field: Some(field_name.clone()),
-                record_index: None,
-                message: format!("Field '{}' does not exist on table '{}'", field_name, table),
-            }),
-        }
-    }
-
-    for required_field in schema_fields.iter().filter(|field| {
-        field.mandatory
-            && !field.read_only
-            && field.default_value.as_deref().unwrap_or("").is_empty()
-    }) {
-        for (record_index, record) in records.iter().enumerate() {
-            if !record.fields.contains_key(&required_field.name) {
-                errors.push(ValidationIssue {
-                    kind: "missing_required_field",
-                    field: Some(required_field.name.clone()),
-                    record_index: Some(record_index),
-                    message: format!(
-                        "Record {} is missing required field '{}'",
-                        record_index, required_field.name
-                    ),
-                });
-            }
-        }
-    }
-
-    Ok(ValidationReport {
-        kind: "validation-report",
-        command: "data validate",
-        dataset_kind: dataset_kind.to_string(),
-        table: table.to_string(),
-        ready: errors.is_empty(),
-        record_count: records.len(),
-        field_count: field_names.len(),
-        errors,
-        warnings,
-    })
-}
-
-async fn handle_import_flat(
-    profile: &str,
-    format: &OutputFormat,
-    instance: Option<&str>,
-    timeout_secs: Option<u64>,
-    artifact: &TableExportArtifact,
-    options: ImportExecutionOptions<'_>,
-) -> anyhow::Result<()> {
-    let report = build_flat_validation_report(profile, instance, timeout_secs, artifact).await?;
-
-    if !report.ready {
-        anyhow::bail!(
-            "Dataset validation failed for table '{}' with {} error(s)",
-            report.table,
-            report.errors.len()
-        );
-    }
-
-    if options.dry_run {
-        let (strategy, strategy_reason) = if options.import_set_table.is_some() {
-            (
-                "import_set",
-                "Dry run preview for create-only Import Set API loading into the selected staging table",
-            )
-        } else {
-            (
-                "table_api",
-                "Dry run preview for create-only Table API import",
-            )
-        };
-
-        let import_report = ImportReport {
-            kind: "import-dry-run",
-            command: "data import",
-            strategy,
-            strategy_reason,
-            table: artifact.table.clone(),
-            record_count: artifact.record_count,
-            created: 0,
-            failed: 0,
-            skipped: artifact.record_count,
-            validation: ImportValidationSummary {
-                ready: true,
-                error_count: report.errors.len(),
-                warning_count: report.warnings.len(),
-            },
-            failures: Vec::new(),
-        };
-
-        return output::print_output(&import_report, format);
-    }
-
-    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
-    let _: TableName = artifact.table.parse()?;
-    let use_import_set = options.import_set_table.is_some();
-    let path = if let Some(staging_table) = options.import_set_table {
-        format!("/api/now/import/{staging_table}")
-    } else {
-        format!("/api/now/table/{}", artifact.table)
-    };
-    let mut created = 0usize;
-    let mut failures = Vec::new();
-
-    for (record_index, record) in artifact.records.iter().enumerate() {
-        let body = serde_json::to_string(record)?;
-        if use_import_set {
-            match client.post_json::<ImportSetApiResponse>(&path, &body).await {
-                Ok(response) => {
-                    let error_message = response.result.iter().find_map(|result| {
-                        match result
-                            .status
-                            .as_deref()
-                            .map(str::to_ascii_lowercase)
-                            .as_deref()
-                        {
-                            Some("error") => result
-                                .error_message
-                                .clone()
-                                .or_else(|| result.status_message.clone())
-                                .or_else(|| {
-                                    Some("Import Set API returned an error row".to_string())
-                                }),
-                            _ => None,
-                        }
-                    });
-
-                    if let Some(message) = error_message {
-                        failures.push(ImportFailure {
-                            record_index,
-                            message,
-                        });
-                    } else {
-                        created += 1;
-                    }
-                }
-                Err(error) => failures.push(ImportFailure {
-                    record_index,
-                    message: error.to_string(),
-                }),
-            }
-        } else {
-            match client.post_json::<SingleRecordResponse>(&path, &body).await {
-                Ok(_) => created += 1,
-                Err(error) => failures.push(ImportFailure {
-                    record_index,
-                    message: error.to_string(),
-                }),
-            }
-        }
-    }
-
-    let (strategy, strategy_reason) = if options.import_set_table.is_some() {
-        (
-            "import_set",
-            "Used the Import Set API with the selected staging table for flat create-only import",
-        )
-    } else {
-        (
-            "table_api",
-            "Import Set API bulk loading was not selected, so the CLI used direct Table API create requests",
-        )
-    };
-
-    let import_report = ImportReport {
-        kind: "import-result",
-        command: "data import",
-        strategy,
-        strategy_reason,
-        table: artifact.table.clone(),
-        record_count: artifact.record_count,
-        created,
-        failed: failures.len(),
-        skipped: 0,
-        validation: ImportValidationSummary {
-            ready: true,
-            error_count: report.errors.len(),
-            warning_count: report.warnings.len(),
-        },
-        failures,
-    };
-
-    output::print_output(&import_report, format)?;
-
-    if use_import_set && options.fail_on_error && import_report.failed > 0 {
-        anyhow::bail!(
-            "Import Set-backed data import completed with {} failed record(s). Re-run without --fail-on-error to inspect the structured response without failing the command.",
-            import_report.failed
-        );
-    }
-
-    if import_report.failed > 0 {
-        anyhow::bail!(
-            "Import completed with {} failed record(s) for table '{}'",
-            import_report.failed,
-            import_report.table
-        );
-    }
-
-    Ok(())
-}
-
-async fn build_package_validation_report(
+pub(super) async fn build_package_validation_report(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
@@ -1016,7 +251,7 @@ async fn build_package_validation_report(
     })
 }
 
-async fn handle_import_package(
+pub(super) async fn handle_import_package(
     profile: &str,
     format: &OutputFormat,
     instance: Option<&str>,
@@ -1159,7 +394,7 @@ async fn handle_import_package(
     Ok(())
 }
 
-async fn fetch_table_schema(
+pub(super) async fn fetch_table_schema(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
@@ -1232,7 +467,7 @@ async fn fetch_table_schema(
         .collect())
 }
 
-async fn fetch_table_hierarchy(
+pub(super) async fn fetch_table_hierarchy(
     client: &mut crate::client::SnowClient,
     table: &str,
 ) -> anyhow::Result<Vec<String>> {
@@ -1261,7 +496,7 @@ async fn fetch_table_hierarchy(
     Ok(table_names)
 }
 
-async fn fetch_table_definition_by_name(
+pub(super) async fn fetch_table_definition_by_name(
     client: &mut crate::client::SnowClient,
     table: &str,
 ) -> anyhow::Result<Option<TableDefinition>> {
@@ -1269,7 +504,7 @@ async fn fetch_table_definition_by_name(
     fetch_table_definition(client, &query).await
 }
 
-async fn fetch_table_definition_by_sys_id(
+pub(super) async fn fetch_table_definition_by_sys_id(
     client: &mut crate::client::SnowClient,
     sys_id: &str,
 ) -> anyhow::Result<Option<TableDefinition>> {
@@ -1277,7 +512,7 @@ async fn fetch_table_definition_by_sys_id(
     fetch_table_definition(client, &query).await
 }
 
-async fn fetch_table_definition(
+pub(super) async fn fetch_table_definition(
     client: &mut crate::client::SnowClient,
     query: &str,
 ) -> anyhow::Result<Option<TableDefinition>> {
@@ -1302,12 +537,7 @@ async fn fetch_table_definition(
     }))
 }
 
-enum DatasetInput {
-    Flat(TableExportArtifact),
-    Package(DatasetManifest),
-}
-
-fn read_dataset_input(file: &str) -> anyhow::Result<DatasetInput> {
+pub(super) fn read_dataset_input(file: &str) -> anyhow::Result<DatasetInput> {
     let body = std::fs::read_to_string(file)?;
     let value: serde_json::Value = serde_json::from_str(&body)
         .map_err(|error| anyhow::anyhow!("Invalid dataset file '{}': {}", file, error))?;
@@ -1329,14 +559,14 @@ fn read_dataset_input(file: &str) -> anyhow::Result<DatasetInput> {
     }
 }
 
-fn read_dataset_export_spec(file: &str) -> anyhow::Result<DatasetExportSpec> {
+pub(super) fn read_dataset_export_spec(file: &str) -> anyhow::Result<DatasetExportSpec> {
     let body = std::fs::read_to_string(file)?;
     let spec: DatasetExportSpec = serde_json::from_str(&body)
         .map_err(|error| anyhow::anyhow!("Invalid dataset export spec '{}': {}", file, error))?;
     Ok(spec)
 }
 
-fn read_dataset_table_artifact(path: &Path) -> anyhow::Result<DatasetTableArtifact> {
+pub(super) fn read_dataset_table_artifact(path: &Path) -> anyhow::Result<DatasetTableArtifact> {
     let body = std::fs::read_to_string(path)?;
     let artifact: DatasetTableArtifact = serde_json::from_str(&body).map_err(|error| {
         anyhow::anyhow!(
@@ -1348,7 +578,7 @@ fn read_dataset_table_artifact(path: &Path) -> anyhow::Result<DatasetTableArtifa
     Ok(artifact)
 }
 
-fn validate_dataset_export_spec(spec: &DatasetExportSpec) -> anyhow::Result<()> {
+pub(super) fn validate_dataset_export_spec(spec: &DatasetExportSpec) -> anyhow::Result<()> {
     if spec.kind != "dataset-export-spec" {
         anyhow::bail!(
             "Unsupported dataset export spec kind '{}'; expected 'dataset-export-spec'",
@@ -1371,7 +601,7 @@ fn validate_dataset_export_spec(spec: &DatasetExportSpec) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn topological_table_order(tables: &[DatasetTableSpec]) -> anyhow::Result<Vec<String>> {
+pub(super) fn topological_table_order(tables: &[DatasetTableSpec]) -> anyhow::Result<Vec<String>> {
     let mut deps = BTreeMap::<String, BTreeSet<String>>::new();
     let table_names = tables
         .iter()
@@ -1397,7 +627,9 @@ fn topological_table_order(tables: &[DatasetTableSpec]) -> anyhow::Result<Vec<St
     topo_sort_dependencies(deps)
 }
 
-fn topological_manifest_order(tables: &[DatasetManifestTable]) -> anyhow::Result<Vec<String>> {
+pub(super) fn topological_manifest_order(
+    tables: &[DatasetManifestTable],
+) -> anyhow::Result<Vec<String>> {
     let mut deps = BTreeMap::<String, BTreeSet<String>>::new();
     let table_names = tables
         .iter()
@@ -1427,7 +659,9 @@ fn topological_manifest_order(tables: &[DatasetManifestTable]) -> anyhow::Result
     topo_sort_dependencies(deps)
 }
 
-fn topo_sort_dependencies(deps: BTreeMap<String, BTreeSet<String>>) -> anyhow::Result<Vec<String>> {
+pub(super) fn topo_sort_dependencies(
+    deps: BTreeMap<String, BTreeSet<String>>,
+) -> anyhow::Result<Vec<String>> {
     let mut incoming = deps.clone();
     let mut outgoing = BTreeMap::<String, BTreeSet<String>>::new();
     for (table, table_deps) in &deps {
@@ -1471,7 +705,9 @@ fn topo_sort_dependencies(deps: BTreeMap<String, BTreeSet<String>>) -> anyhow::R
     Ok(order)
 }
 
-fn required_source_keys(tables: &[DatasetTableSpec]) -> HashMap<String, BTreeSet<String>> {
+pub(super) fn required_source_keys(
+    tables: &[DatasetTableSpec],
+) -> HashMap<String, BTreeSet<String>> {
     let mut keys = HashMap::<String, BTreeSet<String>>::new();
     for table in tables {
         for reference in &table.references {
@@ -1483,7 +719,7 @@ fn required_source_keys(tables: &[DatasetTableSpec]) -> HashMap<String, BTreeSet
     keys
 }
 
-fn required_source_keys_from_manifest(
+pub(super) fn required_source_keys_from_manifest(
     tables: &[DatasetManifestTable],
 ) -> HashMap<String, BTreeSet<String>> {
     let mut keys = HashMap::<String, BTreeSet<String>>::new();
@@ -1497,7 +733,7 @@ fn required_source_keys_from_manifest(
     keys
 }
 
-fn package_fetch_fields(
+pub(super) fn package_fetch_fields(
     table: &DatasetTableSpec,
     required_source_keys: &HashMap<String, BTreeSet<String>>,
 ) -> Option<String> {
@@ -1517,7 +753,7 @@ fn package_fetch_fields(
     Some(fields.into_iter().collect::<Vec<_>>().join(","))
 }
 
-fn build_source_value_indexes(
+pub(super) fn build_source_value_indexes(
     tables: &[DatasetTableSpec],
     raw_records_by_table: &BTreeMap<String, Vec<Record>>,
 ) -> HashMap<String, HashMap<String, HashMap<String, String>>> {
@@ -1544,7 +780,7 @@ fn build_source_value_indexes(
     indexes
 }
 
-fn build_dataset_table_artifact(
+pub(super) fn build_dataset_table_artifact(
     table: &DatasetTableSpec,
     raw_records: &[Record],
     required_source_keys: &HashMap<String, BTreeSet<String>>,
@@ -1634,7 +870,7 @@ fn build_dataset_table_artifact(
     })
 }
 
-fn table_output_file_name(table: &DatasetTableSpec) -> anyhow::Result<String> {
+pub(super) fn table_output_file_name(table: &DatasetTableSpec) -> anyhow::Result<String> {
     let file = table
         .file
         .clone()
@@ -1643,12 +879,12 @@ fn table_output_file_name(table: &DatasetTableSpec) -> anyhow::Result<String> {
     Ok(file)
 }
 
-fn package_file_path(base_dir: &Path, file: &str) -> anyhow::Result<PathBuf> {
+pub(super) fn package_file_path(base_dir: &Path, file: &str) -> anyhow::Result<PathBuf> {
     validate_package_file_name(file)?;
     Ok(base_dir.join(file))
 }
 
-fn validate_package_file_name(file: &str) -> anyhow::Result<()> {
+pub(super) fn validate_package_file_name(file: &str) -> anyhow::Result<()> {
     let path = Path::new(file);
     if file.trim().is_empty() {
         anyhow::bail!("Dataset package file name must not be empty.");
@@ -1669,7 +905,7 @@ fn validate_package_file_name(file: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn artifact_field_list(artifact: &DatasetTableArtifact) -> Option<Vec<String>> {
+pub(super) fn artifact_field_list(artifact: &DatasetTableArtifact) -> Option<Vec<String>> {
     let records = artifact
         .records
         .iter()
@@ -1683,7 +919,7 @@ fn artifact_field_list(artifact: &DatasetTableArtifact) -> Option<Vec<String>> {
     }
 }
 
-fn manifest_table_map(
+pub(super) fn manifest_table_map(
     tables: &[DatasetManifestTable],
 ) -> anyhow::Result<BTreeMap<String, DatasetManifestTable>> {
     let mut map = BTreeMap::new();
@@ -1695,21 +931,21 @@ fn manifest_table_map(
     Ok(map)
 }
 
-fn dataset_base_dir(file: &str) -> PathBuf {
+pub(super) fn dataset_base_dir(file: &str) -> PathBuf {
     Path::new(file)
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn write_json_file<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+pub(super) fn write_json_file<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
     let mut file = File::create(path)?;
     serde_json::to_writer(&mut file, value)?;
     file.write_all(b"\n")?;
     Ok(())
 }
 
-fn remap_reference_fields(
+pub(super) fn remap_reference_fields(
     record: &Record,
     references: &[DatasetReferenceSpec],
     source_to_target_ids: &HashMap<String, HashMap<String, HashMap<String, String>>>,
@@ -1739,14 +975,14 @@ fn remap_reference_fields(
     Ok(Record { fields })
 }
 
-fn ensure_json_output(format: &OutputFormat, command: &str) -> anyhow::Result<()> {
+pub(super) fn ensure_json_output(format: &OutputFormat, command: &str) -> anyhow::Result<()> {
     if matches!(format, OutputFormat::Csv) {
         anyhow::bail!("`{}` currently supports only JSON output", command);
     }
     Ok(())
 }
 
-fn record_field_names(fields: Option<&[String]>, records: &[Record]) -> Vec<String> {
+pub(super) fn record_field_names(fields: Option<&[String]>, records: &[Record]) -> Vec<String> {
     let mut field_names = std::collections::BTreeSet::new();
     if let Some(fields) = fields {
         field_names.extend(fields.iter().cloned());
@@ -1757,7 +993,7 @@ fn record_field_names(fields: Option<&[String]>, records: &[Record]) -> Vec<Stri
     field_names.into_iter().collect()
 }
 
-fn is_system_managed_field(field_name: &str) -> bool {
+pub(super) fn is_system_managed_field(field_name: &str) -> bool {
     matches!(
         field_name,
         "sys_id"
@@ -1771,18 +1007,18 @@ fn is_system_managed_field(field_name: &str) -> bool {
     )
 }
 
-fn is_unsupported_field_type(internal_type: &str) -> bool {
+pub(super) fn is_unsupported_field_type(internal_type: &str) -> bool {
     matches!(
         internal_type,
         "journal" | "journal_input" | "script" | "translated_html" | "password"
     )
 }
 
-fn default_export_command() -> String {
+pub(super) fn default_export_command() -> String {
     "data export".to_string()
 }
 
-fn json_value_as_text(value: &serde_json::Value) -> Option<String> {
+pub(super) fn json_value_as_text(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::Null => None,
         serde_json::Value::String(text) => Some(text.clone()),
@@ -1796,7 +1032,7 @@ fn json_value_as_text(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn json_value_as_bool(value: &serde_json::Value) -> bool {
+pub(super) fn json_value_as_bool(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Bool(flag) => *flag,
         serde_json::Value::String(text) => text == "true" || text == "1",
@@ -1808,21 +1044,23 @@ fn json_value_as_bool(value: &serde_json::Value) -> bool {
     }
 }
 
-fn extract_reference_marker(value: Option<&serde_json::Value>) -> Option<ReferenceMarker> {
+pub(super) fn extract_reference_marker(
+    value: Option<&serde_json::Value>,
+) -> Option<ReferenceMarker> {
     let value = value?;
     serde_json::from_value::<ReferencePlaceholder>(value.clone())
         .ok()
         .map(|placeholder| placeholder.reference)
 }
 
-fn is_not_found_error(error: &anyhow::Error) -> bool {
+pub(super) fn is_not_found_error(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<crate::client::error::ApiError>()
         .map(|api_error| api_error.status == 404)
         .unwrap_or(false)
 }
 
-fn write_export_file(
+pub(super) fn write_export_file(
     artifact: &TableExportArtifact,
     format: &OutputFormat,
     out_path: &str,
@@ -1848,7 +1086,7 @@ fn write_export_file(
     Ok(())
 }
 
-fn split_csv_fields(fields: Option<&str>) -> Option<Vec<String>> {
+pub(super) fn split_csv_fields(fields: Option<&str>) -> Option<Vec<String>> {
     let fields = fields?
         .split(',')
         .map(str::trim)
@@ -1863,14 +1101,14 @@ fn split_csv_fields(fields: Option<&str>) -> Option<Vec<String>> {
     }
 }
 
-fn current_unix_timestamp() -> u64 {
+pub(super) fn current_unix_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
 }
 
-fn output_format_name(format: &OutputFormat) -> &'static str {
+pub(super) fn output_format_name(format: &OutputFormat) -> &'static str {
     match format {
         OutputFormat::Json => "json",
         OutputFormat::Csv => "csv",
@@ -1881,53 +1119,6 @@ fn output_format_name(format: &OutputFormat) -> &'static str {
     }
 }
 
-fn long_running_timeout_secs(timeout_secs: Option<u64>) -> u64 {
+pub(super) fn long_running_timeout_secs(timeout_secs: Option<u64>) -> u64 {
     timeout_secs.unwrap_or(LONG_RUNNING_TIMEOUT_SECS)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_validate_package_file_name_rejects_traversal_and_absolute_paths() {
-        assert!(validate_package_file_name("incident.json").is_ok());
-        assert!(validate_package_file_name("../secret.json").is_err());
-        assert!(validate_package_file_name("nested/incident.json").is_err());
-        assert!(validate_package_file_name("/tmp/incident.json").is_err());
-        assert!(validate_package_file_name("").is_err());
-    }
-
-    #[test]
-    fn test_split_csv_fields_none() {
-        assert_eq!(split_csv_fields(None), None);
-    }
-
-    #[test]
-    fn test_split_csv_fields_trims_values() {
-        assert_eq!(
-            split_csv_fields(Some("sys_id, number, short_description")),
-            Some(vec![
-                "sys_id".to_string(),
-                "number".to_string(),
-                "short_description".to_string(),
-            ])
-        );
-    }
-
-    #[test]
-    fn test_json_value_as_text_from_reference_object() {
-        let value = serde_json::json!({
-            "link": "https://example.com/api/now/table/sys_glide_object?name=integer",
-            "value": "integer"
-        });
-
-        assert_eq!(json_value_as_text(&value), Some("integer".to_string()));
-    }
-
-    #[test]
-    fn test_json_value_as_bool_from_string() {
-        assert!(json_value_as_bool(&serde_json::json!("true")));
-        assert!(!json_value_as_bool(&serde_json::json!("false")));
-    }
 }
