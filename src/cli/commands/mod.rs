@@ -5,6 +5,7 @@ pub mod codesearch;
 pub mod completions;
 pub mod config;
 pub mod data;
+pub mod graphql;
 pub mod import_set;
 pub mod scope;
 pub mod script;

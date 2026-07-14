@@ -295,6 +295,11 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 )
             }
         },
+        Commands::Graphql(_) => deny(
+            "graphql",
+            CommandCapability::RemoteWrite,
+            "read-only policy does not allow GraphQL because documents may contain mutations and the endpoint requires POST",
+        ),
         Commands::Script(args) => match &args.command {
             ScriptCommands::Run { .. } => deny(
                 "script run",
@@ -653,6 +658,29 @@ mod tests {
                 quota_managed_transaction: false,
             },
         }));
+    }
+
+    #[test]
+    fn graphql_policy_allows_full_access_and_denies_read_only() {
+        let command = Commands::Graphql(GraphqlArgs {
+            document: Some("{ incident { number } }".to_string()),
+            query: None,
+            query_file: None,
+            variables: None,
+        });
+
+        assert_eq!(
+            ExecutionPolicy::full_access().decision_for_command(&command),
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            policy().decision_for_command(&command),
+            PolicyDecision::Deny {
+                command: "graphql",
+                capability: CommandCapability::RemoteWrite,
+                reason: "read-only policy does not allow GraphQL because documents may contain mutations and the endpoint requires POST",
+            }
+        );
     }
 
     #[test]

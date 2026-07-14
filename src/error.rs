@@ -1,7 +1,7 @@
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::client::error::ApiError;
+use crate::client::error::{ApiError, GraphqlError};
 
 /// Top-level error type for the CLI.
 ///
@@ -53,44 +53,13 @@ pub struct ErrorBody {
 }
 
 pub fn write_anyhow_error_and_exit_code(error: anyhow::Error) -> i32 {
-    if let Some(policy_error) = error.downcast_ref::<crate::policy::PolicyError>() {
-        let output = ErrorOutput {
-            error: ErrorBody {
-                code: policy_error.code().to_string(),
-                message: policy_error.to_string(),
-                status: None,
-                detail: Some(format!(
-                    "mode={:?}; capability={}",
-                    policy_error.mode,
-                    policy_error.capability.as_str()
-                )),
-                instance: None,
-            },
-        };
+    if let Some((output, exit_code)) = known_error_output_and_exit_code(&error) {
         if let Ok(json) = serde_json::to_string(&output) {
             eprintln!("{json}");
         } else {
-            eprintln!("{policy_error}");
+            eprintln!("{error}");
         }
-        return 7;
-    }
-
-    if let Some(api_error) = error.downcast_ref::<ApiError>() {
-        let output = ErrorOutput {
-            error: ErrorBody {
-                code: api_error.code.clone(),
-                message: api_error.message.clone(),
-                status: Some(api_error.status),
-                detail: api_error.detail.clone(),
-                instance: Some(api_error.instance.clone()),
-            },
-        };
-        if let Ok(json) = serde_json::to_string(&output) {
-            eprintln!("{json}");
-        } else {
-            eprintln!("{api_error}");
-        }
-        return if api_error.status == 404 { 4 } else { 5 };
+        return exit_code;
     }
 
     if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
@@ -99,6 +68,58 @@ pub fn write_anyhow_error_and_exit_code(error: anyhow::Error) -> i32 {
     }
 
     CliError::Other(error).write_and_exit_code()
+}
+
+fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutput, i32)> {
+    if let Some(policy_error) = error.downcast_ref::<crate::policy::PolicyError>() {
+        return Some((
+            ErrorOutput {
+                error: ErrorBody {
+                    code: policy_error.code().to_string(),
+                    message: policy_error.to_string(),
+                    status: None,
+                    detail: Some(format!(
+                        "mode={:?}; capability={}",
+                        policy_error.mode,
+                        policy_error.capability.as_str()
+                    )),
+                    instance: None,
+                },
+            },
+            7,
+        ));
+    }
+
+    if let Some(api_error) = error.downcast_ref::<ApiError>() {
+        let exit_code = if api_error.status == 404 { 4 } else { 5 };
+        return Some((
+            ErrorOutput {
+                error: ErrorBody {
+                    code: api_error.code.clone(),
+                    message: api_error.message.clone(),
+                    status: Some(api_error.status),
+                    detail: api_error.detail.clone(),
+                    instance: Some(api_error.instance.clone()),
+                },
+            },
+            exit_code,
+        ));
+    }
+
+    error.downcast_ref::<GraphqlError>().map(|graphql_error| {
+        (
+            ErrorOutput {
+                error: ErrorBody {
+                    code: graphql_error.code().to_string(),
+                    message: graphql_error.message().to_string(),
+                    status: None,
+                    detail: graphql_error.detail.clone(),
+                    instance: None,
+                },
+            },
+            5,
+        )
+    })
 }
 
 impl CliError {
@@ -204,6 +225,25 @@ mod tests {
         let json = serde_json::to_string(&output).unwrap();
         assert!(json.contains("CONFIG_NOT_FOUND"));
         assert!(json.contains("Config file not found"));
+    }
+
+    #[test]
+    fn test_graphql_error_uses_structured_sanitized_output() {
+        let errors = serde_json::json!([{
+            "message": "Unknown field incidentSecret",
+            "extensions": {"debug": "must-not-appear"},
+            "path": ["privateData"]
+        }]);
+        let graphql_error = GraphqlError::from_errors(errors.as_array().unwrap());
+        let error = anyhow::Error::new(graphql_error);
+        let (output, exit_code) = known_error_output_and_exit_code(&error).unwrap();
+        let json = serde_json::to_string(&output).unwrap();
+
+        assert_eq!(exit_code, 5);
+        assert!(json.contains("GRAPHQL_ERROR"));
+        assert!(json.contains("Unknown field incidentSecret"));
+        assert!(!json.contains("must-not-appear"));
+        assert!(!json.contains("privateData"));
     }
 
     #[test]
