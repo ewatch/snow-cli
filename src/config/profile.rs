@@ -325,7 +325,7 @@ pub fn validate_instance_url(input: &str) -> anyhow::Result<String> {
         anyhow::bail!("Instance URL must not be empty.");
     }
 
-    let url = reqwest::Url::parse(trimmed)
+    let url = url::Url::parse(trimmed)
         .map_err(|error| anyhow::anyhow!("Invalid instance URL '{}': {}", input, error))?;
 
     if url.host_str().is_none() {

@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use reqwest::Method;
+use http::Method;
 use thiserror::Error;
 
 use crate::cli::args::{
@@ -131,6 +131,35 @@ impl ExecutionPolicy {
         })
     }
 
+    pub fn ensure_raw_api_headers_allowed(
+        &self,
+        method: &Method,
+        extra_headers: &[(String, String)],
+    ) -> Result<(), PolicyError> {
+        if self.mode != PolicyMode::ReadOnly || method != Method::GET {
+            return Ok(());
+        }
+
+        let has_method_override = extra_headers.iter().any(|(name, _)| {
+            matches!(
+                name.trim().to_ascii_lowercase().as_str(),
+                "x-http-method-override" | "x-method-override" | "x-http-method"
+            )
+        });
+
+        if has_method_override {
+            return Err(PolicyError {
+                operation: "api get".to_string(),
+                mode: PolicyMode::ReadOnly,
+                capability: CommandCapability::RawApiWrite,
+                reason: "read-only policy does not allow method override headers on api get"
+                    .to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
     pub fn decision_for_command(&self, command: &Commands) -> PolicyDecision {
         if self.mode == PolicyMode::FullAccess {
             return PolicyDecision::Allow;
@@ -149,33 +178,6 @@ pub fn active_policy() -> ExecutionPolicy {
         1 => ExecutionPolicy::read_only(),
         _ => ExecutionPolicy::full_access(),
     }
-}
-
-pub fn ensure_raw_api_get_headers_allowed(
-    extra_headers: &[(String, String)],
-) -> Result<(), PolicyError> {
-    if active_policy().mode() != PolicyMode::ReadOnly {
-        return Ok(());
-    }
-
-    let has_method_override = extra_headers.iter().any(|(name, _)| {
-        matches!(
-            name.trim().to_ascii_lowercase().as_str(),
-            "x-http-method-override" | "x-method-override" | "x-http-method"
-        )
-    });
-
-    if has_method_override {
-        return Err(PolicyError {
-            operation: "api get".to_string(),
-            mode: PolicyMode::ReadOnly,
-            capability: CommandCapability::RawApiWrite,
-            reason: "read-only policy does not allow method override headers on api get"
-                .to_string(),
-        });
-    }
-
-    Ok(())
 }
 
 fn read_only_command_decision(command: &Commands) -> PolicyDecision {

@@ -710,7 +710,7 @@ fn normalize_instance_selector(input: &str) -> anyhow::Result<InstanceSelector> 
         format!("https://{trimmed}")
     };
 
-    let url = reqwest::Url::parse(&url_candidate).map_err(|_| {
+    let url = url::Url::parse(&url_candidate).map_err(|_| {
         anyhow::anyhow!(
             "Invalid instance '{}'. Use an instance name, host, or URL.",
             input

@@ -90,7 +90,7 @@ struct LoadedBundle {
 #[derive(Debug, Clone)]
 enum SourceBase {
     Local { root: PathBuf },
-    Remote { manifest_url: reqwest::Url },
+    Remote { manifest_url: url::Url },
 }
 
 #[derive(Debug, Serialize)]
@@ -219,7 +219,7 @@ async fn install_skill(options: InstallOptions) -> anyhow::Result<InstallResult>
 }
 
 async fn load_bundle(source: &str) -> anyhow::Result<LoadedBundle> {
-    if let Ok(url) = reqwest::Url::parse(source) {
+    if let Ok(url) = url::Url::parse(source) {
         return match url.scheme() {
             "http" | "https" => load_remote_bundle(source, url).await,
             "file" => {
@@ -235,21 +235,18 @@ async fn load_bundle(source: &str) -> anyhow::Result<LoadedBundle> {
     load_local_bundle(source.to_string(), PathBuf::from(source))
 }
 
-async fn load_remote_bundle(
-    source: &str,
-    manifest_url: reqwest::Url,
-) -> anyhow::Result<LoadedBundle> {
-    let response = reqwest::get(manifest_url.clone())
+async fn load_remote_bundle(source: &str, manifest_url: url::Url) -> anyhow::Result<LoadedBundle> {
+    let response = crate::client::fetch_skill_resource(&manifest_url)
         .await
         .with_context(|| format!("Failed to fetch skill manifest {manifest_url}"))?;
-    if !response.status().is_success() {
+    if !(200..300).contains(&response.status) {
         bail!(
             "Failed to fetch skill manifest {}: HTTP {}.",
             manifest_url,
-            response.status()
+            response.status
         );
     }
-    let manifest_text = response.text().await?;
+    let manifest_text = response.text();
     let manifest: SkillManifest =
         toml::from_str(&manifest_text).context("Failed to parse skill.toml")?;
     if manifest.files.is_empty() {
@@ -446,25 +443,22 @@ fn read_local_file(root: &Path, file: &SkillFile) -> anyhow::Result<Vec<u8>> {
     fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))
 }
 
-async fn read_remote_file(
-    manifest_url: &reqwest::Url,
-    file: &SkillFile,
-) -> anyhow::Result<Vec<u8>> {
+async fn read_remote_file(manifest_url: &url::Url, file: &SkillFile) -> anyhow::Result<Vec<u8>> {
     let safe_path = validate_safe_path(&file.path)?;
     let url = manifest_url
         .join(&safe_path)
         .with_context(|| format!("Invalid remote skill file path {}", file.path))?;
-    let response = reqwest::get(url.clone())
+    let response = crate::client::fetch_skill_resource(&url)
         .await
         .with_context(|| format!("Failed to fetch skill file {url}"))?;
-    if !response.status().is_success() {
+    if !(200..300).contains(&response.status) {
         bail!(
             "Failed to fetch skill file {}: HTTP {}.",
             url,
-            response.status()
+            response.status
         );
     }
-    Ok(response.bytes().await?.to_vec())
+    Ok(response.body)
 }
 
 fn write_install_file(install_dir: &Path, relative: &str, bytes: &[u8]) -> anyhow::Result<()> {

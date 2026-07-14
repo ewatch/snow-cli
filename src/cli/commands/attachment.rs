@@ -1,8 +1,6 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-use reqwest::multipart::{Form, Part};
-
 use crate::cli::args::{AttachmentArgs, AttachmentCommands, OutputFormat};
 use crate::cli::output;
 use crate::models::identifiers::EncodedQueryValue;
@@ -87,7 +85,7 @@ pub async fn handle(
                 metadata.result.download_link.clone()
             };
 
-            download_attachment_file(&client, &download_path, &destination).await?;
+            download_attachment_file(&mut client, &download_path, &destination).await?;
 
             output::print_status(
                 &format!(
@@ -104,16 +102,6 @@ pub async fn handle(
             sys_id,
             file,
         } => {
-            if crate::policy::active_policy().mode() == crate::policy::PolicyMode::ReadOnly {
-                return Err(crate::policy::PolicyError {
-                    operation: "attachment upload".to_string(),
-                    mode: crate::policy::PolicyMode::ReadOnly,
-                    capability: crate::policy::CommandCapability::RemoteWrite,
-                    reason: "read-only policy does not allow attachment uploads".to_string(),
-                }
-                .into());
-            }
-
             tracing::info!("Uploading {} to {}/{}", file, table, sys_id);
 
             let path = PathBuf::from(&file);
@@ -143,39 +131,16 @@ pub async fn handle(
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", file, e))?;
 
-            let client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
-            let auth_headers = client.authenticator().authenticate().await?;
-            let url = format!("{}/api/now/attachment/upload", client.base_url());
-
-            let file_part = Part::bytes(file_bytes).file_name(file_name.clone());
-            let form = Form::new()
-                .text("table_name", table.to_string())
-                .text("table_sys_id", sys_id.to_string())
-                .text("file_name", file_name.clone())
-                .part("file", file_part);
-
+            let mut client =
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
             let response = client
-                .http()
-                .post(&url)
-                .query(&[
-                    ("table_name", table.as_str()),
-                    ("table_sys_id", sys_id.as_str()),
-                    ("file_name", file_name.as_str()),
-                ])
-                .header("Accept", "application/json")
-                .headers(auth_headers)
-                .multipart(form)
-                .send()
+                .upload_attachment(table.as_str(), sys_id.as_str(), &file_name, file_bytes)
                 .await?;
 
             let status = response.status();
             let body = response.text().await?;
-            if !status.is_success() {
-                anyhow::bail!(
-                    "Attachment upload failed with status {}: {}",
-                    status.as_u16(),
-                    body
-                );
+            if !(200..300).contains(&status) {
+                anyhow::bail!("Attachment upload failed with status {}: {}", status, body);
             }
 
             let created: AttachmentSingleResponse = serde_json::from_str(&body)
@@ -222,29 +187,20 @@ fn safe_default_download_file_name(file_name: &str) -> Option<String> {
 }
 
 async fn download_attachment_file(
-    client: &crate::client::SnowClient,
+    client: &mut crate::client::SnowClient,
     path: &str,
     destination: &Path,
 ) -> anyhow::Result<()> {
     use tokio::io::AsyncWriteExt;
 
-    let auth_headers = client.authenticator().authenticate().await?;
-    let url = client.authenticated_url(path)?;
-
-    let mut response = client
-        .http()
-        .get(url)
-        .header("Accept", "*/*")
-        .headers(auth_headers)
-        .send()
-        .await?;
+    let mut response = client.download_attachment(path).await?;
 
     let status = response.status();
-    if !status.is_success() {
+    if !(200..300).contains(&status) {
         let body = response.text().await.unwrap_or_default();
         anyhow::bail!(
             "Attachment download failed with status {}: {}",
-            status.as_u16(),
+            status,
             body
         );
     }
@@ -261,7 +217,7 @@ async fn download_attachment_file(
     let mut downloaded: u64 = 0;
     let show_progress = std::io::stderr().is_terminal() && total.unwrap_or(0) >= 1_048_576;
 
-    while let Some(chunk) = response.chunk().await? {
+    while let Some(chunk) = response.next_chunk().await? {
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
 
@@ -299,24 +255,5 @@ mod tests {
             Some("report.pdf".to_string())
         );
         assert_eq!(safe_default_download_file_name(".."), None);
-    }
-
-    #[tokio::test]
-    async fn attachment_upload_rejects_read_only_policy() {
-        crate::policy::set_active_policy(crate::policy::ExecutionPolicy::read_only());
-        let args = AttachmentArgs {
-            command: AttachmentCommands::Upload {
-                table: "incident".parse().unwrap(),
-                sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
-                file: "/dev/null".to_string(),
-            },
-        };
-        let result = handle(args, "dummy", &OutputFormat::Json, None, None).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        let policy_err = err.downcast_ref::<crate::policy::PolicyError>();
-        assert!(policy_err.is_some(), "Expected PolicyError, got: {err}");
-        assert_eq!(policy_err.unwrap().code(), "POLICY_DENIED");
-        crate::policy::set_active_policy(crate::policy::ExecutionPolicy::full_access());
     }
 }

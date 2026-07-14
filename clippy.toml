@@ -1,0 +1,20 @@
+# HTTP transport is owned by src/client/. Keep these diagnostics actionable;
+# path-aware exceptions are enforced by tests/structure.rs.
+disallowed-types = [
+  { path = "reqwest::Client", reason = "use the focused interface in src/client/; only the client transport adapter may own reqwest::Client" },
+  { path = "reqwest::Response", reason = "use snow_cli::client::ClientResponse so transport details stay behind the client seam" },
+]
+
+disallowed-methods = [
+  { path = "reqwest::Client::new", reason = "use the focused interface in src/client/ instead of constructing an HTTP client" },
+  { path = "reqwest::Client::builder", reason = "HTTP client configuration belongs in src/client/" },
+  { path = "reqwest::Client::request", reason = "send HTTP through the focused interface in src/client/" },
+  { path = "reqwest::Client::get", reason = "send HTTP through the focused interface in src/client/" },
+  { path = "reqwest::Client::post", reason = "send HTTP through the focused interface in src/client/" },
+  { path = "reqwest::Client::put", reason = "send HTTP through the focused interface in src/client/" },
+  { path = "reqwest::Client::patch", reason = "send HTTP through the focused interface in src/client/" },
+  { path = "reqwest::Client::delete", reason = "send HTTP through the focused interface in src/client/" },
+  { path = "reqwest::Client::execute", reason = "request execution belongs in src/client/" },
+  { path = "reqwest::get", reason = "use an explicitly named external-fetch operation in src/client/" },
+  { path = "std::process::exit", reason = "return an exit code; process termination is restricted to binary roots" },
+]
