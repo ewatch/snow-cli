@@ -15,7 +15,7 @@ use reqwest::{Client, Response as TransportResponse, Url};
 
 use crate::cli::spinner::SnowflakeSpinner;
 
-use crate::client::error::ApiError;
+use crate::client::error::{ApiError, GraphqlError};
 use crate::policy::ExecutionPolicy;
 
 /// Build an authenticated [`SnowClient`] from the user's configuration.
@@ -1405,6 +1405,31 @@ impl SnowClient {
         Ok(value)
     }
 
+    /// Execute a document against the fixed Now GraphQL endpoint.
+    ///
+    /// The request uses the shared authenticated POST path and returns only the
+    /// GraphQL `data` value. A non-empty `errors` array is returned as a
+    /// sanitized [`GraphqlError`], and partial data is deliberately suppressed.
+    pub async fn execute_graphql(
+        &mut self,
+        query: &str,
+        variables: &serde_json::Map<String, serde_json::Value>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let body = serde_json::to_string(&serde_json::json!({
+            "query": query,
+            "variables": variables,
+        }))?;
+        let response = self.post("/api/now/graphql", &body).await?;
+        let response_body = response.text().await?;
+        tracing::debug!(
+            body_len = response_body.len(),
+            "Parsing GraphQL response envelope"
+        );
+        let envelope: serde_json::Value = serde_json::from_str(&response_body)
+            .map_err(|error| anyhow::anyhow!("GraphQL endpoint returned invalid JSON: {error}"))?;
+        graphql_data_from_envelope(envelope)
+    }
+
     /// Send a PATCH request and deserialize the JSON response body.
     pub async fn patch_json<T: serde::de::DeserializeOwned>(
         &mut self,
@@ -1538,6 +1563,26 @@ impl SnowClient {
     }
 }
 
+fn graphql_data_from_envelope(envelope: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    let object = envelope.as_object().ok_or_else(|| {
+        anyhow::anyhow!("GraphQL endpoint returned a non-object response envelope")
+    })?;
+
+    if let Some(errors) = object.get("errors") {
+        let errors = errors
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("GraphQL endpoint returned an invalid errors field"))?;
+        if !errors.is_empty() {
+            return Err(GraphqlError::from_errors(errors).into());
+        }
+    }
+
+    object
+        .get("data")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("GraphQL endpoint response did not contain data"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1545,7 +1590,7 @@ mod tests {
     use http::HeaderMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use wiremock::matchers::{header, method, path, query_param};
+    use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
@@ -2331,6 +2376,137 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.result.sys_id(), Some("new789"));
+    }
+
+    #[tokio::test]
+    async fn execute_graphql_posts_exact_envelope_and_returns_data() {
+        let server = MockServer::start().await;
+        let query = "query Incident($number: String!) { incident(number: $number) { number } }";
+        let variables = serde_json::json!({"number": "INC0010001"});
+
+        Mock::given(method("POST"))
+            .and(path("/api/now/graphql"))
+            .and(header("Accept", "application/json"))
+            .and(header("Content-Type", "application/json"))
+            .and(header("Authorization", "Bearer graphql-token"))
+            .and(body_json(serde_json::json!({
+                "query": query,
+                "variables": variables
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {"incident": {"number": "INC0010001"}}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("graphql-token"));
+        let variables = variables.as_object().unwrap().clone();
+        let data = client.execute_graphql(query, &variables).await.unwrap();
+
+        assert_eq!(data["incident"]["number"], "INC0010001");
+    }
+
+    #[tokio::test]
+    async fn execute_graphql_preserves_null_data() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/now/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": null
+            })))
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let data = client
+            .execute_graphql("{ nullable }", &serde_json::Map::new())
+            .await
+            .unwrap();
+        assert!(data.is_null());
+    }
+
+    #[tokio::test]
+    async fn execute_graphql_converts_response_errors_without_partial_data() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/now/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {"partialSecret": "must-not-be-retained"},
+                "errors": [{
+                    "message": "Field is not accessible",
+                    "path": ["partialSecret"],
+                    "extensions": {"debug": "raw-extension-secret"}
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let error = client
+            .execute_graphql("{ restricted }", &serde_json::Map::new())
+            .await
+            .unwrap_err()
+            .downcast::<GraphqlError>()
+            .unwrap();
+        let detail = error.detail.as_deref().unwrap();
+
+        assert_eq!(detail, "Field is not accessible");
+        assert!(!detail.contains("must-not-be-retained"));
+        assert!(!detail.contains("raw-extension-secret"));
+        assert!(!detail.contains("partialSecret"));
+    }
+
+    #[tokio::test]
+    async fn execute_graphql_rejects_malformed_success_envelopes() {
+        let invalid_json_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/now/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not-json secret-body"))
+            .mount(&invalid_json_server)
+            .await;
+        let mut client = test_client(&invalid_json_server.uri(), MockAuth::new("token"));
+        let error = client
+            .execute_graphql("{ malformed }", &serde_json::Map::new())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid JSON"));
+        assert!(!error.contains("secret-body"));
+
+        let missing_data_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/now/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&missing_data_server)
+            .await;
+        let mut client = test_client(&missing_data_server.uri(), MockAuth::new("token"));
+        let error = client
+            .execute_graphql("{ malformed }", &serde_json::Map::new())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("did not contain data"));
+    }
+
+    #[tokio::test]
+    async fn execute_graphql_keeps_http_failures_as_api_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/now/graphql"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let error = client
+            .execute_graphql("{ restricted }", &serde_json::Map::new())
+            .await
+            .unwrap_err()
+            .downcast::<ApiError>()
+            .unwrap();
+        assert_eq!(error.code, "FORBIDDEN");
+        assert_eq!(error.status, 403);
     }
 
     #[tokio::test]

@@ -41,6 +41,81 @@ impl std::fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
+/// Sanitized error reported by a successful HTTP GraphQL response.
+///
+/// Only bounded `errors[*].message` strings are retained. Query text, partial
+/// data, paths, locations, extensions, and the raw response body are discarded.
+#[derive(Debug, Serialize)]
+pub struct GraphqlError {
+    pub detail: Option<String>,
+}
+
+impl GraphqlError {
+    /// Maximum GraphQL errors retained in structured stderr output.
+    const MAX_MESSAGES: usize = 8;
+    /// Maximum Unicode scalar values retained from each GraphQL error message.
+    const MAX_MESSAGE_CHARS: usize = 256;
+
+    pub fn from_errors(errors: &[serde_json::Value]) -> Self {
+        let mut messages = errors
+            .iter()
+            .filter_map(|error| error.get("message").and_then(serde_json::Value::as_str))
+            .filter_map(|message| {
+                let message = message.trim();
+                if message.is_empty() {
+                    None
+                } else {
+                    Some(truncate_graphql_message(message))
+                }
+            })
+            .take(Self::MAX_MESSAGES)
+            .collect::<Vec<_>>();
+
+        if errors.len() > Self::MAX_MESSAGES {
+            messages.push(format!(
+                "<{} additional GraphQL errors omitted>",
+                errors.len() - Self::MAX_MESSAGES
+            ));
+        }
+
+        Self {
+            detail: if messages.is_empty() {
+                None
+            } else {
+                Some(messages.join("; "))
+            },
+        }
+    }
+
+    pub const fn code(&self) -> &'static str {
+        "GRAPHQL_ERROR"
+    }
+
+    pub const fn message(&self) -> &'static str {
+        "GraphQL request returned errors"
+    }
+}
+
+impl std::fmt::Display for GraphqlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{}] {}", self.code(), self.message())
+    }
+}
+
+impl std::error::Error for GraphqlError {}
+
+fn truncate_graphql_message(message: &str) -> String {
+    let mut chars = message.chars();
+    let mut truncated = chars
+        .by_ref()
+        .take(GraphqlError::MAX_MESSAGE_CHARS)
+        .collect::<String>();
+    if chars.next().is_some() {
+        truncated.push_str("... <truncated>");
+    }
+    truncated
+}
+
 fn safe_error_detail(body: &str) -> String {
     const MAX_DETAIL_LEN: usize = 1024;
 
@@ -105,5 +180,27 @@ mod tests {
         let display = format!("{err}");
         assert!(display.contains("NOT_FOUND"));
         assert!(display.contains("404"));
+    }
+
+    #[test]
+    fn graphql_error_retains_only_bounded_messages() {
+        let secret_extension = "must-not-be-retained";
+        let long_message = "x".repeat(GraphqlError::MAX_MESSAGE_CHARS + 1);
+        let errors = serde_json::json!([
+            {
+                "message": long_message,
+                "path": ["incident", "caller"],
+                "extensions": {"debug": secret_extension}
+            },
+            {"message": 42},
+            {"locations": [{"line": 1}]}
+        ]);
+        let error = GraphqlError::from_errors(errors.as_array().unwrap());
+        let detail = error.detail.as_deref().unwrap();
+
+        assert!(detail.contains("<truncated>"));
+        assert!(!detail.contains(secret_extension));
+        assert!(!detail.contains("incident"));
+        assert_eq!(error.code(), "GRAPHQL_ERROR");
     }
 }

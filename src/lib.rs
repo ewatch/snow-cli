@@ -187,6 +187,16 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             )
             .await
         }
+        cli::args::Commands::Graphql(args) => {
+            cli::commands::graphql::handle(
+                args,
+                &active_profile,
+                &effective_output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
+        }
         cli::args::Commands::Script(args) => {
             cli::commands::script::handle(
                 args,
@@ -228,6 +238,7 @@ pub fn command_uses_connection(command: &cli::args::Commands) -> bool {
             | cli::args::Commands::Attachment(_)
             | cli::args::Commands::ImportSet(_)
             | cli::args::Commands::Api(_)
+            | cli::args::Commands::Graphql(_)
             | cli::args::Commands::Script(_)
             | cli::args::Commands::Codesearch(_)
             | cli::args::Commands::Snu(_)
@@ -250,7 +261,8 @@ mod tests {
     use super::*;
     use clap_complete::Shell;
     use cli::args::{
-        AuthArgs, AuthCommands, Commands, ConfigArgs, ConfigCommands, TableArgs, TableCommands,
+        AuthArgs, AuthCommands, Commands, ConfigArgs, ConfigCommands, GraphqlArgs, TableArgs,
+        TableCommands,
     };
 
     #[test]
@@ -268,6 +280,12 @@ mod tests {
                 order_by: None,
                 full: false,
             },
+        })));
+        assert!(command_uses_connection(&Commands::Graphql(GraphqlArgs {
+            document: Some("{ incident { number } }".to_string()),
+            query: None,
+            query_file: None,
+            variables: None,
         })));
     }
 

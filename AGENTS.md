@@ -86,6 +86,11 @@ The historical Markdown phase backlog remains under `docs/backlog/`, but active 
 
 Follow `docs/guides/adding-commands.md`; it is the authoritative command-extension workflow.
 
+`snow graphql` is an optional command backed by `/api/now/graphql`. It requires an
+administrator to enable Now GraphQL on the target instance and does not discover
+schemas or enable the feature. It is excluded from read-only mode because GraphQL
+documents may contain mutations.
+
 ## Testing
 
 See `docs/guides/testing.md` for full details.

@@ -890,6 +890,15 @@ mod tests {
         assert!(help.contains("SN-Utils"));
         assert!(!help.contains("Execute background scripts"));
         assert!(!help.contains("Import set operations"));
+        assert!(!help.contains("GraphQL"));
+    }
+
+    #[test]
+    fn graphql_is_rejected_by_the_read_only_grammar() {
+        let error =
+            ReadOnlyCli::try_parse_from(["snow-cli-ro", "graphql", "{ incident { number } }"])
+                .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
 
     #[test]

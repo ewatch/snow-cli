@@ -35,6 +35,8 @@ const TABLE_STATS_AFTER_HELP: &str = "Examples:\n  snow-cli table stats incident
 
 const API_AFTER_HELP: &str = "Examples:\n  snow-cli api get /api/now/table/incident?sysparm_limit=1\n  snow-cli api post /api/x_myapp/action --data '{\"dry_run\":true}'\n  snow-cli api get /api/x_myapp/status -H 'X-Trace-Id:abc123'";
 
+const GRAPHQL_AFTER_HELP: &str = "Examples:\n  snow-cli graphql '{ incident { number } }'\n  snow-cli graphql --query 'query Incident($number: String!) { incident(number: $number) { number } }' --variables '{\"number\":\"INC0010001\"}'\n  snow-cli graphql --query-file incident.graphql --variables '{\"number\":\"INC0010001\"}'\n  cat incident.graphql | snow-cli graphql\n\nNotes:\n  - This command has an implicit query action and posts to /api/now/graphql.\n  - Now GraphQL must be enabled by an administrator on the target instance.\n  - The supplied document must match that instance's GraphQL schema.\n  - GraphQL is unavailable in read-only mode because documents may contain mutations.";
+
 const SCRIPT_RUN_AFTER_HELP: &str = "Examples:\n  snow-cli script run --code 'gs.info(\"hello from snow-cli\")'\n  snow-cli script run --file ./cleanup.js --sandbox\n  printf '%s' 'gs.info(\"from stdin\")' | snow-cli script run --scope x_my_app\n  snow-cli script run --code 'gs.print(\"done\")' --rollback --quota-managed-transaction\n\nNotes:\n  - `script run` executes a background script directly against the ServiceNow instance.\n  - If you are using SN-Utils, the `snu` command family is for browser/session helper actions, not background scripts.";
 
 const SNU_AFTER_HELP: &str = "Examples:\n  snow-cli snu check-connection --verify\n  snow-cli snu query incident --query 'active=true' --fields sys_id,number --limit 10\n  snow-cli snu get-record incident <sys_id> --fields sys_id,number,short_description\n  snow-cli snu update-record sys_script_include <sys_id> --field script --content 'gs.info(\"hello\")'\n  snow-cli snu execute-bg-script --code 'gs.info(\"hello from SN-Utils\")'\n  snow-cli --instance https://dev12345.service-now.com snu query incident --query 'active=true'\n  snow-cli snu broker status\n\nNotes:\n  - Requires the SN-Utils browser extension with its ScriptSync helper tab open. Commands auto-start a local broker on 127.0.0.1:1978; run /token in a ServiceNow tab when prompted. Stop sn-scriptsync first if it owns that port.\n  - When the browser holds sessions for several instances, pass the global --instance <url-or-host> to pick one; `snu broker status` lists live sessions and `snu broker clear` drops cached ones.\n  - `snu update-record` and `snu delete-record` run as server-side background scripts over the bridge; `snu delete-record --dry-run` only previews matches and never deletes.\n  - Full command list, token/session lifecycle, and troubleshooting: https://ewatch.github.io/snow-cli/commands/snu.html";
@@ -158,6 +160,9 @@ pub enum Commands {
 
     /// Raw REST API calls to any endpoint
     Api(ApiArgs),
+
+    /// Submit a document to the optional Now GraphQL endpoint
+    Graphql(GraphqlArgs),
 
     /// Execute background scripts on ServiceNow
     Script(ScriptArgs),
@@ -1158,6 +1163,28 @@ pub enum ApiCommands {
     },
 }
 
+// --- GraphQL ---
+
+#[derive(Args, Debug)]
+#[command(after_help = GRAPHQL_AFTER_HELP)]
+pub struct GraphqlArgs {
+    /// Inline GraphQL document
+    #[arg(value_name = "DOCUMENT", group = "graphql_source")]
+    pub document: Option<String>,
+
+    /// Inline GraphQL document (equivalent to the positional document)
+    #[arg(long, value_name = "DOCUMENT", group = "graphql_source")]
+    pub query: Option<String>,
+
+    /// Read the GraphQL document from a file
+    #[arg(long, value_name = "PATH", group = "graphql_source")]
+    pub query_file: Option<std::path::PathBuf>,
+
+    /// GraphQL variables as a JSON object
+    #[arg(long, value_name = "JSON")]
+    pub variables: Option<String>,
+}
+
 // --- Script ---
 
 #[derive(Args, Debug)]
@@ -1658,6 +1685,74 @@ mod tests {
         // The after-help stays condensed; deep operational detail lives in the
         // book, which the help must point at.
         assert!(help.contains("https://ewatch.github.io/snow-cli/commands/snu.html"));
+    }
+
+    #[test]
+    fn graphql_help_documents_sources_and_enablement() {
+        let help = Cli::command()
+            .find_subcommand_mut("graphql")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("DOCUMENT"));
+        assert!(help.contains("--query"));
+        assert!(help.contains("--query-file"));
+        assert!(help.contains("--variables"));
+        assert!(help.contains("enabled by an administrator"));
+        assert!(help.contains("implicit query action"));
+    }
+
+    #[test]
+    fn parses_each_graphql_document_source() {
+        let positional = Cli::parse_from(["snow-cli", "graphql", "{ incident { number } }"]);
+        match positional.command {
+            Commands::Graphql(args) => {
+                assert_eq!(args.document.as_deref(), Some("{ incident { number } }"));
+                assert!(args.query.is_none());
+                assert!(args.query_file.is_none());
+            }
+            _ => panic!("Expected GraphQL command"),
+        }
+
+        let query = Cli::parse_from([
+            "snow-cli",
+            "graphql",
+            "--query",
+            "{ incident { number } }",
+            "--variables",
+            r#"{"limit":1}"#,
+        ]);
+        match query.command {
+            Commands::Graphql(args) => {
+                assert_eq!(args.query.as_deref(), Some("{ incident { number } }"));
+                assert_eq!(args.variables.as_deref(), Some(r#"{"limit":1}"#));
+            }
+            _ => panic!("Expected GraphQL command"),
+        }
+
+        let file = Cli::parse_from(["snow-cli", "graphql", "--query-file", "incident.graphql"]);
+        match file.command {
+            Commands::Graphql(args) => {
+                assert_eq!(
+                    args.query_file.as_deref(),
+                    Some(std::path::Path::new("incident.graphql"))
+                );
+            }
+            _ => panic!("Expected GraphQL command"),
+        }
+    }
+
+    #[test]
+    fn rejects_multiple_explicit_graphql_sources() {
+        let error = Cli::try_parse_from([
+            "snow-cli",
+            "graphql",
+            "{ incident { number } }",
+            "--query",
+            "{ user { name } }",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
