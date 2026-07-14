@@ -8,7 +8,10 @@ use serde_json::Value;
 
 /// Create a temporary config file with the given content.
 /// Returns the path to the temp directory (which contains config.toml).
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "shared helpers are compiled separately by each integration test crate"
+)]
 pub fn create_temp_config(content: &str) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.toml");
@@ -17,7 +20,10 @@ pub fn create_temp_config(content: &str) -> (tempfile::TempDir, PathBuf) {
 }
 
 /// Create an isolated fake keychain backing file for CLI tests.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "shared helpers are compiled separately by each integration test crate"
+)]
 pub fn create_temp_keychain_store() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let store_path = dir.path().join("keychain-store.json");
@@ -25,7 +31,10 @@ pub fn create_temp_keychain_store() -> (tempfile::TempDir, PathBuf) {
 }
 
 /// Write a service/account entry into the fake keychain store.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "shared helpers are compiled separately by each integration test crate"
+)]
 pub fn write_test_keychain_entry(
     store_path: &std::path::Path,
     service: &str,
@@ -46,7 +55,10 @@ pub fn write_test_keychain_entry(
 }
 
 /// Read a service/account entry from the fake keychain store.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "shared helpers are compiled separately by each integration test crate"
+)]
 pub fn read_test_keychain_entry(
     store_path: &std::path::Path,
     service: &str,
