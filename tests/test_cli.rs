@@ -193,6 +193,38 @@ fn test_read_only_denies_mutating_command_before_config_load() {
         .stderr(predicate::str::contains("table mutations"));
 }
 
+// Command-facing read-only assertions for the two handlers whose hand-rolled
+// policy guards were removed once enforcement moved into the client seam
+// (servicenow-cli-82). These prove the CLI still surfaces PolicyError for the
+// command as a whole, complementing the client-level denial tests.
+#[test]
+fn test_read_only_denies_attachment_upload() {
+    cargo_bin_cmd!("snow-cli")
+        .args([
+            "--read-only",
+            "attachment",
+            "upload",
+            "--file",
+            "/tmp/does-not-need-to-exist.txt",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("POLICY_DENIED"))
+        .stderr(predicate::str::contains("attachment upload"));
+}
+
+#[test]
+fn test_read_only_denies_script_run() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["--read-only", "script", "run", "--code", "gs.info('x')"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("POLICY_DENIED"))
+        .stderr(predicate::str::contains("script run"));
+}
+
 #[test]
 fn test_snow_cli_ro_help_omits_mutating_commands() {
     cargo_bin_cmd!("snow-cli-ro")
