@@ -3,6 +3,7 @@ use std::io::IsTerminal;
 use crate::cli::args::{ApiArgs, ApiCommands, OutputFormat};
 use crate::cli::io::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::cli::output;
+use http::Method;
 
 pub async fn handle(
     args: ApiArgs,
@@ -16,7 +17,6 @@ pub async fn handle(
             tracing::info!("API GET {}", path);
 
             let extra_headers = parse_headers(&header)?;
-            crate::policy::ensure_raw_api_get_headers_allowed(&extra_headers)?;
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
@@ -24,7 +24,7 @@ pub async fn handle(
                 client.get(&path).await?
             } else {
                 client
-                    .request_with_headers(reqwest::Method::GET, &path, None, &[], &extra_headers)
+                    .request_with_headers(Method::GET, &path, None, &[], &extra_headers)
                     .await?
             };
 
@@ -42,13 +42,7 @@ pub async fn handle(
                 client.post(&path, &body).await?
             } else {
                 client
-                    .request_with_headers(
-                        reqwest::Method::POST,
-                        &path,
-                        Some(&body),
-                        &[],
-                        &extra_headers,
-                    )
+                    .request_with_headers(Method::POST, &path, Some(&body), &[], &extra_headers)
                     .await?
             };
 
@@ -66,13 +60,7 @@ pub async fn handle(
                 client.put(&path, &body).await?
             } else {
                 client
-                    .request_with_headers(
-                        reqwest::Method::PUT,
-                        &path,
-                        Some(&body),
-                        &[],
-                        &extra_headers,
-                    )
+                    .request_with_headers(Method::PUT, &path, Some(&body), &[], &extra_headers)
                     .await?
             };
 
@@ -89,7 +77,7 @@ pub async fn handle(
                 client.delete(&path).await?
             } else {
                 client
-                    .request_with_headers(reqwest::Method::DELETE, &path, None, &[], &extra_headers)
+                    .request_with_headers(Method::DELETE, &path, None, &[], &extra_headers)
                     .await?
             };
 
@@ -153,11 +141,14 @@ fn read_data_from<R: std::io::Read>(
 ///
 /// For JSON format: pretty-prints if the body is valid JSON, otherwise raw.
 /// For CSV format: prints raw body as-is (API responses may not be tabular).
-async fn print_response(response: reqwest::Response, format: &OutputFormat) -> anyhow::Result<()> {
+async fn print_response(
+    response: crate::client::ClientResponse,
+    format: &OutputFormat,
+) -> anyhow::Result<()> {
     let status = response.status();
     let body = response.text().await?;
 
-    tracing::debug!(status = status.as_u16(), body_len = body.len(), "Response");
+    tracing::debug!(status = status, body_len = body.len(), "Response");
 
     match format {
         OutputFormat::Json => {

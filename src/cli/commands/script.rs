@@ -3,10 +3,8 @@ use std::io::IsTerminal;
 use crate::cli::args::{OutputFormat, ScriptArgs, ScriptCommands};
 use crate::cli::io::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::cli::output;
-use http::HeaderMap;
 
 const FORM_SCRIPT_ENDPOINT: &str = "/sys.scripts.do";
-const FORM_SCRIPT_BOOTSTRAP_PATH: &str = "/sys.scripts.modern.do";
 
 struct ScriptRunOptions {
     scope: String,
@@ -99,164 +97,42 @@ async fn execute_background_script(
         "Executing background script"
     );
 
-    if crate::policy::active_policy().mode() == crate::policy::PolicyMode::ReadOnly {
-        return Err(crate::policy::PolicyError {
-            operation: "script run".to_string(),
-            mode: crate::policy::PolicyMode::ReadOnly,
-            capability: crate::policy::CommandCapability::RemoteWrite,
-            reason: "read-only policy does not allow background script execution".to_string(),
-        }
-        .into());
-    }
-
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
     let requires_form_session = endpoint_requires_form_session(&options.endpoint);
-    let form_session = if requires_form_session {
-        Some(
-            client
-                .ensure_form_session(FORM_SCRIPT_BOOTSTRAP_PATH)
-                .await?,
-        )
-    } else {
-        None
-    };
-
-    let url = client.authenticated_url(&options.endpoint)?;
-
-    let response = if requires_form_session {
-        let form_session = form_session
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Missing form session for script execution."))?;
-        let cookie_header = form_session.cookie_header.clone();
-        let request_headers = sanitized_request_headers(
-            &HeaderMap::new(),
-            &[
-                ("Accept", "text/html,application/xhtml+xml"),
-                ("Cookie", cookie_header.as_str()),
-                ("X-UserToken", form_session.g_ck.as_str()),
-            ],
-        );
-
+    if requires_form_session {
         eprintln!(
             "Using ServiceNow background script endpoint: {} (scope={})",
             options.endpoint, options.scope
         );
+    }
 
-        let mut form_field_names = vec!["script", "runscript", "sysparm_ck", "sys_scope"];
-        if options.rollback {
-            form_field_names.push("record_for_rollback");
-        }
-        if options.sandbox {
-            form_field_names.push("sandbox");
-        }
-        if options.scriptlet {
-            form_field_names.push("scriptlet");
-        }
-        if options.quota_managed_transaction {
-            form_field_names.push("quota_managed_transaction");
-        }
-
-        tracing::debug!(
-            method = "POST",
-            url = %url,
-            endpoint = options.endpoint,
-            headers = ?request_headers,
-            script_len = script_len,
-            body_encoding = "application/x-www-form-urlencoded",
-            form_fields = ?form_field_names,
-            "Sending request"
-        );
-
-        let mut form_fields = vec![
-            ("script", script),
-            ("runscript", "Run script"),
-            ("sysparm_ck", form_session.g_ck.as_str()),
-            ("sys_scope", options.scope.as_str()),
-        ];
-        if options.rollback {
-            form_fields.push(("record_for_rollback", "on"));
-        }
-        if options.sandbox {
-            form_fields.push(("sandbox", "on"));
-        }
-        if options.scriptlet {
-            form_fields.push(("scriptlet", "on"));
-        }
-        if options.quota_managed_transaction {
-            form_fields.push(("quota_managed_transaction", "on"));
-        }
-
-        let request = client
-            .http()
-            .post(&url)
-            .header("Accept", "text/html,application/xhtml+xml")
-            .header("Cookie", cookie_header)
-            .header("X-UserToken", form_session.g_ck.as_str())
-            .form(&form_fields)
-            .build()?;
-
-        crate::client::log_raw_http_request(&request);
-
-        client.http().execute(request).await?
-    } else {
-        let auth_headers = client.authenticator().authenticate().await?;
-        let request_headers = sanitized_request_headers(
-            &auth_headers,
-            &[
-                ("Accept", "application/json"),
-                ("Content-Type", "application/json"),
-            ],
-        );
-
-        tracing::debug!(
-            method = "POST",
-            url = %url,
-            endpoint = options.endpoint,
-            headers = ?request_headers,
-            script_len = script_len,
-            body_encoding = "application/json",
-            body_keys = ?["script", "scope"],
-            "Sending request"
-        );
-
-        let body = serde_json::json!({
-            "script": script,
-            "scope": options.scope,
-        });
-
-        let request = client
-            .http()
-            .post(&url)
-            .headers(auth_headers.clone())
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .body(serde_json::to_string(&body)?)
-            .build()?;
-
-        crate::client::log_raw_http_request(&request);
-
-        client.http().execute(request).await?
-    };
+    let response = client
+        .execute_background_script(
+            &options.endpoint,
+            script,
+            &options.scope,
+            crate::client::BackgroundScriptOptions {
+                rollback: options.rollback,
+                sandbox: options.sandbox,
+                scriptlet: options.scriptlet,
+                quota_managed_transaction: options.quota_managed_transaction,
+            },
+        )
+        .await?;
 
     let status = response.status();
-    let final_url = response.url().to_string();
+    let final_url = response.final_url().to_string();
     let response_headers = response.headers().clone();
 
-    crate::client::log_raw_http_response(&final_url, status, response.headers());
-
     tracing::debug!(
-        status = status.as_u16(),
+        status = status,
         url = %final_url,
         "Received response"
     );
 
-    if !status.is_success() {
+    if !(200..300).contains(&status) {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!(
-            "Script execution failed with status {}: {}",
-            status.as_u16(),
-            body
-        );
+        anyhow::bail!("Script execution failed with status {}: {}", status, body);
     }
 
     let server_timing = response_headers
@@ -268,7 +144,7 @@ async fn execute_background_script(
     if requires_form_session {
         response_body = validate_background_script_response(
             &response_body,
-            status.as_u16(),
+            status,
             &final_url,
             server_timing.as_deref(),
         )?;
@@ -322,7 +198,7 @@ async fn handle_run(
 }
 
 fn endpoint_requires_form_session(endpoint: &str) -> bool {
-    if let Ok(url) = reqwest::Url::parse(endpoint) {
+    if let Ok(url) = url::Url::parse(endpoint) {
         return url
             .path()
             .trim_end_matches('/')
@@ -335,49 +211,6 @@ fn endpoint_requires_form_session(endpoint: &str) -> bool {
         .unwrap_or(endpoint)
         .trim_end_matches('/')
         .ends_with(FORM_SCRIPT_ENDPOINT)
-}
-
-fn sanitized_request_headers(
-    auth_headers: &HeaderMap,
-    extra_headers: &[(&str, &str)],
-) -> Vec<(String, String)> {
-    let mut headers = auth_headers
-        .iter()
-        .map(|(name, value)| {
-            let header_name = name.as_str().to_string();
-            let value = value
-                .to_str()
-                .map(str::to_string)
-                .unwrap_or_else(|_| "<non-utf8>".to_string());
-            let sanitized = sanitize_header_value(name.as_str(), &value);
-            (header_name, sanitized)
-        })
-        .collect::<Vec<_>>();
-
-    for (name, value) in extra_headers {
-        headers.push((name.to_string(), sanitize_header_value(name, value)));
-    }
-
-    headers
-}
-
-fn sanitize_header_value(name: &str, value: &str) -> String {
-    if is_sensitive_header(name) {
-        "[REDACTED]".to_string()
-    } else {
-        value.to_string()
-    }
-}
-
-fn is_sensitive_header(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    matches!(
-        name.as_str(),
-        "authorization" | "cookie" | "set-cookie" | "x-usertoken" | "x-user-token"
-    ) || name.contains("token")
-        || name.contains("secret")
-        || name.contains("key")
-        || name.contains("auth")
 }
 
 fn decode_basic_html_entities(text: &str) -> String {
@@ -722,61 +555,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_header_value_redacts_sensitive_headers() {
-        assert_eq!(
-            sanitize_header_value("Authorization", "Bearer secret"),
-            "[REDACTED]"
-        );
-        assert_eq!(
-            sanitize_header_value("x-usertoken", "token-123"),
-            "[REDACTED]"
-        );
-        assert_eq!(
-            sanitize_header_value("Cookie", "JSESSIONID=abc"),
-            "[REDACTED]"
-        );
-    }
-
-    #[test]
-    fn test_sanitize_header_value_preserves_non_sensitive_headers() {
-        assert_eq!(
-            sanitize_header_value("Accept", "application/json"),
-            "application/json"
-        );
-    }
-
-    #[test]
-    fn test_sanitized_request_headers_redacts_auth_and_extra_headers() {
-        let mut auth_headers = HeaderMap::new();
-        auth_headers.insert(
-            "Authorization",
-            http::HeaderValue::from_static("Bearer secret"),
-        );
-        auth_headers.insert(
-            "X-Correlation-Id",
-            http::HeaderValue::from_static("abc-123"),
-        );
-
-        let sanitized = sanitized_request_headers(
-            &auth_headers,
-            &[("Accept", "application/json"), ("X-UserToken", "gck-123")],
-        );
-
-        assert!(sanitized.iter().any(
-            |(name, value)| name.eq_ignore_ascii_case("authorization") && value == "[REDACTED]"
-        ));
-        assert!(sanitized.iter().any(
-            |(name, value)| name.eq_ignore_ascii_case("x-correlation-id") && value == "abc-123"
-        ));
-        assert!(
-            sanitized
-                .iter()
-                .any(|(name, value)| name.eq_ignore_ascii_case("x-usertoken")
-                    && value == "[REDACTED]")
-        );
-    }
-
-    #[test]
     fn test_resolve_script_from_code() {
         let script = resolve_script_from(
             None,
@@ -885,31 +663,5 @@ mod tests {
         )
         .unwrap();
         assert_eq!(script, "code content");
-    }
-
-    #[tokio::test]
-    async fn execute_background_script_rejects_read_only_policy() {
-        crate::policy::set_active_policy(crate::policy::ExecutionPolicy::read_only());
-        let result = execute_background_script(
-            "dummy",
-            None,
-            None,
-            "gs.info('test')",
-            &ScriptRunOptions {
-                scope: "global".to_string(),
-                endpoint: FORM_SCRIPT_ENDPOINT.to_string(),
-                rollback: false,
-                sandbox: false,
-                scriptlet: false,
-                quota_managed_transaction: false,
-            },
-        )
-        .await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        let policy_err = err.downcast_ref::<crate::policy::PolicyError>();
-        assert!(policy_err.is_some(), "Expected PolicyError, got: {err}");
-        assert_eq!(policy_err.unwrap().code(), "POLICY_DENIED");
-        crate::policy::set_active_policy(crate::policy::ExecutionPolicy::full_access());
     }
 }

@@ -502,45 +502,24 @@ pub async fn exchange_authorization_code(
 }
 
 async fn send_oauth_token_request(url: &str, body: &str) -> anyhow::Result<TokenSet> {
-    let http_client = reqwest::Client::new();
-
     tracing::debug!(url = %url, "Requesting OAuth2 token");
 
-    let request = http_client
-        .post(url)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(body.to_string())
-        .build()?;
-
-    crate::client::log_raw_http_request(&request);
-
-    let response = http_client.execute(request).await?;
-
-    if let Some(jsessionid) = crate::client::extract_jsessionid_from_headers(response.headers()) {
-        tracing::debug!(
-            url = %url,
-            jsessionid = %jsessionid,
-            "Captured JSESSIONID from OAuth2 token response"
-        );
-    }
-
-    let status = response.status();
-    crate::client::log_raw_http_response(url, status, response.headers());
-    if !status.is_success() {
-        let error_body = response.text().await.unwrap_or_default();
+    let response = crate::client::post_oauth_token_form(url, body).await?;
+    if !(200..300).contains(&response.status) {
+        let error_body = response.text();
         tracing::error!(
-            status = status.as_u16(),
+            status = response.status,
             body = %error_body,
             "OAuth2 token request failed"
         );
         anyhow::bail!(
             "OAuth2 token request failed with status {}: {}",
-            status.as_u16(),
+            response.status,
             error_body
         );
     }
 
-    let token_response: TokenResponse = response.json().await?;
+    let token_response: TokenResponse = serde_json::from_slice(&response.body)?;
 
     tracing::debug!(
         expires_in = token_response.expires_in,

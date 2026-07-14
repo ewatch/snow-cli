@@ -60,6 +60,7 @@ rand = "0.10.1"
 sha2 = "0.11"
 futures-util = "0.3"
 tokio-tungstenite = "0.29"
+url = "2"
 urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 
@@ -93,6 +94,8 @@ unused = { level = "warn", priority = -1 }
 # Placeholders and debug leftovers must never reach main. These have zero
 # occurrences today; denying them keeps it that way.
 dbg_macro = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
 todo = "deny"
 unimplemented = "deny"
 # Panicking constructs are banned in production code. Production currently has

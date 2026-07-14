@@ -1,11 +1,17 @@
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "src/client is the deliberate HTTP transport adapter"
+)]
+
 pub mod error;
 pub mod pagination;
 
 use std::fmt;
 use std::time::Duration;
 
-use http::HeaderMap;
-use reqwest::{Client, Method, Response, Url};
+use http::{HeaderMap, Method};
+use reqwest::{Client, Response as TransportResponse, Url};
 
 use crate::cli::spinner::SnowflakeSpinner;
 
@@ -65,6 +71,9 @@ const HTTP_DEBUG_ENV_VAR: &str = "SNOW_CLI_DEBUG_HTTP";
 const HTTP_DEBUG_INCLUDE_SENSITIVE_ENV_VAR: &str = "SNOW_CLI_DEBUG_HTTP_INCLUDE_SENSITIVE";
 
 const HTTP_DEBUG_BODY_PREVIEW_LIMIT: usize = 2048;
+
+const FORM_SCRIPT_ENDPOINT: &str = "/sys.scripts.do";
+const FORM_SCRIPT_BOOTSTRAP_PATH: &str = "/sys.scripts.modern.do";
 
 fn parse_http_debug_env_value(value: &str) -> bool {
     let normalized = value.trim().to_ascii_lowercase();
@@ -518,10 +527,68 @@ struct SessionState {
     form_session: Option<FormSession>,
 }
 
+/// Opaque response returned by authenticated ServiceNow operations.
+///
+/// Transport details stay private to the client module while callers retain
+/// the status, selected headers, body, and streaming behavior they need.
+#[derive(Debug)]
+pub struct ClientResponse {
+    inner: TransportResponse,
+}
+
+impl ClientResponse {
+    pub fn status(&self) -> u16 {
+        self.inner.status().as_u16()
+    }
+
+    pub fn headers(&self) -> &HeaderMap {
+        self.inner.headers()
+    }
+
+    pub fn final_url(&self) -> &str {
+        self.inner.url().as_str()
+    }
+
+    pub fn content_length(&self) -> Option<u64> {
+        self.inner.content_length()
+    }
+
+    pub async fn text(self) -> anyhow::Result<String> {
+        Ok(self.inner.text().await?)
+    }
+
+    pub async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(self.inner.chunk().await?.map(|chunk| chunk.to_vec()))
+    }
+}
+
+/// Buffered result of an explicitly unauthenticated external HTTP operation.
+#[derive(Debug)]
+pub struct ExternalResponse {
+    pub status: u16,
+    pub final_url: String,
+    pub body: Vec<u8>,
+}
+
+impl ExternalResponse {
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.body).into_owned()
+    }
+}
+
+/// Optional execution flags for a ServiceNow background script request.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BackgroundScriptOptions {
+    pub rollback: bool,
+    pub sandbox: bool,
+    pub scriptlet: bool,
+    pub quota_managed_transaction: bool,
+}
+
 /// High-level HTTP client for ServiceNow API interactions.
 ///
-/// Wraps `reqwest::Client` with authentication, pagination,
-/// and error mapping.
+/// Hides the HTTP transport behind authentication, policy enforcement,
+/// pagination, and error mapping.
 pub struct SnowClient {
     http: Client,
     base_url: String,
@@ -584,10 +651,81 @@ fn is_safe_authenticated_url(url: &Url) -> bool {
     }
 }
 
+fn endpoint_requires_form_session(endpoint: &str) -> bool {
+    if let Ok(url) = Url::parse(endpoint) {
+        return url
+            .path()
+            .trim_end_matches('/')
+            .ends_with(FORM_SCRIPT_ENDPOINT);
+    }
+
+    endpoint
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(endpoint)
+        .trim_end_matches('/')
+        .ends_with(FORM_SCRIPT_ENDPOINT)
+}
+
 fn same_origin(left: &Url, right: &Url) -> bool {
     left.scheme() == right.scheme()
         && left.host_str() == right.host_str()
         && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn validate_external_url(url: &Url, operation: &str) -> anyhow::Result<()> {
+    if is_safe_authenticated_url(url) {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Refusing to {operation} from unsafe URL '{}'. External HTTP requires HTTPS, except loopback HTTP for local tests.",
+        url
+    )
+}
+
+async fn buffered_external_response(
+    response: TransportResponse,
+) -> anyhow::Result<ExternalResponse> {
+    let status = response.status();
+    let final_url = response.url().clone();
+    validate_external_url(&final_url, "follow redirects")?;
+    log_raw_http_response(final_url.as_str(), status, response.headers());
+    let body = response.bytes().await?.to_vec();
+    Ok(ExternalResponse {
+        status: status.as_u16(),
+        final_url: final_url.to_string(),
+        body,
+    })
+}
+
+/// Post an unauthenticated OAuth token form to a validated endpoint.
+pub async fn post_oauth_token_form(url: &str, body: &str) -> anyhow::Result<ExternalResponse> {
+    let url = Url::parse(url)?;
+    validate_external_url(&url, "request OAuth tokens")?;
+    let http = Client::builder()
+        .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .build()?;
+    let request = http
+        .post(url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body.to_string())
+        .build()?;
+    log_raw_http_request(&request);
+    buffered_external_response(http.execute(request).await?).await
+}
+
+/// Fetch one unauthenticated remote skill resource from a validated URL.
+pub async fn fetch_skill_resource(url: &url::Url) -> anyhow::Result<ExternalResponse> {
+    validate_external_url(url, "fetch a skill resource")?;
+    let http = Client::builder()
+        .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .build()?;
+    let request = http.get(url.clone()).header("Accept", "*/*").build()?;
+    log_raw_http_request(&request);
+    buffered_external_response(http.execute(request).await?).await
 }
 
 pub(crate) fn resolve_authenticated_url(base_url: &str, path: &str) -> anyhow::Result<String> {
@@ -671,16 +809,6 @@ impl SnowClient {
         &self.base_url
     }
 
-    /// Get a reference to the underlying reqwest client.
-    pub fn http(&self) -> &Client {
-        &self.http
-    }
-
-    /// Get a reference to the authenticator.
-    pub fn authenticator(&self) -> &dyn crate::auth::Authenticator {
-        self.authenticator.as_ref()
-    }
-
     pub fn jsessionid(&self) -> Option<&str> {
         self.session.jsessionid.as_deref()
     }
@@ -693,12 +821,12 @@ impl SnowClient {
         &mut self,
         bootstrap_path: &str,
     ) -> anyhow::Result<FormSession> {
+        let url = self.authorize_instance_request(&Method::GET, bootstrap_path)?;
         if let Some(session) = self.session.form_session.clone() {
             return Ok(session);
         }
 
         let auth_headers = self.authenticator.authenticate().await?;
-        let url = self.url(bootstrap_path)?;
 
         tracing::debug!(url = %url, "Bootstrapping form session context");
 
@@ -945,8 +1073,127 @@ impl SnowClient {
         resolve_authenticated_url(&self.base_url, path)
     }
 
+    /// Apply the common policy and origin checks required before any
+    /// authenticated ServiceNow network operation.
+    fn authorize_instance_request(&self, method: &Method, path: &str) -> anyhow::Result<String> {
+        self.policy.ensure_request_allowed(method, path)?;
+        self.authenticated_url(path)
+    }
+
+    /// Upload an attachment through the authenticated ServiceNow attachment interface.
+    pub async fn upload_attachment(
+        &mut self,
+        table: &str,
+        table_sys_id: &str,
+        file_name: &str,
+        file_bytes: Vec<u8>,
+    ) -> anyhow::Result<ClientResponse> {
+        const PATH: &str = "/api/now/attachment/upload";
+        let url = self.authorize_instance_request(&Method::POST, PATH)?;
+        let auth_headers = self.authenticator.authenticate().await?;
+        let file_part =
+            reqwest::multipart::Part::bytes(file_bytes).file_name(file_name.to_string());
+        let form = reqwest::multipart::Form::new()
+            .text("table_name", table.to_string())
+            .text("table_sys_id", table_sys_id.to_string())
+            .text("file_name", file_name.to_string())
+            .part("file", file_part);
+        let request = self
+            .http
+            .post(&url)
+            .query(&[
+                ("table_name", table),
+                ("table_sys_id", table_sys_id),
+                ("file_name", file_name),
+            ])
+            .header("Accept", "application/json")
+            .headers(auth_headers)
+            .multipart(form)
+            .build()?;
+        log_raw_http_request(&request);
+        let response = self.http.execute(request).await?;
+        log_raw_http_response(&url, response.status(), response.headers());
+        Ok(ClientResponse { inner: response })
+    }
+
+    /// Start a streaming attachment download through the authenticated client seam.
+    pub async fn download_attachment(&mut self, path: &str) -> anyhow::Result<ClientResponse> {
+        let url = self.authorize_instance_request(&Method::GET, path)?;
+        let auth_headers = self.authenticator.authenticate().await?;
+        let request = self
+            .http
+            .get(&url)
+            .header("Accept", "*/*")
+            .headers(auth_headers)
+            .build()?;
+        log_raw_http_request(&request);
+        let response = self.http.execute(request).await?;
+        log_raw_http_response(&url, response.status(), response.headers());
+        Ok(ClientResponse { inner: response })
+    }
+
+    /// Execute a background script using the form or JSON protocol required by the endpoint.
+    pub async fn execute_background_script(
+        &mut self,
+        endpoint: &str,
+        script: &str,
+        scope: &str,
+        options: BackgroundScriptOptions,
+    ) -> anyhow::Result<ClientResponse> {
+        let url = self.authorize_instance_request(&Method::POST, endpoint)?;
+
+        let request = if endpoint_requires_form_session(endpoint) {
+            let session = self.ensure_form_session(FORM_SCRIPT_BOOTSTRAP_PATH).await?;
+            let mut form_fields = vec![
+                ("script", script.to_string()),
+                ("runscript", "Run script".to_string()),
+                ("sysparm_ck", session.g_ck.clone()),
+                ("sys_scope", scope.to_string()),
+            ];
+            if options.rollback {
+                form_fields.push(("record_for_rollback", "on".to_string()));
+            }
+            if options.sandbox {
+                form_fields.push(("sandbox", "on".to_string()));
+            }
+            if options.scriptlet {
+                form_fields.push(("scriptlet", "on".to_string()));
+            }
+            if options.quota_managed_transaction {
+                form_fields.push(("quota_managed_transaction", "on".to_string()));
+            }
+
+            self.http
+                .post(&url)
+                .header("Accept", "text/html,application/xhtml+xml")
+                .header("Cookie", session.cookie_header)
+                .header("X-UserToken", session.g_ck)
+                .form(&form_fields)
+                .build()?
+        } else {
+            let auth_headers = self.authenticator.authenticate().await?;
+            let body = serde_json::json!({ "script": script, "scope": scope });
+            self.http
+                .post(&url)
+                .headers(auth_headers)
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .body(serde_json::to_string(&body)?)
+                .build()?
+        };
+
+        log_raw_http_request(&request);
+        let response = self.http.execute(request).await?;
+        log_raw_http_response(
+            response.url().as_str(),
+            response.status(),
+            response.headers(),
+        );
+        Ok(ClientResponse { inner: response })
+    }
+
     /// Send an authenticated GET request.
-    pub async fn get(&mut self, path: &str) -> anyhow::Result<Response> {
+    pub async fn get(&mut self, path: &str) -> anyhow::Result<ClientResponse> {
         self.request(Method::GET, path, None, &[]).await
     }
 
@@ -955,27 +1202,27 @@ impl SnowClient {
         &mut self,
         path: &str,
         params: &[(&str, &str)],
-    ) -> anyhow::Result<Response> {
+    ) -> anyhow::Result<ClientResponse> {
         self.request(Method::GET, path, None, params).await
     }
 
     /// Send an authenticated POST request with a JSON body.
-    pub async fn post(&mut self, path: &str, body: &str) -> anyhow::Result<Response> {
+    pub async fn post(&mut self, path: &str, body: &str) -> anyhow::Result<ClientResponse> {
         self.request(Method::POST, path, Some(body), &[]).await
     }
 
     /// Send an authenticated PUT request with a JSON body.
-    pub async fn put(&mut self, path: &str, body: &str) -> anyhow::Result<Response> {
+    pub async fn put(&mut self, path: &str, body: &str) -> anyhow::Result<ClientResponse> {
         self.request(Method::PUT, path, Some(body), &[]).await
     }
 
     /// Send an authenticated PATCH request with a JSON body.
-    pub async fn patch(&mut self, path: &str, body: &str) -> anyhow::Result<Response> {
+    pub async fn patch(&mut self, path: &str, body: &str) -> anyhow::Result<ClientResponse> {
         self.request(Method::PATCH, path, Some(body), &[]).await
     }
 
     /// Send an authenticated DELETE request.
-    pub async fn delete(&mut self, path: &str) -> anyhow::Result<Response> {
+    pub async fn delete(&mut self, path: &str) -> anyhow::Result<ClientResponse> {
         self.request(Method::DELETE, path, None, &[]).await
     }
 
@@ -989,7 +1236,9 @@ impl SnowClient {
         body: Option<&str>,
         params: &[(&str, &str)],
         extra_headers: &[(String, String)],
-    ) -> anyhow::Result<Response> {
+    ) -> anyhow::Result<ClientResponse> {
+        self.policy
+            .ensure_raw_api_headers_allowed(&method, extra_headers)?;
         self.request_inner(method, path, body, params, extra_headers)
             .await
     }
@@ -1001,7 +1250,7 @@ impl SnowClient {
         path: &str,
         body: Option<&str>,
         params: &[(&str, &str)],
-    ) -> anyhow::Result<Response> {
+    ) -> anyhow::Result<ClientResponse> {
         self.request_inner(method, path, body, params, &[]).await
     }
 
@@ -1013,9 +1262,8 @@ impl SnowClient {
         body: Option<&str>,
         params: &[(&str, &str)],
         extra_headers: &[(String, String)],
-    ) -> anyhow::Result<Response> {
-        self.policy.ensure_request_allowed(&method, path)?;
-        let url = self.authenticated_url(path)?;
+    ) -> anyhow::Result<ClientResponse> {
+        let url = self.authorize_instance_request(&method, path)?;
 
         for attempt in 0..=MAX_AUTH_RETRIES {
             let auth_headers = self.authenticator.authenticate().await?;
@@ -1113,7 +1361,7 @@ impl SnowClient {
                 return Err(api_error.into());
             }
 
-            return Ok(response);
+            return Ok(ClientResponse { inner: response });
         }
 
         unreachable!("Loop should have returned by now")
@@ -1401,6 +1649,69 @@ mod tests {
             .downcast_ref::<crate::policy::PolicyError>()
             .expect("error should be a PolicyError");
         assert_eq!(policy_error.mode, crate::policy::PolicyMode::ReadOnly);
+    }
+
+    #[tokio::test]
+    async fn read_only_client_denies_attachment_upload_before_network_io() {
+        let mut client = SnowClient::with_config(
+            "https://test.service-now.com".to_string(),
+            Box::new(MockAuth::new("token")),
+            ClientConfig {
+                policy: ExecutionPolicy::read_only(),
+                ..ClientConfig::default()
+            },
+        )
+        .unwrap();
+
+        let error = client
+            .upload_attachment("incident", "abc123", "test.txt", b"payload".to_vec())
+            .await
+            .expect_err("read-only client must reject attachment upload");
+        assert!(error.downcast_ref::<crate::policy::PolicyError>().is_some());
+    }
+
+    #[tokio::test]
+    async fn read_only_client_denies_background_script_before_bootstrap() {
+        let mut client = SnowClient::with_config(
+            "https://test.service-now.com".to_string(),
+            Box::new(MockAuth::new("token")),
+            ClientConfig {
+                policy: ExecutionPolicy::read_only(),
+                ..ClientConfig::default()
+            },
+        )
+        .unwrap();
+
+        let error = client
+            .execute_background_script(
+                FORM_SCRIPT_ENDPOINT,
+                "gs.info('test')",
+                "global",
+                BackgroundScriptOptions::default(),
+            )
+            .await
+            .expect_err("read-only client must reject script execution");
+        assert!(error.downcast_ref::<crate::policy::PolicyError>().is_some());
+    }
+
+    #[tokio::test]
+    async fn read_only_client_denies_raw_get_method_override() {
+        let mut client = SnowClient::with_config(
+            "https://test.service-now.com".to_string(),
+            Box::new(MockAuth::new("token")),
+            ClientConfig {
+                policy: ExecutionPolicy::read_only(),
+                ..ClientConfig::default()
+            },
+        )
+        .unwrap();
+        let headers = vec![("X-HTTP-Method-Override".to_string(), "DELETE".to_string())];
+
+        let error = client
+            .request_with_headers(Method::GET, "/api/now/table/incident", None, &[], &headers)
+            .await
+            .expect_err("read-only client must reject method override");
+        assert!(error.downcast_ref::<crate::policy::PolicyError>().is_some());
     }
 
     /// A full-access client (the constructor default) permits writes even when

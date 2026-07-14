@@ -72,7 +72,7 @@ impl SnuMessage {
 /// or trailing slash. Returns `None` for inputs that are not a parseable URL
 /// with a host.
 pub fn normalize_origin(url: &str) -> Option<String> {
-    let parsed = reqwest::Url::parse(url).ok()?;
+    let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?;
     let port = parsed.port_or_known_default()?;
     Some(format!("{}://{}:{}", parsed.scheme(), host, port))

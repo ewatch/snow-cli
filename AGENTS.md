@@ -65,6 +65,13 @@ Keep this file limited to durable contributor rules and entry points. Do not add
 - Keep credentials out of plaintext configuration; use the OS keychain integration.
 - Send structured command results to stdout and logs or errors to stderr.
 
+### Module boundaries
+
+- Preserve the dependency direction `models -> config -> auth -> client -> cli/commands`; `policy` and `snu` are cross-cutting modules.
+- `src/client/` is the only HTTP seam. Commands must use its interface and must not import `reqwest`, construct HTTP clients, or expose transport response types.
+- Active-policy mutation is process initialization owned by the CLI launch paths in `src/lib.rs`; command implementations must not mutate or re-read it.
+- Process termination belongs only in the binary roots. Any new module-boundary exception requires an explicit structural-test allow-list change and rationale.
+
 ## How to Pick Up Work
 
 1. Run `bd ready --json` to find unblocked work.
