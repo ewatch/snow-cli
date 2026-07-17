@@ -5,17 +5,34 @@ All notable changes to `snow-cli` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows semantic versioning conventions while it is pre-1.0.
 
-## [Unreleased]
+## [0.6.0] - 2026-07-17
 
 ### Added
 
 - Bounded `table list` defaults for agent workflows: at most 20 records without `--limit`, a new `--all` flag for full fetches, and a compact table-aware field projection without `--fields` (pass `'*'` for every field). List responses carry `total`/`returned`/`truncated` result metadata in every format except CSV.
 - Per-field content cap for `table list` and `table get`: field values longer than 2,000 characters are cut with an inline `… [truncated N of M chars; use --full]` size hint, list metadata reports `fields_truncated`, and the new `--full` flag disables the cap.
 - Added `table stats` backed by the Aggregate API (`GET /api/now/stats/{table}`): returns record counts by default and supports `--group-by`, `--avg`, `--min`, `--max`, `--sum`, and `--having` for grouped aggregates. Available in `snow-cli-ro` as a read-only command.
+- Added an opt-in `graphql query` command for the ServiceNow GraphQL API.
+- Added a token-efficient `auto` output format and made the chosen default output format persistent.
+- Added a `skill install` command for installing agent skills.
+- Added a declarative e2e scenario harness (`scripts/e2e-run`, `tests/e2e/scenarios/**/*.toml`) with a coverage gate, validated against a real PDI.
+- Added a CI workflow running `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test` on every PR and push to main.
 
 ### Changed
 
 - Condensed the `snu` after-help from ~4.3 KB to ~1.3 KB for token economy; the operational detail it carried (broker env vars, `check-connection --verify` semantics, mutation channel) moved to the book's `snu` page, which the help now links.
+- Reworked the `snu` integration around a broker-owned WebSocket connection manager with probe-before-prompt reauthentication and resilient mutation parsing; update/delete mutations now go through the background-script bridge instead of cookie-less REST.
+
+### Fixed
+
+- Fixed `snu check-connection` and `snu get-instance-info` hanging against the legacy bridge protocol.
+- Mapped empty background-script output to an expired-session hint instead of a confusing parse error.
+- Fixed e2e scenario temp-file templates that BSD `mktemp` never randomized, which caused silent setup-step failures and stale-file collisions between runs; scenario setup steps now fail fast.
+
+### Security
+
+- Wrapped OAuth tokens and `now-sdk` credentials in a `Secret<T>` type so they are redacted from `Debug` output and logs.
+- Identifiers are now strictly validated: path-traversal sequences are rejected and `sys_id` values must be 32-hex, backed by `TableName`/`SysId` newtypes used throughout the request path.
 
 ## [0.5.1] - 2026-06-24
 
