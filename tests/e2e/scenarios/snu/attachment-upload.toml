@@ -13,7 +13,7 @@ capture = { sys_id = ".sys_id" }
 
 [[setup]]
 description = "Create a small PNG fixture file to upload"
-shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-attach.XXXXXX\"); mv \"$f\" \"$f.png\"; f=\"$f.png\"; python3 -c 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0cwAAAABJRU5ErkJggg==\"))' > \"$f\"; printf '%s' \"$f\""
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-attach.XXXXXX\") && mv \"$f\" \"$f.png\" && f=\"$f.png\" && python3 -c 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0cwAAAABJRU5ErkJggg==\"))' > \"$f\" && printf '%s' \"$f\""
 capture = { file_path = "raw" }
 
 [command]

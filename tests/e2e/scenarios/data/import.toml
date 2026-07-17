@@ -19,7 +19,7 @@ shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --pro
 
 [[setup]]
 description = "Export a small incident artifact to a temp file"
-shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-export.XXXXXX.json\"); \"$SNOW_CLI_BIN\" data export incident --fields short_description,description,urgency,impact,category --limit 2 --profile e2e-scenario --out \"$f\" >/dev/null; printf '%s' \"$f\""
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-export.XXXXXX\") && mv \"$f\" \"$f.json\" && f=\"$f.json\" && \"$SNOW_CLI_BIN\" data export incident --fields short_description,description,urgency,impact,category --limit 2 --profile e2e-scenario --out \"$f\" >/dev/null && printf '%s' \"$f\""
 capture = { export_path = "raw" }
 
 [command]

@@ -17,7 +17,7 @@ capture = { sys_id = ".sys_id" }
 
 [[setup]]
 description = "Upload a small PNG fixture and capture the attachment sys_id"
-shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-attach.XXXXXX\"); mv \"$f\" \"$f.png\"; f=\"$f.png\"; python3 -c 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0cwAAAABJRU5ErkJggg==\"))' > \"$f\"; \"$SNOW_CLI_BIN\" attachment upload incident \"{{sys_id}}\" --file \"$f\" --profile e2e-scenario --output json | jq -r '.sys_id'; rm -f \"$f\""
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-attach.XXXXXX\") && mv \"$f\" \"$f.png\" && f=\"$f.png\" && python3 -c 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0cwAAAABJRU5ErkJggg==\"))' > \"$f\" && \"$SNOW_CLI_BIN\" attachment upload incident \"{{sys_id}}\" --file \"$f\" --profile e2e-scenario --output json | jq -r '.sys_id' && rm -f \"$f\""
 capture = { attachment_sys_id = "raw" }
 
 [[setup]]

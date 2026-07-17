@@ -17,12 +17,12 @@ shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --pro
 
 [[setup]]
 description = "Write the dataset export spec fixture"
-shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-spec.XXXXXX.json\"); printf '%s' '{\"version\":1,\"kind\":\"dataset-export-spec\",\"tables\":[{\"name\":\"incident\",\"query\":\"number=SNOW_CLI_E2E_NO_MATCH\"}]}' > \"$f\"; printf '%s' \"$f\""
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-spec.XXXXXX\") && mv \"$f\" \"$f.json\" && f=\"$f.json\" && printf '%s' '{\"version\":1,\"kind\":\"dataset-export-spec\",\"tables\":[{\"name\":\"incident\",\"query\":\"number=SNOW_CLI_E2E_NO_MATCH\"}]}' > \"$f\" && printf '%s' \"$f\""
 capture = { spec_path = "raw" }
 
 [[setup]]
 description = "Create an output directory for the package"
-shell = "d=$(mktemp -d \"${TMPDIR:-/tmp}/snow-cli-e2e-pkg.XXXXXX\"); printf '%s' \"$d\""
+shell = "d=$(mktemp -d \"${TMPDIR:-/tmp}/snow-cli-e2e-pkg.XXXXXX\") && printf '%s' \"$d\""
 capture = { out_dir = "raw" }
 
 [command]

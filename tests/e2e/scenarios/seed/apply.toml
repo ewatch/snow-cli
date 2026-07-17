@@ -11,7 +11,7 @@ args = ["profile", "add", "e2e-scenario", "--instance", "https://e2e-offline.exa
 
 [[setup]]
 description = "Write a minimal seed spec fixture"
-shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-seed.XXXXXX.json\"); printf '%s' '{\"kind\":\"seed\",\"records\":[]}' > \"$f\"; printf '%s' \"$f\""
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-seed.XXXXXX\") && mv \"$f\" \"$f.json\" && f=\"$f.json\" && printf '%s' '{\"kind\":\"seed\",\"records\":[]}' > \"$f\" && printf '%s' \"$f\""
 capture = { spec_path = "raw" }
 
 [command]
