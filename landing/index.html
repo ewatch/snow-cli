@@ -3,16 +3,16 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>snow-cli | ServiceNow CLI for Coding Agents</title>
-<meta name="description" content="Inspect ServiceNow Flow Designer workflows, search instance code, analyze custom applications, and review recent development activity with snow-cli." />
+<title>snow-cli | ServiceNow CLI for Agents, Analytics &amp; App Exploration</title>
+<meta name="description" content="Use snow-cli to help coding agents explain ServiceNow low-code logic, query instance analytics, search scoped code, and explore custom applications from the terminal." />
 <meta name="robots" content="index, follow" />
 <meta name="theme-color" content="#08100d" />
 <meta property="og:type" content="website" />
-<meta property="og:title" content="snow-cli | ServiceNow CLI for Coding Agents" />
-<meta property="og:description" content="Give Claude Code, opencode, pi, or another terminal agent a structured CLI for inspecting ServiceNow workflows, code, applications, and development activity." />
+<meta property="og:title" content="snow-cli | ServiceNow CLI for Agents, Analytics &amp; App Exploration" />
+<meta property="og:description" content="Give terminal agents a structured ServiceNow CLI for explaining low-code logic, querying instance analytics, and exploring custom applications." />
 <meta name="twitter:card" content="summary" />
 <meta name="twitter:title" content="snow-cli | ServiceNow CLI for Coding Agents" />
-<meta name="twitter:description" content="Inspect ServiceNow workflows, search instance code, and analyze application activity from the terminal." />
+<meta name="twitter:description" content="Explain ServiceNow low-code logic, query instance analytics, and explore custom apps from the terminal." />
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -27,9 +27,11 @@
   "license": "https://opensource.org/license/mit",
   "programmingLanguage": "Rust",
   "featureList": [
+    "Inspect ServiceNow playbooks and Flow Designer records",
     "List and classify ServiceNow application scopes by origin",
-    "Search code across a ServiceNow instance",
-    "Query and aggregate ServiceNow table records",
+    "Search code in a specific ServiceNow application scope",
+    "Count, group, and aggregate ServiceNow table records",
+    "Execute background scripts with the full snow-cli binary",
     "Run supported commands with a read-only execution policy",
     "Render structured output as JSON, JSON Lines, CSV, TOON, or text"
   ]
@@ -49,6 +51,8 @@
     --signal-dark: #193522;
     --cyan: #79d5d0;
     --amber: #e8c477;
+    --danger: #ff8f82;
+    --danger-dark: #351714;
     --mono: "SFMono-Regular", "Cascadia Code", "Liberation Mono", Menlo, monospace;
     --sans: "Avenir Next", Avenir, "Segoe UI", sans-serif;
     --shadow: 0 30px 90px rgba(0, 0, 0, .42);
@@ -182,6 +186,14 @@
   .evidence-note { margin-top: 20px; padding: 15px 17px; border-left: 2px solid var(--signal); background: rgba(158, 228, 147, .055); color: var(--ink-muted); font-size: 13px; }
   .evidence-note strong { color: var(--ink); }
 
+  .finding-list { margin-top: 24px; display: grid; gap: 12px; }
+  .finding { padding: 14px 16px; border-left: 2px solid var(--cyan); background: rgba(121, 213, 208, .045); color: var(--ink-muted); font-size: 13px; }
+  .finding strong { color: var(--ink); }
+  .session-stat { display: inline-flex; align-items: center; gap: 9px; margin-top: 22px; padding: 8px 11px; border: 1px solid var(--line-bright); border-radius: 6px; color: var(--signal); font: 700 11px/1.4 var(--mono); }
+  .session-stat::before { content: "49"; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--signal-dark); color: var(--signal); }
+  .warning { margin-top: 24px; padding: 17px 18px; border: 1px solid rgba(255, 143, 130, .7); border-left: 5px solid var(--danger); border-radius: 8px; background: var(--danger-dark); color: #ffd4cf; font-size: 14px; box-shadow: 0 0 34px rgba(255, 143, 130, .08); }
+  .warning strong { display: block; margin-bottom: 4px; color: #fff1ef; font: 800 12px/1.4 var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+
   .use-case { position: relative; }
   .use-case.alt { background: rgba(13, 23, 19, .72); }
   .use-grid { display: grid; grid-template-columns: .86fr 1.14fr; gap: 74px; align-items: center; }
@@ -212,23 +224,38 @@
   .replay-shell[open] > summary::after { content: "-"; }
   .replay-intro { padding: 24px 28px 0; color: var(--ink-muted); font-size: 14px; }
   .replay-footnote { padding: 8px 28px 0; color: var(--ink-faint); font-size: 11px; }
-  .replay-stage { margin: 22px 28px 0; border: 1px solid var(--line); border-radius: 11px; overflow: hidden; background: var(--paper); }
-  .replay-meta { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 18px; border-bottom: 1px solid var(--line); color: var(--ink-faint); font: 11px/1.4 var(--mono); }
-  .replay-dots { display: flex; gap: 6px; }
-  .replay-dot { width: 7px; height: 7px; border: 0; border-radius: 50%; background: var(--line-bright); }
-  .replay-dot.active { background: var(--signal); box-shadow: 0 0 0 3px rgba(158, 228, 147, .11); }
-  .replay-content { padding: 25px; }
-  .replay-content.conclusion { border-left: 2px solid var(--signal); background: rgba(158, 228, 147, .035); }
-  .replay-content h3 { font-size: 1.15rem; }
-  .replay-block { margin-top: 20px; }
+  .replay-grid { margin: 22px 28px 28px; display: grid; grid-template-columns: minmax(220px, .72fr) minmax(0, 1.28fr); gap: 1px; border: 1px solid var(--line); border-radius: 11px; overflow: hidden; background: var(--line); }
+  .replay-step, .replay-pane { min-width: 0; padding: 22px; background: var(--paper); outline: 0; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; border: 2px solid transparent; }
+  .replay-step { background: linear-gradient(145deg, var(--paper-soft), var(--paper-raised)); }
+  .replay-step:hover, .replay-step:focus-visible, .replay-step.is-linked,
+  .replay-pane:hover, .replay-pane:focus-visible, .replay-pane.is-linked { position: relative; z-index: 1; border-color: var(--signal); background: #102019; box-shadow: inset 0 0 0 1px rgba(158, 228, 147, .2); }
+  .replay-step:hover + .replay-pane, .replay-step:focus-visible + .replay-pane { border-color: var(--signal); }
+  .replay-step-number { display: block; margin-bottom: 12px; color: var(--signal); font: 700 10px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+  .replay-step h3 { font-size: 1rem; line-height: 1.4; }
+  .replay-step .replay-learning { margin-top: 12px; }
+  .replay-pane.conclusion { border-left-color: var(--signal); background: rgba(158, 228, 147, .035); }
+  .replay-block { margin-top: 15px; }
+  .replay-block:first-child { margin-top: 0; }
   .replay-block > span { display: block; margin-bottom: 7px; color: var(--signal); font: 700 10px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
   .replay-block pre { padding: 14px 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper-raised); color: var(--ink-muted); font-size: 11.5px; line-height: 1.65; }
   .replay-learning { color: var(--ink-muted); font-size: 14px; }
-  .replay-controls { display: flex; justify-content: space-between; gap: 10px; padding: 18px 28px 28px; }
-  .step-btn { min-height: 40px; padding: 0 15px; border: 1px solid var(--line-bright); border-radius: 7px; background: var(--paper-soft); color: var(--ink); cursor: pointer; font: 700 12px/1 var(--mono); }
-  .step-btn:hover, .step-btn:focus-visible { border-color: var(--signal); }
-  .step-btn:disabled { opacity: .38; cursor: default; border-color: var(--line); }
-  .step-btn.autoplay { margin-left: auto; color: var(--signal); }
+  .journey-stack { display: grid; gap: 15px; }
+  .journey-step { position: relative; }
+  .journey-step + .journey-step::before { content: ""; position: absolute; left: 31px; top: -16px; width: 1px; height: 16px; background: var(--signal); }
+  .journey-label { padding: 10px 17px; border-bottom: 1px solid var(--line); color: var(--signal); font: 700 10px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+
+  .format-switcher { padding: 0 18px 18px; }
+  .format-tabs { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
+  .format-tab { min-height: 31px; padding: 0 9px; border: 1px solid var(--line-bright); border-radius: 5px; background: var(--paper-soft); color: var(--ink-muted); cursor: pointer; font: 700 10px/1 var(--mono); }
+  .format-tab:hover, .format-tab:focus-visible { color: var(--ink); border-color: var(--cyan); }
+  .format-tab[aria-selected="true"] { color: #07130b; border-color: var(--signal); background: var(--signal); }
+  .format-output { max-height: 355px; overflow: auto; padding: 14px 15px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink-muted); font-size: 11.5px; line-height: 1.65; white-space: pre; overflow-wrap: normal; }
+  .comparison .format-output { min-height: 220px; }
+  .output-details .format-switcher { padding: 0 18px 18px; }
+  .machine-body .format-switcher { padding: 14px 0 0; }
+  .command-card > .format-switcher { padding: 0 25px 22px; }
+  .command-card pre.cmd { min-height: 0; padding-bottom: 16px; }
+  .command-card pre.format-output, .turn pre.format-output { min-height: 0; padding: 14px 15px; }
 
   .comparison { background: linear-gradient(180deg, rgba(8, 16, 13, .98), rgba(13, 23, 19, .72)); }
   .comparison h2 span { color: var(--signal); font-family: var(--mono); font-size: .66em; white-space: nowrap; }
@@ -280,6 +307,7 @@
     .principle-grid { grid-template-columns: 1fr; }
     .comparison-row { grid-template-columns: 1fr; }
     .comparison-pane + .comparison-pane { border-left: 0; border-top: 1px solid var(--line); }
+    .replay-grid { grid-template-columns: 1fr; }
   }
   @media (max-width: 720px) {
     .wrap { width: min(100% - 30px, 1160px); }
@@ -295,10 +323,11 @@
     .console-body { padding: 20px 17px; }
     .use-grid { gap: 34px; }
     .replay-intro { padding: 21px 18px 0; }
-    .replay-stage { margin: 18px 14px 0; }
-    .replay-content { padding: 20px 16px; }
-    .replay-controls { padding: 14px; flex-wrap: wrap; }
-    .step-btn.autoplay { margin-left: 0; }
+    .replay-grid { margin: 18px 14px 14px; }
+    .replay-step, .replay-pane { padding: 18px 16px; }
+    .replay-pane { border-top: 0; }
+    .format-switcher { padding: 0 13px 13px; }
+    .format-tab { flex: 1 1 auto; }
     .comparison-list { margin-top: 38px; }
     .pane-head { align-items: flex-start; flex-direction: column; gap: 4px; }
     .machine-body { padding: 13px; }
@@ -317,9 +346,9 @@
     <a class="brand" href="#top" aria-label="snow-cli home"><span class="mark" aria-hidden="true">&gt;_</span> snow-cli</a>
     <div class="nav-links">
       <a href="#workflow">Workflow</a>
-      <a href="#code-search">Code search</a>
-      <a href="#custom-apps">Custom apps</a>
-      <a href="#activity">Activity</a>
+      <a href="#low-code">Low-code</a>
+      <a href="#analytics">Analytics</a>
+      <a href="#custom-app">Custom apps</a>
       <span class="release-badge" id="latest-release" aria-live="polite">Latest: v0.6.0</span>
       <a class="nav-cta github-link" href="https://github.com/ewatch/snow-cli" aria-label="snow-cli on GitHub">
         <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 018 1.5c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -351,20 +380,11 @@
         <span class="label">agent</span><br>
         <span class="comment"># Ground the review in the flow table and active records.</span><br>
         <span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output json</span> table schema <span class="value">sys_hub_flow</span><br>
-        <span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output json</span> table list <span class="value">sys_hub_flow</span> <span class="flag">--query</span> <span class="value">'active=true'</span> <span class="flag">--fields</span> name,active,sys_updated_on <span class="flag">--limit</span> 5<span class="cursor"></span>
+        <span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output</span> <span class="value">&lt;format&gt;</span> table list <span class="value">sys_hub_flow</span> <span class="flag">--query</span> <span class="value">'active=true'</span> <span class="flag">--fields</span> name,active,sys_updated_on <span class="flag">--limit</span> 5<span class="cursor"></span>
       </div>
       <details class="output-details">
-        <summary>Output excerpt</summary>
-        <pre><span class="output-label">Captured JSON / first returned active flow</span>
-{
-  "total": 311, "returned": 5, "truncated": true,
-  "records": [{
-    "sys_updated_on": "2026-04-30 08:31:44",
-    "active": "true",
-    "name": "Request Management Approval"
-  }]
-}
-<span class="truncation">... 4 more returned records (truncated for display); response reports 311 total</span></pre>
+        <summary>Output excerpt in all six formats</summary>
+        <div class="format-switcher" data-excerpt="flows-active"></div>
       </details>
     </div>
   </div>
@@ -398,200 +418,175 @@
 
           <div class="turn">
             <div class="turn-head"><span class="speaker">01 / agent</span><span class="intent">Ground the flow query with the table schema.</span></div>
-            <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output json</span> table schema <span class="value">sys_hub_flow</span></pre>
+            <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output</span> <span class="value">&lt;format&gt;</span> table schema <span class="value">sys_hub_flow</span></pre>
             <details class="output-details">
-              <summary>Output excerpt</summary>
-              <pre><span class="output-label">Captured JSON / first 3 of 13 entries</span>
-[
-  { "column": "compiler_build", "type": "string", "label": "Compiler build" },
-  { "column": "generation_source", "type": "string", "label": "Generation source" },
-  { "column": "master_snapshot_digest", "type": "string", "label": "Main snapshot Digest" }
-]
-<span class="truncation">... 10 more schema entries (truncated for display)</span></pre>
+              <summary>Output excerpt in all six formats</summary>
+              <div class="format-switcher" data-excerpt="schema"></div>
             </details>
           </div>
 
           <div class="turn">
             <div class="turn-head"><span class="speaker">02 / agent</span><span class="intent">Read a bounded set of active flows.</span></div>
-            <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output json</span> table list sys_hub_flow \
+            <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output</span> <span class="value">&lt;format&gt;</span> table list sys_hub_flow \
   <span class="flag">--query</span> <span class="value">'active=true'</span> <span class="flag">--fields</span> name,active,sys_updated_on <span class="flag">--limit</span> 5</pre>
             <details class="output-details">
-              <summary>Output excerpt</summary>
-              <pre><span class="output-label">Captured JSON / first 2 returned records</span>
-{
-  "total": 311, "returned": 5, "truncated": true,
-  "records": [
-    { "sys_updated_on": "2026-04-30 08:31:44", "active": "true", "name": "Request Management Approval" },
-    { "sys_updated_on": "2026-04-30 08:25:13", "name": "[Interaction] Review and attach article", "active": "true" }
-  ]
-}
-<span class="truncation">... 3 more returned records (truncated for display); response reports 311 total</span></pre>
+              <summary>Output excerpt in all six formats</summary>
+              <div class="format-switcher" data-excerpt="flows-active"></div>
             </details>
           </div>
 
           <div class="turn">
             <div class="turn-head"><span class="speaker">03 / agent</span><span class="intent">Search configured code sources for GlideAjax references.</span></div>
-            <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output json</span> codesearch search <span class="value">GlideAjax</span> <span class="flag">--limit</span> 10</pre>
+            <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output</span> <span class="value">&lt;format&gt;</span> codesearch search <span class="value">GlideAjax</span> <span class="flag">--limit</span> 10</pre>
             <details class="output-details">
-              <summary>Output excerpt</summary>
-              <pre><span class="output-label">Captured JSON / selected fields from first 2 UI Page hits</span>
-[
-  { "recordType": "sys_ui_page", "hits": [
-    { "name": "$pwd_change", "className": "sys_ui_page", "context": "    var ga = new GlideAjax('PwdAjaxChangePassword');" },
-    { "name": "$pwd_enrollment_form_container", "className": "sys_ui_page", "context": "\tvar ga = new GlideAjax('PwdAjaxEnrollmentProcessor');" }
-  ] }
-]
-<span class="truncation">... 8 more UI Page hits and 20 more source groups (truncated for display); record identifiers omitted</span></pre>
+              <summary>Output excerpt in all six formats</summary>
+              <div class="format-switcher" data-excerpt="glideajax"></div>
             </details>
           </div>
 
           <div class="turn">
             <div class="turn-head"><span class="speaker">04 / agent</span><span class="intent">Review the latest captured Customer Updates.</span></div>
-            <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output json</span> table list <span class="value">sys_update_xml</span> \
+            <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output</span> <span class="value">&lt;format&gt;</span> table list <span class="value">sys_update_xml</span> \
   <span class="flag">--query</span> <span class="value">'ORDERBYDESCsys_updated_on'</span> \
   <span class="flag">--fields</span> name,type,action,sys_updated_on,update_set <span class="flag">--limit</span> 10</pre>
             <details class="output-details">
-              <summary>Output excerpt</summary>
-              <pre><span class="output-label">Captured JSON / selected non-identifying fields from first 3 records</span>
-{
-  "total": 284, "returned": 10, "truncated": true,
-  "records": [
-    { "type": "System Property", "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-17 14:25:06" },
-    { "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-15 03:12:07", "type": "System Property" },
-    { "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-14 20:17:44", "type": "Access Roles" }
-  ]
-}
-<span class="truncation">... 7 more returned records (truncated for display); record and update-set identifiers omitted</span></pre>
+              <summary>Output excerpt in all six formats</summary>
+              <div class="format-switcher" data-excerpt="updates-recent"></div>
             </details>
           </div>
         </div>
       </div>
 
-      <p class="evidence-note"><strong>Captured, not simulated:</strong> commands and selected output values above come from matching files under <code>artifacts/e2e/v0.6.0/</code>. Excerpts omit record identifiers and instance-specific links, and mark every truncation. snow-cli exposes records and related code for inspection; it does not replace the visual Flow Designer authoring canvas.</p>
+      <p class="evidence-note"><strong>Captured, not simulated:</strong> every output excerpt on this page comes from a sanitized v0.6.0 capture, and each excerpt can be switched among all six <code>--output</code> formats — json, jsonl, csv, toon, text, and auto — each captured by re-running the same command per format. Hostnames and record identifiers are replaced consistently, and every truncation is marked. snow-cli exposes records and related code for inspection; it does not replace the visual Flow Designer authoring canvas.</p>
 
       <details class="replay-shell" id="agent-replay">
         <summary>Watch a full agent session</summary>
         <p class="replay-intro">A distilled replay of pi with GPT 5.6 answering: "Which custom apps are installed and what changed recently?" The agent stays read-only, corrects one invalid argument using the CLI's own guidance, and follows the returned evidence from application scope to update set.</p>
-        <p class="replay-footnote">Recorded against a local build; commands are shown with the installed binary name.</p>
-        <div class="replay-stage" aria-live="polite">
-          <div class="replay-meta">
-            <span id="replay-progress">Step 1 of 7</span>
-            <span class="replay-dots" id="replay-dots" aria-hidden="true"></span>
-          </div>
-          <article class="replay-content">
-            <h3 id="replay-reasoning"></h3>
-            <div class="replay-block" id="replay-command-block"><span>Command</span><pre id="replay-command"></pre></div>
-            <div class="replay-block"><span id="replay-output-label">Output excerpt</span><pre id="replay-output"></pre></div>
-            <div class="replay-block"><span>What it learned</span><p class="replay-learning" id="replay-learning"></p></div>
-          </article>
-        </div>
-        <div class="replay-controls">
-          <button class="step-btn" id="replay-prev" type="button">Previous</button>
-          <button class="step-btn" id="replay-next" type="button">Next</button>
-          <button class="step-btn autoplay" id="replay-autoplay" type="button" aria-pressed="false">Autoplay</button>
-        </div>
+        <p class="replay-footnote">Recorded against a local build. Displayed commands use <code>snow-cli</code> and <code>--profile dev</code> by convention; output excerpts clearly identify omissions. Transcript outputs appear exactly as the agent received them (JSON) — the format switchers elsewhere on this page show the same payload shapes in every <code>--output</code> format.</p>
+        <div class="replay-grid" id="replay-grid" aria-label="Seven-step agent session replay"></div>
       </details>
     </div>
   </section>
 
-  <section id="code-search" class="use-case alt">
+  <section id="low-code" class="use-case alt">
     <div class="wrap use-grid">
       <div class="use-copy">
         <span class="use-index">USE CASE 01</span>
-        <p class="eyebrow">ServiceNow code search</p>
-        <h2>Find script references across the instance.</h2>
-        <p>Use <code>codesearch search</code> when a flow, business rule, or Script Include points to logic you need to trace. Restrict the search to a source table, an application scope, or the current scope.</p>
-        <ul class="use-points">
-          <li>Search scripts, business rules, Script Includes, and other configured Studio search sources.</li>
-          <li>Return bounded, structured results for an agent to inspect.</li>
-        </ul>
+        <p class="eyebrow">Agent-assisted low-code analysis</p>
+        <h2>Understand low-code implementations.</h2>
+        <p>Ask a coding agent to read playbook and Flow Designer records, follow their related definitions, and explain the implemented business logic in plain language. A recorded pi / GPT 5.6 session used 49 read-only snow-cli calls to investigate one playbook and three change flows.</p>
+        <span class="session-stat">read-only snow-cli calls in the recorded session</span>
+        <div class="finding-list" aria-label="Agent findings">
+          <blockquote class="finding"><strong>Multi-factor Authentication</strong> “A guided, administrator-facing MFA rollout/setup guide; it does not itself enforce or enroll MFA.”</blockquote>
+          <blockquote class="finding"><strong>Cloud infrastructure</strong> “It routes cloud changes through their approval gate before they can proceed.”</blockquote>
+          <blockquote class="finding"><strong>Conflict detection</strong> “It asynchronously checks a change for scheduling/resource conflicts when Change Management queues that work.”</blockquote>
+          <blockquote class="finding"><strong>Emergency authorization</strong> “It provides the expedited approval checkpoint required before an emergency change can continue.”</blockquote>
+        </div>
       </div>
       <div class="command-card reveal">
-        <div class="console-bar"><i></i><i></i><i></i><span class="console-title">search one code source</span></div>
-        <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output json</span> codesearch search <span class="value">GlideAjax</span> <span class="flag">--limit</span> 10</pre>
+        <div class="console-bar"><i></i><i></i><i></i><span class="console-title">agent reads the implementation</span></div>
+        <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output</span> <span class="value">&lt;format&gt;</span> table list sys_pd_process_definition \
+  <span class="flag">--fields</span> label,name,active,sys_scope <span class="flag">--limit</span> 50
+
+<span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output json</span> table list sys_hub_flow \
+  <span class="flag">--query</span> <span class="value">'nameINChange - Cloud Infrastructure - Authorize,Change - Conflict Detection,Change - Emergency - Authorize'</span> \
+  <span class="flag">--fields</span> sys_id,name,description,active,sys_scope,sys_created_on,sys_updated_on <span class="flag">--limit</span> 10</pre>
         <details class="output-details">
-          <summary>Output excerpt</summary>
-          <pre><span class="output-label">Captured JSON / selected fields from first 2 UI Page hits</span>
-[
-  { "recordType": "sys_ui_page", "hits": [
-    { "name": "$pwd_change", "className": "sys_ui_page", "context": "    var ga = new GlideAjax('PwdAjaxChangePassword');" },
-    { "name": "$pwd_enrollment_form_container", "className": "sys_ui_page", "context": "\tvar ga = new GlideAjax('PwdAjaxEnrollmentProcessor');" }
-  ] }
-]
-<span class="truncation">... 8 more UI Page hits and 20 more source groups (truncated for display); record identifiers omitted</span></pre>
+          <summary>Playbook list excerpt in all six formats</summary>
+          <div class="format-switcher" data-excerpt="playbooks"></div>
         </details>
-        <p class="command-caption">Captured command: <code>codesearch search GlideAjax --limit 10</code>. This run returned UI Page hits; its Script Include source group was empty.</p>
+        <p class="command-caption">The first command confirms the active playbook exists. The recorded agent then followed process definitions, activities, flow records, snapshots, triggers, plans, and related code before producing the quoted explanations.</p>
       </div>
     </div>
   </section>
 
-  <section id="custom-apps" class="use-case">
+  <section id="background-scripts" class="use-case">
     <div class="wrap use-grid">
       <div class="use-copy">
         <span class="use-index">USE CASE 02</span>
-        <p class="eyebrow">Custom application overview</p>
-        <h2>Inventory the custom apps installed on an instance.</h2>
-        <p><code>scope list</code> reads scope, Store application, and plugin metadata and classifies results by origin. Filter to custom applications to identify the app scopes relevant to a review.</p>
-        <ul class="use-points">
-          <li>Separate custom applications from platform, Store, and plugin entries.</li>
-          <li>Return structured scope metadata for a focused application overview.</li>
-        </ul>
+        <p class="eyebrow">Controlled server-side execution</p>
+        <h2>The guarded escape hatch: background scripts.</h2>
+        <p>When the read-only command surface cannot express a task, <code>script run</code> sends a background script for server-side execution. This example demonstrates the mechanism by combining a GlideAggregate count and a <code>gs.info</code> log line in one call.</p>
+        <aside class="warning" role="note"><strong>Do not use on production instances</strong>Background scripts execute arbitrary server-side code. The <code>script</code> command is excluded from <code>snow-cli-ro</code>; use a disposable development instance and review every script before execution.</aside>
       </div>
       <div class="command-card reveal">
-        <div class="console-bar"><i></i><i></i><i></i><span class="console-title">map custom application scopes</span></div>
-        <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output json</span> scope list \
-  <span class="flag">--kind</span> custom-app</pre>
+        <div class="console-bar"><i></i><i></i><i></i><span class="console-title">background script / full binary only</span></div>
+        <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --output json</span> script run <span class="flag">--code</span> <span class="value">'var agg = new GlideAggregate("incident"); agg.addQuery("active", true); agg.addAggregate("COUNT"); agg.query(); var count = 0; if (agg.next()) { count = agg.getAggregate("COUNT"); } gs.info("Active incident count: " + count); count;'</span></pre>
         <details class="output-details">
-          <summary>Output excerpt</summary>
-          <pre><span class="output-label">Captured JSON / selected non-identifying fields</span>
-{
-  "kind_filter": ["custom_app"],
-  "counts": { "total": 1, "by_kind": { "custom_app": 1 } },
-  "rows": [{
-    "kind": "custom_app", "scope": "x_2135095_au_demo",
-    "name": "Australia Demo Showcase", "version": "0.0.1",
-    "identifier": "", "source_table": "sys_scope"
-  }]
-}
-<span class="truncation">Record identifier and warnings omitted from this excerpt</span></pre>
+          <summary>Captured output</summary>
+          <pre>[0:00:00.118] Script completed in scope global: script
+<span class="truncation">[... script execution history link omitted ...]</span>
+
+*** Script: Active incident count: 44</pre>
         </details>
-        <p class="command-caption">Captured command: <code>scope list --kind custom-app</code>. The excerpt keeps the returned counts and scope row.</p>
+        <p class="command-caption">The example is non-mutating in effect, but <code>script run</code> itself is intentionally outside the read-only surface because arbitrary scripts can mutate an instance. Its output is the server's execution log, so it reads the same under every <code>--output</code> format — the format switchers elsewhere on this page apply to structured payloads.</p>
       </div>
     </div>
   </section>
 
-  <section id="activity" class="use-case alt">
+  <section id="analytics" class="use-case alt">
     <div class="wrap use-grid">
       <div class="use-copy">
         <span class="use-index">USE CASE 03</span>
-        <p class="eyebrow">Recent development activity</p>
-        <h2>Review the latest customer updates by recency.</h2>
-        <p>Query the Customer Updates table with a descending encoded order and an explicit record limit. The result gives an agent a bounded view of recently updated application records without inventing an activity metric.</p>
+        <p class="eyebrow">ServiceNow Aggregate API</p>
+        <h2>Instance analytics in one call.</h2>
+        <p><code>table stats</code> counts records and can group results while calculating averages, minimums, maximums, or sums. Query active incidents once for a total, or group the same population by priority and average reassignment count.</p>
         <ul class="use-points">
-          <li>Select only the fields needed for review.</li>
-          <li>Use encoded queries to narrow by update set, type, scope, or time window when needed.</li>
+          <li>The Aggregate API returned 44 active incidents.</li>
+          <li>The background-script aggregate above independently found the same 44: two mechanisms, one truth.</li>
         </ul>
       </div>
       <div class="command-card reveal">
-        <div class="console-bar"><i></i><i></i><i></i><span class="console-title">latest customer update records</span></div>
-        <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output json</span> table list sys_update_xml \
-  <span class="flag">--query</span> <span class="value">'ORDERBYDESCsys_updated_on'</span> \
-  <span class="flag">--fields</span> name,type,action,sys_updated_on,update_set \
-  <span class="flag">--limit</span> 10</pre>
-        <details class="output-details">
-          <summary>Output excerpt</summary>
-          <pre><span class="output-label">Captured JSON / selected non-identifying fields from first 3 records</span>
-{
-  "total": 284, "returned": 10, "truncated": true,
-  "records": [
-    { "type": "System Property", "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-17 14:25:06" },
-    { "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-15 03:12:07", "type": "System Property" },
-    { "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-14 20:17:44", "type": "Access Roles" }
-  ]
-}
-<span class="truncation">... 7 more returned records (truncated for display); record and update-set identifiers omitted</span></pre>
-        </details>
-        <p class="command-caption">Captured command: <code>table list sys_update_xml --query --fields --limit 10</code></p>
+        <div class="console-bar"><i></i><i></i><i></i><span class="console-title">count, group, aggregate</span></div>
+        <pre class="cmd"><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output</span> <span class="value">&lt;format&gt;</span> table stats incident <span class="flag">--query</span> <span class="value">'active=true'</span></pre>
+        <div class="format-switcher" data-excerpt="stats-count"></div>
+        <pre class="cmd"><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output</span> <span class="value">&lt;format&gt;</span> table stats incident <span class="flag">--query</span> <span class="value">'active=true'</span> <span class="flag">--group-by</span> priority <span class="flag">--avg</span> reassignment_count</pre>
+        <div class="format-switcher" data-excerpt="stats-prio"></div>
+        <p class="command-caption">Both payloads are shown in full, byte-for-byte, in every captured output format.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="custom-app" class="use-case">
+    <div class="wrap use-grid">
+      <div class="use-copy">
+        <span class="use-index">USE CASE 04</span>
+        <p class="eyebrow">Scoped application investigation</p>
+        <h2>Explore a custom app end-to-end.</h2>
+        <p>Start with the custom application inventory, use its returned scope to constrain an instance code search, then query Customer Updates for the same application scope. The sequence keeps discovery, implementation, and change history connected.</p>
+        <ul class="use-points">
+          <li>Discover Australia Demo Showcase and its <code>x_2135095_au_demo</code> scope.</li>
+          <li>Find the scoped ES12Demo Script Include.</li>
+          <li>Read six app-specific update records ordered by recency.</li>
+        </ul>
+      </div>
+      <div class="journey-stack reveal">
+        <article class="command-card journey-step">
+          <p class="journey-label">01 / discover the scope</p>
+          <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output</span> <span class="value">&lt;format&gt;</span> scope list <span class="flag">--kind</span> custom-app</pre>
+          <details class="output-details">
+            <summary>Output excerpt in all six formats</summary>
+            <div class="format-switcher" data-excerpt="scope-custom"></div>
+          </details>
+        </article>
+        <article class="command-card journey-step">
+          <p class="journey-label">02 / read scoped code</p>
+          <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output</span> <span class="value">&lt;format&gt;</span> codesearch search ES12Demo <span class="flag">--scope</span> x_2135095_au_demo <span class="flag">--limit</span> 10</pre>
+          <details class="output-details">
+            <summary>Output excerpt in all six formats</summary>
+            <div class="format-switcher" data-excerpt="es12demo"></div>
+          </details>
+        </article>
+        <article class="command-card journey-step">
+          <p class="journey-label">03 / follow recent app changes</p>
+          <pre><span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output</span> <span class="value">&lt;format&gt;</span> table list sys_update_xml \
+  <span class="flag">--query</span> <span class="value">'application.scope=x_2135095_au_demo^ORDERBYDESCsys_updated_on'</span> \
+  <span class="flag">--fields</span> name,type,action,sys_updated_on <span class="flag">--limit</span> 10</pre>
+          <details class="output-details">
+            <summary>Output excerpt in all six formats</summary>
+            <div class="format-switcher" data-excerpt="updates-au"></div>
+          </details>
+        </article>
       </div>
     </div>
   </section>
@@ -613,20 +608,10 @@
           <div class="comparison-pane">
             <div class="pane-head"><span>LLM / structured JSON</span><strong>Custom scope inventory</strong></div>
             <div class="machine-body">
-              <pre class="command-line">$ snow-cli --profile dev --read-only --output json scope list --kind custom-app</pre>
-              <pre>{
-  "counts": { "total": 1, "by_kind": { "custom_app": 1 } },
-  "rows": [{
-    "kind": "custom_app",
-    "scope": "x_2135095_au_demo",
-    "name": "Australia Demo Showcase",
-    "version": "0.0.1",
-    "source_table": "sys_scope"
-  }]
-}
-<span class="truncation">Selected-field excerpt; record identifier and warnings omitted</span></pre>
+              <pre class="command-line">$ snow-cli --profile dev --read-only --output &lt;format&gt; scope list --kind custom-app</pre>
+              <div class="format-switcher" data-excerpt="scope-custom"></div>
             </div>
-            <p class="pair-note">The CLI payload contains the same Australia Demo Showcase application and scope visible in the screenshot.</p>
+            <p class="pair-note">The CLI payload contains the same Australia Demo Showcase application and scope visible in the screenshot, in every captured output format.</p>
           </div>
         </article>
 
@@ -638,18 +623,10 @@
           <div class="comparison-pane">
             <div class="pane-head"><span>LLM / structured JSON</span><strong>Active flow records</strong></div>
             <div class="machine-body">
-              <pre class="command-line">$ snow-cli --read-only --output json table list sys_hub_flow --query 'sys_scope.scope=x_2135095_au_demo' --fields name,active,status,sys_updated_on --limit 5</pre>
-              <pre>{
-  "total": 1, "returned": 1, "truncated": false,
-  "records": [{
-    "active": "true",
-    "name": "Business Calendar Demo",
-    "sys_updated_on": "2026-07-14 15:51:06",
-    "status": "draft"
-  }]
-}</pre>
+              <pre class="command-line">$ snow-cli --profile dev --read-only --output &lt;format&gt; table list sys_hub_flow --query 'nameLIKEBusiness Calendar^ORDERBYname' --fields name,active,status,sys_updated_on --limit 3</pre>
             </div>
-            <p class="pair-note">The CLI payload contains the same active Business Calendar Demo flow highlighted in the screenshot.</p>
+            <div class="format-switcher" data-excerpt="flows-bc"></div>
+            <p class="pair-note">Switch among six captured renderings of the same three-record flow query. For this payload, <code>auto</code> selected TOON.</p>
           </div>
         </article>
 
@@ -661,22 +638,10 @@
           <div class="comparison-pane">
             <div class="pane-head"><span>LLM / structured JSON</span><strong>Instance code search</strong></div>
             <div class="machine-body">
-              <pre class="command-line">$ snow-cli --read-only --output json codesearch search ES12Demo --scope x_2135095_au_demo --limit 10</pre>
-              <pre>[
-  { "recordType": "sys_script_include", "tableLabel": "Script Include", "hits": [{
-    "name": "ES12Demo",
-    "className": "sys_script_include",
-    "tableLabel": "sys_script_include",
-    "matches": [{
-      "field": "name", "fieldLabel": "Name",
-      "lineMatches": [{ "line": 1.0, "context": "ES12Demo", "escaped": "ES12Demo" }],
-      "count": 1.0
-    }]
-  }] }
-]
-<span class="truncation">... other record types: no hits; additional ES12Demo match fields truncated; record identifier omitted</span></pre>
+              <pre class="command-line">$ snow-cli --profile dev --read-only --output &lt;format&gt; codesearch search ES12Demo --scope x_2135095_au_demo --limit 10</pre>
+              <div class="format-switcher" data-excerpt="es12demo"></div>
             </div>
-            <p class="pair-note">The CLI payload contains the same ES12Demo Script Include visible in the form screenshot.</p>
+            <p class="pair-note">The CLI payload contains the same ES12Demo Script Include visible in the form screenshot, in every captured output format.</p>
           </div>
         </article>
 
@@ -688,24 +653,14 @@
           <div class="comparison-pane">
             <div class="pane-head"><span>LLM / structured JSON</span><strong>Recent update sets</strong></div>
             <div class="machine-body">
-              <pre class="command-line">$ snow-cli --read-only --output json table list sys_update_set --query 'ORDERBYDESCsys_created_on' --fields name,application.name,state,sys_created_on,sys_created_by --limit 5</pre>
-              <pre>{
-  "total": 5, "returned": 5, "truncated": false,
-  "records": [
-    { "state": "in progress", "name": "Default", "sys_created_by": "admin", "application.name": "Incident Management for Service Operations Workspace", "sys_created_on": "2026-07-14 16:06:55" },
-    { "state": "in progress", "sys_created_by": "admin", "sys_created_on": "2026-07-14 16:04:12", "name": "Default", "application.name": "Upgrade Console" },
-    { "sys_created_on": "2026-07-09 20:10:44", "name": "Default 1", "state": "in progress", "sys_created_by": "admin", "application.name": "Australia Demo Showcase" },
-    { "sys_created_by": "admin", "application.name": "Australia Demo Showcase", "state": "ignore", "sys_created_on": "2026-07-09 19:30:37", "name": "Default" },
-    { "sys_created_on": "2026-04-30 07:40:06", "name": "Default", "application.name": "Global", "sys_created_by": "system", "state": "in progress" }
-  ]
-}</pre>
+              <pre class="command-line">$ snow-cli --profile dev --read-only --output &lt;format&gt; table list sys_update_set --query 'sys_created_on&lt;2026-07-15^ORDERBYDESCsys_created_on' --fields name,application.name,state,sys_created_on,sys_created_by --limit 5</pre>
+              <div class="format-switcher" data-excerpt="updatesets-recent"></div>
             </div>
-            <p class="pair-note">The CLI payload contains the same five update sets visible in the screenshot, including both Australia Demo Showcase rows.</p>
+            <p class="pair-note">The CLI payload contains the same five update sets visible in the screenshot, including both Australia Demo Showcase rows — in every captured output format.</p>
           </div>
         </article>
       </div>
 
-      <p class="evidence-note"><strong>Evidence paths:</strong> screenshots are loaded from <code>landing/assets/ui-*.png</code>. Commands and outputs are paired from matching <code>*.cmd.txt</code> and <code>*.json</code> files under <code>artifacts/e2e/v0.6.0/</code>.</p>
     </div>
   </section>
 
@@ -813,6 +768,153 @@
 ]
 </script>
 
+<script type="application/json" id="format-excerpts">{
+ "flows-bc": {
+  "command": "snow-cli --profile dev --read-only --output <format> table list sys_hub_flow --query 'nameLIKEBusiness Calendar^ORDERBYname' --fields name,active,status,sys_updated_on --limit 3",
+  "auto_resolves": "toon",
+  "formats": {
+   "json": "{\"total\": 3, \"returned\": 3, \"truncated\": false, \"records\": [{\"sys_updated_on\": \"2026-07-14 15:51:06\", \"status\": \"draft\", \"name\": \"Business Calendar Demo\", \"active\": \"true\"}, {\"name\": \"Business Calendar Test\", \"status\": \"draft\", \"active\": \"false\", \"sys_updated_on\": \"2026-07-14 15:58:02\"}, {\"sys_updated_on\": \"2026-07-14 16:01:41\", \"status\": \"draft\", \"name\": \"Business Calendar Test\", \"active\": \"false\"}]}",
+   "jsonl": "{\"meta\": {\"total\": 3, \"returned\": 3, \"truncated\": false}}\n{\"status\": \"draft\", \"sys_updated_on\": \"2026-07-14 15:51:06\", \"name\": \"Business Calendar Demo\", \"active\": \"true\"}\n{\"active\": \"false\", \"name\": \"Business Calendar Test\", \"sys_updated_on\": \"2026-07-14 15:58:02\", \"status\": \"draft\"}\n{\"name\": \"Business Calendar Test\", \"sys_updated_on\": \"2026-07-14 16:01:41\", \"active\": \"false\", \"status\": \"draft\"}",
+   "csv": "active,name,status,sys_updated_on\ntrue,Business Calendar Demo,draft,2026-07-14 15:51:06\nfalse,Business Calendar Test,draft,2026-07-14 15:58:02\nfalse,Business Calendar Test,draft,2026-07-14 16:01:41",
+   "toon": "total: 3\nreturned: 3\ntruncated: false\nrecords[3]{name,active,sys_updated_on,status}:\n  Business Calendar Demo,\"true\",\"2026-07-14 15:51:06\",draft\n  Business Calendar Test,\"false\",\"2026-07-14 15:58:02\",draft\n  Business Calendar Test,\"false\",\"2026-07-14 16:01:41\",draft",
+   "text": "{\n  \"total\": 3,\n  \"returned\": 3,\n  \"truncated\": false,\n  \"records\": [\n    {\n      \"name\": \"Business Calendar Demo\",\n      \"status\": \"draft\",\n      \"active\": \"true\",\n      \"sys_updated_on\": \"2026-07-14 15:51:06\"\n    },\n    {\n      \"sys_updated_on\": \"2026-07-14 15:58:02\",\n      \"status\": \"draft\",\n      \"name\": \"Business Calendar Test\",\n      \"active\": \"false\"\n    },\n    {\n      \"name\": \"Business Calendar Test\",\n      \"status\": \"draft\",\n      \"sys_updated_on\": \"2026-07-14 16:01:41\",\n      \"active\": \"false\"\n    }\n  ]\n}",
+   "auto": "total: 3\nreturned: 3\ntruncated: false\nrecords[3]{active,name,sys_updated_on,status}:\n  \"true\",Business Calendar Demo,\"2026-07-14 15:51:06\",draft\n  \"false\",Business Calendar Test,\"2026-07-14 15:58:02\",draft\n  \"false\",Business Calendar Test,\"2026-07-14 16:01:41\",draft"
+  }
+ },
+ "schema": {
+  "command": "snow-cli --profile dev --read-only --output <format> table schema sys_hub_flow",
+  "auto_resolves": "toon",
+  "formats": {
+   "json": "[{\"column\":\"compiler_build\",\"type\":\"string\",\"label\":\"Compiler build\"},{\"column\":\"generation_source\",\"type\":\"string\",\"label\":\"Generation source\"},{\"column\":\"master_snapshot_digest\",\"type\":\"string\",\"label\":\"Main snapshot Digest\"},{\"column\":\"show_triggered_flows\",\"type\":\"boolean\",\"label\":\"Show triggered flows\"},{\"column\":\"sys_id\",\"type\":\"GUID\",\"label\":\"Sys ID\"},{\"column\":\"version_record\",\"type\":\"string\",\"label\":\"Version record\"},{\"column\":\"substatus\",\"type\":\"string\",\"label\":\"Substatus\"},{\"column\":\"updation_source\",\"type\":\"string\",\"label\":\"Updation source\"},{\"column\":\"show_draft_actions\",\"type\":\"boolean\",\"label\":\"Show draft actions\"},{\"column\":\"display_name_after_preview\",\"type\":\"string\",\"label\":\"Display name after preview\"},{\"column\":\"latest_snapshot\",\"type\":\"string\",\"label\":\"Latest snapshot\"},{\"column\":\"pre_compiled\",\"type\":\"boolean\",\"label\":\"Pre-Compiled\"},{\"column\":\"master_snapshot\",\"type\":\"string\",\"label\":\"Main snapshot\"}]",
+   "jsonl": "{\"column\":\"compiler_build\",\"type\":\"string\",\"label\":\"Compiler build\"}\n{\"column\":\"generation_source\",\"type\":\"string\",\"label\":\"Generation source\"}\n{\"column\":\"master_snapshot_digest\",\"type\":\"string\",\"label\":\"Main snapshot Digest\"}\n{\"column\":\"show_triggered_flows\",\"type\":\"boolean\",\"label\":\"Show triggered flows\"}\n{\"column\":\"sys_id\",\"type\":\"GUID\",\"label\":\"Sys ID\"}\n{\"column\":\"version_record\",\"type\":\"string\",\"label\":\"Version record\"}\n{\"column\":\"substatus\",\"type\":\"string\",\"label\":\"Substatus\"}\n{\"column\":\"updation_source\",\"type\":\"string\",\"label\":\"Updation source\"}\n{\"column\":\"show_draft_actions\",\"type\":\"boolean\",\"label\":\"Show draft actions\"}\n{\"column\":\"display_name_after_preview\",\"type\":\"string\",\"label\":\"Display name after preview\"}\n{\"column\":\"latest_snapshot\",\"type\":\"string\",\"label\":\"Latest snapshot\"}\n{\"column\":\"pre_compiled\",\"type\":\"boolean\",\"label\":\"Pre-Compiled\"}\n{\"column\":\"master_snapshot\",\"type\":\"string\",\"label\":\"Main snapshot\"}",
+   "csv": "column,type,label\ncompiler_build,string,Compiler build\ngeneration_source,string,Generation source\nmaster_snapshot_digest,string,Main snapshot Digest\nshow_triggered_flows,boolean,Show triggered flows\nsys_id,GUID,Sys ID\nversion_record,string,Version record\nsubstatus,string,Substatus\nupdation_source,string,Updation source\nshow_draft_actions,boolean,Show draft actions\ndisplay_name_after_preview,string,Display name after preview\nlatest_snapshot,string,Latest snapshot\npre_compiled,boolean,Pre-Compiled\nmaster_snapshot,string,Main snapshot",
+   "toon": "[13]{column,type,label}:\n  compiler_build,string,Compiler build\n  generation_source,string,Generation source\n  master_snapshot_digest,string,Main snapshot Digest\n  show_triggered_flows,boolean,Show triggered flows\n  sys_id,GUID,Sys ID\n  version_record,string,Version record\n  substatus,string,Substatus\n  updation_source,string,Updation source\n  show_draft_actions,boolean,Show draft actions\n  display_name_after_preview,string,Display name after preview\n  latest_snapshot,string,Latest snapshot\n  pre_compiled,boolean,\"Pre-Compiled\"\n  master_snapshot,string,Main snapshot",
+   "text": "[\n  {\n    \"column\": \"compiler_build\",\n    \"type\": \"string\",\n    \"label\": \"Compiler build\"\n  },\n  {\n    \"column\": \"generation_source\",\n    \"type\": \"string\",\n    \"label\": \"Generation source\"\n  },\n  {\n    \"column\": \"master_snapshot_digest\",\n    \"type\": \"string\",\n    \"label\": \"Main snapshot Digest\"\n  },\n  {\n    \"column\": \"show_triggered_flows\",\n    \"type\": \"boolean\",\n    \"label\": \"Show triggered flows\"\n  },\n  {\n[... 45 more lines truncated for display]",
+   "auto": "[13]{column,type,label}:\n  compiler_build,string,Compiler build\n  generation_source,string,Generation source\n  master_snapshot_digest,string,Main snapshot Digest\n  show_triggered_flows,boolean,Show triggered flows\n  sys_id,GUID,Sys ID\n  version_record,string,Version record\n  substatus,string,Substatus\n  updation_source,string,Updation source\n  show_draft_actions,boolean,Show draft actions\n  display_name_after_preview,string,Display name after preview\n  latest_snapshot,string,Latest snapshot\n  pre_compiled,boolean,\"Pre-Compiled\"\n  master_snapshot,string,Main snapshot"
+  }
+ },
+ "flows-active": {
+  "command": "snow-cli --profile dev --read-only --output <format> table list sys_hub_flow --query active=true --fields name,active,sys_updated_on --limit 5",
+  "auto_resolves": "toon",
+  "formats": {
+   "json": "{\"total\":311,\"returned\":5,\"truncated\":true,\"records\":[{\"sys_updated_on\":\"2026-04-30 08:31:44\",\"active\":\"true\",\"name\":\"Request Management Approval\"},{\"name\":\"[Interaction] Review and attach article\",\"active\":\"true\",\"sys_updated_on\":\"2026-04-30 08:25:13\"},{\"name\":\"Wait Until Tracker Completes\",\"active\":\"true\",\"sys_updated_on\":\"2026-04-30 07:57:28\"},{\"sys_updated_on\":\"2020-04-23 12:42:08\",\"name\":\"SLA notification and escalation flow\",\"active\":\"true\"},{\"name\":\"Delete Configuration Items\",\"active\":\"true\",\"sys_updated_on\":\"2026-04-30 07:59:12\"}]}",
+   "jsonl": "{\"meta\":{\"total\":311,\"returned\":5,\"truncated\":true}}\n{\"name\":\"Request Management Approval\",\"active\":\"true\",\"sys_updated_on\":\"2026-04-30 08:31:44\"}\n{\"name\":\"[Interaction] Review and attach article\",\"sys_updated_on\":\"2026-04-30 08:25:13\",\"active\":\"true\"}\n{\"name\":\"Wait Until Tracker Completes\",\"active\":\"true\",\"sys_updated_on\":\"2026-04-30 07:57:28\"}\n{\"name\":\"SLA notification and escalation flow\",\"active\":\"true\",\"sys_updated_on\":\"2020-04-23 12:42:08\"}\n{\"name\":\"Delete Configuration Items\",\"active\":\"true\",\"sys_updated_on\":\"2026-04-30 07:59:12\"}",
+   "csv": "active,name,sys_updated_on\ntrue,Request Management Approval,2026-04-30 08:31:44\ntrue,[Interaction] Review and attach article,2026-04-30 08:25:13\ntrue,Wait Until Tracker Completes,2026-04-30 07:57:28\ntrue,SLA notification and escalation flow,2020-04-23 12:42:08\ntrue,Delete Configuration Items,2026-04-30 07:59:12",
+   "toon": "total: 311\nreturned: 5\ntruncated: true\nrecords[5]{name,active,sys_updated_on}:\n  Request Management Approval,\"true\",\"2026-04-30 08:31:44\"\n  \"[Interaction] Review and attach article\",\"true\",\"2026-04-30 08:25:13\"\n  Wait Until Tracker Completes,\"true\",\"2026-04-30 07:57:28\"\n  SLA notification and escalation flow,\"true\",\"2020-04-23 12:42:08\"\n  Delete Configuration Items,\"true\",\"2026-04-30 07:59:12\"",
+   "text": "{\n  \"total\": 311,\n  \"returned\": 5,\n  \"truncated\": true,\n  \"records\": [\n    {\n      \"sys_updated_on\": \"2026-04-30 08:31:44\",\n      \"active\": \"true\",\n      \"name\": \"Request Management Approval\"\n    },\n    {\n      \"active\": \"true\",\n      \"sys_updated_on\": \"2026-04-30 08:25:13\",\n      \"name\": \"[Interaction] Review and attach article\"\n    },\n    {\n      \"sys_updated_on\": \"2026-04-30 07:57:28\",\n      \"name\": \"Wait Until Tracker Completes\",\n      \"active\": \"true\"\n    },\n    {\n      \"active\": \"true\",\n[... 10 more lines truncated for display]",
+   "auto": "total: 311\nreturned: 5\ntruncated: true\nrecords[5]{name,active,sys_updated_on}:\n  Request Management Approval,\"true\",\"2026-04-30 08:31:44\"\n  \"[Interaction] Review and attach article\",\"true\",\"2026-04-30 08:25:13\"\n  Wait Until Tracker Completes,\"true\",\"2026-04-30 07:57:28\"\n  SLA notification and escalation flow,\"true\",\"2020-04-23 12:42:08\"\n  Delete Configuration Items,\"true\",\"2026-04-30 07:59:12\""
+  }
+ },
+ "stats-count": {
+  "command": "snow-cli --profile dev --read-only --output <format> table stats incident --query active=true",
+  "auto_resolves": "toon",
+  "formats": {
+   "json": "{\"count\":44}",
+   "jsonl": "{\"count\":44}",
+   "csv": "count\n44",
+   "toon": "count: 44",
+   "text": "{\n  \"count\": 44\n}",
+   "auto": "count: 44"
+  }
+ },
+ "stats-prio": {
+  "command": "snow-cli --profile dev --read-only --output <format> table stats incident --query active=true --group-by priority --avg reassignment_count",
+  "auto_resolves": "toon",
+  "formats": {
+   "json": "[{\"priority\":\"1\",\"avg_reassignment_count\":0.7333,\"count\":17},{\"priority\":\"2\",\"count\":4,\"avg_reassignment_count\":0.75},{\"avg_reassignment_count\":0.8571,\"count\":7,\"priority\":\"3\"},{\"avg_reassignment_count\":0.1429,\"priority\":\"4\",\"count\":7},{\"priority\":\"5\",\"avg_reassignment_count\":0.375,\"count\":9}]",
+   "jsonl": "{\"priority\":\"1\",\"count\":17,\"avg_reassignment_count\":0.7333}\n{\"count\":4,\"priority\":\"2\",\"avg_reassignment_count\":0.75}\n{\"avg_reassignment_count\":0.8571,\"count\":7,\"priority\":\"3\"}\n{\"avg_reassignment_count\":0.1429,\"count\":7,\"priority\":\"4\"}\n{\"avg_reassignment_count\":0.375,\"priority\":\"5\",\"count\":9}",
+   "csv": "avg_reassignment_count,count,priority\n0.7333,17,1\n0.75,4,2\n0.8571,7,3\n0.1429,7,4\n0.375,9,5",
+   "toon": "[5]{priority,count,avg_reassignment_count}:\n  \"1\",17,0.7333\n  \"2\",4,0.75\n  \"3\",7,0.8571\n  \"4\",7,0.1429\n  \"5\",9,0.375",
+   "text": "[\n  {\n    \"count\": 17,\n    \"avg_reassignment_count\": 0.7333,\n    \"priority\": \"1\"\n  },\n  {\n    \"avg_reassignment_count\": 0.75,\n    \"count\": 4,\n    \"priority\": \"2\"\n  },\n  {\n    \"priority\": \"3\",\n    \"avg_reassignment_count\": 0.8571,\n    \"count\": 7\n  },\n  {\n    \"avg_reassignment_count\": 0.1429,\n    \"priority\": \"4\",\n    \"count\": 7\n  },\n  {\n[... 5 more lines truncated for display]",
+   "auto": "[5]{count,avg_reassignment_count,priority}:\n  17,0.7333,\"1\"\n  4,0.75,\"2\"\n  7,0.8571,\"3\"\n  7,0.1429,\"4\"\n  9,0.375,\"5\""
+  }
+ },
+ "updates-recent": {
+  "command": "snow-cli --profile dev --read-only --output <format> table list sys_update_xml --query ORDERBYDESCsys_updated_on --fields name,type,action,sys_updated_on,update_set --limit 10",
+  "auto_resolves": "json",
+  "formats": {
+   "json": "{\"total\":288,\"returned\":10,\"truncated\":true,\"records\":[{\"action\":\"INSERT_OR_UPDATE\",\"type\":\"Process Definition\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\"value\":\"1967d67a6722b6e59c3892c00083f533\"},\"sys_updated_on\":\"2026-07-17 16:46:56\",\"name\":\"sys_pd_process_definition_f81cf8baff302210d64dffffffffffad\"},{\"type\":\"Field Label\",\"sys_updated_on\":\"2026-07-17 16:45:52\",\"name\":\"sys_documentation_var__m_sys_pd_process_input_f81cf8baff302210d64dffffffffffad_parent_record_en\",\"action\":\"INSERT_OR_UPDATE\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\"value\":\"1967d67a6722b6e59c3892c00083f533\"}},{\"name\":\"sys_pd_process_definition_1d9b6f3577812110583f78dabd5a99d8\",\"action\":\"INSERT_OR_UPDATE\",\"type\":\"Process Definition\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/7030ba425952b88bcdd03488a4190667\",\"value\":\"7030ba425952\n[... 2304 more bytes truncated for display]",
+   "jsonl": "{\"meta\":{\"total\":288,\"returned\":10,\"truncated\":true}}\n{\"name\":\"sys_pd_process_definition_f81cf8baff302210d64dffffffffffad\",\"action\":\"INSERT_OR_UPDATE\",\"sys_updated_on\":\"2026-07-17 16:46:56\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\"value\":\"1967d67a6722b6e59c3892c00083f533\"},\"type\":\"Process Definition\"}\n{\"sys_updated_on\":\"2026-07-17 16:45:52\",\"type\":\"Field Label\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\"value\":\"1967d67a6722b6e59c3892c00083f533\"},\"action\":\"INSERT_OR_UPDATE\",\"name\":\"sys_documentation_var__m_sys_pd_process_input_f81cf8baff302210d64dffffffffffad_parent_record_en\"}\n{\"type\":\"Process Definition\",\"action\":\"INSERT_OR_UPDATE\",\"sys_updated_on\":\"2026-07-17 16:36:09\",\"name\":\"sys_pd_process_definition_1d9b6f3577812110583f78dabd5a99d8\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/7030ba425952b88bcdd03488a4190667\",\"value\":\"7030ba425952b88bcdd03488a4190667\"}}\n{\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/7030ba425952b88bcdd03488a4190667\",\"value\":\"7030ba425952b88bcdd03488a4190667\"},\"sys_updated_on\":\"2026-07-17 16:35:56\",\"action\":\"INSERT_OR_UPDATE\",\"name\":\"sys_documentation_var__m_sys_pd_process_input_1d9b6f3577812110583f78dabd5a99d8_parent_record_en\",\"type\":\"Field Label\"}\n{\"sys_updated_on\":\"2026-07-17 14:25:06\",\"type\":\"System Property\",\"name\":\"sys_properties_fe532a6243111110110905c02bb8f2d5\",\"action\":\"INSERT_OR_UPDATE\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\"value\":\"1967d67a6722b6e59c3892c00083f533\"}}\n{\"sys_updated_on\":\"2026-07-15 03:12:07\",\"action\":\"INSERT_OR_UPDATE\",\"type\":\"System Property\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\"value\":\"1967d67a6722b6e59c3892c00083f533\"},\"name\":\"sys_properties_fa94ecf7ff1032109557ffffffffffd0\"}\n{\"action\":\"INSERT_OR_UPDATE\",\"type\":\"Access Roles\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\"value\":\"1967d67a6722b6e59c3892c00083f533\"},\"sys_updated_on\":\"2026-07-14 20:17:44\",\"name\":\"sys_security_acl_role_65e993862f4a435084cde3807fa4e3b0\"}\n{\"sys_updated_on\":\"2026-07-14 19:45:25\",\"type\":\"Script Include\",\"name\":\"sys_script_include_9be157c62f0a435084cde3807fa4e347\",\"action\":\"INSERT_OR_UPDATE\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\"value\":\"1967d67a6722b6e59c3892c00083f533\"}}\n{\"sys_updated_on\":\"2026-07-14 19:44:13\",\"type\":\"Access Roles\",\"action\":\"INSERT_OR_UPDATE\",\"name\":\"sys_security_acl_role_de32dfc62f0a435084cde3807fa4e35c\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\"value\":\"1967d67a6722b6e59c3892c00083f533\"}}\n{\"sys_updated_on\":\"2026-07-14 19:44:11\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\"value\":\"1967d67a6722b6e59c3892c00083f533\"},\"name\":\"sys_security_acl_bd3253c62f0a435084cde3807fa4e339\",\"type\":\"Access Control\",\"action\":\"INSERT_OR_UPDATE\"}",
+   "csv": "action,name,sys_updated_on,type,update_set\nINSERT_OR_UPDATE,sys_pd_process_definition_f81cf8baff302210d64dffffffffffad,2026-07-17 16:46:56,Process Definition,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\"\",\"\"value\"\":\"\"1967d67a6722b6e59c3892c00083f533\"\"}\"\nINSERT_OR_UPDATE,sys_documentation_var__m_sys_pd_process_input_f81cf8baff302210d64dffffffffffad_parent_record_en,2026-07-17 16:45:52,Field Label,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\"\",\"\"value\"\":\"\"1967d67a6722b6e59c3892c00083f533\"\"}\"\nINSERT_OR_UPDATE,sys_pd_process_definition_1d9b6f3577812110583f78dabd5a99d8,2026-07-17 16:36:09,Process Definition,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_update_set/7030ba425952b88bcdd03488a4190667\"\",\"\"value\"\":\"\"7030ba425952b88bcdd03488a4190667\"\"}\"\nINSERT_OR_UPDATE,sys_documentation_var__m_sys_pd_process_input_1d9b6f3577812110583f78dabd5a99d8_parent_record_en,2026-07-17 16:35:56,Field Label,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_update_set/7030ba425952b88bcdd03488a4190667\"\",\"\"value\"\":\"\"7030ba425952b88bcdd03488a4190667\"\"}\"\nINSERT_OR_UPDATE,sys_properties_fe532a6243111110110905c02bb8f2d5,2026-07-17 14:25:06,System Property,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\"\",\"\"value\"\":\"\"1967d67a6722b6e59c3892c00083f533\"\"}\"\nINSERT_OR_UPDATE,sys_properties_fa94ecf7ff1032109557ffffffffffd0,2026-07-15 03:12:07,System Property,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\"\",\"\"value\"\":\"\"1967d67a6722b6e59c3892c00083f533\"\"}\"\nINSERT_OR_UPDATE,sys_security_acl_role_65e993862f4a435084cde3807fa4e3b0,2026-07-14 20:17:44,Access Roles,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\"\",\"\"value\"\":\"\"1967d67a6722b6e59c3892c00083f533\"\"}\"\nINSERT_OR_UPDATE,sys_script_include_9be157c62f0a435084cde3807fa4e347,2026-07-14 19:45:25,Script Include,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\"\",\"\"value\"\":\"\"1967d67a6722b6e59c3892c00083f533\"\"}\"\nINSERT_OR_UPDATE,sys_security_acl_role_de32dfc62f0a435084cde3807fa4e35c,2026-07-14 19:44:13,Access Roles,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\"\",\"\"value\"\":\"\"1967d67a6722b6e59c3892c00083f533\"\"}\"\nINSERT_OR_UPDATE,sys_security_acl_bd3253c62f0a435084cde3807fa4e339,2026-07-14 19:44:11,Access Control,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\"\",\"\"value\"\":\"\"1967d67a6722b6e59c3892c00083f533\"\"}\"",
+   "toon": "total: 288\nreturned: 10\ntruncated: true\nrecords[10]:\n  - type: Process Definition\n    update_set:\n      link: \"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\"\n      value: 1967d67a6722b6e59c3892c00083f533\n    action: INSERT_OR_UPDATE\n    sys_updated_on: \"2026-07-17 16:46:56\"\n    name: sys_pd_process_definition_f81cf8baff302210d64dffffffffffad\n  - name: sys_documentation_var__m_sys_pd_process_input_f81cf8baff302210d64dffffffffffad_parent_record_en\n    type: Field Label\n    action: INSERT_OR_UPDATE\n    update_set:\n      link: \"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\"\n      value: 1967d67a6722b6e59c3892c00083f533\n    sys_updated_on: \"2026-07-17 16:45:52\"\n  - sys_updated_on: \"2026-07-17 16:36:09\"\n    name: sys_pd_process_definition_1d9b6f3577812110583f78dabd5a99d8\n    type: Process Definition\n    action: INSERT_OR_UPDATE\n[... 52 more lines truncated for display]",
+   "text": "{\n  \"total\": 288,\n  \"returned\": 10,\n  \"truncated\": true,\n  \"records\": [\n    {\n      \"name\": \"sys_pd_process_definition_f81cf8baff302210d64dffffffffffad\",\n      \"sys_updated_on\": \"2026-07-17 16:46:56\",\n      \"type\": \"Process Definition\",\n      \"update_set\": {\n        \"link\": \"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\n        \"value\": \"1967d67a6722b6e59c3892c00083f533\"\n      },\n      \"action\": \"INSERT_OR_UPDATE\"\n    },\n    {\n      \"type\": \"Field Label\",\n      \"sys_updated_on\": \"2026-07-17 16:45:52\",\n      \"name\": \"sys_documentation_var__m_sys_pd_process_input_f81cf8baff302210d64dffffffffffad_parent_record_en\",\n      \"action\": \"INSERT_OR_UPDATE\",\n      \"update_set\": {\n        \"link\": \"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\n[... 85 more lines truncated for display]",
+   "auto": "{\"total\":288,\"returned\":10,\"truncated\":true,\"records\":[{\"type\":\"Process Definition\",\"name\":\"sys_pd_process_definition_f81cf8baff302210d64dffffffffffad\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\"value\":\"1967d67a6722b6e59c3892c00083f533\"},\"sys_updated_on\":\"2026-07-17 16:46:56\",\"action\":\"INSERT_OR_UPDATE\"},{\"action\":\"INSERT_OR_UPDATE\",\"name\":\"sys_documentation_var__m_sys_pd_process_input_f81cf8baff302210d64dffffffffffad_parent_record_en\",\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/1967d67a6722b6e59c3892c00083f533\",\"value\":\"1967d67a6722b6e59c3892c00083f533\"},\"type\":\"Field Label\",\"sys_updated_on\":\"2026-07-17 16:45:52\"},{\"update_set\":{\"link\":\"https://example.service-now.com/api/now/table/sys_update_set/7030ba425952b88bcdd03488a4190667\",\"value\":\"7030ba425952b88bcdd03488a4190667\"},\"sys_updated_on\":\"2026-07-17 16:36:09\",\"action\":\"INSERT_OR_UPDATE\",\"type\":\"Process Definition\",\"name\"\n[... 2304 more bytes truncated for display]"
+  }
+ },
+ "updates-au": {
+  "command": "snow-cli --profile dev --read-only --output <format> table list sys_update_xml --query application.scope=x_2135095_au_demo^ORDERBYDESCsys_updated_on --fields name,type,action,sys_updated_on --limit 10",
+  "auto_resolves": "toon",
+  "formats": {
+   "json": "{\"total\":6,\"returned\":6,\"truncated\":false,\"records\":[{\"sys_updated_on\":\"2026-07-14 15:51:12\",\"type\":\"Flow\",\"action\":\"INSERT_OR_UPDATE\",\"name\":\"sys_hub_flow_a0db9eafb1ed43c393b4267ac227bc7c\"},{\"type\":\"Cross scope privilege\",\"action\":\"INSERT_OR_UPDATE\",\"name\":\"sys_scope_privilege_e14740b82f0e871084cde3807fa4e34e\",\"sys_updated_on\":\"2026-07-10 07:45:05\"},{\"name\":\"sys_scope_privilege_a44784782f0e871084cde3807fa4e3af\",\"sys_updated_on\":\"2026-07-10 07:45:05\",\"action\":\"INSERT_OR_UPDATE\",\"type\":\"Cross scope privilege\"},{\"action\":\"INSERT_OR_UPDATE\",\"name\":\"sys_ui_section_192c2da02f8a471084cde3807fa4e3de\",\"sys_updated_on\":\"2026-07-09 20:27:20\",\"type\":\"Form Layout\"},{\"sys_updated_on\":\"2026-07-09 20:24:10\",\"action\":\"INSERT_OR_UPDATE\",\"name\":\"sys_ui_section_326b69a42f4a471084cde3807fa4e384\",\"type\":\"Form Layout\"},{\"action\":\"INSERT_OR_UPDATE\",\"name\":\"sys_hub_flow_a0db9eafb1ed43c393b4267ac227bc7c\",\"type\":\"Flow\",\"sys_updated_on\":\"2026-07-09 20:22:08\"}]}",
+   "jsonl": "{\"meta\":{\"total\":6,\"returned\":6,\"truncated\":false}}\n{\"name\":\"sys_hub_flow_a0db9eafb1ed43c393b4267ac227bc7c\",\"sys_updated_on\":\"2026-07-14 15:51:12\",\"action\":\"INSERT_OR_UPDATE\",\"type\":\"Flow\"}\n{\"action\":\"INSERT_OR_UPDATE\",\"sys_updated_on\":\"2026-07-10 07:45:05\",\"name\":\"sys_scope_privilege_e14740b82f0e871084cde3807fa4e34e\",\"type\":\"Cross scope privilege\"}\n{\"action\":\"INSERT_OR_UPDATE\",\"name\":\"sys_scope_privilege_a44784782f0e871084cde3807fa4e3af\",\"sys_updated_on\":\"2026-07-10 07:45:05\",\"type\":\"Cross scope privilege\"}\n{\"type\":\"Form Layout\",\"name\":\"sys_ui_section_192c2da02f8a471084cde3807fa4e3de\",\"action\":\"INSERT_OR_UPDATE\",\"sys_updated_on\":\"2026-07-09 20:27:20\"}\n{\"action\":\"INSERT_OR_UPDATE\",\"sys_updated_on\":\"2026-07-09 20:24:10\",\"type\":\"Form Layout\",\"name\":\"sys_ui_section_326b69a42f4a471084cde3807fa4e384\"}\n{\"type\":\"Flow\",\"sys_updated_on\":\"2026-07-09 20:22:08\",\"action\":\"INSERT_OR_UPDATE\",\"name\":\"sys_hub_flow_a0db9eafb1ed43c393b4267ac227bc7c\"}",
+   "csv": "action,name,sys_updated_on,type\nINSERT_OR_UPDATE,sys_hub_flow_a0db9eafb1ed43c393b4267ac227bc7c,2026-07-14 15:51:12,Flow\nINSERT_OR_UPDATE,sys_scope_privilege_e14740b82f0e871084cde3807fa4e34e,2026-07-10 07:45:05,Cross scope privilege\nINSERT_OR_UPDATE,sys_scope_privilege_a44784782f0e871084cde3807fa4e3af,2026-07-10 07:45:05,Cross scope privilege\nINSERT_OR_UPDATE,sys_ui_section_192c2da02f8a471084cde3807fa4e3de,2026-07-09 20:27:20,Form Layout\nINSERT_OR_UPDATE,sys_ui_section_326b69a42f4a471084cde3807fa4e384,2026-07-09 20:24:10,Form Layout\nINSERT_OR_UPDATE,sys_hub_flow_a0db9eafb1ed43c393b4267ac227bc7c,2026-07-09 20:22:08,Flow",
+   "toon": "total: 6\nreturned: 6\ntruncated: false\nrecords[6]{type,sys_updated_on,name,action}:\n  Flow,\"2026-07-14 15:51:12\",sys_hub_flow_a0db9eafb1ed43c393b4267ac227bc7c,INSERT_OR_UPDATE\n  Cross scope privilege,\"2026-07-10 07:45:05\",sys_scope_privilege_e14740b82f0e871084cde3807fa4e34e,INSERT_OR_UPDATE\n  Cross scope privilege,\"2026-07-10 07:45:05\",sys_scope_privilege_a44784782f0e871084cde3807fa4e3af,INSERT_OR_UPDATE\n  Form Layout,\"2026-07-09 20:27:20\",sys_ui_section_192c2da02f8a471084cde3807fa4e3de,INSERT_OR_UPDATE\n  Form Layout,\"2026-07-09 20:24:10\",sys_ui_section_326b69a42f4a471084cde3807fa4e384,INSERT_OR_UPDATE\n  Flow,\"2026-07-09 20:22:08\",sys_hub_flow_a0db9eafb1ed43c393b4267ac227bc7c,INSERT_OR_UPDATE",
+   "text": "{\n  \"total\": 6,\n  \"returned\": 6,\n  \"truncated\": false,\n  \"records\": [\n    {\n      \"type\": \"Flow\",\n      \"sys_updated_on\": \"2026-07-14 15:51:12\",\n      \"action\": \"INSERT_OR_UPDATE\",\n      \"name\": \"sys_hub_flow_a0db9eafb1ed43c393b4267ac227bc7c\"\n    },\n    {\n      \"name\": \"sys_scope_privilege_e14740b82f0e871084cde3807fa4e34e\",\n      \"sys_updated_on\": \"2026-07-10 07:45:05\",\n      \"type\": \"Cross scope privilege\",\n      \"action\": \"INSERT_OR_UPDATE\"\n    },\n    {\n      \"type\": \"Cross scope privilege\",\n      \"action\": \"INSERT_OR_UPDATE\",\n      \"name\": \"sys_scope_privilege_a44784782f0e871084cde3807fa4e3af\",\n      \"sys_updated_on\": \"2026-07-10 07:45:05\"\n[... 21 more lines truncated for display]",
+   "auto": "total: 6\nreturned: 6\ntruncated: false\nrecords[6]{action,type,name,sys_updated_on}:\n  INSERT_OR_UPDATE,Flow,sys_hub_flow_a0db9eafb1ed43c393b4267ac227bc7c,\"2026-07-14 15:51:12\"\n  INSERT_OR_UPDATE,Cross scope privilege,sys_scope_privilege_e14740b82f0e871084cde3807fa4e34e,\"2026-07-10 07:45:05\"\n  INSERT_OR_UPDATE,Cross scope privilege,sys_scope_privilege_a44784782f0e871084cde3807fa4e3af,\"2026-07-10 07:45:05\"\n  INSERT_OR_UPDATE,Form Layout,sys_ui_section_192c2da02f8a471084cde3807fa4e3de,\"2026-07-09 20:27:20\"\n  INSERT_OR_UPDATE,Form Layout,sys_ui_section_326b69a42f4a471084cde3807fa4e384,\"2026-07-09 20:24:10\"\n  INSERT_OR_UPDATE,Flow,sys_hub_flow_a0db9eafb1ed43c393b4267ac227bc7c,\"2026-07-09 20:22:08\""
+  }
+ },
+ "updatesets-recent": {
+  "command": "snow-cli --profile dev --read-only --output <format> table list sys_update_set --query 'sys_created_on<2026-07-15^ORDERBYDESCsys_created_on' --fields name,application.name,state,sys_created_on,sys_created_by --limit 5",
+  "auto_resolves": "toon",
+  "formats": {
+   "json": "{\"total\":5,\"returned\":5,\"truncated\":false,\"records\":[{\"name\":\"Default\",\"sys_created_by\":\"admin\",\"sys_created_on\":\"2026-07-14 16:06:55\",\"state\":\"in progress\",\"application.name\":\"Incident Management for Service Operations Workspace\"},{\"sys_created_on\":\"2026-07-14 16:04:12\",\"name\":\"Default\",\"state\":\"in progress\",\"sys_created_by\":\"admin\",\"application.name\":\"Upgrade Console\"},{\"sys_created_on\":\"2026-07-09 20:10:44\",\"name\":\"Default 1\",\"state\":\"in progress\",\"application.name\":\"Australia Demo Showcase\",\"sys_created_by\":\"admin\"},{\"application.name\":\"Australia Demo Showcase\",\"sys_created_by\":\"admin\",\"state\":\"ignore\",\"name\":\"Default\",\"sys_created_on\":\"2026-07-09 19:30:37\"},{\"name\":\"Default\",\"state\":\"in progress\",\"sys_created_on\":\"2026-04-30 07:40:06\",\"sys_created_by\":\"system\",\"application.name\":\"Global\"}]}",
+   "jsonl": "{\"meta\":{\"total\":5,\"returned\":5,\"truncated\":false}}\n{\"name\":\"Default\",\"sys_created_on\":\"2026-07-14 16:06:55\",\"sys_created_by\":\"admin\",\"state\":\"in progress\",\"application.name\":\"Incident Management for Service Operations Workspace\"}\n{\"state\":\"in progress\",\"application.name\":\"Upgrade Console\",\"sys_created_on\":\"2026-07-14 16:04:12\",\"name\":\"Default\",\"sys_created_by\":\"admin\"}\n{\"application.name\":\"Australia Demo Showcase\",\"state\":\"in progress\",\"sys_created_by\":\"admin\",\"name\":\"Default 1\",\"sys_created_on\":\"2026-07-09 20:10:44\"}\n{\"sys_created_on\":\"2026-07-09 19:30:37\",\"application.name\":\"Australia Demo Showcase\",\"state\":\"ignore\",\"name\":\"Default\",\"sys_created_by\":\"admin\"}\n{\"sys_created_on\":\"2026-04-30 07:40:06\",\"sys_created_by\":\"system\",\"application.name\":\"Global\",\"name\":\"Default\",\"state\":\"in progress\"}",
+   "csv": "application.name,name,state,sys_created_by,sys_created_on\nIncident Management for Service Operations Workspace,Default,in progress,admin,2026-07-14 16:06:55\nUpgrade Console,Default,in progress,admin,2026-07-14 16:04:12\nAustralia Demo Showcase,Default 1,in progress,admin,2026-07-09 20:10:44\nAustralia Demo Showcase,Default,ignore,admin,2026-07-09 19:30:37\nGlobal,Default,in progress,system,2026-04-30 07:40:06",
+   "toon": "total: 5\nreturned: 5\ntruncated: false\nrecords[5]{name,sys_created_on,state,application.name,sys_created_by}:\n  Default,\"2026-07-14 16:06:55\",in progress,Incident Management for Service Operations Workspace,admin\n  Default,\"2026-07-14 16:04:12\",in progress,Upgrade Console,admin\n  Default 1,\"2026-07-09 20:10:44\",in progress,Australia Demo Showcase,admin\n  Default,\"2026-07-09 19:30:37\",ignore,Australia Demo Showcase,admin\n  Default,\"2026-04-30 07:40:06\",in progress,Global,system",
+   "text": "{\n  \"total\": 5,\n  \"returned\": 5,\n  \"truncated\": false,\n  \"records\": [\n    {\n      \"sys_created_by\": \"admin\",\n      \"sys_created_on\": \"2026-07-14 16:06:55\",\n      \"name\": \"Default\",\n      \"application.name\": \"Incident Management for Service Operations Workspace\",\n      \"state\": \"in progress\"\n    },\n    {\n      \"sys_created_on\": \"2026-07-14 16:04:12\",\n      \"name\": \"Default\",\n      \"sys_created_by\": \"admin\",\n      \"application.name\": \"Upgrade Console\",\n      \"state\": \"in progress\"\n    },\n    {\n      \"sys_created_on\": \"2026-07-09 20:10:44\",\n      \"sys_created_by\": \"admin\",\n[... 20 more lines truncated for display]",
+   "auto": "total: 5\nreturned: 5\ntruncated: false\nrecords[5]{state,sys_created_by,sys_created_on,application.name,name}:\n  in progress,admin,\"2026-07-14 16:06:55\",Incident Management for Service Operations Workspace,Default\n  in progress,admin,\"2026-07-14 16:04:12\",Upgrade Console,Default\n  in progress,admin,\"2026-07-09 20:10:44\",Australia Demo Showcase,Default 1\n  ignore,admin,\"2026-07-09 19:30:37\",Australia Demo Showcase,Default\n  in progress,system,\"2026-04-30 07:40:06\",Global,Default"
+  }
+ },
+ "playbooks": {
+  "command": "snow-cli --profile dev --read-only --output <format> table list sys_pd_process_definition --fields label,name,active,sys_scope --limit 50",
+  "auto_resolves": "json",
+  "formats": {
+   "json": "{\"total\":49,\"returned\":48,\"truncated\":true,\"records\":[{\"active\":\"true\",\"name\":\"task_steps_2\",\"label\":\"Task steps\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"}},{\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"label\":\"Task steps\",\"active\":\"true\",\"name\":\"task_steps_21\"},{\"label\":\"Task steps\",\"active\":\"true\",\"name\":\"task_steps_26\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"}},{\"label\":\"Task steps\",\"name\":\"task_steps_22\",\"active\":\"true\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"}},{\"label\":\"Task steps\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/\n[... 9284 more bytes truncated for display]",
+   "jsonl": "{\"meta\":{\"total\":49,\"returned\":48,\"truncated\":true}}\n{\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"active\":\"true\",\"name\":\"task_steps_2\",\"label\":\"Task steps\"}\n{\"name\":\"task_steps_21\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"label\":\"Task steps\",\"active\":\"true\"}\n{\"name\":\"task_steps_26\",\"label\":\"Task steps\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"active\":\"true\"}\n{\"label\":\"Task steps\",\"active\":\"true\",\"name\":\"task_steps_22\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"}}\n{\"label\":\"Task steps\",\"name\":\"task_steps_34\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"active\":\"true\"}\n{\"name\":\"remedial_action_process_server\",\"label\":\"Remediate server\",\"active\":\"true\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/46fea6d18575149a813bf5ffeef27397\",\"value\":\"46fea6d18575149a813bf5ffeef27397\"}}\n{\"label\":\"Task steps\",\"active\":\"true\",\"name\":\"task_steps_27\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"}}\n{\"active\":\"true\",\"name\":\"task_steps_18\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"label\":\"Task steps\"}\n{\"name\":\"task_steps_10\",\"label\":\"Task steps\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"active\":\"true\"}\n{\"label\":\"Task steps\",\"name\":\"task_steps_19\",\"active\":\"true\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"}}\n{\"label\":\"Task steps\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"name\":\"task_steps_5\",\"active\":\"true\"}\n{\"active\":\"true\",\"label\":\"Task steps\",\"name\":\"task_steps_33\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"}}\n{\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"label\":\"Task steps\",\"name\":\"task_steps_13\",\"active\":\"true\"}\n{\"label\":\"Task steps\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"active\":\"true\",\"name\":\"task_steps_31\"}\n{\"name\":\"task_steps_11\",\"active\":\"true\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"label\":\"Task steps\"}\n{\"name\":\"remedial_action_process\",\"active\":\"true\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/46fea6d18575149a813bf5ffeef27397\",\"value\":\"46fea6d18575149a813bf5ffeef27397\"},\"label\":\"Remediate device\"}\n{\"active\":\"true\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"name\":\"task_steps_28\",\"label\":\"Task steps\"}\n{\"name\":\"task_steps\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"label\":\"Task steps\",\"active\":\"true\"}\n{\"name\":\"task_steps_23\",\"active\":\"true\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"label\":\"task steps\"}\n{\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"label\":\"Task steps\",\"name\":\"task_steps_3\",\"active\":\"true\"}\n{\"label\":\"Task steps\",\"active\":\"true\",\"name\":\"task_steps_35\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"}}\n[... 27 more lines truncated for display]",
+   "csv": "active,label,name,sys_scope\ntrue,Task steps,task_steps_2,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_21,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_26,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_22,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_34,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Remediate server,remedial_action_process_server,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/46fea6d18575149a813bf5ffeef27397\"\",\"\"value\"\":\"\"46fea6d18575149a813bf5ffeef27397\"\"}\"\ntrue,Task steps,task_steps_27,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_18,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_10,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_19,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_5,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_33,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_13,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_31,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_11,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Remediate device,remedial_action_process,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/46fea6d18575149a813bf5ffeef27397\"\",\"\"value\"\":\"\"46fea6d18575149a813bf5ffeef27397\"\"}\"\ntrue,Task steps,task_steps_28,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,task steps,task_steps_23,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_3,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\ntrue,Task steps,task_steps_35,\"{\"\"link\"\":\"\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\",\"\"value\"\":\"\"580f699e6ea16bce4d8555a19e48800f\"\"}\"\n[... 27 more lines truncated for display]",
+   "toon": "total: 49\nreturned: 48\ntruncated: true\nrecords[48]:\n  - name: task_steps_2\n    sys_scope:\n      link: \"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\n      value: 580f699e6ea16bce4d8555a19e48800f\n    active: \"true\"\n    label: Task steps\n  - name: task_steps_21\n    active: \"true\"\n    sys_scope:\n      link: \"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\n      value: 580f699e6ea16bce4d8555a19e48800f\n    label: Task steps\n  - active: \"true\"\n    sys_scope:\n      link: \"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\"\n      value: 580f699e6ea16bce4d8555a19e48800f\n    name: task_steps_26\n    label: Task steps\n[... 270 more lines truncated for display]",
+   "text": "{\n  \"total\": 49,\n  \"returned\": 48,\n  \"truncated\": true,\n  \"records\": [\n    {\n      \"active\": \"true\",\n      \"label\": \"Task steps\",\n      \"name\": \"task_steps_2\",\n      \"sys_scope\": {\n        \"link\": \"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\n        \"value\": \"580f699e6ea16bce4d8555a19e48800f\"\n      }\n    },\n    {\n      \"name\": \"task_steps_21\",\n      \"sys_scope\": {\n        \"link\": \"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\n        \"value\": \"580f699e6ea16bce4d8555a19e48800f\"\n      },\n      \"label\": \"Task steps\",\n      \"active\": \"true\"\n[... 417 more lines truncated for display]",
+   "auto": "{\"total\":49,\"returned\":48,\"truncated\":true,\"records\":[{\"label\":\"Task steps\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"active\":\"true\",\"name\":\"task_steps_2\"},{\"name\":\"task_steps_21\",\"active\":\"true\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"label\":\"Task steps\"},{\"label\":\"Task steps\",\"active\":\"true\",\"name\":\"task_steps_26\",\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"}},{\"sys_scope\":{\"link\":\"https://example.service-now.com/api/now/table/sys_scope/580f699e6ea16bce4d8555a19e48800f\",\"value\":\"580f699e6ea16bce4d8555a19e48800f\"},\"active\":\"true\",\"name\":\"task_steps_22\",\"label\":\"Task steps\"},{\"name\":\"task_steps_34\",\"active\":\"true\",\"sys_scope\":{\"link\":\"https://example.se\n[... 9284 more bytes truncated for display]"
+  }
+ },
+ "glideajax": {
+  "command": "snow-cli --profile dev --read-only --output <format> codesearch search GlideAjax --limit 10",
+  "auto_resolves": "toon",
+  "formats": {
+   "json": "[{\"recordType\":\"sys_ui_page\",\"hits\":[{\"name\":\"$pwd_change\",\"className\":\"sys_ui_page\",\"tableLabel\":\"sys_ui_page\",\"matches\":[{\"field\":\"client_script\",\"fieldLabel\":\"Client script\",\"lineMatches\":[{\"line\":151.0,\"context\":\"\",\"escaped\":\"\"},{\"line\":152.0,\"context\":\"    var ga = new GlideAjax('PwdAjaxChangePassword');\",\"escaped\":\"    var ga = new GlideAjax(&#x27;PwdAjaxChangePassword&#x27;);\"},{\"line\":153.0,\"context\":\"    ga.addParam('sysparm_name', 'getProcessesForUser');\",\"escaped\":\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;getProcessesForUser&#x27;);\"},{\"line\":306.0,\"context\":\"    showPwdLoadingDialog();\",\"escaped\":\"    showPwdLoadingDialog();\"},{\"line\":307.0,\"context\":\"    var ga = new GlideAjax('PwdAjaxChangePassword');\",\"escaped\":\"    var ga = new GlideAjax(&#x27;PwdAjaxChangePassword&#x27;);\"},{\"line\":308.0,\"context\":\"    ga.addParam('sysparm_name', 'changePassword');\",\"escaped\":\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;changePassword&#x27;);\"},{\"line\":338.0,\"context\":\"funct\n[... 12499 more bytes truncated for display]",
+   "jsonl": "{\"recordType\":\"sys_ui_page\",\"tableLabel\":\"UI Page\",\"hits\":[{\"name\":\"$pwd_change\",\"className\":\"sys_ui_page\",\"tableLabel\":\"sys_ui_page\",\"matches\":[{\"field\":\"client_script\",\"fieldLabel\":\"Client script\",\"lineMatches\":[{\"line\":151.0,\"context\":\"\",\"escaped\":\"\"},{\"line\":152.0,\"context\":\"    var ga = new GlideAjax('PwdAjaxChangePassword');\",\"escaped\":\"    var ga = new GlideAjax(&#x27;PwdAjaxChangePassword&#x27;);\"},{\"line\":153.0,\"context\":\"    ga.addParam('sysparm_name', 'getProcessesForUser');\",\"escaped\":\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;getProcessesForUser&#x27;);\"},{\"line\":306.0,\"context\":\"    showPwdLoadingDialog();\",\"escaped\":\"    showPwdLoadingDialog();\"},{\"line\":307.0,\"context\":\"    var ga = new GlideAjax('PwdAjaxChangePassword');\",\"escaped\":\"    var ga = new GlideAjax(&#x27;PwdAjaxChangePassword&#x27;);\"},{\"line\":308.0,\"context\":\"    ga.addParam('sysparm_name', 'changePassword');\",\"escaped\":\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;changePassword&#x27;);\"},{\"line\":338.0,\"context\":\"function isFlow() {\",\"escaped\":\"function isFlow() {\"},{\"line\":339.0,\"context\":\"    var ga = new GlideAjax('PwdAjaxWFRequestProcessor');\",\"escaped\":\"    var ga = new GlideAjax(&#x27;PwdAjaxWFRequestProcessor&#x27;);\"},{\"line\":340.0,\"context\":\"    ga.addParam('sysparm_name', 'isFlow');\",\"escaped\":\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;isFlow&#x27;);\"},{\"line\":358.0,\"context\":\"    } else {\",\"escaped\":\"    } else {\"},{\"line\":359.0,\"context\":\"        var ga = new GlideAjax('PwdAjaxChangePassword');\",\"escaped\":\"        var ga = new GlideAjax(&#x27;PwdAjaxChangePassword&#x27;);\"},{\"line\":360.0,\"context\":\"        ga.addParam('sysparm_name', 'checkChangePwdWFState');\",\"escaped\":\"        ga.addParam(&#x27;sysparm_name&#x27;, &#x27;checkChangePwdWFState&#x27;);\"},{\"line\":424.0,\"context\":\"function serversideValidatePassword(processId, password) {\",\"escaped\":\"function serversideValidatePassword(processId, password) {\"},{\"line\":425.0,\"context\":\"    var ga = new GlideAjax('PwdAjaxWFRequestProcessor');\",\"escaped\":\"    var ga = new GlideAjax(&#x27;PwdAjaxWFRequestProcessor&#x27;);\"},{\"line\":426.0,\"context\":\"    ga.addParam('sysparm_name', 'validatePasswordForChange');\",\"escaped\":\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;validatePasswordForChange&#x27;);\"}],\"count\":5.0}],\"sysId\":\"5d0756ac4a4e616f752be323749a1df2\",\"modified\":1750229788000},{\"name\":\"$pwd_enrollment_form_container\",\"className\":\"sys_ui_page\",\"tableLabel\":\"sys_ui_page\",\"matches\":[{\"field\":\"client_script\",\"fieldLabel\":\"Client script\",\"lineMatches\":[{\"line\":85.0,\"context\":\"function sendRequest() {\",\"escaped\":\"function sendRequest() {\"},{\"line\":86.0,\"context\":\"\\tvar ga = new GlideAjax('PwdAjaxEnrollmentProcessor');\",\"escaped\":\"\\tvar ga = new GlideAjax(&#x27;PwdAjaxEnrollmentProcessor&#x27;);\"},{\"line\":87.0,\"context\":\"\\tga.addParam('sysparm_name', 'enroll');\",\"escaped\":\"\\tga.addParam(&#x27;sysparm_name&#x27;, &#x27;enroll&#x27;);\"}],\"count\":1.0}],\"sysId\":\"0325956ddd4d57254fc708acc3515b03\",\"modified\":1694161413000},{\"name\":\"$pwd_new\",\"className\":\"sys_ui_page\",\"tableLabel\":\"sys_ui_page\",\"matches\":[{\"field\":\"client_script\",\"fieldLabel\":\"Client script\",\"lineMatches\":[{\"line\":135.0,\"context\":\"    // Use ajax to retrieve the lock state from request record:\",\"escaped\":\"    // Use ajax to retrieve the lock state from request record:\"},{\"line\":136.0,\"context\":\"    var ga = new GlideAjax('PwdAjaxUserUnlockProcessor');\",\"escaped\":\"    var ga = new GlideAjax(&#x27;PwdAjaxUserUnlockProcessor&#x27;);\"},{\"line\":137.0,\"context\":\"    ga.addParam('sysparm_name', 'pollLockStateFromRequest');\",\"escaped\":\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;pollLockStateFromRequest&#x27;);\"},{\"line\":201.0,\"context\":\"function serversideValidatePassword(password) {\",\"escaped\":\"function serversideValidatePassword(password) {\"},{\"line\":202.0,\"context\":\"    var ga = new GlideAjax('PwdAjaxWFRequestProcessor');\",\"escaped\":\"    var ga = new GlideAjax(&#x27;PwdAjaxWFRequestProcessor&#x27;);\"},{\"line\":203.0,\"context\":\"    ga.addParam('sysparm_name', 'validatePassword');\",\"escaped\":\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;validatePassword&#x27;);\"}],\"count\":2.0}],\"sysId\":\"17fdddcd4eec9467eac58d1f99b2915d\",\"modified\":1766559872000},{\"name\":\"$pwd_reset\",\"className\":\"sys_ui_page\",\"tableLabel\":\"sys_ui_page\",\"matches\":[{\"field\":\"client_script\",\"fieldLabel\":\"Client script\",\"lineMatches\":[{\"line\":109.0,\"context\":\"\\t\",\"escaped\":\"\\t\"},{\"line\":110.0,\"context\":\"\\tvar ga = new GlideAjax('PwdAjaxVerifyIdentity');\",\"escaped\":\"\\tvar ga = new GlideAjax(&#x27;PwdAjaxVerifyIdentity&#x27;);\"},{\"line\":111.0,\"context\":\"\\t\",\"escaped\":\"\\t\"}],\"count\":1.0}],\"sysId\":\"a4d801f9f2b7393d301f5cc75fd3e949\",\"modified\":1766559859000},{\"name\":\"$pwd_reset_serviceDesk\",\"className\":\"sys_ui_page\",\"tableLabel\":\"sys_ui_page\",\"matches\":[{\"field\":\"client_script\",\"fieldLabel\":\"Client script\",\"lineMatches\":[{\"line\":48.0,\"context\":\"\\t\\t\",\"escaped\":\"\\t\\t\"},{\"line\":49.0,\"context\":\"\\t\\tvar ga = new GlideAjax('PwdAjaxVerifyIdentityServiceDesk');\",\"escaped\":\"\\t\\tvar ga = new GlideAjax(&#x27;PwdAjaxVerifyIdentityServiceDesk&#x27;);\"},{\"line\":50.0,\"context\":\"\\t\\tga.addParam('sysparm_name', 'getProcessNamesAsync');\",\"escaped\":\"\\t\\tga.addParam(&#x27;sysparm_name&#x27;, &#x27;getProcessNamesAsync&#x27;);\"},{\"line\":90.0,\"context\":\"\\t//showPwdLoadingDialog(); //Removing the PopUp as the Call has been made Asynchronous\",\"escaped\":\"\\t//showPwdLoadingDialog(); //Removing the PopUp as the Call has been made Asynchronous\"},{\"line\":91.0,\"context\":\"\\tvar ga = new GlideAjax('PwdAjaxVerifyIdentityServiceDesk');\",\"escaped\":\"\\tvar ga = new GlideAjax(&#x27;PwdAjaxVerifyIdentityServiceDesk&#x27;);\"},{\"line\":92.0,\"context\":\"\\tga.addParam('sysparm_name', 'saveAndProceed');\",\"escaped\":\"\\tga.addParam(&#x27;sysparm_name&#x27;, &#x27;saveAndProceed&#x27;);\"}],\"count\":2.0}],\"sysId\":\"ea045af6270c0d61e972db076ccd5ca0\",\"modified\":1679313674000},{\"name\":\"$pwd_verify\",\"className\":\"sys_ui_page\",\"tableLabel\":\"sys_ui_page\",\"matches\":[{\"field\":\"client_script\",\"fieldLabel\":\"Client script\",\"lineMatches\":[{\"line\":68.0,\"context\":\"\\t\",\"escaped\":\"\\t\"},{\"line\":69.0,\"context\":\"\\tvar ga = new GlideAjax('PwdAjaxVerifyProcessor');\",\"escaped\":\"\\tvar ga = new GlideAjax(&#x27;PwdAjaxVerifyProcessor&#x27;);\"},{\"line\":70.0,\"context\":\"\\tga.addParam('sysparm_name','pwdAjaxVerifyProcessor');\",\"escaped\":\"\\tga.addParam(&#x27;sysparm_name&#x27;,&#x27;pwdAjaxVerifyProcessor&#x27;);\"},{\"line\":90.0,\"context\":\"\\t\",\"escaped\":\"\\t\"},{\"line\":91.0,\"context\":\"\\tvar ga = new GlideAjax('PwdAjaxVerifyProcessor');\",\"escaped\":\"\\tvar ga = new GlideAjax(&#x27;PwdAjaxVerifyProcessor&#x27;);\"},{\"line\":92.0,\"context\":\"\\tga.addParam('sysparm_name','pwdAjaxVerifyProcessor');\",\"escaped\":\"\\tga.addParam(&#x27;sysparm_name&#x27;,&#x27;pwdAjaxVerifyProcessor&#x27;);\"},{\"line\":128.0,\"context\":\"\\t\\t\\tif('$[pwd_email_reset_url]' == 'true') {\",\"escaped\":\"\\t\\t\\tif(&#x27;$[pwd_email_reset_url]&#x27; == &#x27;true&#x27;) {\"},{\"line\":129.0,\"context\":\"\\t\\t\\t\\tvar ga = new GlideAjax(\\\"PasswordResetUtil\\\");\",\"escaped\":\"\\t\\t\\t\\tvar ga = new GlideAjax(&quot;PasswordResetUtil&quot;);\"},{\"line\":130.0,\"context\":\"\\t\\t\\t\\tga.addParam(\\\"sysparm_name\\\",\\\"sendResetEmail\\\");\",\"escaped\":\"\\t\\t\\t\\tga.addParam(&quot;sysparm_name&quot;,&quot;sendResetEmail&quot;);\"}],\"count\":3.0}],\"sysId\":\"e986c9afec47d453879be7d9553beecb\",\"modified\":1766559957000},{\"name\":\"acl_execution_plan\",\"className\":\"sys_ui_page\",\"tableLabel\":\"sys_ui_page\",\"matches\":[{\"field\":\"client_script\",\"fieldLabel\":\"Client script\",\"lineMatches\":[{\"line\":14.0,\"context\":\"\",\"escaped\":\"\"},{\"line\":15.0,\"context\":\"\\tvar ga = new GlideAjax(\\\"FindRelevantAcls\\\");\",\"escaped\":\"\\tvar ga = new GlideAjax(&quot;FindRelevantAcls&quot;);\"},{\"line\":16.0,\"context\":\"\\tga.addParam(\\\"sysparm_identifier\\\", identifier);\",\"escaped\":\"\\tga.addParam(&quot;sysparm_identifier&quot;, identifier);\"},{\"line\":488.0,\"context\":\"function sendSecurityEvent() {\",\"escaped\":\"function sendSecurityEvent() {\"},{\"line\":489.0,\"context\":\"\\tvar ga = new GlideAjax('SecurityEventSender');\",\"escaped\":\"\\tvar ga = new GlideAjax(&#x27;SecurityEventSender&#x27;);\"},{\"line\":490.0,\"context\":\"\\tga.addParam('sysparm_eventName', 'acl.show.execution.plan.view.related.acl');\",\"escaped\":\"\\tga.addParam(&#x27;sysparm_eventName&#x27;, &#x27;acl.show.execution.plan.view.related.acl&#x27;);\"}],\"count\":2.0}],\"sysId\":\"b8f0389e18000e0a5204254155818584\",\"modified\":1724366437000},{\"name\":\"activate_plugin_confirm\",\"className\":\"sys_ui_page\",\"tableLabel\":\"sys_ui_page\",\"matches\":[{\"field\":\"client_script\",\"fieldLabel\":\"Client script\",\"lineMatches\":[{\"line\":44.0,\"context\":\"\\tcollectionData.app_id = pluginID;\",\"escaped\":\"\\tcollectionData.app_id = pluginID;\"},{\"line\":45.0,\"context\":\"\\tvar gcfUtil = new GlideAjax('sn_appclient.AppManagerGCFAjax');\",\"escaped\":\"\\tvar gcfUtil = new GlideAjax(&#x27;sn_appclient.AppManagerGCFAjax&#x27;);\"},{\"line\":46.0,\"context\":\"\\tgcfUtil.addParam('sysparm_name', 'capturePluginInstallAnalytics');\",\"escaped\":\"\\tgcfUtil.addParam(&#x27;sysparm_name&#x27;, &#x27;capturePluginInstallAnalytics&#x27;);\"},{\"line\":49.0,\"context\":\"\",\"escaped\":\"\"},{\"line\":50.0,\"context\":\"\\tvar ga = new GlideAjax('AppManagerCacheHelper');\",\"escaped\":\"\\tvar ga = new GlideAjax(&#x27;AppManagerCacheHelper&#x27;);\"},{\"line\":51.0,\"context\":\"\\tga.addParam('sysparm_name', 'getActivePlugins');\",\"escaped\":\"\\tga.addParam(&#x27;sysparm_name&#x27;, &#x27;getActivePlugins&#x27;);\"},{\"line\":84.0,\"context\":\"\\tdd.on(\\\"executionComplete\\\", function(trackerObj) {\",\"escaped\":\"\\tdd.on(&quot;executionComplete&quot;, function(trackerObj) {\"},{\"line\":85.0,\"context\":\"\\t\\tvar gr = new GlideAjax(\\\"AppManagerCacheHelper\\\");\",\"escaped\":\"\\t\\tvar gr = new GlideAjax(&quot;AppManagerCacheHelper&quot;);\"},{\"line\":86.0,\"context\":\"\\t\\tgr.addParam(\\\"sysparm_name\\\", \\\"refreshAppManagerCache\\\");\",\"escaped\":\"\\t\\tgr.addParam(&quot;sysparm_name&quot;, &quot;refreshAppManagerCache&quot;);\"},{\"line\":90.0,\"context\":\"\",\"escaped\":\"\"},{\"line\":91.0,\"context\":\"\\t\\tvar ga = new GlideAjax(\\\"sn_appclient.AppManagerGCFAjax\\\");\",\"escaped\":\"\\t\\tvar ga = new GlideAjax(&quot;sn_appclient.AppManagerGCFAjax&quot;);\"},{\"line\":92.0,\"context\":\"\\t\\tga.addParam(\\\"sysparm_name\\\", \\\"capturePluginInstallationTime\\\");\",\"escaped\":\"\\t\\tga.addParam(&quot;sysparm_name&quot;, &quot;capturePluginInstallationTime&quot;);\"},{\"line\":248.0,\"context\":\"\",\"escaped\":\"\"},{\"line\":249.0,\"context\":\"  var pa = new GlideAjax(\\\"UAPlatformAnalyticsAjaxAPI\\\");\",\"escaped\":\"  var pa = new GlideAjax(&quot;UAPlatformAnalyticsAjaxAPI&quot;);\"},{\"line\":250.0,\"context\":\"  pa.addParam(\\\"sysparm_name\\\", \\\"sendAnalytic\\\");\",\"escaped\":\"  pa.addParam(&quot;sysparm_name&quot;, &quot;sendAnalytic&quot;);\"}],\"count\":5.0}],\"sysId\":\"0197996de06ffdbf5ab6730dd6f89a89\",\"modified\":1694178837000},{\"name\":\"add_all_ci_confirmation\",\"className\":\"sys_ui_page\",\"tableLabel\":\"sys_ui_page\",\"matches\":[{\"field\":\"client_script\",\"fieldLabel\":\"Client script\",\"lineMatches\":[{\"line\":9.0,\"context\":\"\",\"escaped\":\"\"},{\"line\":10.0,\"context\":\"\\tvar gajax = new window.parent.GlideAjax(\\\"AssociateCIToTask\\\");\",\"escaped\":\"\\tvar gajax = new window.parent.GlideAjax(&quot;AssociateCIToTask&quot;);\"},{\"line\":11.0,\"context\":\"\\tgajax.addParam(\\\"sysparm_name\\\",\\\"addAll\\\");\",\"escaped\":\"\\tgajax.addParam(&quot;sysparm_name&quot;,&quot;addAll&quot;);\"}],\"count\":1.0}],\"sysId\":\"f78ef60fef66706727c8592952bdf58e\",\"modified\":1711551752000},{\"name\":\"add_all_incident_confirmation\",\"className\":\"sys_ui_page\",\"tableLabel\":\"sys_ui_page\",\"matches\":[{\"field\":\"client_script\",\"fieldLabel\":\"Client script\",\"lineMatches\":[{\"line\":12.0,\"context\":\"    }\",\"escaped\":\"    }\"},{\"line\":13.0,\"context\":\"    var gajax = new window.parent.GlideAjax(\\\"BulkAddIncidents\\\");\",\"escaped\":\"    var gajax = new window.parent.GlideAjax(&quot;BulkAddIncidents&quot;);\"},{\"line\":14.0,\"context\":\"    gajax.addParam(\\\"sysparm_name\\\", \\\"linkTasks\\\");\",\"escaped\":\"    gajax.addParam(&quot;sysparm_name&quot;, &quot;linkTasks&quot;);\"}],\"count\":1.0}],\"sysId\":\"61fb73f63af518c9590d339a1e1ebf12\",\"modified\":1725264987000}]}\n[... 20 more lines truncated for display]",
+   "csv": "hits,recordType,tableLabel\n[... 21 more lines truncated for display]",
+   "toon": "[21]:\n  - recordType: sys_ui_page\n    tableLabel: UI Page\n    hits[10]:\n      - name: $pwd_change\n        className: sys_ui_page\n        tableLabel: sys_ui_page\n        matches[1]:\n          - field: client_script\n            fieldLabel: Client script\n            lineMatches[15]{line,context,escaped}:\n              151,\"\",\"\"\n              152,\"    var ga = new GlideAjax('PwdAjaxChangePassword');\",\"    var ga = new GlideAjax(&#x27;PwdAjaxChangePassword&#x27;);\"\n              153,\"    ga.addParam('sysparm_name', 'getProcessesForUser');\",\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;getProcessesForUser&#x27;);\"\n              306,\"    showPwdLoadingDialog();\",\"    showPwdLoadingDialog();\"\n              307,\"    var ga = new GlideAjax('PwdAjaxChangePassword');\",\"    var ga = new GlideAjax(&#x27;PwdAjaxChangePassword&#x27;);\"\n              308,\"    ga.addParam('sysparm_name', 'changePassword');\",\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;changePassword&#x27;);\"\n              338,\"function isFlow() {\",\"function isFlow() {\"\n              339,\"    var ga = new GlideAjax('PwdAjaxWFRequestProcessor');\",\"    var ga = new GlideAjax(&#x27;PwdAjaxWFRequestProcessor&#x27;);\"\n              340,\"    ga.addParam('sysparm_name', 'isFlow');\",\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;isFlow&#x27;);\"\n              358,\"    } else {\",\"    } else {\"\n              359,\"        var ga = new GlideAjax('PwdAjaxChangePassword');\",\"        var ga = new GlideAjax(&#x27;PwdAjaxChangePassword&#x27;);\"\n[... 211 more lines truncated for display]",
+   "text": "[\n  {\n    \"recordType\": \"sys_ui_page\",\n    \"hits\": [\n      {\n        \"name\": \"$pwd_change\",\n        \"className\": \"sys_ui_page\",\n        \"tableLabel\": \"sys_ui_page\",\n        \"matches\": [\n          {\n            \"field\": \"client_script\",\n            \"fieldLabel\": \"Client script\",\n            \"lineMatches\": [\n              {\n                \"line\": 151.0,\n                \"context\": \"\",\n                \"escaped\": \"\"\n              },\n              {\n                \"line\": 152.0,\n                \"context\": \"    var ga = new GlideAjax('PwdAjaxChangePassword');\",\n                \"escaped\": \"    var ga = new GlideAjax(&#x27;PwdAjaxChangePassword&#x27;);\"\n[... 591 more lines truncated for display]",
+   "auto": "[21]:\n  - hits[10]:\n      - name: $pwd_change\n        className: sys_ui_page\n        tableLabel: sys_ui_page\n        matches[1]:\n          - field: client_script\n            fieldLabel: Client script\n            lineMatches[15]{line,context,escaped}:\n              151,\"\",\"\"\n              152,\"    var ga = new GlideAjax('PwdAjaxChangePassword');\",\"    var ga = new GlideAjax(&#x27;PwdAjaxChangePassword&#x27;);\"\n              153,\"    ga.addParam('sysparm_name', 'getProcessesForUser');\",\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;getProcessesForUser&#x27;);\"\n              306,\"    showPwdLoadingDialog();\",\"    showPwdLoadingDialog();\"\n              307,\"    var ga = new GlideAjax('PwdAjaxChangePassword');\",\"    var ga = new GlideAjax(&#x27;PwdAjaxChangePassword&#x27;);\"\n              308,\"    ga.addParam('sysparm_name', 'changePassword');\",\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;changePassword&#x27;);\"\n              338,\"function isFlow() {\",\"function isFlow() {\"\n              339,\"    var ga = new GlideAjax('PwdAjaxWFRequestProcessor');\",\"    var ga = new GlideAjax(&#x27;PwdAjaxWFRequestProcessor&#x27;);\"\n              340,\"    ga.addParam('sysparm_name', 'isFlow');\",\"    ga.addParam(&#x27;sysparm_name&#x27;, &#x27;isFlow&#x27;);\"\n              358,\"    } else {\",\"    } else {\"\n              359,\"        var ga = new GlideAjax('PwdAjaxChangePassword');\",\"        var ga = new GlideAjax(&#x27;PwdAjaxChangePassword&#x27;);\"\n              360,\"        ga.addParam('sysparm_name', 'checkChangePwdWFState');\",\"        ga.addParam(&#x27;sysparm_name&#x27;, &#x27;checkChangePwdWFState&#x27;);\"\n              424,\"function serversideValidatePassword(processId, password) {\",\"function serversideValidatePassword(processId, password) {\"\n[... 211 more lines truncated for display]"
+  }
+ },
+ "es12demo": {
+  "command": "snow-cli --profile dev --read-only --output <format> codesearch search ES12Demo --scope x_2135095_au_demo --limit 10",
+  "auto_resolves": "jsonl",
+  "formats": {
+   "json": "[{\"recordType\":\"sys_ui_page\",\"hits\":[],\"tableLabel\":\"UI Page\"},{\"recordType\":\"sys_relationship\",\"hits\":[],\"tableLabel\":\"Relationship\"},{\"hits\":[],\"tableLabel\":\"Macro\",\"recordType\":\"sys_ui_macro\"},{\"recordType\":\"sys_security_acl\",\"hits\":[],\"tableLabel\":\"Access Control\"},{\"hits\":[],\"tableLabel\":\"Map Page\",\"recordType\":\"cmn_map_page\"},{\"recordType\":\"sys_script\",\"hits\":[],\"tableLabel\":\"Business Rule\"},{\"hits\":[{\"name\":\"ES12Demo\",\"className\":\"sys_script_include\",\"tableLabel\":\"sys_script_include\",\"matches\":[{\"field\":\"name\",\"fieldLabel\":\"Name\",\"lineMatches\":[{\"line\":1.0,\"context\":\"ES12Demo\",\"escaped\":\"ES12Demo\"}],\"count\":1.0},{\"field\":\"script\",\"fieldLabel\":\"Script\",\"lineMatches\":[{\"line\":2.0,\"context\":\"    var ES12Demo = Class.create();\",\"escaped\":\"    var ES12Demo = Class.create();\"},{\"line\":3.0,\"context\":\"    ES12Demo.prototype = {\",\"escaped\":\"    ES12Demo.prototype = {\"},{\"line\":27.0,\"context\":\"      },\",\"escaped\":\"      },\"},{\"line\":28.0,\"context\":\"      type: 'ES12Demo'\",\"escaped\":\"     \n[... 1544 more bytes truncated for display]",
+   "jsonl": "{\"tableLabel\":\"UI Page\",\"recordType\":\"sys_ui_page\",\"hits\":[]}\n{\"recordType\":\"sys_relationship\",\"hits\":[],\"tableLabel\":\"Relationship\"}\n{\"hits\":[],\"tableLabel\":\"Macro\",\"recordType\":\"sys_ui_macro\"}\n{\"tableLabel\":\"Access Control\",\"recordType\":\"sys_security_acl\",\"hits\":[]}\n{\"recordType\":\"cmn_map_page\",\"hits\":[],\"tableLabel\":\"Map Page\"}\n{\"tableLabel\":\"Business Rule\",\"hits\":[],\"recordType\":\"sys_script\"}\n{\"tableLabel\":\"Script Include\",\"hits\":[{\"name\":\"ES12Demo\",\"className\":\"sys_script_include\",\"tableLabel\":\"sys_script_include\",\"matches\":[{\"field\":\"name\",\"fieldLabel\":\"Name\",\"lineMatches\":[{\"line\":1.0,\"context\":\"ES12Demo\",\"escaped\":\"ES12Demo\"}],\"count\":1.0},{\"field\":\"script\",\"fieldLabel\":\"Script\",\"lineMatches\":[{\"line\":2.0,\"context\":\"    var ES12Demo = Class.create();\",\"escaped\":\"    var ES12Demo = Class.create();\"},{\"line\":3.0,\"context\":\"    ES12Demo.prototype = {\",\"escaped\":\"    ES12Demo.prototype = {\"},{\"line\":27.0,\"context\":\"      },\",\"escaped\":\"      },\"},{\"line\":28.0,\"context\":\"      type: 'ES12Demo'\",\"escaped\":\"      type: &#x27;ES12Demo&#x27;\"},{\"line\":29.0,\"context\":\"    };\",\"escaped\":\"    };\"}],\"count\":3.0},{\"field\":\"api_name\",\"fieldLabel\":\"API Name\",\"lineMatches\":[{\"line\":1.0,\"context\":\"x_2135095_au_demo.ES12Demo\",\"escaped\":\"x_2135095_au_demo.ES12Demo\"}],\"count\":1.0},{\"field\":\"sys_name\",\"fieldLabel\":\"Display name\",\"lineMatches\":[{\"line\":1.0,\"context\":\"ES12Demo\",\"escaped\":\"ES12Demo\"}],\"count\":1.0}],\"sysId\":\"e7dfa82900a22070eaeaf80629be74ca\",\"modified\":1783627779000}],\"recordType\":\"sys_script_include\"}\n{\"tableLabel\":\"Schedule Item\",\"hits\":[],\"recordType\":\"sys_trigger\"}\n{\"recordType\":\"sys_ui_action\",\"tableLabel\":\"UI Action\",\"hits\":[]}\n{\"hits\":[],\"recordType\":\"sys_ui_policy\",\"tableLabel\":\"UI Policy\"}\n{\"recordType\":\"sysauto_script\",\"hits\":[],\"tableLabel\":\"Scheduled Script Execution\"}\n{\"hits\":[],\"tableLabel\":\"Table Transform Map\",\"recordType\":\"sys_transform_map\"}\n{\"recordType\":\"sys_script_client\",\"tableLabel\":\"Client Script\",\"hits\":[]}\n{\"recordType\":\"sysevent_email_template\",\"tableLabel\":\"Email Template\",\"hits\":[]}\n{\"tableLabel\":\"Processor\",\"hits\":[],\"recordType\":\"sys_processor\"}\n{\"hits\":[],\"recordType\":\"sys_ui_script\",\"tableLabel\":\"UI Script\"}\n{\"tableLabel\":\"Script Action\",\"recordType\":\"sysevent_script_action\",\"hits\":[]}\n{\"tableLabel\":\"Notification\",\"recordType\":\"sysevent_email_action\",\"hits\":[]}\n{\"recordType\":\"sysevent_in_email_action\",\"tableLabel\":\"Inbound Email Actions\",\"hits\":[]}\n{\"recordType\":\"sp_widget\",\"hits\":[],\"tableLabel\":\"Widget\"}\n{\"hits\":[],\"recordType\":\"sys_ui_style\",\"tableLabel\":\"Style\"}",
+   "csv": "hits,recordType,tableLabel\n[],sys_ui_page,UI Page\n[],sys_relationship,Relationship\n[],sys_ui_macro,Macro\n[],sys_security_acl,Access Control\n[],cmn_map_page,Map Page\n[],sys_script,Business Rule\n\"[{\"\"name\"\":\"\"ES12Demo\"\",\"\"className\"\":\"\"sys_script_include\"\",\"\"tableLabel\"\":\"\"sys_script_include\"\",\"\"matches\"\":[{\"\"field\"\":\"\"name\"\",\"\"fieldLabel\"\":\"\"Name\"\",\"\"lineMatches\"\":[{\"\"line\"\":1.0,\"\"context\"\":\"\"ES12Demo\"\",\"\"escaped\"\":\"\"ES12Demo\"\"}],\"\"count\"\":1.0},{\"\"field\"\":\"\"script\"\",\"\"fieldLabel\"\":\"\"Script\"\",\"\"lineMatches\"\":[{\"\"line\"\":2.0,\"\"context\"\":\"\"    var ES12Demo = Class.create();\"\",\"\"escaped\"\":\"\"    var ES12Demo = Class.create();\"\"},{\"\"line\"\":3.0,\"\"context\"\":\"\"    ES12Demo.prototype = {\"\",\"\"escaped\"\":\"\"    ES12Demo.prototype = {\"\"},{\"\"line\"\":27.0,\"\"context\"\":\"\"      },\"\",\"\"escaped\"\":\"\"      },\"\"},{\"\"line\"\":28.0,\"\"context\"\":\"\"      type: 'ES12Demo'\"\",\"\"escaped\"\":\"\"      type: &#x27;ES12Demo&#x27;\"\"},{\"\"line\"\":29.0,\"\"context\"\":\"\"    };\"\",\"\"escaped\"\":\"\"    };\"\"}],\"\"count\"\":3.0},{\"\"field\"\":\"\"api_name\"\",\"\"fieldLabel\"\":\"\"API Name\"\",\"\"lineMatches\"\":[{\"\"line\"\":1.0,\"\"context\"\":\"\"x_2135095_au_demo.ES12Demo\"\",\"\"escaped\"\":\"\"x_2135095_au_demo.ES12Demo\"\"}],\"\"count\"\":1.0},{\"\"field\"\":\"\"sys_name\"\",\"\"fieldLabel\"\":\"\"Display name\"\",\"\"lineMatches\"\":[{\"\"line\"\":1.0,\"\"context\"\":\"\"ES12Demo\"\",\"\"escaped\"\":\"\"ES12Demo\"\"}],\"\"count\"\":1.0}],\"\"sysId\"\":\"\"e7dfa82900a22070eaeaf80629be74ca\"\",\"\"modified\"\":1783627779000}]\",sys_script_include,Script Include\n[],sys_trigger,Schedule Item\n[],sys_ui_action,UI Action\n[],sys_ui_policy,UI Policy\n[],sysauto_script,Scheduled Script Execution\n[],sys_transform_map,Table Transform Map\n[],sys_script_client,Client Script\n[],sysevent_email_template,Email Template\n[],sys_processor,Processor\n[],sys_ui_script,UI Script\n[],sysevent_script_action,Script Action\n[],sysevent_email_action,Notification\n[],sysevent_in_email_action,Inbound Email Actions\n[],sp_widget,Widget\n[],sys_ui_style,Style",
+   "toon": "[21]:\n  - tableLabel: UI Page\n    hits[0]:\n    recordType: sys_ui_page\n  - recordType: sys_relationship\n    hits[0]:\n    tableLabel: Relationship\n  - recordType: sys_ui_macro\n    hits[0]:\n    tableLabel: Macro\n  - recordType: sys_security_acl\n    hits[0]:\n    tableLabel: Access Control\n  - recordType: cmn_map_page\n    tableLabel: Map Page\n    hits[0]:\n  - hits[0]:\n    recordType: sys_script\n    tableLabel: Business Rule\n  - recordType: sys_script_include\n    tableLabel: Script Include\n    hits[1]:\n[... 72 more lines truncated for display]",
+   "text": "[\n  {\n    \"recordType\": \"sys_ui_page\",\n    \"hits\": [],\n    \"tableLabel\": \"UI Page\"\n  },\n  {\n    \"hits\": [],\n    \"tableLabel\": \"Relationship\",\n    \"recordType\": \"sys_relationship\"\n  },\n  {\n    \"recordType\": \"sys_ui_macro\",\n    \"tableLabel\": \"Macro\",\n    \"hits\": []\n  },\n  {\n    \"hits\": [],\n    \"tableLabel\": \"Access Control\",\n    \"recordType\": \"sys_security_acl\"\n  },\n  {\n[... 163 more lines truncated for display]",
+   "auto": "{\"tableLabel\":\"UI Page\",\"hits\":[],\"recordType\":\"sys_ui_page\"}\n{\"hits\":[],\"recordType\":\"sys_relationship\",\"tableLabel\":\"Relationship\"}\n{\"recordType\":\"sys_ui_macro\",\"hits\":[],\"tableLabel\":\"Macro\"}\n{\"tableLabel\":\"Access Control\",\"recordType\":\"sys_security_acl\",\"hits\":[]}\n{\"tableLabel\":\"Map Page\",\"recordType\":\"cmn_map_page\",\"hits\":[]}\n{\"tableLabel\":\"Business Rule\",\"recordType\":\"sys_script\",\"hits\":[]}\n{\"tableLabel\":\"Script Include\",\"recordType\":\"sys_script_include\",\"hits\":[{\"name\":\"ES12Demo\",\"className\":\"sys_script_include\",\"tableLabel\":\"sys_script_include\",\"matches\":[{\"field\":\"name\",\"fieldLabel\":\"Name\",\"lineMatches\":[{\"line\":1.0,\"context\":\"ES12Demo\",\"escaped\":\"ES12Demo\"}],\"count\":1.0},{\"field\":\"script\",\"fieldLabel\":\"Script\",\"lineMatches\":[{\"line\":2.0,\"context\":\"    var ES12Demo = Class.create();\",\"escaped\":\"    var ES12Demo = Class.create();\"},{\"line\":3.0,\"context\":\"    ES12Demo.prototype = {\",\"escaped\":\"    ES12Demo.prototype = {\"},{\"line\":27.0,\"context\":\"      },\",\"escaped\":\"      },\"},{\"line\":28.0,\"context\":\"      type: 'ES12Demo'\",\"escaped\":\"      type: &#x27;ES12Demo&#x27;\"},{\"line\":29.0,\"context\":\"    };\",\"escaped\":\"    };\"}],\"count\":3.0},{\"field\":\"api_name\",\"fieldLabel\":\"API Name\",\"lineMatches\":[{\"line\":1.0,\"context\":\"x_2135095_au_demo.ES12Demo\",\"escaped\":\"x_2135095_au_demo.ES12Demo\"}],\"count\":1.0},{\"field\":\"sys_name\",\"fieldLabel\":\"Display name\",\"lineMatches\":[{\"line\":1.0,\"context\":\"ES12Demo\",\"escaped\":\"ES12Demo\"}],\"count\":1.0}],\"sysId\":\"e7dfa82900a22070eaeaf80629be74ca\",\"modified\":1783627779000}]}\n{\"hits\":[],\"tableLabel\":\"Schedule Item\",\"recordType\":\"sys_trigger\"}\n{\"hits\":[],\"tableLabel\":\"UI Action\",\"recordType\":\"sys_ui_action\"}\n{\"recordType\":\"sys_ui_policy\",\"tableLabel\":\"UI Policy\",\"hits\":[]}\n{\"hits\":[],\"tableLabel\":\"Scheduled Script Execution\",\"recordType\":\"sysauto_script\"}\n{\"tableLabel\":\"Table Transform Map\",\"recordType\":\"sys_transform_map\",\"hits\":[]}\n{\"hits\":[],\"tableLabel\":\"Client Script\",\"recordType\":\"sys_script_client\"}\n{\"hits\":[],\"tableLabel\":\"Email Template\",\"recordType\":\"sysevent_email_template\"}\n{\"recordType\":\"sys_processor\",\"hits\":[],\"tableLabel\":\"Processor\"}\n{\"hits\":[],\"tableLabel\":\"UI Script\",\"recordType\":\"sys_ui_script\"}\n{\"tableLabel\":\"Script Action\",\"recordType\":\"sysevent_script_action\",\"hits\":[]}\n{\"recordType\":\"sysevent_email_action\",\"tableLabel\":\"Notification\",\"hits\":[]}\n{\"recordType\":\"sysevent_in_email_action\",\"hits\":[],\"tableLabel\":\"Inbound Email Actions\"}\n{\"hits\":[],\"tableLabel\":\"Widget\",\"recordType\":\"sp_widget\"}\n{\"tableLabel\":\"Style\",\"recordType\":\"sys_ui_style\",\"hits\":[]}"
+  }
+ },
+ "scope-custom": {
+  "command": "snow-cli --profile dev --read-only --output <format> scope list --kind custom-app",
+  "auto_resolves": "toon",
+  "formats": {
+   "json": "{\"kind_filter\":[\"custom_app\"],\"counts\":{\"total\":1,\"by_kind\":{\"custom_app\":1}},\"rows\":[{\"kind\":\"custom_app\",\"scope\":\"x_2135095_au_demo\",\"name\":\"Australia Demo Showcase\",\"version\":\"0.0.1\",\"identifier\":\"\",\"source_table\":\"sys_scope\",\"sys_id\":\"10c73433fd953db8363ada3501e646cf\"}],\"warnings\":[\"Failed to query sys_store_app: [FORBIDDEN] Insufficient permissions (HTTP 403)\",\"Failed to query v_plugin: [SERVER_ERROR] ServiceNow internal error (HTTP 500)\"]}",
+   "jsonl": "{\"kind_filter\":[\"custom_app\"],\"counts\":{\"total\":1,\"by_kind\":{\"custom_app\":1}},\"rows\":[{\"kind\":\"custom_app\",\"scope\":\"x_2135095_au_demo\",\"name\":\"Australia Demo Showcase\",\"version\":\"0.0.1\",\"identifier\":\"\",\"source_table\":\"sys_scope\",\"sys_id\":\"10c73433fd953db8363ada3501e646cf\"}],\"warnings\":[\"Failed to query sys_store_app: [FORBIDDEN] Insufficient permissions (HTTP 403)\",\"Failed to query v_plugin: [SERVER_ERROR] ServiceNow internal error (HTTP 500)\"]}",
+   "csv": "kind,scope,name,version,identifier,source_table,sys_id\ncustom_app,x_2135095_au_demo,Australia Demo Showcase,0.0.1,,sys_scope,10c73433fd953db8363ada3501e646cf",
+   "toon": "kind_filter[1]: custom_app\ncounts:\n  total: 1\n  by_kind:\n    custom_app: 1\nrows[1]{kind,scope,name,version,identifier,source_table,sys_id}:\n  custom_app,x_2135095_au_demo,Australia Demo Showcase,\"0.0.1\",\"\",sys_scope,10c73433fd953db8363ada3501e646cf\nwarnings[2]: \"Failed to query sys_store_app: [FORBIDDEN] Insufficient permissions (HTTP 403)\",\"Failed to query v_plugin: [SERVER_ERROR] ServiceNow internal error (HTTP 500)\"",
+   "text": "Kinds: custom_app\nTotal: 1\nBy kind: custom_app=1\n\nCUSTOM_APP\n- Australia Demo Showcase  x_2135095_au_demo  0.0.1\n\nWarnings:\n- Failed to query sys_store_app: [FORBIDDEN] Insufficient permissions (HTTP 403)\n- Failed to query v_plugin: [SERVER_ERROR] ServiceNow internal error (HTTP 500)",
+   "auto": "kind_filter[1]: custom_app\ncounts:\n  total: 1\n  by_kind:\n    custom_app: 1\nrows[1]{kind,scope,name,version,identifier,source_table,sys_id}:\n  custom_app,x_2135095_au_demo,Australia Demo Showcase,\"0.0.1\",\"\",sys_scope,10c73433fd953db8363ada3501e646cf\nwarnings[2]: \"Failed to query sys_store_app: [FORBIDDEN] Insufficient permissions (HTTP 403)\",\"Failed to query v_plugin: [SERVER_ERROR] ServiceNow internal error (HTTP 500)\""
+  }
+ }
+}</script>
+
 <script>
   const latestRelease = document.getElementById("latest-release");
   fetch("https://api.github.com/repos/ewatch/snow-cli/releases/latest", {
@@ -844,86 +946,120 @@
   document.querySelectorAll(".reveal").forEach((element) => observer.observe(element));
 
   const replayData = JSON.parse(document.getElementById("replay-data").textContent);
-  const replayShell = document.getElementById("agent-replay");
-  const replayProgress = document.getElementById("replay-progress");
-  const replayDots = document.getElementById("replay-dots");
-  const replayReasoning = document.getElementById("replay-reasoning");
-  const replayCommandBlock = document.getElementById("replay-command-block");
-  const replayCommand = document.getElementById("replay-command");
-  const replayOutputLabel = document.getElementById("replay-output-label");
-  const replayOutput = document.getElementById("replay-output");
-  const replayLearning = document.getElementById("replay-learning");
-  const replayPrev = document.getElementById("replay-prev");
-  const replayNext = document.getElementById("replay-next");
-  const replayAutoplay = document.getElementById("replay-autoplay");
-  let replayIndex = 0;
-  let replayTimer;
+  const replayGrid = document.getElementById("replay-grid");
 
-  replayData.forEach(() => {
-    const dot = document.createElement("span");
-    dot.className = "replay-dot";
-    replayDots.appendChild(dot);
-  });
+  replayData.forEach((item, index) => {
+    const pair = String(index + 1);
+    const step = document.createElement("article");
+    step.className = "replay-step";
+    step.dataset.replayPair = pair;
+    step.tabIndex = 0;
 
-  function stopReplay() {
-    window.clearInterval(replayTimer);
-    replayTimer = undefined;
-    replayAutoplay.textContent = "Autoplay";
-    replayAutoplay.setAttribute("aria-pressed", "false");
-  }
+    const number = document.createElement("span");
+    number.className = "replay-step-number";
+    number.textContent = item.type === "conclusion" ? `Step ${pair} / conclusion` : `Step ${pair} / ${replayData.length}`;
+    const heading = document.createElement("h3");
+    heading.textContent = item.reasoning;
+    const learning = document.createElement("p");
+    learning.className = "replay-learning";
+    learning.textContent = item.learning;
+    step.append(number, heading, learning);
 
-  function renderReplay() {
-    const step = replayData[replayIndex];
-    replayProgress.textContent = `Step ${replayIndex + 1} of ${replayData.length}`;
-    replayReasoning.textContent = step.reasoning;
-    const isConclusion = step.type === "conclusion";
-    replayCommandBlock.hidden = isConclusion;
-    replayCommand.textContent = step.command || "";
-    replayOutputLabel.textContent = isConclusion ? "Conclusion" : "Output excerpt";
-    replayReasoning.parentElement.classList.toggle("conclusion", isConclusion);
-    replayOutput.textContent = step.output;
-    replayLearning.textContent = step.learning;
-    replayPrev.disabled = replayIndex === 0;
-    replayNext.disabled = replayIndex === replayData.length - 1;
-    replayDots.querySelectorAll(".replay-dot").forEach((dot, index) => {
-      dot.classList.toggle("active", index === replayIndex);
-    });
-  }
+    const pane = document.createElement("article");
+    pane.className = `replay-pane${item.type === "conclusion" ? " conclusion" : ""}`;
+    pane.dataset.replayPair = pair;
+    pane.tabIndex = 0;
 
-  replayPrev.addEventListener("click", () => {
-    replayIndex = Math.max(0, replayIndex - 1);
-    renderReplay();
-  });
-
-  replayNext.addEventListener("click", () => {
-    replayIndex = Math.min(replayData.length - 1, replayIndex + 1);
-    renderReplay();
-  });
-
-  replayAutoplay.addEventListener("click", () => {
-    if (replayTimer) {
-      stopReplay();
-      return;
+    if (item.command) {
+      const commandBlock = document.createElement("div");
+      commandBlock.className = "replay-block";
+      commandBlock.innerHTML = "<span>Command</span><pre></pre>";
+      commandBlock.querySelector("pre").textContent = item.command;
+      pane.appendChild(commandBlock);
     }
-    if (replayIndex === replayData.length - 1) replayIndex = 0;
-    renderReplay();
-    replayAutoplay.textContent = "Pause";
-    replayAutoplay.setAttribute("aria-pressed", "true");
-    replayTimer = window.setInterval(() => {
-      if (replayIndex === replayData.length - 1) {
-        stopReplay();
-        return;
-      }
-      replayIndex += 1;
-      renderReplay();
-    }, 4500);
+
+    const outputBlock = document.createElement("div");
+    outputBlock.className = "replay-block";
+    outputBlock.innerHTML = `<span>${item.type === "conclusion" ? "Conclusion" : "Output excerpt"}</span><pre></pre>`;
+    outputBlock.querySelector("pre").textContent = item.output;
+    pane.appendChild(outputBlock);
+    replayGrid.append(step, pane);
   });
 
-  replayShell.addEventListener("toggle", () => {
-    if (!replayShell.open) stopReplay();
+  document.querySelectorAll("[data-replay-pair]").forEach((element) => {
+    const peers = [...document.querySelectorAll(`[data-replay-pair="${element.dataset.replayPair}"]`)];
+    const update = () => peers.forEach((peer) => peer.classList.toggle("is-linked", peers.some((candidate) => candidate.matches(":hover") || candidate === document.activeElement)));
+    element.addEventListener("mouseenter", update);
+    element.addEventListener("mouseleave", () => window.requestAnimationFrame(update));
+    element.addEventListener("focus", update);
+    element.addEventListener("blur", () => window.requestAnimationFrame(update));
   });
 
-  renderReplay();
+  const excerptData = JSON.parse(document.getElementById("format-excerpts").textContent);
+  const formatOrder = ["json", "jsonl", "csv", "toon", "text", "auto"];
+
+  document.querySelectorAll(".format-switcher[data-excerpt]").forEach((switcher) => {
+    const entry = excerptData[switcher.dataset.excerpt];
+    if (!entry) return;
+
+    const tabs = document.createElement("div");
+    tabs.className = "format-tabs";
+    tabs.setAttribute("role", "tablist");
+    tabs.setAttribute("aria-label", "Captured output format");
+    const pane = document.createElement("pre");
+    pane.className = "format-output";
+    pane.setAttribute("role", "tabpanel");
+    pane.setAttribute("aria-live", "polite");
+    pane.tabIndex = 0;
+
+    const renderPane = (format) => {
+      pane.textContent = "";
+      entry.formats[format].split("\n").forEach((line, lineIndex) => {
+        if (lineIndex) pane.appendChild(document.createTextNode("\n"));
+        if (line.startsWith("[...")) {
+          const marker = document.createElement("span");
+          marker.className = "truncation";
+          marker.textContent = line;
+          pane.appendChild(marker);
+        } else {
+          pane.appendChild(document.createTextNode(line));
+        }
+      });
+      pane.scrollTop = 0;
+    };
+
+    const buttons = formatOrder.map((format) => {
+      const button = document.createElement("button");
+      button.className = "format-tab";
+      button.type = "button";
+      button.setAttribute("role", "tab");
+      button.dataset.format = format;
+      button.textContent = format === "auto" && entry.auto_resolves !== "auto"
+        ? `auto \u2192 ${entry.auto_resolves.toUpperCase()}`
+        : format;
+      tabs.appendChild(button);
+      return button;
+    });
+
+    const select = (button) => {
+      buttons.forEach((candidate) => candidate.setAttribute("aria-selected", String(candidate === button)));
+      renderPane(button.dataset.format);
+    };
+
+    buttons.forEach((button, index) => {
+      button.addEventListener("click", () => select(button));
+      button.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
+        buttons[nextIndex].focus();
+        select(buttons[nextIndex]);
+      });
+    });
+
+    switcher.append(tabs, pane);
+    select(buttons[0]);
+  });
 </script>
 </body>
 </html>
