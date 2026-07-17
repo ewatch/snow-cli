@@ -27,7 +27,7 @@
   "license": "https://opensource.org/license/mit",
   "programmingLanguage": "Rust",
   "featureList": [
-    "Inspect ServiceNow application scope metadata and artifacts",
+    "List and classify ServiceNow application scopes by origin",
     "Search code across a ServiceNow instance",
     "Query and aggregate ServiceNow table records",
     "Run supported commands with a read-only execution policy",
@@ -96,9 +96,12 @@
     background: var(--signal-dark);
     box-shadow: 0 0 24px rgba(158, 228, 147, .12);
   }
-  .nav-links { display: flex; align-items: center; gap: 25px; color: var(--ink-muted); font-size: 13.5px; }
+  .nav-links { display: flex; align-items: center; gap: 18px; color: var(--ink-muted); font-size: 13.5px; }
   .nav-links a:hover, .nav-links a:focus-visible { color: var(--ink); }
+  .release-badge { border: 1px solid var(--line-bright); border-radius: 999px; padding: 4px 9px; color: var(--signal); font: 11px/1.3 var(--mono); white-space: nowrap; }
   .nav-cta { border: 1px solid var(--line-bright); border-radius: 7px; padding: 7px 13px; color: var(--ink) !important; }
+  .github-link { width: 34px; min-height: 34px; padding: 7px; }
+  .github-link svg { display: block; width: 18px; height: 18px; fill: currentColor; }
 
   .hero { position: relative; padding: 112px 0 86px; overflow: hidden; }
   .hero::before {
@@ -227,6 +230,9 @@
   }
   @media (max-width: 720px) {
     .wrap { width: min(100% - 30px, 1160px); }
+    .nav-inner { gap: 12px; }
+    .nav-links { gap: 10px; }
+    .release-badge { padding: 3px 7px; font-size: 10px; }
     .nav-links a:not(.nav-cta) { display: none; }
     .hero { padding: 80px 0 70px; }
     section { padding: 78px 0; }
@@ -252,7 +258,10 @@
       <a href="#code-search">Code search</a>
       <a href="#custom-apps">Custom apps</a>
       <a href="#activity">Activity</a>
-      <a class="nav-cta" href="https://github.com/ewatch/snow-cli">GitHub</a>
+      <span class="release-badge" id="latest-release" aria-live="polite">Latest: v0.6.0</span>
+      <a class="nav-cta github-link" href="https://github.com/ewatch/snow-cli" aria-label="snow-cli on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 018 1.5c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
     </div>
   </div>
 </nav>
@@ -260,7 +269,7 @@
 <header class="hero" id="top">
   <div class="wrap hero-grid">
     <div>
-      <p class="kicker">v0.6.0 / ServiceNow CLI for agents</p>
+      <p class="kicker">ServiceNow CLI for agents</p>
       <h1>Inspect ServiceNow <em>workflows</em> with your coding agent.</h1>
       <p class="hero-copy"><strong>snow-cli</strong> gives developers and terminal-based agents a structured command surface for ServiceNow. Investigate Flow Designer artifacts, trace instance code, map custom applications, and review recent changes without navigating the UI for every question.</p>
       <div class="cta-row">
@@ -273,14 +282,15 @@
     </div>
 
     <div class="hero-console reveal" aria-label="Example snow-cli command">
-      <div class="console-bar"><i></i><i></i><i></i><span class="console-title">agent session / read-only</span></div>
+      <div class="console-bar"><i></i><i></i><i></i><span class="console-title">agent session / flow review</span></div>
       <div class="console-body">
         <span class="label">developer</span><br>
         Review the approval flow in our custom app.<br><br>
         <span class="label">agent</span><br>
-        <span class="comment"># Start with the scope and its artifacts.</span><br>
-        <span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> \<br>
-        &nbsp;&nbsp;scope inspect <span class="value">x_acme_ops</span> <span class="flag">--details full</span><span class="cursor"></span>
+        <span class="comment"># Check the flow table, then narrow the record query.</span><br>
+        <span class="prompt">$</span> snow-cli table schema <span class="value">sys_hub_flow</span><br>
+        <span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> table list <span class="value">sys_hub_flow</span> \<br>
+        &nbsp;&nbsp;<span class="flag">--query</span> <span class="value">'sys_scope.scope=x_acme_ops^nameLIKEapproval^active=true'</span><span class="cursor"></span>
       </div>
     </div>
   </div>
@@ -292,17 +302,17 @@
       <div class="section-head">
         <p class="eyebrow">The agent workflow</p>
         <h2>Turn a Flow Designer question into inspectable evidence.</h2>
-        <p class="section-copy">A developer asks Claude Code, opencode, pi, or another terminal harness to review a flow. The agent invokes snow-cli, reads structured instance data, traces related scripts, and compares the scope before and after the developer publishes a new Flow Designer version.</p>
+        <p class="section-copy">A developer asks Claude Code, opencode, pi, or another terminal harness to review a flow. The agent invokes snow-cli, reads the table schema before it queries Flow Designer records, traces related scripts, and reviews recent development activity after the developer publishes a new Flow Designer version.</p>
       </div>
 
       <div class="workflow-shell reveal">
         <aside class="story-nav" aria-label="Workflow stages">
           <h3>Approval flow review</h3>
           <ol>
-            <li><strong>Map the scope</strong>See artifact counts and full inventory rows.</li>
+            <li><strong>Ground the query</strong>Read the Flow Designer table schema first.</li>
             <li><strong>Find the flow</strong>Query Flow Designer records by scope and name.</li>
             <li><strong>Trace dependencies</strong>Search scripts referenced by the implementation.</li>
-            <li><strong>Review the iteration</strong>Compare normalized scope inventories.</li>
+            <li><strong>Review the iteration</strong>Read recent Customer Updates by recency.</li>
           </ol>
         </aside>
 
@@ -313,8 +323,8 @@
           </div>
 
           <div class="turn">
-            <div class="turn-head"><span class="speaker">01 / agent</span><span class="intent">Establish application context.</span></div>
-            <pre><span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> scope inspect <span class="value">x_acme_ops</span> <span class="flag">--details full</span></pre>
+            <div class="turn-head"><span class="speaker">01 / agent</span><span class="intent">Ground the flow query with the table schema.</span></div>
+            <pre><span class="prompt">$</span> snow-cli table schema <span class="value">sys_hub_flow</span></pre>
           </div>
 
           <div class="turn">
@@ -331,11 +341,11 @@
           </div>
 
           <div class="turn">
-            <div class="turn-head"><span class="speaker">04 / developer + agent</span><span class="intent">Publish in Flow Designer, then compare the evidence.</span></div>
-            <pre><span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> scope inventory <span class="value">x_acme_ops</span> &gt; flow-before.json
-<span class="comment"># The developer publishes the revised flow in Flow Designer.</span>
-<span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> scope inventory <span class="value">x_acme_ops</span> &gt; flow-after.json
-<span class="prompt">$</span> diff -u flow-before.json flow-after.json</pre>
+            <div class="turn-head"><span class="speaker">04 / developer + agent</span><span class="intent">Publish in Flow Designer, then review the latest Customer Updates.</span></div>
+            <pre><span class="comment"># The developer publishes the revised flow in Flow Designer.</span>
+<span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> table list <span class="value">sys_update_xml</span> \
+  <span class="flag">--query</span> <span class="value">'ORDERBYDESCsys_updated_on'</span> \
+  <span class="flag">--fields</span> name,type,action,sys_updated_on,update_set <span class="flag">--limit</span> 25</pre>
           </div>
         </div>
       </div>
@@ -372,20 +382,17 @@
         <span class="use-index">USE CASE 02</span>
         <p class="eyebrow">Custom application overview</p>
         <h2>Inventory the custom apps installed on an instance.</h2>
-        <p><code>scope list</code> reads scope, Store application, and plugin metadata and classifies results by origin. Filter to custom applications, then inspect one scope to count and enumerate its artifacts.</p>
+        <p><code>scope list</code> reads scope, Store application, and plugin metadata and classifies results by origin. Filter to custom applications to identify the app scopes relevant to a review.</p>
         <ul class="use-points">
           <li>Separate custom applications from platform, Store, and plugin entries.</li>
-          <li>Inspect flows, scripts, tables, integrations, and other scoped artifacts.</li>
+          <li>Return structured scope metadata for a focused application overview.</li>
         </ul>
       </div>
       <div class="command-card reveal">
         <div class="console-bar"><i></i><i></i><i></i><span class="console-title">map custom application scopes</span></div>
         <pre><span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> scope list \
-  <span class="flag">--kind</span> custom-app
-
-<span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> scope inspect <span class="value">x_acme_ops</span> \
-  <span class="flag">--details</span> full</pre>
-        <p class="command-caption">Command surface: <code>scope list --kind custom-app</code> and <code>scope inspect --details full</code></p>
+  <span class="flag">--kind</span> custom-app</pre>
+        <p class="command-caption">Command surface: <code>scope list --kind custom-app</code></p>
       </div>
     </div>
   </section>
@@ -471,6 +478,24 @@
 </footer>
 
 <script>
+  const latestRelease = document.getElementById("latest-release");
+  fetch("https://api.github.com/repos/ewatch/snow-cli/releases/latest", {
+    headers: { Accept: "application/vnd.github+json" }
+  })
+    .then((response) => {
+      if (!response.ok) throw new Error("Latest release request failed");
+      return response.json();
+    })
+    .then((release) => {
+      if (typeof release.tag_name !== "string" || !release.tag_name) {
+        throw new Error("Latest release tag missing");
+      }
+      latestRelease.textContent = `Latest: ${release.tag_name}`;
+    })
+    .catch(() => {
+      // Keep the baked-in v0.6.0 label when GitHub is unavailable.
+    });
+
   const observer = new IntersectionObserver((entries) => {
     entries.forEach((entry) => {
       if (entry.isIntersecting) {
