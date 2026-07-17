@@ -1,0 +1,31 @@
+name = "script-run"
+description = "Execute a background script on the instance and observe its output"
+requires = ["credentials"]
+
+# NOTE: background script execution posts to /sys.scripts.do and requires an
+# admin-capable session (basic auth as admin on a PDI works). The response body
+# is the script sandbox output (HTML/text), in which gs.print output appears —
+# so we assert our marker string is echoed back.
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["script", "run", "--code", "gs.print('SNOW_CLI_E2E_MARKER_' + (1+1));", "--profile", "e2e-scenario"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["SNOW_CLI_E2E_MARKER_2"]
+
+[[fuzzy]]
+expectation = "The background script executed server-side and its gs.print output (SNOW_CLI_E2E_MARKER_2) is echoed back in the response."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

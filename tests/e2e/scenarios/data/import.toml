@@ -1,0 +1,42 @@
+name = "data-import"
+description = "Import a dataset artifact in dry-run mode (data: import leg, no records created)"
+requires = ["credentials"]
+
+# Self-contained and non-mutating: export a small artifact, then import it with
+# --dry-run so the import plan is computed without creating any records.
+#
+# The export is restricted to writable fields: a full export includes read-only
+# system fields (sys_id, sys_created_on, ...) which the create-only import
+# validation rejects (verified against a real PDI on 2026-07-17).
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[[setup]]
+description = "Export a small incident artifact to a temp file"
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-export.XXXXXX.json\"); \"$SNOW_CLI_BIN\" data export incident --fields short_description,description,urgency,impact,category --limit 2 --profile e2e-scenario --out \"$f\" >/dev/null; printf '%s' \"$f\""
+capture = { export_path = "raw" }
+
+[command]
+args = ["data", "import", "--file", "{{export_path}}", "--dry-run", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The dry-run reports an import plan for the artifact without creating any records on the instance."
+
+[[cleanup]]
+description = "Remove the export artifact"
+shell = "rm -f \"{{export_path}}\""
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

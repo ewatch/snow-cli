@@ -1,0 +1,27 @@
+name = "snu-create-record"
+description = "Create a record through the active SN-Utils browser session (snu CRUD: create)"
+requires = ["sn-utils-bridge", "credentials"]
+
+[[setup]]
+description = "Create the scenario profile (instance context; bridge provides the session)"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+args = ["snu", "create-record", "incident", "--data", "{\"short_description\":\"snow-cli e2e scenario: snu-create-record\"}", "--profile", "e2e-scenario", "--output", "json"]
+capture = { sys_id = ".sys_id" }
+
+[[fuzzy]]
+expectation = "A new incident is created via the browser session with a fresh sys_id and the short_description we sent."
+
+[expect]
+exit_code = 0
+
+[[cleanup]]
+description = "Delete the record via the browser session"
+args = ["snu", "delete-record", "incident", "--sys-id", "{{sys_id}}", "--profile", "e2e-scenario"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

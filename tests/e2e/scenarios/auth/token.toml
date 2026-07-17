@@ -1,0 +1,33 @@
+name = "auth-token"
+description = "Print the current access token for a logged-in profile (for piping)"
+requires = ["credentials"]
+
+# `auth token` prints the raw token to stdout with no JSON envelope, so
+# exit_code plus a non-empty stdout is the deterministic signal.
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["auth", "token", "--profile", "e2e-scenario"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "A non-empty credential/token string is printed to stdout (for basic auth this is the HTTP Basic token) with no surrounding JSON."
+
+[[cleanup]]
+description = "Clear stored credentials"
+args = ["auth", "logout", "--profile", "e2e-scenario"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

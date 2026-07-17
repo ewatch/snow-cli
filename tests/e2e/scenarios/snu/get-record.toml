@@ -1,0 +1,31 @@
+name = "snu-get-record"
+description = "Fetch a single record through the active SN-Utils browser session (snu CRUD: read)"
+requires = ["sn-utils-bridge", "credentials"]
+
+[[setup]]
+description = "Create the scenario profile (instance context; bridge provides the session)"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Create a record to read back via the browser session"
+args = ["snu", "create-record", "incident", "--data", "{\"short_description\":\"snow-cli e2e scenario: snu-get-record\"}", "--profile", "e2e-scenario", "--output", "json"]
+capture = { sys_id = ".sys_id" }
+
+[command]
+args = ["snu", "get-record", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The record read back has the sys_id we created and the short_description we sent."
+
+[[cleanup]]
+description = "Delete the record via the browser session"
+args = ["snu", "delete-record", "incident", "--sys-id", "{{sys_id}}", "--profile", "e2e-scenario"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

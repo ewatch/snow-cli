@@ -1,0 +1,12 @@
+name = "snu-broker-clear"
+description = "Clear cached browser sessions from SN-Utils broker memory"
+requires = ["sn-utils-bridge"]
+
+[command]
+args = ["snu", "broker", "clear", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "Cached browser sessions are cleared from broker memory; the command reports success."

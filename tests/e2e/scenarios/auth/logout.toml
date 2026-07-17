@@ -1,0 +1,26 @@
+name = "auth-logout"
+description = "Clear stored credentials for a profile (no instance required)"
+
+# Clears the local credential store entry for the profile; no network call.
+# Logging out with nothing stored is a no-op that still reports success.
+requires = ["none"]
+
+[[setup]]
+description = "Create a uniquely-named profile"
+args = ["profile", "add", "e2e-auth-logout", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[command]
+args = ["auth", "logout", "--profile", "e2e-auth-logout"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["logged_out", "e2e-auth-logout"]
+json_field_present = ['.status', '.profile']
+
+[[fuzzy]]
+expectation = "The command reports logged_out for e2e-auth-logout; any stored credential for the profile is cleared."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-auth-logout", "--yes"]
+allow_failure = true

@@ -1,0 +1,28 @@
+name = "profile-sdk-export"
+description = "Export a basic snow-cli profile into the now-sdk alias store (profile sdk: export leg)"
+requires = ["credentials"]
+
+# TOOLCHAIN PREREQUISITE: requires the now-sdk toolchain installed (see
+# profile/sdk/list.toml). Exports the e2e-scenario profile as a now-sdk alias.
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["profile", "sdk", "export", "e2e-scenario", "--alias", "snow-cli-e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The e2e-scenario profile is written into the now-sdk alias store under alias snow-cli-e2e-scenario; `profile sdk list` would then include it."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

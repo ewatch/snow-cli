@@ -1,0 +1,25 @@
+name = "profile-show"
+description = "Show details of a named profile from local config (no instance required)"
+
+# Reads the isolated SNOW_CLI_CONFIG scratch file only; no network call.
+requires = ["none"]
+
+[[setup]]
+description = "Create a uniquely-named profile"
+args = ["profile", "add", "e2e-show", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[command]
+args = ["profile", "show", "--profile", "e2e-show"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["e2e-show", "total_profiles"]
+json_field_present = ['.active_profile', '.total_profiles', '.profile.auth_method']
+
+[[fuzzy]]
+expectation = "active_profile is e2e-show and the profile object reports basic auth_method and the username/instance we supplied."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-show", "--yes"]
+allow_failure = true

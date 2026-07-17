@@ -1,0 +1,29 @@
+name = "profile-list"
+description = "List configured profiles from the local config (no instance required)"
+
+# Pure local-config operation: `profile add` writes the isolated SNOW_CLI_CONFIG
+# scratch file and `profile list` reads it back. No network call is made, so
+# this runs deterministically without credentials or a live instance.
+requires = ["none"]
+
+[[setup]]
+description = "Create a uniquely-named profile to list"
+args = ["profile", "add", "e2e-list", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[command]
+args = ["profile", "list", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["e2e-list", "e2e-offline.example.service-now.com"]
+# Robust against other scenarios' leftover profiles in the shared config:
+# assert our specific profile is present rather than a global count.
+json_field_present = ['.[] | select(.name == "e2e-list")']
+
+[[fuzzy]]
+expectation = "Output is a JSON array; the e2e-list entry reports auth_method basic and the instance URL we supplied."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-list", "--yes"]
+allow_failure = true

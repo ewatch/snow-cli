@@ -1,0 +1,34 @@
+name = "import-set-load"
+description = "Load a row into an import set staging table (import-set: load leg)"
+requires = ["credentials"]
+
+# INSTANCE-SPECIFIC PREREQUISITE: import-set load targets an existing Import Set
+# staging table (a sys_import_set_row descendant). A generic PDI has none, so you
+# must create one and replace the placeholders below:
+#   * <TABLE> placeholder `u_e2e_import`: the name of a real staging table.
+#   * --data columns: match that staging table's columns (e.g. u_short_description).
+# Until a matching staging table exists, expect this to FAIL. Once it does, the
+# exit_code=0 assertion holds. The load is captured so import-set/transform can
+# reuse the import set sys_id.
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["import-set", "load", "u_e2e_import", "--data", "{\"u_short_description\":\"snow-cli e2e scenario: import-set-load\"}", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The staging load returns an import set sys_id and per-row result (typically state 'inserted' or 'pending') for the row we sent."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

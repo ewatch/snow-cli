@@ -1,0 +1,38 @@
+name = "seed-plan"
+description = "seed plan is a stub today — asserts the not-implemented contract (no instance required)"
+
+# `seed` is planned but not implemented yet (docs/book/commands/seed.md). The
+# command validates args locally and returns a structured not-implemented error
+# on stderr with exit code 1, before any network call — so this runs without
+# credentials and pins the current contract. When seed is implemented, replace
+# this with a real credentialed plan scenario.
+requires = ["none"]
+
+[[setup]]
+description = "Create an offline profile (seed resolves a profile before hitting the not-implemented stub; no network)"
+args = ["profile", "add", "e2e-scenario", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[[setup]]
+description = "Write a minimal seed spec fixture"
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-seed.XXXXXX.json\"); printf '%s' '{\"kind\":\"seed\",\"records\":[]}' > \"$f\"; printf '%s' \"$f\""
+capture = { spec_path = "raw" }
+
+[command]
+args = ["seed", "plan", "--file", "{{spec_path}}", "--profile", "e2e-scenario"]
+
+[expect]
+exit_code = 1
+stderr_contains = ["planned but not implemented yet"]
+
+[[fuzzy]]
+expectation = "The error is a structured JSON error object on stderr stating seed plan is not implemented yet."
+
+[[cleanup]]
+description = "Remove the seed spec fixture"
+shell = "rm -f \"{{spec_path}}\""
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the offline profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

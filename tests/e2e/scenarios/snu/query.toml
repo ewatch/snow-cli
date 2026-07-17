@@ -1,0 +1,21 @@
+name = "snu-query"
+description = "Query records through the active SN-Utils browser session"
+requires = ["sn-utils-bridge", "credentials"]
+
+[[setup]]
+description = "Create the scenario profile (instance context; bridge provides the session)"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+args = ["snu", "query", "incident", "--limit", "5", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "At most 5 incident records are returned with the default fields (sys_id, number, short_description)."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

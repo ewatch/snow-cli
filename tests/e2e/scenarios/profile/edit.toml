@@ -1,0 +1,25 @@
+name = "profile-edit"
+description = "Edit fields of an existing profile in local config (no instance required)"
+
+# Mutates the isolated SNOW_CLI_CONFIG scratch file only; no network call.
+requires = ["none"]
+
+[[setup]]
+description = "Create a uniquely-named profile to edit"
+args = ["profile", "add", "e2e-edit", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "alice"]
+
+[command]
+args = ["profile", "edit", "e2e-edit", "--username", "bob"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["updated", "e2e-edit"]
+json_field_present = ['.status', '.profile']
+
+[[fuzzy]]
+expectation = "The profile's username changes from alice to bob; a subsequent `profile show --profile e2e-edit` would report username bob."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-edit", "--yes"]
+allow_failure = true

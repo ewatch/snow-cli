@@ -1,0 +1,32 @@
+name = "profile-sdk-list"
+description = "List saved now-sdk authentication aliases (profile sdk: list leg)"
+requires = ["credentials"]
+
+# TOOLCHAIN PREREQUISITE: the `profile sdk` commands bridge to the ServiceNow
+# now-sdk toolchain. If now-sdk is not installed/reachable, this command can BLOCK
+# (it shells out and waits). Only run this scenario on a host where now-sdk is
+# installed. It reads the local now-sdk alias store (no instance call), but is
+# gated on `credentials` because there is no dedicated `requires` tag for the
+# now-sdk toolchain and this keeps it out of a no-credential CI run.
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["profile", "sdk", "list", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The saved now-sdk aliases are listed as structured JSON (an empty list is valid if none are saved)."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

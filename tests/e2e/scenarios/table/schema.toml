@@ -1,0 +1,26 @@
+name = "table-schema"
+description = "Show a table's schema from sys_dictionary (read-only, no records mutated)"
+requires = ["credentials"]
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["table", "schema", "incident", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["category"]
+
+[[fuzzy]]
+expectation = "The schema lists columns defined directly on the incident table (names/types/labels), e.g. category, severity, subcategory. Fields inherited from the parent task table (short_description, priority, state) are correctly excluded since --include-inherited was not passed."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

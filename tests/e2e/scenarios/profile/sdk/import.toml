@@ -1,0 +1,38 @@
+name = "profile-sdk-import"
+description = "Import saved now-sdk aliases into snow-cli profiles (profile sdk: import leg)"
+requires = ["credentials"]
+
+# TOOLCHAIN PREREQUISITE: requires the now-sdk toolchain installed (see
+# profile/sdk/list.toml). This chains an export first so there is at least one
+# alias to import back, making the scenario self-contained on a host with now-sdk.
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[[setup]]
+description = "Export the profile as a now-sdk alias so there is something to import"
+shell = "\"$SNOW_CLI_BIN\" profile sdk export e2e-scenario --alias snow-cli-e2e-import --output json >/dev/null 2>&1 || true"
+
+[command]
+args = ["profile", "sdk", "import", "--alias", "snow-cli-e2e-import", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The now-sdk alias snow-cli-e2e-import is imported as a snow-cli profile."
+
+[[cleanup]]
+description = "Remove the imported profile if it was created under a new name"
+shell = "\"$SNOW_CLI_BIN\" profile remove snow-cli-e2e-import --yes >/dev/null 2>&1 || true"
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

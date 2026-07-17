@@ -1,0 +1,30 @@
+name = "codesearch-search"
+description = "Search server-side code across the instance (read-only)"
+requires = ["credentials"]
+
+# NOTE: codesearch relies on the ServiceNow Code Search feature/indexing being
+# available on the target instance. On a PDI where it is not enabled this may
+# return an error; if so, the assertion below should be relaxed or the scenario
+# tightened from the recorded artifact after the first run.
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["codesearch", "search", "GlideRecord", "--limit", "5", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "Results reference server-side script artifacts (e.g. sys_script_include) that contain the term GlideRecord; at most 5 results are returned."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

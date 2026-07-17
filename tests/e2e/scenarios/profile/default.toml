@@ -1,0 +1,35 @@
+name = "profile-default"
+description = "Switch the default profile in local config (no instance required)"
+
+# Mutates the isolated SNOW_CLI_CONFIG scratch file only; no network call.
+requires = ["none"]
+
+[[setup]]
+description = "Create the first profile (becomes default on creation)"
+args = ["profile", "add", "e2e-def-a", "--instance", "https://e2e-def-a.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[[setup]]
+description = "Create a second profile (does not change the default)"
+args = ["profile", "add", "e2e-def-b", "--instance", "https://e2e-def-b.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[command]
+# Switch the default from e2e-def-a to e2e-def-b.
+args = ["profile", "default", "e2e-def-b"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["updated", "e2e-def-b"]
+json_field_present = ['.default_profile']
+
+[[fuzzy]]
+expectation = "default_profile becomes e2e-def-b; `profile current` would then resolve e2e-def-b as the default."
+
+[[cleanup]]
+description = "Remove the first scenario profile"
+args = ["profile", "remove", "e2e-def-a", "--yes"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the second scenario profile"
+args = ["profile", "remove", "e2e-def-b", "--yes"]
+allow_failure = true

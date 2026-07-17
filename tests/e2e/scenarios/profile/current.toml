@@ -1,0 +1,27 @@
+name = "profile-current"
+description = "Show the active/resolved profile from local config (no instance required)"
+
+# Reads the isolated SNOW_CLI_CONFIG scratch file only; no network call.
+requires = ["none"]
+
+[[setup]]
+description = "Create a uniquely-named profile"
+args = ["profile", "add", "e2e-current", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[command]
+# Pin --profile so the assertion holds regardless of which profile is default
+# in the run-shared config.
+args = ["profile", "current", "--profile", "e2e-current"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["e2e-current", "active_profile"]
+json_field_present = ['.active_profile', '.profile.instance']
+
+[[fuzzy]]
+expectation = "active_profile is e2e-current and the nested profile object echoes the instance URL and basic auth_method we configured."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-current", "--yes"]
+allow_failure = true

@@ -1,0 +1,38 @@
+name = "api-delete"
+description = "Raw DELETE to remove a record via the Table API (api delete: delete leg)"
+requires = ["credentials"]
+
+# A successful Table API DELETE returns HTTP 204 with an empty body, so exit_code
+# is the only reliable deterministic signal here (no stdout to match).
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[[setup]]
+description = "Create a throwaway record to delete"
+args = ["table", "create", "incident", "--profile", "e2e-scenario", "--output", "json", "--data", "{\"short_description\":\"snow-cli e2e scenario: api-delete\"}"]
+capture = { sys_id = ".sys_id" }
+
+[command]
+args = ["api", "delete", "/api/now/table/incident/{{sys_id}}", "--profile", "e2e-scenario"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The DELETE succeeds (HTTP 204); a subsequent `table get incident {{sys_id}}` returns no record."
+
+[[cleanup]]
+description = "Best-effort re-delete in case the command step failed"
+args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

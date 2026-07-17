@@ -1,0 +1,26 @@
+name = "snu-wait-token"
+description = "Wait for /token from SN-Utils and print the received browser session metadata"
+requires = ["sn-utils-bridge", "credentials"]
+
+# BROWSER-ACTION PREREQUISITE: this blocks until the SN-Utils helper posts a
+# /token (typically triggered from the browser). A bounded --timeout-secs keeps it
+# from hanging the run; if no token arrives within the window it will time out and
+# FAIL. Run this with the browser helper primed to emit a token.
+
+[[setup]]
+description = "Create the scenario profile (instance context; bridge provides the session)"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+args = ["snu", "wait-token", "--timeout-secs", "30", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "Browser session metadata from the received /token is printed (instance and session identifiers)."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

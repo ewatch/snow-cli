@@ -1,0 +1,21 @@
+name = "snu-app-meta"
+description = "Fetch a scoped application's artifacts/metadata (SN-Utils requestAppMeta)"
+requires = ["sn-utils-bridge", "credentials"]
+
+[[setup]]
+description = "Create the scenario profile (instance context; bridge provides the session)"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+args = ["snu", "app-meta", "global", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "Artifacts/metadata for the requested application scope (global) are returned."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

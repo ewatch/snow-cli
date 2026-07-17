@@ -1,0 +1,35 @@
+name = "seed-apply"
+description = "seed apply is a stub today — asserts the not-implemented contract (no instance required)"
+
+# See seed/plan.toml: seed is not implemented yet and returns a not-implemented
+# error before any network call. Runs without credentials.
+requires = ["none"]
+
+[[setup]]
+description = "Create an offline profile (seed resolves a profile before hitting the not-implemented stub; no network)"
+args = ["profile", "add", "e2e-scenario", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[[setup]]
+description = "Write a minimal seed spec fixture"
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-seed.XXXXXX.json\"); printf '%s' '{\"kind\":\"seed\",\"records\":[]}' > \"$f\"; printf '%s' \"$f\""
+capture = { spec_path = "raw" }
+
+[command]
+args = ["seed", "apply", "--file", "{{spec_path}}", "--profile", "e2e-scenario"]
+
+[expect]
+exit_code = 1
+stderr_contains = ["planned but not implemented yet"]
+
+[[fuzzy]]
+expectation = "The error is a structured JSON error object on stderr stating seed apply is not implemented yet."
+
+[[cleanup]]
+description = "Remove the seed spec fixture"
+shell = "rm -f \"{{spec_path}}\""
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the offline profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

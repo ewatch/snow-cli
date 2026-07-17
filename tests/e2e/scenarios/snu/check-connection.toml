@@ -1,0 +1,28 @@
+name = "snu-check-connection"
+description = "Check that the SN-Utils bridge and browser helper are connected"
+requires = ["sn-utils-bridge", "credentials"]
+
+# snu commands talk to the SN-Utils browser extension via a local bridge, not the
+# REST API — so they are gated on `sn-utils-bridge` (SNOW_E2E_SN_UTILS=1). The
+# `credentials` tag is also required only so SNOW_E2E_INSTANCE_URL is available
+# for the profile's instance context; the bridge supplies the actual session, so
+# no `auth login` step is performed. Assertions are exit_code-first and should be
+# tightened from real artifacts once run against a live bridge.
+
+[[setup]]
+description = "Create the scenario profile (instance context; bridge provides the session)"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+args = ["snu", "check-connection", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The bridge reports the SN-Utils helper is connected (a connected/ready status)."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

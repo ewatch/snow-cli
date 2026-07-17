@@ -1,0 +1,36 @@
+name = "scope-move-file"
+description = "Move an application file to a different custom scope (dry-run, no mutation)"
+requires = ["credentials"]
+
+# INSTANCE-SPECIFIC PREREQUISITES — this scenario cannot be made self-contained
+# without provisioning a custom application scope and a movable application file,
+# which requires elevated admin setup beyond a generic PDI. It is written as a
+# --dry-run (no persisted change) against placeholder values that you must
+# replace with a real source record and target scope on your instance:
+#   * SYS_ID placeholder: a sys_id in a source application-file table (e.g.
+#     sys_script_include) that belongs to a custom scope.
+#   * --target-scope placeholder: a real custom scope name (e.g. x_your_app).
+# Until those are filled in, expect this scenario to FAIL (the record/scope will
+# not resolve). Adjust the args below, then the exit_code=0 assertion holds.
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["scope", "move-file", "sys_script_include", "REPLACE_WITH_SOURCE_SYS_ID", "--target-scope", "REPLACE_WITH_TARGET_SCOPE", "--dry-run", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The dry-run previews moving the application file to the target scope without persisting changes; the source sys_id is unchanged and warnings (if any) are reported."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

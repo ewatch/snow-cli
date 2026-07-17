@@ -142,11 +142,41 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
 
 ## Known gaps
 
-- **Coverage is enumeration-only, not authored for every subcommand yet.**
-  `scripts/e2e-coverage` currently reports ~60 subcommands without a scenario
-  file (everything except the 6 seeded here: `completions`, `profile add`,
-  `table list`/`create`/`delete`, `attachment upload`). That's the point of
-  the gate — it's meant to be closed incrementally, not all at once.
+- **Every leaf subcommand now has a scenario file (coverage gate passes), but
+  many credentialed assertions are exit-code-first and need tightening from a
+  real PDI run.** The scenarios fall into three tiers:
+  - **Network-free** (`requires = ["none"]`): run in any CI without credentials —
+    `completions`, the local-config `profile *` and `auth status`/`logout` leaves,
+    and the `seed *` stubs (which assert the current "planned but not implemented
+    yet" contract). These have real deterministic assertions.
+  - **Credentialed** (`requires = ["credentials"]`): the REST leaves (`api`,
+    `table`, `attachment`, `auth login`/`token`, `data`, `import-set`, `scope`,
+    `script`, `codesearch`, `graphql`, `profile sdk`). They run against the PDI
+    named by `SNOW_E2E_*`. **Assertion philosophy:** `exit_code` is the primary
+    deterministic gate (it proves auth + network + parse + format all worked),
+    `json_field_present`/`stdout_contains` are used only where the output shape
+    is already proven (e.g. `api` returns a `.result` envelope; the `table`
+    family), and richer value-level checks live in `[[fuzzy]]`. After the first
+    successful PDI run, promote the fuzzy expectations to deterministic
+    assertions using the recorded artifacts (see `docs/guides/releasing.md`).
+  - **SN-Utils bridge** (`requires = ["sn-utils-bridge", ...]`): the `snu *`
+    leaves, which drive the browser extension bridge rather than REST.
+- **Some credentialed scenarios need instance-specific prerequisites and will
+  FAIL until adjusted.** These carry a prominent NOTE comment at the top of the
+  file: `import-set load`/`transform` (need a real Import Set staging table),
+  `scope move-file` (a custom scope + movable application file — uses `--dry-run`
+  and placeholder ids), `graphql` (Now GraphQL enabled + a schema-matching
+  document), `snu context switch` (a real `sys_update_set` sys_id), and the
+  `profile sdk` leaves (need the now-sdk toolchain installed — they can BLOCK if
+  it is absent). Fill in the placeholders / provision the prerequisite before
+  relying on these.
+- **`json_field_present` means "present AND truthy".** The runner checks each
+  path with `jq -e`, which exits non-zero when the resolved value is `false` or
+  `null`. So a field that is legitimately `false`/`null` (e.g. `auth status`'s
+  `.authenticated` for a profile with no stored credential) cannot be asserted
+  via `json_field_present` — assert it through `stdout_contains` (e.g.
+  `'"authenticated": false'`) and reserve `json_field_present` for
+  always-truthy fields.
 - **Hidden commands are invisible to the coverage gate.** Subcommands marked
   `#[command(hide = true)]` in `src/cli/args.rs` (currently `skill install`)
   don't appear in `--help` output, so the gate can't require a scenario for

@@ -1,0 +1,34 @@
+name = "auth-login"
+description = "Authenticate a profile and store credentials in the OS keychain"
+requires = ["credentials"]
+
+# NOTE: unlike other scenarios, the command under test is itself the login. It
+# runs as a `shell` step so the password can be piped via stdin (never passed as
+# an argv value). This writes a real OS keychain entry under the `e2e-scenario`
+# profile name; cleanup logs out and removes the profile (there is no keychain
+# sandbox — see tests/e2e/README.md "Isolation").
+
+[[setup]]
+description = "Create the scenario profile (no credentials stored yet)"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin --output json"
+
+[expect]
+exit_code = 0
+stdout_contains = ["authenticated", "e2e-scenario"]
+json_field_present = ['.status', '.profile']
+
+[[fuzzy]]
+expectation = "status is authenticated for profile e2e-scenario; a subsequent `auth status` reports authenticated=true."
+
+[[cleanup]]
+description = "Clear stored credentials"
+args = ["auth", "logout", "--profile", "e2e-scenario"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

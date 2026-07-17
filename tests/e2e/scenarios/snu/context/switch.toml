@@ -1,0 +1,26 @@
+name = "snu-context-switch"
+description = "Switch update set / application / domain in the browser session through SN-Utils"
+requires = ["sn-utils-bridge", "credentials"]
+
+# INSTANCE-SPECIFIC PREREQUISITE: switching context needs a real target value.
+# The placeholder below switches to an update set by sys_id — replace it with a
+# real sys_update_set sys_id on your instance. --no-reload-tab avoids reloading a
+# browser tab as a side effect. Until a real value is supplied, expect FAIL.
+
+[[setup]]
+description = "Create the scenario profile (instance context; bridge provides the session)"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+args = ["snu", "context", "switch", "updateset", "REPLACE_WITH_UPDATE_SET_SYS_ID", "--no-reload-tab", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The browser session's active update set switches to the requested sys_id; the command reports the new context."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

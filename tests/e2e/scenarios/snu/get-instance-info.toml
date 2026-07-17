@@ -1,0 +1,23 @@
+name = "snu-get-instance-info"
+description = "Get SN-Utils bridge instance info"
+requires = ["sn-utils-bridge", "credentials"]
+
+# See snu/check-connection.toml for how the snu tier is gated.
+
+[[setup]]
+description = "Create the scenario profile (instance context; bridge provides the session)"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+args = ["snu", "get-instance-info", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "Instance info from the active browser session is returned (instance URL/name and session context)."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

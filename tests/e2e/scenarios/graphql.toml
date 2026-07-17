@@ -1,0 +1,33 @@
+name = "graphql"
+description = "Submit a document to the Now GraphQL endpoint (opt-in query command)"
+requires = ["credentials"]
+
+# INSTANCE-SPECIFIC PREREQUISITE: Now GraphQL must be enabled by an administrator
+# on the target instance. The document below queries the GlideRecord_Query schema
+# for a single incident sys_id; the `pagination: {limit: N}` argument shape was
+# verified against a real PDI (dev instance, 2026-07-17) — Relay-style `first`
+# and bare `limit` are rejected by the schema. On an instance without Now
+# GraphQL enabled, expect this to FAIL.
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["graphql", "query { GlideRecord_Query { incident(pagination: {limit: 1}) { _results { sys_id { value } } } } }", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+json_field_present = [".GlideRecord_Query.incident._results"]
+
+[[fuzzy]]
+expectation = "The Now GraphQL endpoint returns a data payload matching the requested shape (a single incident's sys_id), with no GraphQL errors."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

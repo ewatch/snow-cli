@@ -1,0 +1,33 @@
+name = "api-post"
+description = "Raw POST to create a record via the Table API (api post: create leg)"
+requires = ["credentials"]
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["api", "post", "/api/now/table/incident", "--profile", "e2e-scenario", "--output", "json", "--data", "{\"short_description\":\"snow-cli e2e scenario: api-post\"}"]
+capture = { sys_id = ".result.sys_id" }
+
+[expect]
+exit_code = 0
+stdout_contains = ["result", "snow-cli e2e scenario: api-post"]
+json_field_present = ['.result.sys_id']
+
+[[fuzzy]]
+expectation = "The response `.result` is the created incident with a fresh sys_id and the short_description we sent."
+
+[[cleanup]]
+description = "Delete the record this scenario created"
+args = ["api", "delete", "/api/now/table/incident/{{sys_id}}", "--profile", "e2e-scenario"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

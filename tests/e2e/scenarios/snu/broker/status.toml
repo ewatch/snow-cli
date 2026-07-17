@@ -1,0 +1,15 @@
+name = "snu-broker-status"
+description = "Show SN-Utils broker status (local broker process; no instance context needed)"
+requires = ["sn-utils-bridge"]
+
+# broker commands manage the local auto-started SN-Utils broker process, not the
+# instance, so no profile/credentials are needed — only the bridge tag.
+
+[command]
+args = ["snu", "broker", "status", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "Broker status is reported (running/stopped, port/pid if running)."

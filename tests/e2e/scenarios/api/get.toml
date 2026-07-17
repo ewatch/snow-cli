@@ -1,0 +1,36 @@
+name = "api-get"
+description = "Raw GET against the Table API (api get: read leg)"
+requires = ["credentials"]
+
+# Assertion philosophy for credentialed scenarios authored without a live PDI
+# in hand: exit_code is the primary deterministic gate (it proves auth + network
+# + parse + format all succeeded). `json_field_present` is used only where the
+# output envelope is already proven — here `api` prints the raw ServiceNow
+# response body, so a Table API path yields a `.result` array. Richer, value-level
+# checks live in `[[fuzzy]]` and should be promoted to deterministic assertions
+# from the recorded artifacts after the first successful PDI run
+# (see docs/guides/releasing.md).
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["api", "get", "/api/now/table/sys_user?sysparm_limit=1", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["result"]
+json_field_present = ['.result']
+
+[[fuzzy]]
+expectation = "The response body is a Table API envelope whose `.result` is an array with at most one sys_user record (sys_id is a 32-char hex string)."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

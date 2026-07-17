@@ -1,0 +1,38 @@
+name = "data-validate"
+description = "Validate an exported dataset artifact against the instance schema (data: validate leg)"
+requires = ["credentials"]
+
+# Self-contained: export a small artifact first, then validate it. This keeps
+# the dataset format authoritative (it comes from `data export`, not hand-built).
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[[setup]]
+description = "Export a small incident artifact to a temp file"
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-export.XXXXXX.json\"); \"$SNOW_CLI_BIN\" data export incident --limit 2 --profile e2e-scenario --out \"$f\" >/dev/null; printf '%s' \"$f\""
+capture = { export_path = "raw" }
+
+[command]
+args = ["data", "validate", "--file", "{{export_path}}", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The validation report finds the incident artifact schema-compatible (no blocking errors), since it was just exported from this same instance."
+
+[[cleanup]]
+description = "Remove the export artifact"
+shell = "rm -f \"{{export_path}}\""
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

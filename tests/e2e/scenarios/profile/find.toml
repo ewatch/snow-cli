@@ -1,0 +1,27 @@
+name = "profile-find"
+description = "Find profiles matching an instance name/host/URL from local config (no instance required)"
+
+# Matches against the isolated SNOW_CLI_CONFIG scratch file only; no network call.
+requires = ["none"]
+
+[[setup]]
+description = "Create a uniquely-named profile with a distinctive host"
+args = ["profile", "add", "e2e-find", "--instance", "https://e2e-find.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[command]
+# Look the profile up by a partial instance name (the resolver accepts name,
+# host, or full URL).
+args = ["profile", "find", "--instance", "e2e-find.example.service-now.com", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["e2e-find"]
+json_field_present = ['.[] | select(.name == "e2e-find")']
+
+[[fuzzy]]
+expectation = "Output is a JSON array containing the e2e-find profile, resolved from the partial instance host we passed."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-find", "--yes"]
+allow_failure = true

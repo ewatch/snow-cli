@@ -1,0 +1,15 @@
+name = "snu-broker-stop"
+description = "Stop the running SN-Utils broker (auto-restarts on next use)"
+requires = ["sn-utils-bridge"]
+
+# Mutating (stops the local broker process), but harmless: the broker auto-starts
+# again the next time an snu command needs it.
+
+[command]
+args = ["snu", "broker", "stop", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The running broker is stopped (or reported as already stopped); the command reports success."

@@ -1,0 +1,20 @@
+name = "profile-output"
+description = "Persist the default output format in local config (no instance required)"
+
+# Writes/reads the persisted default output setting in the isolated
+# SNOW_CLI_CONFIG scratch file; no network call.
+requires = ["none"]
+
+[command]
+# Set the persisted default output format. Setting it to `json` matches the
+# built-in effective default, so this leaves no observable cross-scenario
+# side effect in the run-shared config.
+args = ["profile", "output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["updated", "default_output", "json"]
+json_field_present = ['.status', '.default_output']
+
+[[fuzzy]]
+expectation = "The command confirms it persisted json as the default output format (status updated, default_output json)."

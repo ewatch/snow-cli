@@ -1,0 +1,26 @@
+name = "profile-remove"
+description = "Delete a profile from local config (no instance required)"
+
+# Deletes from the isolated SNOW_CLI_CONFIG scratch file only; no network call.
+requires = ["none"]
+
+[[setup]]
+description = "Create a uniquely-named profile to remove"
+args = ["profile", "add", "e2e-remove", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[command]
+args = ["profile", "remove", "e2e-remove", "--yes"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["deleted", "e2e-remove"]
+json_field_present = ['.status', '.profile']
+
+[[fuzzy]]
+expectation = "The profile is deleted; a subsequent `profile list` would no longer include e2e-remove."
+
+# Idempotent safety net in case the command under test did not fully remove it.
+[[cleanup]]
+description = "Ensure the scenario profile is gone"
+args = ["profile", "remove", "e2e-remove", "--yes"]
+allow_failure = true

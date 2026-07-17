@@ -1,0 +1,37 @@
+name = "import-set-transform"
+description = "Transform a staged import set by sys_id (import-set: transform leg)"
+requires = ["credentials"]
+
+# INSTANCE-SPECIFIC PREREQUISITE: transform needs an existing import set sys_id,
+# which comes from a prior `import-set load` into a real staging table (see
+# import-set/load.toml). This scenario chains a load first and captures the
+# import set sys_id, but that load has the same staging-table prerequisite.
+# Replace the staging table name and the capture path to match your instance's
+# load response shape, then the exit_code=0 assertion holds.
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[[setup]]
+description = "Load a staging row and capture the import set sys_id"
+shell = "\"$SNOW_CLI_BIN\" import-set load u_e2e_import --data '{\"u_short_description\":\"snow-cli e2e scenario: import-set-transform\"}' --profile e2e-scenario --output json | jq -r '.import_set_sys_id // .sys_id // .import_set'"
+capture = { import_set_sys_id = "raw" }
+
+[command]
+args = ["import-set", "transform", "{{import_set_sys_id}}", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The staged import set is transformed and the result reports the target records created/updated."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

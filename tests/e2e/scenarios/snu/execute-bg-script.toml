@@ -1,0 +1,21 @@
+name = "snu-execute-bg-script"
+description = "Execute a server-side background script through the active SN-Utils browser session"
+requires = ["sn-utils-bridge", "credentials"]
+
+[[setup]]
+description = "Create the scenario profile (instance context; bridge provides the session)"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+args = ["snu", "execute-bg-script", "--code", "gs.print('SNOW_CLI_SNU_MARKER_' + (2+2));", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The background script runs server-side through the browser session and its output includes SNOW_CLI_SNU_MARKER_4."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

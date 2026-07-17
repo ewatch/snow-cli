@@ -1,0 +1,40 @@
+name = "api-put"
+description = "Raw PUT to update a record via the Table API (api put: update leg)"
+requires = ["credentials"]
+
+# See api/get.toml for the assertion philosophy (exit_code is the primary gate;
+# value-level checks live in [[fuzzy]] until tightened from real artifacts).
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[[setup]]
+description = "Create a throwaway record to update"
+args = ["table", "create", "incident", "--profile", "e2e-scenario", "--output", "json", "--data", "{\"short_description\":\"snow-cli e2e scenario: api-put (before)\"}"]
+capture = { sys_id = ".sys_id" }
+
+[command]
+args = ["api", "put", "/api/now/table/incident/{{sys_id}}", "--profile", "e2e-scenario", "--output", "json", "--data", "{\"short_description\":\"snow-cli e2e scenario: api-put (after)\"}"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["result", "api-put (after)"]
+json_field_present = ['.result.sys_id']
+
+[[fuzzy]]
+expectation = "The response `.result` reflects the updated short_description ('after'), and the sys_id is unchanged from the record we created."
+
+[[cleanup]]
+description = "Delete the record this scenario created"
+args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

@@ -1,0 +1,25 @@
+name = "snu-slash"
+description = "Run an SN-Utils slash command in a ServiceNow browser tab"
+requires = ["sn-utils-bridge", "credentials"]
+
+# BROWSER-ACTION PREREQUISITE: needs an open ServiceNow browser tab matching the
+# default URL pattern. --no-auto-run inserts/shows the slash command without
+# executing it, keeping this scenario side-effect-free.
+
+[[setup]]
+description = "Create the scenario profile (instance context; bridge provides the session)"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+args = ["snu", "slash", "/tn", "--no-auto-run", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The slash command /tn is inserted/shown in a ServiceNow browser tab without auto-running; the command reports the targeted tab."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

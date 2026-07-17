@@ -1,0 +1,50 @@
+name = "attachment-download"
+description = "Download an attachment by sys_id to a local file (attachment: download leg)"
+requires = ["credentials"]
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[[setup]]
+description = "Create a throwaway record to attach to"
+args = ["table", "create", "incident", "--profile", "e2e-scenario", "--output", "json", "--data", "{\"short_description\":\"snow-cli e2e scenario: attachment-download\"}"]
+capture = { sys_id = ".sys_id" }
+
+[[setup]]
+description = "Upload a small PNG fixture and capture the attachment sys_id"
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-attach.XXXXXX\"); mv \"$f\" \"$f.png\"; f=\"$f.png\"; python3 -c 'import base64, sys; sys.stdout.buffer.write(base64.b64decode(\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0cwAAAABJRU5ErkJggg==\"))' > \"$f\"; \"$SNOW_CLI_BIN\" attachment upload incident \"{{sys_id}}\" --file \"$f\" --profile e2e-scenario --output json | jq -r '.sys_id'; rm -f \"$f\""
+capture = { attachment_sys_id = "raw" }
+
+[[setup]]
+description = "Compute a local download target path"
+shell = "printf '%s' \"${TMPDIR:-/tmp}/snow-cli-e2e-download-$$.bin\""
+capture = { download_path = "raw" }
+
+[command]
+args = ["attachment", "download", "{{attachment_sys_id}}", "--out", "{{download_path}}", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "The command writes the attachment bytes to the --out path and reports the saved location; the downloaded file is non-empty and byte-identical to the uploaded fixture."
+
+[[cleanup]]
+description = "Delete the record (cascades to its attachments)"
+args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the downloaded file"
+shell = "rm -f \"{{download_path}}\""
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

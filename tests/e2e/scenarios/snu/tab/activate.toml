@@ -1,0 +1,25 @@
+name = "snu-tab-activate"
+description = "Activate a browser tab matching a URL pattern through SN-Utils"
+requires = ["sn-utils-bridge", "credentials"]
+
+# BROWSER-ACTION PREREQUISITE: needs at least one open browser tab matching the
+# URL pattern (or use --open-if-not-found to open one). Without a match and
+# without that flag, expect this to FAIL.
+
+[[setup]]
+description = "Create the scenario profile (instance context; bridge provides the session)"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+args = ["snu", "tab", "activate", "https://*.service-now.com/*", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "A ServiceNow browser tab matching the pattern is activated; the command reports the activated tab's id/url."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

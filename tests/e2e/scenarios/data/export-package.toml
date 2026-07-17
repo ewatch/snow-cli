@@ -1,0 +1,45 @@
+name = "data-export-package"
+description = "Export a multi-table dataset package from a manifest spec (data: package export leg)"
+requires = ["credentials"]
+
+# Self-contained: write a minimal dataset-export-spec (kind must be
+# 'dataset-export-spec') targeting incident with a query that matches no rows,
+# so the package export is fast and creates no data on the instance. The manifest
+# and per-table files are written under a temp out-dir that cleanup removes.
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[[setup]]
+description = "Write the dataset export spec fixture"
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-spec.XXXXXX.json\"); printf '%s' '{\"version\":1,\"kind\":\"dataset-export-spec\",\"tables\":[{\"name\":\"incident\",\"query\":\"number=SNOW_CLI_E2E_NO_MATCH\"}]}' > \"$f\"; printf '%s' \"$f\""
+capture = { spec_path = "raw" }
+
+[[setup]]
+description = "Create an output directory for the package"
+shell = "d=$(mktemp -d \"${TMPDIR:-/tmp}/snow-cli-e2e-pkg.XXXXXX\"); printf '%s' \"$d\""
+capture = { out_dir = "raw" }
+
+[command]
+args = ["data", "export-package", "--file", "{{spec_path}}", "--out-dir", "{{out_dir}}", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+
+[[fuzzy]]
+expectation = "A manifest.json plus a per-table file for incident are written under the out-dir; the manifest kind is 'dataset' and the incident table exported zero rows (query matched nothing)."
+
+[[cleanup]]
+description = "Remove the spec fixture and output directory"
+shell = "rm -f \"{{spec_path}}\"; rm -rf \"{{out_dir}}\""
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

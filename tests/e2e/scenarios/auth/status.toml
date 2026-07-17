@@ -1,0 +1,31 @@
+name = "auth-status"
+description = "Report auth status for a profile with no stored credentials (no instance required)"
+
+# Reads the isolated SNOW_CLI_CONFIG scratch file and the local credential
+# store only; with no credentials stored it reports authenticated=false
+# without contacting the instance.
+requires = ["none"]
+
+[[setup]]
+description = "Create a uniquely-named profile (no credentials stored)"
+args = ["profile", "add", "e2e-auth-status", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[command]
+args = ["auth", "status", "--profile", "e2e-auth-status"]
+
+[expect]
+exit_code = 0
+# NB: `.authenticated` is legitimately `false` here, and the harness's
+# json_field_present uses `jq -e`, which treats a false/null value as absent.
+# So we assert authenticated=false via stdout_contains and keep only truthy
+# fields in json_field_present.
+stdout_contains = ["e2e-auth-status", '"authenticated": false', "basic"]
+json_field_present = ['.auth_method', '.profile']
+
+[[fuzzy]]
+expectation = "authenticated is false (no password was stored for this profile), and auth_method is basic with username e2e-user."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-auth-status", "--yes"]
+allow_failure = true
