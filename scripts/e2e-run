@@ -25,9 +25,8 @@ usage() {
     '      broker on 127.0.0.1:19178/19179 — never the default 1978/1979 ports,' \
     '      so it cannot evict a real daily-driver browser session. Also needs' \
     '      SNOW_E2E_INSTANCE_URL/USERNAME/PASSWORD for the harness'"'"'s own' \
-    '      ServiceNow login (SSO instances unsupported); the /token session' \
-    '      capture step is a best-effort, unverified keystroke attempt (see' \
-    '      tests/e2e/README.md).' \
+    '      ServiceNow login (SSO instances unsupported); confirmed working' \
+    '      end to end against a real PDI (see tests/e2e/README.md).' \
     '  SNOW_CLI_BIN' \
     '      Override the snow-cli binary path (default: target/release/snow-cli,' \
     '      built automatically if missing).' \
