@@ -19,3 +19,8 @@ video/
 .codebase-memory/
 .tokensave/
 .serena/
+
+# scripts/e2e-snu-harness is npm-installed on demand by scripts/e2e-run
+# (only when SNOW_E2E_SN_UTILS=1) — package-lock.json is committed, the
+# installed tree is not.
+scripts/e2e-snu-harness/node_modules/

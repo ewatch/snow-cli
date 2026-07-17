@@ -117,6 +117,15 @@ export SNOW_E2E_PASSWORD='...'
 scripts/e2e-run
 ```
 
+`snu *` (`sn-utils-bridge`) scenarios additionally need the headless-browser
+harness (requires `node`; see "Known gaps" below for what it does and does
+not cover):
+
+```bash
+export SNOW_E2E_SN_UTILS=1
+scripts/e2e-run tests/e2e/scenarios/snu/
+```
+
 Results land in `artifacts/e2e/<version>/`: one sanitized JSON file per
 scenario, an aggregate `results.jsonl`, and a `summary.md`. `scripts/e2e-run`
 exits non-zero if any scenario **failed**; skipped scenarios are reported but
@@ -160,7 +169,8 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
     successful PDI run, promote the fuzzy expectations to deterministic
     assertions using the recorded artifacts (see `docs/guides/releasing.md`).
   - **SN-Utils bridge** (`requires = ["sn-utils-bridge", ...]`): the `snu *`
-    leaves, which drive the browser extension bridge rather than REST.
+    leaves, which drive the browser extension bridge rather than REST. Needs
+    `SNOW_E2E_SN_UTILS=1` — see the harness details in "Known gaps" below.
 - **Some credentialed scenarios need instance-specific prerequisites and will
   FAIL until adjusted.** These carry a prominent NOTE comment at the top of the
   file: `import-set load`/`transform` (need a real Import Set staging table),
@@ -191,11 +201,38 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
   `docs/guides/releasing.md` step 3 (turning successful E2E artifacts into doc
   examples) still needs a human/agent pass to strip anything sensitive before
   publishing.
-- **`sn-utils-bridge` scenarios aren't seeded yet.** The tag and skip logic
-  exist, but none of the 6 seed scenarios exercise the `snu` command family.
+- **`sn-utils-bridge` scenarios now have a real harness, but session capture
+  is unverified.** `SNOW_E2E_SN_UTILS=1` starts `scripts/e2e-snu-harness`
+  (Node + Playwright, npm-installed on demand — untouched otherwise), which
+  downloads the real SN-Utils extension from the Chrome Web Store, loads it
+  in headless Chromium, logs into `SNOW_E2E_INSTANCE_URL` with
+  `SNOW_E2E_USERNAME`/`PASSWORD` (standard ServiceNow basic-auth login form;
+  SSO instances unsupported), and opens its ScriptSync helper tab — enough
+  by itself to make `snu broker status` report `browser_connected: true`.
+  Known limits:
+  - The harness runs against a **dedicated isolated broker**
+    (`127.0.0.1:19178`/`19179`, via the `SNOW_CLI_SNU_WS_ADDR`/
+    `SNOW_CLI_SNU_BROKER_ADDR` env overrides), never the real default
+    `1978`/`1979` — so it can't evict a real daily-driver browser session.
+    This means only **one** `SNOW_E2E_SN_UTILS=1` run at a time; see "No
+    parallelism" below.
+  - Getting an isolated port past the extension required patching a local,
+    unpacked copy of it (CSP `connect-src` + the hardcoded WS port in
+    `scriptsync.js`) — never redistributed, applied fresh each run. The
+    patch matches on exact literal strings; if SN-Utils ships an update that
+    changes them, the harness fails loudly (not silently unpatched) and the
+    patch in `scripts/e2e-snu-harness/harness.js` needs updating.
+  - **SN-Utils' `/token` in-page session-capture command is not automated.**
+    Its exact trigger UI wasn't discoverable from the extension's source
+    without a live instance to observe it against, so the harness reports
+    `token_capture: "not_implemented"` and leaves session-dependent `snu`
+    scenarios (`query`, `get-record`, etc.) to fail on their own `/token`
+    wait timeout — bridge-connectivity-only scenarios (e.g. `snu broker
+    status`) work end to end today.
 - **No parallelism.** Scenarios run sequentially in one isolated config; two
   concurrent `scripts/e2e-run` invocations would race on the same
-  `e2e-scenario` profile name if pointed at the same real instance.
+  `e2e-scenario` profile name if pointed at the same real instance, and (with
+  `SNOW_E2E_SN_UTILS=1`) on the SN-Utils harness's fixed isolated ports too.
 - **Argument values may not contain literal newlines.** The runner passes
   step stdout/args through newline-delimited plumbing (`jq -r '...[]'`
   piped into a `while read` loop); a `--data` payload or captured value

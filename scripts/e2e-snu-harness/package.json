@@ -1,0 +1,12 @@
+{
+  "name": "snow-cli-e2e-snu-harness",
+  "private": true,
+  "description": "Headless-browser SN-Utils bridge harness for scripts/e2e-run's sn-utils-bridge scenarios. Opt-in only (SNOW_E2E_SN_UTILS=1) — never installed or run on the default e2e path.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node harness.js"
+  },
+  "dependencies": {
+    "playwright": "1.61.1"
+  }
+}

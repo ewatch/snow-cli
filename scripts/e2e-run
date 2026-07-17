@@ -19,7 +19,14 @@ usage() {
     '  SNOW_E2E_INSTANCE_URL, SNOW_E2E_USERNAME, SNOW_E2E_PASSWORD' \
     '      Unlock scenarios tagged requires = ["credentials"].' \
     '  SNOW_E2E_SN_UTILS=1' \
-    '      Unlock scenarios tagged requires = ["sn-utils-bridge"].' \
+    '      Unlock scenarios tagged requires = ["sn-utils-bridge"]. Also starts' \
+    '      a headless-browser SN-Utils bridge harness (scripts/e2e-snu-harness,' \
+    '      requires node) driving a real SN-Utils extension against an isolated' \
+    '      broker on 127.0.0.1:19178/19179 — never the default 1978/1979 ports,' \
+    '      so it cannot evict a real daily-driver browser session. Also needs' \
+    '      SNOW_E2E_INSTANCE_URL/USERNAME/PASSWORD for the harness'"'"'s own' \
+    '      ServiceNow login (SSO instances unsupported); the /token session' \
+    '      capture step is not yet automated (see tests/e2e/README.md).' \
     '  SNOW_CLI_BIN' \
     '      Override the snow-cli binary path (default: target/release/snow-cli,' \
     '      built automatically if missing).' \
@@ -63,8 +70,75 @@ mkdir -p "$artifacts_dir"
 # dir is removed on exit; scenarios that create profiles named "e2e-scenario"
 # never touch anything persistent.
 scratch_dir=$(mktemp -d "${TMPDIR:-/tmp}/snow-cli-e2e.XXXXXX")
-trap 'rm -rf "$scratch_dir"' EXIT
 export SNOW_CLI_CONFIG="$scratch_dir/config.toml"
+
+# SN-Utils bridge harness (scripts/e2e-snu-harness): a headless-browser
+# process that drives the real SN-Utils extension so `sn-utils-bridge`
+# scenarios can actually run instead of permanently skipping. Opt-in only —
+# untouched unless SNOW_E2E_SN_UTILS=1. Dedicated fixed ports so it never
+# collides with a real daily-driver broker (see tests/e2e/README.md).
+snu_harness_dir="$repo_root/scripts/e2e-snu-harness"
+snu_harness_ws_addr="127.0.0.1:19178"
+snu_harness_broker_addr="127.0.0.1:19179"
+snu_harness_pid=""
+
+cleanup() {
+  if [[ -n $snu_harness_pid ]] && kill -0 "$snu_harness_pid" 2>/dev/null; then
+    kill -TERM "$snu_harness_pid" 2>/dev/null
+    wait "$snu_harness_pid" 2>/dev/null
+  fi
+  if [[ ${SNOW_E2E_SN_UTILS:-0} == "1" ]]; then
+    SNOW_CLI_SNU_BROKER_ADDR=$snu_harness_broker_addr "$SNOW_CLI_BIN" snu broker stop >/dev/null 2>&1 || true
+  fi
+  rm -rf "$scratch_dir"
+}
+trap cleanup EXIT
+
+if [[ ${SNOW_E2E_SN_UTILS:-0} == "1" ]]; then
+  if ! command -v node >/dev/null 2>&1; then
+    echo "SNOW_E2E_SN_UTILS=1 but node is not on PATH; cannot run the SN-Utils bridge harness ($snu_harness_dir)." >&2
+    exit 2
+  fi
+  if [[ ! -d "$snu_harness_dir/node_modules" ]]; then
+    echo "Installing SN-Utils bridge harness dependencies ($snu_harness_dir)..." >&2
+    npm ci --prefix "$snu_harness_dir" || {
+      echo "npm ci failed for $snu_harness_dir" >&2
+      exit 2
+    }
+  fi
+
+  export SNOW_CLI_SNU_WS_ADDR=$snu_harness_ws_addr
+  export SNOW_CLI_SNU_BROKER_ADDR=$snu_harness_broker_addr
+
+  # Pre-spawn the isolated broker so its WS listener is already up before the
+  # headless browser's ScriptSync tab tries to connect. (The tab auto-retries
+  # every 1s regardless, but this avoids a guaranteed first-attempt failure.)
+  "$SNOW_CLI_BIN" snu check-connection --timeout-secs 2 >/dev/null 2>&1 || true
+
+  snu_ready_file="$scratch_dir/snu-harness-ready.json"
+  echo "Starting SN-Utils bridge harness..." >&2
+  SNU_HARNESS_SCRATCH_DIR="$scratch_dir" \
+    SNU_HARNESS_WS_PORT="${snu_harness_ws_addr##*:}" \
+    SNU_HARNESS_READY_FILE="$snu_ready_file" \
+    node "$snu_harness_dir/harness.js" >"$scratch_dir/snu-harness.log" 2>&1 &
+  snu_harness_pid=$!
+
+  snu_harness_deadline=$((SECONDS + 60))
+  while [[ ! -f $snu_ready_file ]]; do
+    if ! kill -0 "$snu_harness_pid" 2>/dev/null; then
+      echo "SN-Utils bridge harness exited before becoming ready. Log:" >&2
+      cat "$scratch_dir/snu-harness.log" >&2
+      exit 2
+    fi
+    if [[ $SECONDS -ge $snu_harness_deadline ]]; then
+      echo "Timed out waiting for SN-Utils bridge harness to become ready. Log:" >&2
+      cat "$scratch_dir/snu-harness.log" >&2
+      exit 2
+    fi
+    sleep 0.5
+  done
+  echo "SN-Utils bridge harness ready: $(cat "$snu_ready_file")" >&2
+fi
 
 # Collect scenario files from the given paths (files or directories),
 # defaulting to the whole scenarios root.
