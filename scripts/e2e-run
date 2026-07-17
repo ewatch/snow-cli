@@ -26,7 +26,8 @@ usage() {
     '      so it cannot evict a real daily-driver browser session. Also needs' \
     '      SNOW_E2E_INSTANCE_URL/USERNAME/PASSWORD for the harness'"'"'s own' \
     '      ServiceNow login (SSO instances unsupported); the /token session' \
-    '      capture step is not yet automated (see tests/e2e/README.md).' \
+    '      capture step is a best-effort, unverified keystroke attempt (see' \
+    '      tests/e2e/README.md).' \
     '  SNOW_CLI_BIN' \
     '      Override the snow-cli binary path (default: target/release/snow-cli,' \
     '      built automatically if missing).' \

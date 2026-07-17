@@ -17,20 +17,22 @@
 //      the collision risk).
 //   3. Launches headless Chromium with the patched extension loaded, using
 //      the two flag workarounds validated by hand (see README below).
-//   4. Logs into SNOW_E2E_INSTANCE_URL with SNOW_E2E_USERNAME/PASSWORD via
+//   4. Opens the extension's ScriptSync helper tab pointed at the isolated
+//      port, before logging in, so the bridge is already live when a
+//      session gets pushed over it. This step alone is enough to make
+//      `snow-cli snu broker status` report browser_connected: true.
+//   5. Logs into SNOW_E2E_INSTANCE_URL with SNOW_E2E_USERNAME/PASSWORD via
 //      ServiceNow's standard basic-auth login form.
-//   5. Opens the extension's ScriptSync helper tab pointed at the isolated
-//      port. This alone is enough to make `snow-cli snu broker status`
-//      report browser_connected: true.
-//   6. Attempts to capture a live session via SN-Utils' in-page `/token`
-//      command. THIS STEP IS NOT IMPLEMENTED: the exact trigger UI for
-//      `/token` inside a logged-in ServiceNow tab was not discoverable from
-//      the extension's source without a live instance to observe it against
-//      (see tests/e2e/README.md). Rather than guess at DOM interactions
-//      against a real ServiceNow instance — which could misfire — this
-//      harness reports `token_capture: "not_implemented"` in its ready
-//      signal and leaves session-dependent scenarios to fail cleanly on
-//      their own `/token`-wait timeout, same as an unattended broker today.
+//   6. Attempts to trigger SN-Utils' in-page `/token` session-capture
+//      command by sending it synthetic keystrokes ("/", "token", Enter) in
+//      the logged-in tab — the same input a human would type. The exact
+//      trigger element/selector was never reverse-engineered (SN-Utils'
+//      own source only hints at a "slash-popup" command-palette concept in
+//      sidekick.js), so this is a best-effort attempt, not a verified
+//      integration: it's UNTESTED against a real instance (see
+//      tests/e2e/README.md). It reports `token_capture: "attempted"` in
+//      its ready signal either way; session-dependent scenarios still fall
+//      back to their own `/token`-wait timeout if this doesn't land.
 //   7. Writes a ready-signal JSON file and blocks until SIGTERM/SIGINT, at
 //      which point it closes the browser and exits.
 
@@ -184,6 +186,26 @@ async function openScriptSyncTab(context, extensionId, wsPort) {
   await page.waitForTimeout(3000);
 }
 
+/// Best-effort, UNVERIFIED attempt to trigger SN-Utils' in-page `/token`
+/// session-capture command by sending it the same keystrokes a human would
+/// type, rather than guessing at a specific DOM selector (none was found in
+/// the extension's source — see the file header). Synthetic keyboard input
+/// into the page is low-risk (no destructive server-side action), but has
+/// never been confirmed to actually land against a real ServiceNow tab.
+async function attemptTokenCapture(page) {
+  try {
+    await page.bringToFront();
+    await page.keyboard.press("/");
+    await page.keyboard.type("token", { delay: 50 });
+    await page.keyboard.press("Enter");
+    log("sent /token keystrokes to the ServiceNow tab (unverified trigger — see harness.js header)");
+    return "attempted";
+  } catch (err) {
+    log(`WARNING: /token keystroke attempt failed: ${err.message}`);
+    return "failed";
+  }
+}
+
 async function main() {
   const instanceUrl = requireEnv("SNOW_E2E_INSTANCE_URL");
   const username = requireEnv("SNOW_E2E_USERNAME");
@@ -198,15 +220,19 @@ async function main() {
 
   const { context, extensionId } = await launchBrowser(extDir);
 
+  // Open the bridge before logging in: /token's push has nowhere to go if
+  // the helper tab isn't connected yet.
+  await openScriptSyncTab(context, extensionId, wsPort);
+
   let loginOk = true;
+  let tokenCapture = "skipped (login failed)";
   try {
-    await loginToServiceNow(context, instanceUrl, username, password);
+    const snPage = await loginToServiceNow(context, instanceUrl, username, password);
+    tokenCapture = await attemptTokenCapture(snPage);
   } catch (err) {
     loginOk = false;
     log(`WARNING: ServiceNow login failed, continuing bridge-only: ${err.message}`);
   }
-
-  await openScriptSyncTab(context, extensionId, wsPort);
 
   fs.writeFileSync(
     readyFile,
@@ -216,7 +242,7 @@ async function main() {
         pid: process.pid,
         ws_port: wsPort,
         login_ok: loginOk,
-        token_capture: "not_implemented",
+        token_capture: tokenCapture,
       },
       null,
       2,

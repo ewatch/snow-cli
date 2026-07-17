@@ -222,13 +222,18 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
     patch matches on exact literal strings; if SN-Utils ships an update that
     changes them, the harness fails loudly (not silently unpatched) and the
     patch in `scripts/e2e-snu-harness/harness.js` needs updating.
-  - **SN-Utils' `/token` in-page session-capture command is not automated.**
-    Its exact trigger UI wasn't discoverable from the extension's source
-    without a live instance to observe it against, so the harness reports
-    `token_capture: "not_implemented"` and leaves session-dependent `snu`
-    scenarios (`query`, `get-record`, etc.) to fail on their own `/token`
-    wait timeout — bridge-connectivity-only scenarios (e.g. `snu broker
-    status`) work end to end today.
+  - **SN-Utils' `/token` in-page session-capture command is triggered
+    best-effort and UNVERIFIED.** No specific trigger element was found in
+    the extension's source (only a hint of a "slash-popup" command-palette
+    concept in `sidekick.js`), so the harness sends it the same keystrokes a
+    human would type (`/`, `token`, Enter) into the logged-in ServiceNow tab
+    rather than guessing at a DOM selector — but this has never been
+    confirmed to actually land against a real instance. It reports
+    `token_capture: "attempted"` either way; if the trigger sequence is
+    wrong, session-dependent `snu` scenarios (`query`, `get-record`, etc.)
+    still fail cleanly on their own `/token` wait timeout —
+    bridge-connectivity-only scenarios (e.g. `snu broker status`) work end
+    to end regardless. First live PDI run should confirm or fix this.
 - **No parallelism.** Scenarios run sequentially in one isolated config; two
   concurrent `scripts/e2e-run` invocations would race on the same
   `e2e-scenario` profile name if pointed at the same real instance, and (with
