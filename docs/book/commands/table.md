@@ -168,21 +168,20 @@ cheap way to answer "how many rows match?" without fetching records:
 
 ```bash
 snow-cli table stats incident --query 'active=true'
-# {"count":4381}
 ```
 
 With `--group-by`, one row per group is returned, including the count and any
 requested aggregates (flattened as `avg_<field>`, `min_<field>`, and so on):
 
 ```bash
-snow-cli table stats incident --group-by state --avg priority
-# [{"state":"1","count":8,"avg_priority":2.5}, ...]
+snow-cli table stats incident --group-by state --avg priority --having 'count>5'
 ```
 
 Notes:
 
 - Numeric strings in the response are converted to numbers where they parse cleanly.
 - Group values (like `state`) stay strings because they are categorical codes.
+- `table stats` is available in `snow-cli-ro` because it only reads data.
 
 ## Common examples
 

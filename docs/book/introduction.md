@@ -18,15 +18,14 @@ With `snow-cli`, you can:
 - manage connection profiles,
 - log in using supported authentication methods,
 - query, create, update, and delete Table API records,
-- inspect table schemas,
-- call raw REST API endpoints,
+- inspect table schemas and aggregate table statistics,
+- call raw REST API endpoints or the optional Now GraphQL endpoint,
 - run background scripts,
 - search ServiceNow code,
 - list, upload, and download attachments,
 - load records through import sets,
 - move data through export/import workflows,
 - use the SN-Utils browser helper for browser-session operations,
-- install agent skill bundles,
 - use `snow-cli-ro` or `--read-only` for a reduced read-only policy,
 - generate shell completions.
 

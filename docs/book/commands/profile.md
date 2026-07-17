@@ -192,12 +192,17 @@ Compared with `profile current`, this also includes the config path and profile 
 Show or set the global default output format used when `--output` is not passed.
 
 ```bash
+snow-cli profile output json
 snow-cli profile output
-snow-cli profile output toon
 snow-cli profile output --reset
 ```
 
 Supported persisted formats are `json`, `csv`, `jsonl`, `toon`, `text`, and `auto`.
+Pass `auto` in place of `json` to make token-efficient automatic selection the
+default.
+`auto` chooses the most compact lossless representation for each payload from
+JSON, JSON Lines, and TOON; it keeps JSON when formats tie. The saved setting
+is used by later commands when neither `--output` nor `SNOW_CLI_OUTPUT` is set.
 `--reset` clears the configured default and returns to the built-in JSON fallback.
 
 ## `profile remove <name>`

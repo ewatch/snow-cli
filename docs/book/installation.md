@@ -1,5 +1,9 @@
 # Installation
 
+Install `snow-cli` and its read-only companion, `snow-cli-ro`, with Homebrew,
+the platform installer, or a source build. The platform installer selects the
+latest GitHub release for your platform and asks before it downloads anything.
+
 ## Homebrew (macOS and Linux)
 
 The simplest way to install on macOS or Linux is via the Homebrew tap:
@@ -32,8 +36,8 @@ You will see a plan like this and be asked to confirm:
 
 ```text
 Plan:
-  Download: https://github.com/ewatch/snow-cli/releases/download/v0.5.1/snow-cli-0.5.1-aarch64-apple-darwin.tar.xz
-  Release:  v0.5.1
+  Download: https://github.com/ewatch/snow-cli/releases/download/v0.6.0/snow-cli-0.6.0-aarch64-apple-darwin.tar.xz
+  Release:  v0.6.0
   Install to: /Users/you/.local/bin
   Binaries: snow-cli, snow-cli-ro
 
@@ -62,7 +66,9 @@ Open PowerShell and run:
 irm https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.ps1 | iex
 ```
 
-The script shows the same plan-and-confirm flow. To skip the prompt in automation:
+The script shows the same plan-and-confirm flow and installs the Windows
+executables in `$env:LOCALAPPDATA\snow-cli\bin` by default. To skip the prompt
+in automation:
 
 ```powershell
 $env:FORCE = "1"; irm https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.ps1 | iex
@@ -70,11 +76,13 @@ $env:FORCE = "1"; irm https://raw.githubusercontent.com/ewatch/snow-cli/main/scr
 
 ### What the script does (in plain English)
 
-1. Detects your operating system and CPU architecture.
-2. Finds the latest release on GitHub.
+1. Finds the latest release on GitHub.
+2. On macOS and Linux, detects the operating system and CPU architecture; on
+   Windows, selects the x86_64 Windows archive for a 64-bit operating system.
 3. Downloads the matching archive (`tar.xz` for macOS/Linux, `zip` for Windows).
 4. Extracts it to a temporary folder.
-5. Copies `snow-cli` and `snow-cli-ro` into the install directory.
+5. Copies `snow-cli` and `snow-cli-ro` (the `.exe` files on Windows) into the
+   install directory.
 6. Tells you if the directory is missing from your `PATH` and how to add it.
 
 No registry changes, no admin rights required by default, and the archive is deleted automatically.

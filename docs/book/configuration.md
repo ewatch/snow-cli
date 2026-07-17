@@ -161,7 +161,10 @@ snow-cli -v <command>
 snow-cli -vv <command>
 ```
 
-When `--output` is omitted, output format resolution is: command-line flag, `SNOW_CLI_OUTPUT`, `profile output`, then JSON.
+When `--output` is omitted, output format resolution is: command-line flag, `SNOW_CLI_OUTPUT`, `profile output`, then JSON. Set a persistent default with
+`snow-cli profile output <format>`; use `auto` to select the most compact
+lossless format for each payload. See the [`profile` command reference](./commands/profile.md)
+for the supported formats and reset behavior.
 
 ## Discover more
 
