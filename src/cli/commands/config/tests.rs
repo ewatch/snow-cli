@@ -458,3 +458,26 @@ async fn test_config_delete_default_requires_confirmation() {
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("current default"));
 }
+
+#[tokio::test]
+async fn test_config_delete_only_default_with_confirmation() {
+    let (_tmp, config_path) = temp_config_path();
+    handle_init(
+        &config_path,
+        Some("https://dev.service-now.com".to_string()),
+        None,
+        None,
+        None,
+        "dev".to_string(),
+    )
+    .await
+    .unwrap();
+
+    handle_delete_profile(&config_path, "dev".to_string(), true, None)
+        .await
+        .unwrap();
+
+    let config = AppConfig::load_from(&config_path).unwrap();
+    assert!(config.profiles.is_empty());
+    assert!(config.default_profile.is_empty());
+}

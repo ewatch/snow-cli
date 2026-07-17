@@ -687,7 +687,7 @@ pub(super) async fn handle_delete_profile(
         );
     }
 
-    if is_default {
+    if is_default && config.profiles.len() > 1 {
         let replacement = new_default.ok_or_else(|| {
             anyhow::anyhow!("Deleting the current default profile requires --new-default <name>.")
         })?;
