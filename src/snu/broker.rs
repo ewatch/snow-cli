@@ -16,6 +16,14 @@ use crate::snu::bridge::{BridgeConfig, BridgeError, BridgeManager, Matcher};
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
 pub const DEFAULT_SNU_BROKER_ADDR: &str = "127.0.0.1:1979";
+
+/// Resolves the broker's CLI-facing IPC address, honoring `SNOW_CLI_SNU_BROKER_ADDR`
+/// when set (see [`crate::snu::bridge::ws_addr`] for the matching browser-facing
+/// override and why one is needed).
+fn broker_addr() -> String {
+    std::env::var("SNOW_CLI_SNU_BROKER_ADDR")
+        .unwrap_or_else(|_| DEFAULT_SNU_BROKER_ADDR.to_string())
+}
 const BROKER_READY_TIMEOUT_SECS: u64 = 5;
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 1800;
 /// File name for the on-disk session cache under `~/.servicenow/`.
@@ -198,7 +206,7 @@ impl BrokerState {
 
         BrokerStatus {
             version: env!("CARGO_PKG_VERSION").to_string(),
-            ipc_addr: DEFAULT_SNU_BROKER_ADDR.to_string(),
+            ipc_addr: broker_addr(),
             browser_connected,
             session_count: self.sessions_by_origin.len(),
             latest_instance_url: self
@@ -314,14 +322,14 @@ impl BrokerBridge {
         }
 
         Ok(Self {
-            addr: DEFAULT_SNU_BROKER_ADDR.to_string(),
+            addr: broker_addr(),
         })
     }
 
     pub async fn connect_existing() -> anyhow::Result<Self> {
         connect_once().await?;
         Ok(Self {
-            addr: DEFAULT_SNU_BROKER_ADDR.to_string(),
+            addr: broker_addr(),
         })
     }
 
@@ -491,11 +499,10 @@ pub async fn clear_broker_sessions(origin: Option<String>) -> anyhow::Result<Vec
 
 pub async fn run_broker_server() -> anyhow::Result<()> {
     let idle_timeout = idle_timeout();
-    let listener = TcpListener::bind(DEFAULT_SNU_BROKER_ADDR)
+    let ipc_addr = broker_addr();
+    let listener = TcpListener::bind(&ipc_addr)
         .await
-        .with_context(|| {
-            format!("failed to bind SN-Utils broker IPC on {DEFAULT_SNU_BROKER_ADDR}")
-        })?;
+        .with_context(|| format!("failed to bind SN-Utils broker IPC on {ipc_addr}"))?;
     let (manager, mut sessions_rx) = BridgeManager::start(BridgeConfig::default());
     let broker = Arc::new(Broker::new(idle_timeout, manager));
 
@@ -1029,7 +1036,7 @@ fn message_response(message: SnuMessage) -> BrokerResponse {
 /// confusingly. Requiring a parseable `ok` response also flushes out a stale
 /// broker that accepts but no longer answers.
 async fn connect_once() -> anyhow::Result<()> {
-    let stream = TcpStream::connect(DEFAULT_SNU_BROKER_ADDR).await?;
+    let stream = TcpStream::connect(broker_addr()).await?;
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
 
@@ -1124,7 +1131,8 @@ async fn wait_until_ready() -> anyhow::Result<()> {
         }
         if Instant::now() >= deadline {
             return Err(anyhow!(
-                "timed out waiting for SN-Utils broker on {DEFAULT_SNU_BROKER_ADDR}"
+                "timed out waiting for SN-Utils broker on {}",
+                broker_addr()
             ));
         }
         sleep(Duration::from_millis(100)).await;

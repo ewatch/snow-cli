@@ -19,6 +19,15 @@ use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
 pub const DEFAULT_SNU_WS_ADDR: &str = "127.0.0.1:1978";
 
+/// Resolves the SN-Utils bridge WebSocket address, honoring `SNOW_CLI_SNU_WS_ADDR`
+/// when set. This is a single machine-wide port by default (the helper tab has
+/// no way to discover a non-default one), so an override is the only way to run
+/// an isolated broker instance — e.g. driving a headless browser in tests
+/// without evicting a real, already-connected ScriptSync tab.
+pub fn ws_addr() -> String {
+    std::env::var("SNOW_CLI_SNU_WS_ADDR").unwrap_or_else(|_| DEFAULT_SNU_WS_ADDR.to_string())
+}
+
 /// Maximum time to wait for the SN-Utils ScriptSync helper tab to *connect* to
 /// the bridge. This is deliberately short and separate from the per-action
 /// response timeout: an installed, open helper tab reconnects within ~1s, so a
@@ -124,7 +133,7 @@ pub struct BridgeConfig {
 impl Default for BridgeConfig {
     fn default() -> Self {
         Self {
-            addr: DEFAULT_SNU_WS_ADDR.to_string(),
+            addr: ws_addr(),
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
             connect_timeout: Duration::from_secs(HELPER_CONNECT_TIMEOUT_SECS),
             rebind_delay: DEFAULT_REBIND_DELAY,
