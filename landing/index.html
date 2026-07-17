@@ -196,6 +196,55 @@
   .command-card pre { padding: 25px; min-height: 144px; display: block; }
   .command-caption { padding: 13px 18px; border-top: 1px solid var(--line); color: var(--ink-faint); font-size: 12px; }
 
+  .output-details { border-top: 1px solid var(--line); background: rgba(17, 30, 24, .42); }
+  .output-details summary { padding: 13px 18px; color: var(--cyan); cursor: pointer; font: 700 12px/1.45 var(--mono); list-style-position: inside; }
+  .output-details summary:hover, .output-details summary:focus-visible { color: var(--ink); }
+  .output-details pre { min-height: 0; padding: 0 18px 18px; color: var(--ink-muted); font-size: 11.5px; line-height: 1.65; }
+  .turn .output-details { margin: 16px -28px -25px; }
+  .turn .output-details pre { padding-bottom: 20px; }
+  .output-label { color: var(--ink-faint); }
+  .truncation { color: var(--amber); }
+
+  .replay-shell { margin-top: 30px; border: 1px solid var(--line-bright); border-radius: 14px; background: var(--paper-raised); box-shadow: 0 24px 65px rgba(0, 0, 0, .28); overflow: hidden; }
+  .replay-shell > summary { min-height: 58px; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 14px 20px; background: var(--signal); color: #07130b; cursor: pointer; font-weight: 800; list-style: none; }
+  .replay-shell > summary::-webkit-details-marker { display: none; }
+  .replay-shell > summary::after { content: "+"; font: 700 18px/1 var(--mono); }
+  .replay-shell[open] > summary::after { content: "-"; }
+  .replay-intro { padding: 24px 28px 0; color: var(--ink-muted); font-size: 14px; }
+  .replay-stage { margin: 22px 28px 0; border: 1px solid var(--line); border-radius: 11px; overflow: hidden; background: var(--paper); }
+  .replay-meta { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 18px; border-bottom: 1px solid var(--line); color: var(--ink-faint); font: 11px/1.4 var(--mono); }
+  .replay-dots { display: flex; gap: 6px; }
+  .replay-dot { width: 7px; height: 7px; border: 0; border-radius: 50%; background: var(--line-bright); }
+  .replay-dot.active { background: var(--signal); box-shadow: 0 0 0 3px rgba(158, 228, 147, .11); }
+  .replay-content { padding: 25px; }
+  .replay-content h3 { font-size: 1.15rem; }
+  .replay-block { margin-top: 20px; }
+  .replay-block > span { display: block; margin-bottom: 7px; color: var(--signal); font: 700 10px/1.4 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+  .replay-block pre { padding: 14px 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper-raised); color: var(--ink-muted); font-size: 11.5px; line-height: 1.65; }
+  .replay-learning { color: var(--ink-muted); font-size: 14px; }
+  .replay-controls { display: flex; justify-content: space-between; gap: 10px; padding: 18px 28px 28px; }
+  .step-btn { min-height: 40px; padding: 0 15px; border: 1px solid var(--line-bright); border-radius: 7px; background: var(--paper-soft); color: var(--ink); cursor: pointer; font: 700 12px/1 var(--mono); }
+  .step-btn:hover, .step-btn:focus-visible { border-color: var(--signal); }
+  .step-btn:disabled { opacity: .38; cursor: default; border-color: var(--line); }
+  .step-btn.autoplay { margin-left: auto; color: var(--signal); }
+
+  .comparison { background: linear-gradient(180deg, rgba(8, 16, 13, .98), rgba(13, 23, 19, .72)); }
+  .comparison h2 span { color: var(--signal); font-family: var(--mono); font-size: .66em; white-space: nowrap; }
+  .comparison-list { display: grid; gap: 28px; margin-top: 54px; }
+  .comparison-row { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line-bright); border-radius: 14px; overflow: hidden; background: var(--paper-raised); box-shadow: 0 22px 58px rgba(0, 0, 0, .22); }
+  .comparison-pane { min-width: 0; }
+  .comparison-pane + .comparison-pane { border-left: 1px solid var(--line); }
+  .pane-head { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 17px; border-bottom: 1px solid var(--line); }
+  .pane-head span { color: var(--signal); font: 700 10px/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+  .pane-head strong { font-size: 14px; }
+  .ui-shot { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; object-position: top left; background: #fff; }
+  .comparison-row.flow .ui-shot { aspect-ratio: 32 / 15; }
+  .machine-body { padding: 18px; }
+  .machine-body pre { padding: 14px 15px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--ink-muted); font-size: 11px; line-height: 1.6; }
+  .machine-body pre + pre { margin-top: 12px; }
+  .machine-body .command-line { color: var(--ink); }
+  .pair-note { padding: 13px 17px; border-top: 1px solid var(--line); color: var(--ink-faint); font-size: 12px; }
+
   .principles { background: linear-gradient(180deg, rgba(13, 23, 19, .9), rgba(8, 16, 13, .95)); }
   .principle-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 17px; margin-top: 45px; }
   .principle { padding: 26px; border: 1px solid var(--line); border-radius: 11px; background: rgba(17, 30, 24, .62); }
@@ -227,6 +276,8 @@
     .story-nav { border-right: 0; border-bottom: 1px solid var(--line); }
     .story-nav ol { grid-template-columns: repeat(2, 1fr); }
     .principle-grid { grid-template-columns: 1fr; }
+    .comparison-row { grid-template-columns: 1fr; }
+    .comparison-pane + .comparison-pane { border-left: 0; border-top: 1px solid var(--line); }
   }
   @media (max-width: 720px) {
     .wrap { width: min(100% - 30px, 1160px); }
@@ -238,8 +289,17 @@
     section { padding: 78px 0; }
     .story-nav ol { grid-template-columns: 1fr; }
     .turn { padding: 22px 18px; }
+    .turn .output-details { margin: 16px -18px -22px; }
     .console-body { padding: 20px 17px; }
     .use-grid { gap: 34px; }
+    .replay-intro { padding: 21px 18px 0; }
+    .replay-stage { margin: 18px 14px 0; }
+    .replay-content { padding: 20px 16px; }
+    .replay-controls { padding: 14px; flex-wrap: wrap; }
+    .step-btn.autoplay { margin-left: 0; }
+    .comparison-list { margin-top: 38px; }
+    .pane-head { align-items: flex-start; flex-direction: column; gap: 4px; }
+    .machine-body { padding: 13px; }
   }
   @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }
@@ -285,13 +345,25 @@
       <div class="console-bar"><i></i><i></i><i></i><span class="console-title">agent session / flow review</span></div>
       <div class="console-body">
         <span class="label">developer</span><br>
-        Review the approval flow in our custom app.<br><br>
+        Review Business Calendar Demo in Australia Demo Showcase.<br><br>
         <span class="label">agent</span><br>
-        <span class="comment"># Check the flow table, then narrow the record query.</span><br>
-        <span class="prompt">$</span> snow-cli table schema <span class="value">sys_hub_flow</span><br>
-        <span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> table list <span class="value">sys_hub_flow</span> \<br>
-        &nbsp;&nbsp;<span class="flag">--query</span> <span class="value">'sys_scope.scope=x_acme_ops^nameLIKEapproval^active=true'</span><span class="cursor"></span>
+        <span class="comment"># Ground the review in the flow table and active records.</span><br>
+        <span class="prompt">$</span> ./target/release/snow-cli <span class="flag">--profile e2e --read-only --output json</span> table schema <span class="value">sys_hub_flow</span><br>
+        <span class="prompt">$</span> ./target/release/snow-cli <span class="flag">--profile e2e --read-only --output json</span> table list <span class="value">sys_hub_flow</span> <span class="flag">--query</span> <span class="value">'active=true'</span> <span class="flag">--fields</span> name,active,sys_updated_on <span class="flag">--limit</span> 5<span class="cursor"></span>
       </div>
+      <details class="output-details">
+        <summary>Output excerpt</summary>
+        <pre><span class="output-label">Captured JSON / first returned active flow</span>
+{
+  "total": 311, "returned": 5, "truncated": true,
+  "records": [{
+    "sys_updated_on": "2026-04-30 08:31:44",
+    "active": "true",
+    "name": "Request Management Approval"
+  }]
+}
+<span class="truncation">... 4 more returned records (truncated for display); response reports 311 total</span></pre>
+      </details>
     </div>
   </div>
 </header>
@@ -302,17 +374,17 @@
       <div class="section-head">
         <p class="eyebrow">The agent workflow</p>
         <h2>Turn a Flow Designer question into inspectable evidence.</h2>
-        <p class="section-copy">A developer asks Claude Code, opencode, pi, or another terminal harness to review a flow. The agent invokes snow-cli, reads the table schema before it queries Flow Designer records, traces related scripts, and reviews recent development activity after the developer publishes a new Flow Designer version.</p>
+        <p class="section-copy">A developer asks Claude Code, opencode, pi, or another terminal harness to review a flow. The agent invokes snow-cli, reads the table schema before it queries Flow Designer records, searches instance code, and reviews recent development activity. Every output below is excerpted from a sanitized v0.6.0 run.</p>
       </div>
 
       <div class="workflow-shell reveal">
         <aside class="story-nav" aria-label="Workflow stages">
-          <h3>Approval flow review</h3>
+          <h3>Business Calendar Demo review</h3>
           <ol>
             <li><strong>Ground the query</strong>Read the Flow Designer table schema first.</li>
-            <li><strong>Find the flow</strong>Query Flow Designer records by scope and name.</li>
-            <li><strong>Trace dependencies</strong>Search scripts referenced by the implementation.</li>
-            <li><strong>Review the iteration</strong>Read recent Customer Updates by recency.</li>
+            <li><strong>Scan active flows</strong>Read a bounded set of active Flow Designer records.</li>
+            <li><strong>Search instance code</strong>Find captured GlideAjax references across configured sources.</li>
+            <li><strong>Review recent work</strong>Read recent Customer Updates by recency.</li>
           </ol>
         </aside>
 
@@ -324,33 +396,98 @@
 
           <div class="turn">
             <div class="turn-head"><span class="speaker">01 / agent</span><span class="intent">Ground the flow query with the table schema.</span></div>
-            <pre><span class="prompt">$</span> snow-cli table schema <span class="value">sys_hub_flow</span></pre>
+            <pre><span class="prompt">$</span> ./target/release/snow-cli <span class="flag">--profile e2e --read-only --output json</span> table schema <span class="value">sys_hub_flow</span></pre>
+            <details class="output-details">
+              <summary>Output excerpt</summary>
+              <pre><span class="output-label">Captured JSON / first 3 of 13 entries</span>
+[
+  { "column": "compiler_build", "type": "string", "label": "Compiler build" },
+  { "column": "generation_source", "type": "string", "label": "Generation source" },
+  { "column": "master_snapshot_digest", "type": "string", "label": "Main snapshot Digest" }
+]
+<span class="truncation">... 10 more schema entries (truncated for display)</span></pre>
+            </details>
           </div>
 
           <div class="turn">
-            <div class="turn-head"><span class="speaker">02 / agent</span><span class="intent">Narrow the review to active approval flows.</span></div>
-            <pre><span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> table list sys_hub_flow \
-  <span class="flag">--query</span> <span class="value">'sys_scope.scope=x_acme_ops^nameLIKEapproval^active=true'</span> \
-  <span class="flag">--fields</span> name,active,sys_updated_on <span class="flag">--limit</span> 20</pre>
+            <div class="turn-head"><span class="speaker">02 / agent</span><span class="intent">Read a bounded set of active flows.</span></div>
+            <pre><span class="prompt">$</span> ./target/release/snow-cli <span class="flag">--profile e2e --read-only --output json</span> table list sys_hub_flow \
+  <span class="flag">--query</span> <span class="value">'active=true'</span> <span class="flag">--fields</span> name,active,sys_updated_on <span class="flag">--limit</span> 5</pre>
+            <details class="output-details">
+              <summary>Output excerpt</summary>
+              <pre><span class="output-label">Captured JSON / first 2 returned records</span>
+{
+  "total": 311, "returned": 5, "truncated": true,
+  "records": [
+    { "sys_updated_on": "2026-04-30 08:31:44", "active": "true", "name": "Request Management Approval" },
+    { "sys_updated_on": "2026-04-30 08:25:13", "name": "[Interaction] Review and attach article", "active": "true" }
+  ]
+}
+<span class="truncation">... 3 more returned records (truncated for display); response reports 311 total</span></pre>
+            </details>
           </div>
 
           <div class="turn">
-            <div class="turn-head"><span class="speaker">03 / agent</span><span class="intent">Trace the server-side helper used by the flow.</span></div>
-            <pre><span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> codesearch search <span class="value">ApprovalUtils</span> \
-  <span class="flag">--scope</span> x_acme_ops <span class="flag">--limit</span> 25</pre>
+            <div class="turn-head"><span class="speaker">03 / agent</span><span class="intent">Search configured code sources for GlideAjax references.</span></div>
+            <pre><span class="prompt">$</span> ./target/release/snow-cli <span class="flag">--profile e2e --read-only --output json</span> codesearch search <span class="value">GlideAjax</span> <span class="flag">--limit</span> 10</pre>
+            <details class="output-details">
+              <summary>Output excerpt</summary>
+              <pre><span class="output-label">Captured JSON / selected fields from first 2 UI Page hits</span>
+[
+  { "recordType": "sys_ui_page", "hits": [
+    { "name": "$pwd_change", "className": "sys_ui_page", "context": "    var ga = new GlideAjax('PwdAjaxChangePassword');" },
+    { "name": "$pwd_enrollment_form_container", "className": "sys_ui_page", "context": "\tvar ga = new GlideAjax('PwdAjaxEnrollmentProcessor');" }
+  ] }
+]
+<span class="truncation">... 8 more UI Page hits and 20 more source groups (truncated for display); record identifiers omitted</span></pre>
+            </details>
           </div>
 
           <div class="turn">
-            <div class="turn-head"><span class="speaker">04 / developer + agent</span><span class="intent">Publish in Flow Designer, then review the latest Customer Updates.</span></div>
-            <pre><span class="comment"># The developer publishes the revised flow in Flow Designer.</span>
-<span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> table list <span class="value">sys_update_xml</span> \
+            <div class="turn-head"><span class="speaker">04 / agent</span><span class="intent">Review the latest captured Customer Updates.</span></div>
+            <pre><span class="prompt">$</span> ./target/release/snow-cli <span class="flag">--profile e2e --read-only --output json</span> table list <span class="value">sys_update_xml</span> \
   <span class="flag">--query</span> <span class="value">'ORDERBYDESCsys_updated_on'</span> \
-  <span class="flag">--fields</span> name,type,action,sys_updated_on,update_set <span class="flag">--limit</span> 25</pre>
+  <span class="flag">--fields</span> name,type,action,sys_updated_on,update_set <span class="flag">--limit</span> 10</pre>
+            <details class="output-details">
+              <summary>Output excerpt</summary>
+              <pre><span class="output-label">Captured JSON / selected non-identifying fields from first 3 records</span>
+{
+  "total": 284, "returned": 10, "truncated": true,
+  "records": [
+    { "type": "System Property", "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-17 14:25:06" },
+    { "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-15 03:12:07", "type": "System Property" },
+    { "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-14 20:17:44", "type": "Access Roles" }
+  ]
+}
+<span class="truncation">... 7 more returned records (truncated for display); record and update-set identifiers omitted</span></pre>
+            </details>
           </div>
         </div>
       </div>
 
-      <p class="evidence-note"><strong>Deliberate boundary:</strong> snow-cli exposes the records and related code an agent needs for inspection and review. It does not claim to replace the visual Flow Designer authoring canvas. The transcript shows commands only, with no simulated instance output.</p>
+      <p class="evidence-note"><strong>Captured, not simulated:</strong> commands and selected output values above come from matching files under <code>artifacts/e2e/v0.6.0/</code>. Excerpts omit record identifiers and instance-specific links, and mark every truncation. snow-cli exposes records and related code for inspection; it does not replace the visual Flow Designer authoring canvas.</p>
+
+      <details class="replay-shell" id="agent-replay">
+        <summary>Watch a full agent session</summary>
+        <p class="replay-intro">A distilled replay of pi with GPT 5.6 answering: "Which custom apps are installed and what changed recently?" The agent stays read-only, makes a wrong argument choice, encounters a timeout and permission warnings, then works from the partial evidence.</p>
+        <div class="replay-stage" aria-live="polite">
+          <div class="replay-meta">
+            <span id="replay-progress">Step 1 of 8</span>
+            <span class="replay-dots" id="replay-dots" aria-hidden="true"></span>
+          </div>
+          <article class="replay-content">
+            <h3 id="replay-reasoning"></h3>
+            <div class="replay-block" id="replay-command-block"><span>Command</span><pre id="replay-command"></pre></div>
+            <div class="replay-block"><span>Output excerpt</span><pre id="replay-output"></pre></div>
+            <div class="replay-block"><span>What it learned</span><p class="replay-learning" id="replay-learning"></p></div>
+          </article>
+        </div>
+        <div class="replay-controls">
+          <button class="step-btn" id="replay-prev" type="button">Previous</button>
+          <button class="step-btn" id="replay-next" type="button">Next</button>
+          <button class="step-btn autoplay" id="replay-autoplay" type="button" aria-pressed="false">Autoplay</button>
+        </div>
+      </details>
     </div>
   </section>
 
@@ -368,10 +505,19 @@
       </div>
       <div class="command-card reveal">
         <div class="console-bar"><i></i><i></i><i></i><span class="console-title">search one code source</span></div>
-        <pre><span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> codesearch search <span class="value">GlideAjax</span> \
-  <span class="flag">--source-table</span> sys_script_include \
-  <span class="flag">--scope</span> x_acme_ops <span class="flag">--limit</span> 50</pre>
-        <p class="command-caption">Command surface: <code>codesearch search &lt;QUERY&gt; --source-table --scope --limit</code></p>
+        <pre><span class="prompt">$</span> ./target/release/snow-cli <span class="flag">--profile e2e --read-only --output json</span> codesearch search <span class="value">GlideAjax</span> <span class="flag">--limit</span> 10</pre>
+        <details class="output-details">
+          <summary>Output excerpt</summary>
+          <pre><span class="output-label">Captured JSON / selected fields from first 2 UI Page hits</span>
+[
+  { "recordType": "sys_ui_page", "hits": [
+    { "name": "$pwd_change", "className": "sys_ui_page", "context": "    var ga = new GlideAjax('PwdAjaxChangePassword');" },
+    { "name": "$pwd_enrollment_form_container", "className": "sys_ui_page", "context": "\tvar ga = new GlideAjax('PwdAjaxEnrollmentProcessor');" }
+  ] }
+]
+<span class="truncation">... 8 more UI Page hits and 20 more source groups (truncated for display); record identifiers omitted</span></pre>
+        </details>
+        <p class="command-caption">Captured command: <code>codesearch search GlideAjax --limit 10</code>. This run returned UI Page hits; its Script Include source group was empty.</p>
       </div>
     </div>
   </section>
@@ -390,9 +536,27 @@
       </div>
       <div class="command-card reveal">
         <div class="console-bar"><i></i><i></i><i></i><span class="console-title">map custom application scopes</span></div>
-        <pre><span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> scope list \
+        <pre><span class="prompt">$</span> ./target/release/snow-cli <span class="flag">--profile e2e --read-only --output json</span> scope list \
   <span class="flag">--kind</span> custom-app</pre>
-        <p class="command-caption">Command surface: <code>scope list --kind custom-app</code></p>
+        <details class="output-details">
+          <summary>Output excerpt</summary>
+          <pre><span class="output-label">Captured JSON / selected non-identifying fields</span>
+{
+  "kind_filter": ["custom_app"],
+  "counts": { "total": 1, "by_kind": { "custom_app": 1 } },
+  "rows": [{
+    "kind": "custom_app", "scope": "x_2135095_au_demo",
+    "name": "Australia Demo Showcase", "version": "0.0.1",
+    "identifier": "", "source_table": "sys_scope"
+  }],
+  "warnings": [
+    "Failed to query sys_store_app: [FORBIDDEN] Insufficient permissions (HTTP 403)",
+    "Failed to query v_plugin: [SERVER_ERROR] ServiceNow internal error (HTTP 500)"
+  ]
+}
+<span class="truncation">Record identifier omitted from display</span></pre>
+        </details>
+        <p class="command-caption">Captured command: <code>scope list --kind custom-app</code>. Partial-source warnings remain visible instead of being presented as a clean run.</p>
       </div>
     </div>
   </section>
@@ -411,12 +575,132 @@
       </div>
       <div class="command-card reveal">
         <div class="console-bar"><i></i><i></i><i></i><span class="console-title">latest customer update records</span></div>
-        <pre><span class="prompt">$</span> snow-cli <span class="flag">--read-only --output json</span> table list sys_update_xml \
+        <pre><span class="prompt">$</span> ./target/release/snow-cli <span class="flag">--profile e2e --read-only --output json</span> table list sys_update_xml \
   <span class="flag">--query</span> <span class="value">'ORDERBYDESCsys_updated_on'</span> \
   <span class="flag">--fields</span> name,type,action,sys_updated_on,update_set \
-  <span class="flag">--limit</span> 25</pre>
-        <p class="command-caption">Command surface: <code>table list &lt;TABLE&gt; --query --fields --limit</code></p>
+  <span class="flag">--limit</span> 10</pre>
+        <details class="output-details">
+          <summary>Output excerpt</summary>
+          <pre><span class="output-label">Captured JSON / selected non-identifying fields from first 3 records</span>
+{
+  "total": 284, "returned": 10, "truncated": true,
+  "records": [
+    { "type": "System Property", "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-17 14:25:06" },
+    { "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-15 03:12:07", "type": "System Property" },
+    { "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-14 20:17:44", "type": "Access Roles" }
+  ]
+}
+<span class="truncation">... 7 more returned records (truncated for display); record and update-set identifiers omitted</span></pre>
+        </details>
+        <p class="command-caption">Captured command: <code>table list sys_update_xml --query --fields --limit 10</code></p>
       </div>
+    </div>
+  </section>
+
+  <section class="comparison" id="ui-to-cli">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">The same instance, two interfaces</p>
+        <h2>Human understanding <span>&lt;=&gt;</span> LLM understanding.</h2>
+        <p class="section-copy">The screenshots show the captured ServiceNow UI. Beside each one, the matching read-only snow-cli command exposes a structured projection an agent can inspect. Broad queries do not always return the named UI record in their first bounded page; the excerpts say so when that happens.</p>
+      </div>
+
+      <div class="comparison-list">
+        <article class="comparison-row reveal">
+          <div class="comparison-pane">
+            <div class="pane-head"><span>Human / ServiceNow UI</span><strong>Custom application list</strong></div>
+            <img class="ui-shot" src="assets/ui-sys-app-list.png" width="1280" height="720" loading="lazy" alt="ServiceNow Custom Applications list showing Australia Demo Showcase with scope x_2135095_au_demo" />
+          </div>
+          <div class="comparison-pane">
+            <div class="pane-head"><span>LLM / structured JSON</span><strong>Custom scope inventory</strong></div>
+            <div class="machine-body">
+              <pre class="command-line">$ ./target/release/snow-cli --profile e2e --read-only --output json scope list --kind custom-app</pre>
+              <pre>{
+  "counts": { "total": 1, "by_kind": { "custom_app": 1 } },
+  "rows": [{
+    "kind": "custom_app",
+    "scope": "x_2135095_au_demo",
+    "name": "Australia Demo Showcase",
+    "version": "0.0.1",
+    "source_table": "sys_scope"
+  }]
+}
+<span class="truncation">Selected-field excerpt; record identifier and 2 source warnings omitted here</span></pre>
+            </div>
+            <p class="pair-note">Both views identify the same custom application and scope. The expandable command output above preserves the captured 403 and 500 source warnings.</p>
+          </div>
+        </article>
+
+        <article class="comparison-row flow reveal">
+          <div class="comparison-pane">
+            <div class="pane-head"><span>Human / ServiceNow UI</span><strong>Flow Designer list</strong></div>
+            <img class="ui-shot" src="assets/ui-flow-designer.png" width="1280" height="600" loading="lazy" alt="ServiceNow Flow Designer list showing Business Calendar Demo in the Australia Demo Showcase application" />
+          </div>
+          <div class="comparison-pane">
+            <div class="pane-head"><span>LLM / structured JSON</span><strong>Active flow records</strong></div>
+            <div class="machine-body">
+              <pre class="command-line">$ ./target/release/snow-cli --profile e2e --read-only --output json table list sys_hub_flow --query 'active=true' --fields name,active,sys_updated_on --limit 5</pre>
+              <pre>{
+  "total": 311, "returned": 5, "truncated": true,
+  "records": [{
+    "sys_updated_on": "2026-04-30 08:31:44",
+    "active": "true",
+    "name": "Request Management Approval"
+  }]
+}
+<span class="truncation">... 4 more returned records (truncated for display); response reports 311 total</span></pre>
+            </div>
+            <p class="pair-note">The UI screenshot shows Business Calendar Demo. The captured broad active-flow query returned a different first page; the replay resolves Business Calendar Demo directly and verifies that it is active.</p>
+          </div>
+        </article>
+
+        <article class="comparison-row reveal">
+          <div class="comparison-pane">
+            <div class="pane-head"><span>Human / ServiceNow UI</span><strong>Script Include form</strong></div>
+            <img class="ui-shot" src="assets/ui-script-include-form.png" width="1280" height="720" loading="lazy" alt="ServiceNow Script Include form for ES12Demo in Australia Demo Showcase with Glide AJAX enabled" />
+          </div>
+          <div class="comparison-pane">
+            <div class="pane-head"><span>LLM / structured JSON</span><strong>Instance code search</strong></div>
+            <div class="machine-body">
+              <pre class="command-line">$ ./target/release/snow-cli --profile e2e --read-only --output json codesearch search GlideAjax --limit 10</pre>
+              <pre>[
+  { "recordType": "sys_ui_page", "hits": [{
+    "name": "$pwd_change",
+    "className": "sys_ui_page",
+    "context": "    var ga = new GlideAjax('PwdAjaxChangePassword');"
+  }] },
+  { "recordType": "sys_script_include", "hits": [] }
+]
+<span class="truncation">Selected-field excerpt; 9 more UI Page hits and 19 more source groups omitted</span></pre>
+            </div>
+            <p class="pair-note">The UI confirms that ES12Demo is Glide AJAX enabled. The captured text search found GlideAjax references in UI Pages but no Script Include hit, so this evidence does not claim that ES12Demo appeared in the search results.</p>
+          </div>
+        </article>
+
+        <article class="comparison-row reveal">
+          <div class="comparison-pane">
+            <div class="pane-head"><span>Human / ServiceNow UI</span><strong>Update Sets list</strong></div>
+            <img class="ui-shot" src="assets/ui-update-sets-list.png" width="1280" height="720" loading="lazy" alt="ServiceNow Update Sets list showing entries for the Australia Demo Showcase application" />
+          </div>
+          <div class="comparison-pane">
+            <div class="pane-head"><span>LLM / structured JSON</span><strong>Recent Customer Updates</strong></div>
+            <div class="machine-body">
+              <pre class="command-line">$ ./target/release/snow-cli --profile e2e --read-only --output json table list sys_update_xml --query 'ORDERBYDESCsys_updated_on' --fields name,type,action,sys_updated_on,update_set --limit 10</pre>
+              <pre>{
+  "total": 284, "returned": 10, "truncated": true,
+  "records": [
+    { "type": "System Property", "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-17 14:25:06" },
+    { "action": "INSERT_OR_UPDATE", "sys_updated_on": "2026-07-15 03:12:07", "type": "System Property" }
+  ]
+}
+<span class="truncation">... 8 more returned records (truncated for display); record and update-set identifiers omitted</span></pre>
+            </div>
+            <p class="pair-note">The UI shows update-set containers. The CLI excerpt shows recent Customer Update records associated with update sets; these are related views, not the same table.</p>
+          </div>
+        </article>
+      </div>
+
+      <p class="evidence-note"><strong>Evidence paths:</strong> screenshots are loaded from <code>landing/assets/ui-*.png</code>. Commands and outputs are paired from matching <code>*.cmd.txt</code> and <code>*.json</code> files under <code>artifacts/e2e/v0.6.0/</code>.</p>
     </div>
   </section>
 
@@ -455,7 +739,7 @@
       <div class="command-card setup reveal">
         <div class="console-bar"><i></i><i></i><i></i><span class="console-title">profile setup</span></div>
         <pre><span class="prompt">$</span> snow-cli profile add dev \
-  <span class="flag">--instance</span> https://example.service-now.com
+  <span class="flag">--instance</span> &lt;your-instance-url&gt;
 <span class="prompt">$</span> snow-cli auth login <span class="flag">--profile</span> dev</pre>
       </div>
       <div class="cta-row">
@@ -476,6 +760,59 @@
     </span>
   </div>
 </footer>
+
+<script type="application/json" id="replay-data">
+[
+  {
+    "reasoning": "Test the scope filter while staying inside the read-only snow-cli boundary.",
+    "command": "./target/release/snow-cli --profile e2e --read-only --output json scope list --kind custom",
+    "output": "error: invalid value 'custom' for '--kind <KIND>'\n  [possible values: store-app, plugin, custom-app, platform, platform-app]\n\n  tip: a similar value exists: 'custom-app'\n\nCommand exited with code 2",
+    "learning": "The first assumption was wrong. The CLI named the accepted value, custom-app, instead of silently broadening the query."
+  },
+  {
+    "reasoning": "Apply the CLI's suggested value and retry the custom-application inventory.",
+    "command": "./target/release/snow-cli --profile e2e --read-only --output json scope list --kind custom-app",
+    "output": "Command timed out after 30 seconds",
+    "learning": "A correct command can still fail operationally. The agent has no evidence yet and retries rather than inventing an answer."
+  },
+  {
+    "reasoning": "Retry once and inspect partial results as well as source-specific failures.",
+    "command": "./target/release/snow-cli --profile e2e --read-only --output json scope list --kind custom-app",
+    "output": "{\"kind_filter\":[\"custom_app\"],\"counts\":{\"total\":1,\"by_kind\":{\"custom_app\":1}},\"rows\":[{\"kind\":\"custom_app\",\"scope\":\"x_2135095_au_demo\",\"name\":\"Australia Demo Showcase\",\"version\":\"0.0.1\",\"identifier\":\"\",\"source_table\":\"sys_scope\"}],\"warnings\":[\"Failed to query sys_store_app: [FORBIDDEN] Insufficient permissions (HTTP 403)\",\"Failed to query v_plugin: [SERVER_ERROR] ServiceNow internal error (HTTP 500)\"]}\n\n[Output excerpt; record identifier omitted]",
+    "learning": "The accessible sys_scope source reports one custom app: Australia Demo Showcase, scope x_2135095_au_demo, version 0.0.1. The 403 and 500 warnings qualify the result."
+  },
+  {
+    "reasoning": "Use the returned scope directly, working past the unavailable Store and plugin metadata sources.",
+    "command": "./target/release/snow-cli --profile e2e --read-only --output json scope inventory x_2135095_au_demo",
+    "output": "{\"scope\":{\"scope\":\"x_2135095_au_demo\",\"name\":\"Australia Demo Showcase\",\"version\":\"0.0.1\"},\"summary\":{\"total_artifacts\":163,\"artifact_counts\":{\"acls\":1,\"business_rules\":2,\"choices\":3,\"dictionary_fields\":42,\"flows\":1,\"other\":95,\"rest_message_functions\":1,\"rest_messages\":1,\"scheduled_scripts\":1,\"scope_privileges\":2,\"script_includes\":2,\"scripted_rest_apis\":3,\"scripted_rest_operations\":4,\"tables\":4,\"ui_pages\":1}}}\n\n[Output excerpt; artifact rows and record identifiers omitted]",
+    "learning": "The app inventory includes one flow and two Script Includes among 163 normalized artifacts, giving the agent a bounded app-specific next step."
+  },
+  {
+    "reasoning": "Query Customer Updates for that application and request the latest records first.",
+    "command": "./target/release/snow-cli --profile e2e --read-only --output json table list sys_update_xml --query 'application=<application-sys-id>' --fields sys_id,name,type,action,sys_updated_on,sys_updated_by,update_set --order-by=-sys_updated_on --limit 10",
+    "output": "{\"total\":6,\"returned\":6,\"truncated\":false,\"records\":[{\"action\":\"INSERT_OR_UPDATE\",\"sys_updated_on\":\"2026-07-14 15:51:12\",\"type\":\"Flow\"}]}\n\n[Output excerpt; identifiers and 5 records omitted]",
+    "learning": "The app-specific update records include a Flow update written on 2026-07-14 at 15:51:12. The page masks the captured application identifier."
+  },
+  {
+    "reasoning": "Resolve the Flow update to the underlying record and inspect its descriptive fields.",
+    "command": "./target/release/snow-cli --profile e2e --read-only --output json table get sys_hub_flow <flow-sys-id> --fields sys_id,name,description,active,sys_created_on,sys_created_by,sys_updated_on,sys_updated_by",
+    "output": "{\"sys_updated_on\":\"2026-07-14 15:51:06\",\"active\":\"true\",\"sys_created_on\":\"2026-07-09 20:09:34\",\"sys_created_by\":\"admin\",\"sys_updated_by\":\"admin\",\"description\":\"Australia feature: Business Calendar as a scheduled trigger. On the platform, replace the simple daily schedule with a Business Calendar definition to handle holidays and non-working days.\",\"name\":\"Business Calendar Demo\"}\n\n[Output excerpt; record identifier omitted]",
+    "learning": "Business Calendar Demo is active and was updated by admin on 2026-07-14 at 15:51:06, six seconds before its Customer Update record."
+  },
+  {
+    "reasoning": "Inspect the referenced update set before describing where the change was captured.",
+    "command": "./target/release/snow-cli --profile e2e --read-only --output json table get sys_update_set <update-set-sys-id> --fields sys_id,name,description,state,sys_created_on,sys_created_by,sys_updated_on,sys_updated_by",
+    "output": "{\"sys_created_on\":\"2026-04-30 07:40:06\",\"state\":\"in progress\",\"sys_updated_by\":\"system\",\"name\":\"Default\",\"description\":\"Automatically created by the system\",\"sys_updated_on\":\"2026-04-30 07:40:06\",\"sys_created_by\":\"system\"}\n\n[Output excerpt; record identifier omitted]",
+    "learning": "The flow change was captured in the in-progress Default update set. The page masks the captured update-set identifier."
+  },
+  {
+    "reasoning": "Synthesize only what the successful read-only outputs support.",
+    "command": "",
+    "output": "- **Installed custom application:** **Australia Demo Showcase**\n  - Scope: `x_2135095_au_demo`\n  - Version: `0.0.1`\n  - The instance reported exactly one custom application.\n\n- **Most recent development activity:** Admin updated the **Business Calendar Demo** Flow on **2026-07-14 15:51:06** (its update record was written at `15:51:12`).\n  - The active flow demonstrates replacing a simple daily schedule with a Business Calendar to account for holidays and non-working days.\n  - The update was captured in the in-progress default update set.",
+    "learning": "The final answer carries the timeout and partial-source warnings forward rather than presenting the session as frictionless or complete beyond the accessible evidence."
+  }
+]
+</script>
 
 <script>
   const latestRelease = document.getElementById("latest-release");
@@ -506,6 +843,84 @@
   }, { threshold: 0.12 });
 
   document.querySelectorAll(".reveal").forEach((element) => observer.observe(element));
+
+  const replayData = JSON.parse(document.getElementById("replay-data").textContent);
+  const replayShell = document.getElementById("agent-replay");
+  const replayProgress = document.getElementById("replay-progress");
+  const replayDots = document.getElementById("replay-dots");
+  const replayReasoning = document.getElementById("replay-reasoning");
+  const replayCommandBlock = document.getElementById("replay-command-block");
+  const replayCommand = document.getElementById("replay-command");
+  const replayOutput = document.getElementById("replay-output");
+  const replayLearning = document.getElementById("replay-learning");
+  const replayPrev = document.getElementById("replay-prev");
+  const replayNext = document.getElementById("replay-next");
+  const replayAutoplay = document.getElementById("replay-autoplay");
+  let replayIndex = 0;
+  let replayTimer;
+
+  replayData.forEach(() => {
+    const dot = document.createElement("span");
+    dot.className = "replay-dot";
+    replayDots.appendChild(dot);
+  });
+
+  function stopReplay() {
+    window.clearInterval(replayTimer);
+    replayTimer = undefined;
+    replayAutoplay.textContent = "Autoplay";
+    replayAutoplay.setAttribute("aria-pressed", "false");
+  }
+
+  function renderReplay() {
+    const step = replayData[replayIndex];
+    replayProgress.textContent = `Step ${replayIndex + 1} of ${replayData.length}`;
+    replayReasoning.textContent = step.reasoning;
+    replayCommandBlock.hidden = !step.command;
+    replayCommand.textContent = step.command;
+    replayOutput.textContent = step.output;
+    replayLearning.textContent = step.learning;
+    replayPrev.disabled = replayIndex === 0;
+    replayNext.disabled = replayIndex === replayData.length - 1;
+    replayDots.querySelectorAll(".replay-dot").forEach((dot, index) => {
+      dot.classList.toggle("active", index === replayIndex);
+    });
+  }
+
+  replayPrev.addEventListener("click", () => {
+    replayIndex = Math.max(0, replayIndex - 1);
+    renderReplay();
+  });
+
+  replayNext.addEventListener("click", () => {
+    replayIndex = Math.min(replayData.length - 1, replayIndex + 1);
+    renderReplay();
+  });
+
+  replayAutoplay.addEventListener("click", () => {
+    if (replayTimer) {
+      stopReplay();
+      return;
+    }
+    if (replayIndex === replayData.length - 1) replayIndex = 0;
+    renderReplay();
+    replayAutoplay.textContent = "Pause";
+    replayAutoplay.setAttribute("aria-pressed", "true");
+    replayTimer = window.setInterval(() => {
+      if (replayIndex === replayData.length - 1) {
+        stopReplay();
+        return;
+      }
+      replayIndex += 1;
+      renderReplay();
+    }, 4500);
+  });
+
+  replayShell.addEventListener("toggle", () => {
+    if (!replayShell.open) stopReplay();
+  });
+
+  renderReplay();
 </script>
 </body>
 </html>
