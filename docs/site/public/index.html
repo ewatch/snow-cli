@@ -104,6 +104,8 @@
   .nav-links a:hover, .nav-links a:focus-visible { color: var(--ink); }
   .release-badge { border: 1px solid var(--line-bright); border-radius: 999px; padding: 4px 9px; color: var(--signal); font: 11px/1.3 var(--mono); white-space: nowrap; }
   .nav-cta { border: 1px solid var(--line-bright); border-radius: 7px; padding: 7px 13px; color: var(--ink) !important; }
+  .nav-docs { color: var(--signal); font-weight: 600; }
+  .nav-docs:hover, .nav-docs:focus-visible { color: var(--ink); }
   .github-link { width: 34px; min-height: 34px; padding: 7px; }
   .github-link svg { display: block; width: 18px; height: 18px; fill: currentColor; }
 
@@ -130,7 +132,16 @@
   .btn:hover { transform: translateY(-2px); }
   .btn-primary { background: var(--signal); color: #07130b; border: 1px solid var(--signal); }
   .btn-secondary { color: var(--ink); border: 1px solid var(--line-bright); background: rgba(13, 23, 19, .7); }
-  .harnesses { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 38px; }
+  .install { display: flex; align-items: center; gap: 10px; margin-top: 22px; padding: 11px 13px; border: 1px solid var(--line-bright); border-radius: 9px; background: rgba(8, 15, 12, .8); max-width: 460px; }
+  .install-prompt { color: var(--signal); font: 700 13px/1 var(--mono); }
+  .install-cmd { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; color: var(--ink); font: 13.5px/1.5 var(--mono); }
+  .copy-btn { flex-shrink: 0; min-height: 30px; padding: 0 12px; border: 1px solid var(--line-bright); border-radius: 6px; background: var(--signal-dark); color: var(--signal); cursor: pointer; font: 700 11px/1 var(--mono); letter-spacing: .04em; transition: border-color .16s ease, color .16s ease, background .16s ease; }
+  .copy-btn:hover, .copy-btn:focus-visible { border-color: var(--signal); color: var(--ink); }
+  .copy-btn.copied { background: var(--signal); color: #07130b; border-color: var(--signal); }
+  .install-alt { margin-top: 10px; color: var(--ink-faint); font-size: 12.5px; }
+  .install-alt a { color: var(--cyan); text-decoration: underline; text-underline-offset: 2px; }
+  .install-alt a:hover { color: var(--ink); }
+  .harnesses { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 30px; }
   .harnesses span { border: 1px solid var(--line); border-radius: 999px; padding: 5px 10px; color: var(--ink-faint); font: 12px/1.4 var(--mono); }
 
   .hero-console, .terminal {
@@ -314,7 +325,7 @@
     .nav-inner { gap: 12px; }
     .nav-links { gap: 10px; }
     .release-badge { padding: 3px 7px; font-size: 10px; }
-    .nav-links a:not(.nav-cta) { display: none; }
+    .nav-links a:not(.nav-cta):not(.nav-docs) { display: none; }
     .hero { padding: 80px 0 70px; }
     section { padding: 78px 0; }
     .story-nav ol { grid-template-columns: 1fr; }
@@ -349,6 +360,7 @@
       <a href="#low-code">Low-code</a>
       <a href="#analytics">Analytics</a>
       <a href="#custom-app">Custom apps</a>
+      <a class="nav-docs" href="introduction/">Docs</a>
       <span class="release-badge" id="latest-release" aria-live="polite">Latest: v0.6.0</span>
       <a class="nav-cta github-link" href="https://github.com/ewatch/snow-cli" aria-label="snow-cli on GitHub">
         <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 018 1.5c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -364,9 +376,15 @@
       <h1>Inspect ServiceNow <em>workflows</em> with your coding agent.</h1>
       <p class="hero-copy"><strong>snow-cli</strong> gives developers and terminal-based agents a structured command surface for ServiceNow. Investigate Flow Designer artifacts, trace instance code, map custom applications, and review recent changes without navigating the UI for every question.</p>
       <div class="cta-row">
-        <a class="btn btn-primary" href="#workflow">See the workflow</a>
-        <a class="btn btn-secondary" href="https://github.com/ewatch/snow-cli">View source</a>
+        <a class="btn btn-primary" href="quick-start/">Get started</a>
+        <a class="btn btn-secondary" href="#workflow">See it work</a>
       </div>
+      <div class="install" aria-label="Install command">
+        <span class="install-prompt" aria-hidden="true">$</span>
+        <code class="install-cmd" id="install-cmd">brew install ewatch/tap/snow-cli</code>
+        <button class="copy-btn" type="button" data-copy="install-cmd" aria-label="Copy install command">Copy</button>
+      </div>
+      <p class="install-alt">macOS &amp; Linux &middot; <a href="installation/">Windows, curl, and other install methods</a></p>
       <div class="harnesses" aria-label="Compatible terminal agent harness examples">
         <span>Claude Code</span><span>opencode</span><span>pi</span><span>shell scripts</span>
       </div>
@@ -916,6 +934,26 @@
 }</script>
 
 <script>
+  // Copy-to-clipboard for the hero install command.
+  document.querySelectorAll(".copy-btn").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const target = document.getElementById(button.dataset.copy);
+      if (!target) return;
+      try {
+        await navigator.clipboard.writeText(target.textContent.trim());
+        const original = button.textContent;
+        button.textContent = "Copied";
+        button.classList.add("copied");
+        window.setTimeout(() => {
+          button.textContent = original;
+          button.classList.remove("copied");
+        }, 1600);
+      } catch {
+        // Clipboard unavailable (e.g. insecure context); leave the command for manual copy.
+      }
+    });
+  });
+
   const latestRelease = document.getElementById("latest-release");
   fetch("https://api.github.com/repos/ewatch/snow-cli/releases/latest", {
     headers: { Accept: "application/vnd.github+json" }
