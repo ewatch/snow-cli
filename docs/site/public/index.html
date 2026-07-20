@@ -214,6 +214,9 @@
   .use-points { margin-top: 24px; display: grid; gap: 11px; list-style: none; color: var(--ink-muted); font-size: 14px; }
   .use-points li { padding-left: 20px; position: relative; }
   .use-points li::before { content: "+"; position: absolute; left: 0; color: var(--signal); font-family: var(--mono); }
+  .guide-link { display: inline-flex; align-items: center; gap: 7px; margin-top: 26px; color: var(--signal); font: 700 13px/1.4 var(--mono); border-bottom: 1px solid rgba(158, 228, 147, .35); padding-bottom: 2px; transition: border-color .16s ease, color .16s ease; }
+  .guide-link:hover, .guide-link:focus-visible { color: var(--ink); border-color: var(--signal); }
+  .guide-link::after { content: "\2192"; }
   .command-card { border: 1px solid var(--line-bright); border-radius: 13px; overflow: hidden; background: var(--paper); box-shadow: 0 24px 65px rgba(0, 0, 0, .28); }
   .command-card .console-bar { min-height: 39px; }
   .command-card pre { padding: 25px; min-height: 144px; display: block; }
@@ -415,6 +418,7 @@
         <p class="eyebrow">The agent workflow</p>
         <h2>Turn a Flow Designer question into inspectable evidence.</h2>
         <p class="section-copy">A developer asks Claude Code, opencode, pi, or another terminal harness to review a flow. The agent invokes snow-cli, reads the table schema before it queries Flow Designer records, searches instance code, and reviews recent development activity. Every output below is excerpted from a sanitized v0.6.0 run.</p>
+        <a class="guide-link" href="guides/review-a-flow/">Read the guide: Review a Flow Designer flow</a>
       </div>
 
       <div class="workflow-shell reveal">
@@ -500,6 +504,7 @@
           <blockquote class="finding"><strong>Conflict detection</strong> “It asynchronously checks a change for scheduling/resource conflicts when Change Management queues that work.”</blockquote>
           <blockquote class="finding"><strong>Emergency authorization</strong> “It provides the expedited approval checkpoint required before an emergency change can continue.”</blockquote>
         </div>
+        <a class="guide-link" href="guides/review-a-flow/">Read the guide: Review a Flow Designer flow</a>
       </div>
       <div class="command-card reveal">
         <div class="console-bar"><i></i><i></i><i></i><span class="console-title">agent reads the implementation</span></div>
@@ -526,6 +531,7 @@
         <h2>The guarded escape hatch: background scripts.</h2>
         <p>When the read-only command surface cannot express a task, <code>script run</code> sends a background script for server-side execution. This example demonstrates the mechanism by combining a GlideAggregate count and a <code>gs.info</code> log line in one call.</p>
         <aside class="warning" role="note"><strong>Do not use on production instances</strong>Background scripts execute arbitrary server-side code. The <code>script</code> command is excluded from <code>snow-cli-ro</code>; use a disposable development instance and review every script before execution.</aside>
+        <a class="guide-link" href="guides/run-a-background-script/">Read the guide: Run a background script safely</a>
       </div>
       <div class="command-card reveal">
         <div class="console-bar"><i></i><i></i><i></i><span class="console-title">background script / full binary only</span></div>
@@ -553,6 +559,7 @@
           <li>The Aggregate API returned 44 active incidents.</li>
           <li>The background-script aggregate above independently found the same 44: two mechanisms, one truth.</li>
         </ul>
+        <a class="guide-link" href="guides/instance-analytics/">Read the guide: Query instance analytics</a>
       </div>
       <div class="command-card reveal">
         <div class="console-bar"><i></i><i></i><i></i><span class="console-title">count, group, aggregate</span></div>
@@ -577,6 +584,7 @@
           <li>Find the scoped ES12Demo Script Include.</li>
           <li>Read six app-specific update records ordered by recency.</li>
         </ul>
+        <a class="guide-link" href="guides/explore-a-custom-app/">Read the guide: Explore a custom application</a>
       </div>
       <div class="journey-stack reveal">
         <article class="command-card journey-step">

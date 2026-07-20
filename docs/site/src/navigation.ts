@@ -22,6 +22,15 @@ export const sidebar: NavGroup[] = [
     ],
   },
   {
+    label: 'Guides',
+    items: [
+      { label: 'Review a Flow Designer flow', href: '/guides/review-a-flow/' },
+      { label: 'Explore a custom application', href: '/guides/explore-a-custom-app/' },
+      { label: 'Query instance analytics', href: '/guides/instance-analytics/' },
+      { label: 'Run a background script safely', href: '/guides/run-a-background-script/' },
+    ],
+  },
+  {
     label: 'Configuration',
     items: [
       {
