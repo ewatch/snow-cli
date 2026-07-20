@@ -59,6 +59,7 @@
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  [hidden] { display: none !important; }
   html { scroll-behavior: smooth; }
   body {
     background:
@@ -156,7 +157,11 @@
   .console-bar i:nth-child(2) { background: var(--amber); }
   .console-bar i:nth-child(3) { background: var(--signal); }
   .console-title { margin-left: 8px; color: var(--ink-faint); font: 11px/1 var(--mono); }
-  .console-body { padding: 24px; font: 13px/1.85 var(--mono); overflow-x: auto; }
+  .console-body { padding: 22px 24px; font: 13px/1.85 var(--mono); overflow-x: auto; }
+  .console-output { border-top: 1px solid var(--line); padding: 16px 18px 18px; background: rgba(13, 23, 19, .35); }
+  .console-output .format-switcher { padding: 0; }
+  .console-output .format-tabs { margin-bottom: 11px; }
+  .hero-console .format-output { min-height: 188px; max-height: 286px; }
   .console-body .label { color: var(--cyan); }
   .console-body .prompt { color: var(--signal); }
   .console-body .flag { color: var(--cyan); }
@@ -371,7 +376,7 @@
       <p class="hero-copy"><strong>snow-cli</strong> gives developers and terminal-based agents a structured command surface for ServiceNow. Investigate Flow Designer artifacts, trace instance code, map custom applications, and review recent changes without navigating the UI for every question.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="quick-start/">Get started</a>
-        <a class="btn btn-secondary" href="#workflow">See it work</a>
+        <a class="btn btn-secondary" href="#ui-to-cli">See it work</a>
       </div>
       <div class="install" aria-label="Install command">
         <span class="install-prompt" aria-hidden="true">$</span>
@@ -381,26 +386,25 @@
       <p class="install-alt">macOS &amp; Linux &middot; <a href="installation/">Windows, curl, and other install methods</a></p>
     </div>
 
-    <div class="hero-console reveal" aria-label="Example snow-cli command">
-      <div class="console-bar"><i></i><i></i><i></i><span class="console-title">agent session / flow review</span></div>
+    <div class="hero-console reveal" aria-label="Example snow-cli session">
+      <div class="console-bar"><i></i><i></i><i></i><span class="console-title">agent session / incident lookup</span></div>
       <div class="console-body">
         <span class="label">developer</span><br>
-        Review the active flows in Flow Designer on this instance.<br><br>
+        Show me a few active incidents from this instance.<br><br>
         <span class="label">agent</span><br>
-        <span class="comment"># Ground the review in the flow table and active records.</span><br>
-        <span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output json</span> table schema <span class="value">sys_hub_flow</span><br>
-        <span class="prompt">$</span> snow-cli <span class="flag">--profile dev --read-only --output</span> <span class="value">&lt;format&gt;</span> table list <span class="value">sys_hub_flow</span> <span class="flag">--query</span> <span class="value">'active=true'</span> <span class="flag">--fields</span> name,active,sys_updated_on <span class="flag">--limit</span> 5<span class="cursor"></span>
+        <span class="comment"># One read-only call &mdash; then pick any output format.</span><br>
+        <span class="prompt">$</span> snow-cli <span class="flag">--read-only --output</span> <span class="value">&lt;format&gt;</span> table list <span class="value">incident</span> <span class="flag">--query</span> <span class="value">'active=true'</span> <span class="flag">--fields</span> number,short_description,priority,state <span class="flag">--limit</span> 3
       </div>
-      <details class="output-details">
-        <summary>Output excerpt in all six formats</summary>
-        <div class="format-switcher" data-excerpt="flows-active"></div>
-      </details>
+      <div class="console-output">
+        <div class="format-switcher" data-excerpt="incidents"></div>
+      </div>
     </div>
   </div>
 </header>
 
 <main>
-  <section id="workflow">
+  <!-- Hidden for now; structure kept for a later PDI recapture pass. -->
+  <section id="workflow" hidden>
     <div class="wrap">
       <div class="section-head">
         <p class="eyebrow">The agent workflow</p>
@@ -477,7 +481,8 @@
     </div>
   </section>
 
-  <section id="low-code" class="use-case alt">
+  <!-- Use cases hidden for now; structure kept for a later PDI recapture pass. -->
+  <section id="low-code" class="use-case alt" hidden>
     <div class="wrap use-grid">
       <div class="use-copy">
         <span class="use-index">USE CASE 01</span>
@@ -509,7 +514,7 @@
     </div>
   </section>
 
-  <section id="background-scripts" class="use-case">
+  <section id="background-scripts" class="use-case" hidden>
     <div class="wrap use-grid">
       <div class="use-copy">
         <span class="use-index">USE CASE 02</span>
@@ -533,7 +538,7 @@
     </div>
   </section>
 
-  <section id="analytics" class="use-case alt">
+  <section id="analytics" class="use-case alt" hidden>
     <div class="wrap use-grid">
       <div class="use-copy">
         <span class="use-index">USE CASE 03</span>
@@ -556,7 +561,7 @@
     </div>
   </section>
 
-  <section id="custom-app" class="use-case">
+  <section id="custom-app" class="use-case" hidden>
     <div class="wrap use-grid">
       <div class="use-copy">
         <span class="use-index">USE CASE 04</span>
@@ -779,6 +784,18 @@
 </script>
 
 <script type="application/json" id="format-excerpts">{
+ "incidents": {
+  "command": "snow-cli --read-only --output <format> table list incident --query 'active=true' --fields number,short_description,priority,state --limit 3",
+  "auto_resolves": "toon",
+  "formats": {
+   "json": "{\"total\": 3, \"returned\": 3, \"truncated\": false, \"records\": [{\"number\": \"INC0010042\", \"short_description\": \"Email server is not responding\", \"priority\": \"1\", \"state\": \"2\"}, {\"number\": \"INC0010041\", \"short_description\": \"VPN drops when switching networks\", \"priority\": \"3\", \"state\": \"2\"}, {\"number\": \"INC0010040\", \"short_description\": \"New laptop request for onboarding\", \"priority\": \"4\", \"state\": \"1\"}]}",
+   "jsonl": "{\"meta\": {\"total\": 3, \"returned\": 3, \"truncated\": false}}\n{\"number\": \"INC0010042\", \"short_description\": \"Email server is not responding\", \"priority\": \"1\", \"state\": \"2\"}\n{\"number\": \"INC0010041\", \"short_description\": \"VPN drops when switching networks\", \"priority\": \"3\", \"state\": \"2\"}\n{\"number\": \"INC0010040\", \"short_description\": \"New laptop request for onboarding\", \"priority\": \"4\", \"state\": \"1\"}",
+   "csv": "number,short_description,priority,state\nINC0010042,Email server is not responding,1,2\nINC0010041,VPN drops when switching networks,3,2\nINC0010040,New laptop request for onboarding,4,1",
+   "toon": "total: 3\nreturned: 3\ntruncated: false\nrecords[3]{number,short_description,priority,state}:\n  INC0010042,Email server is not responding,\"1\",\"2\"\n  INC0010041,VPN drops when switching networks,\"3\",\"2\"\n  INC0010040,New laptop request for onboarding,\"4\",\"1\"",
+   "text": "{\n  \"total\": 3,\n  \"returned\": 3,\n  \"truncated\": false,\n  \"records\": [\n    {\n      \"number\": \"INC0010042\",\n      \"short_description\": \"Email server is not responding\",\n      \"priority\": \"1\",\n      \"state\": \"2\"\n    },\n    {\n      \"number\": \"INC0010041\",\n      \"short_description\": \"VPN drops when switching networks\",\n      \"priority\": \"3\",\n      \"state\": \"2\"\n    },\n    {\n      \"number\": \"INC0010040\",\n      \"short_description\": \"New laptop request for onboarding\",\n      \"priority\": \"4\",\n      \"state\": \"1\"\n    }\n  ]\n}",
+   "auto": "total: 3\nreturned: 3\ntruncated: false\nrecords[3]{number,short_description,priority,state}:\n  INC0010042,Email server is not responding,\"1\",\"2\"\n  INC0010041,VPN drops when switching networks,\"3\",\"2\"\n  INC0010040,New laptop request for onboarding,\"4\",\"1\""
+  }
+ },
  "flows-bc": {
   "command": "snow-cli --profile dev --read-only --output <format> table list sys_hub_flow --query 'nameLIKEBusiness Calendar^ORDERBYname' --fields name,active,status,sys_updated_on --limit 3",
   "auto_resolves": "toon",
