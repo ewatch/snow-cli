@@ -141,8 +141,6 @@
   .install-alt { margin-top: 10px; color: var(--ink-faint); font-size: 12.5px; }
   .install-alt a { color: var(--cyan); text-decoration: underline; text-underline-offset: 2px; }
   .install-alt a:hover { color: var(--ink); }
-  .harnesses { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 30px; }
-  .harnesses span { border: 1px solid var(--line); border-radius: 999px; padding: 5px 10px; color: var(--ink-faint); font: 12px/1.4 var(--mono); }
 
   .hero-console, .terminal {
     border: 1px solid var(--line-bright);
@@ -356,10 +354,6 @@
   <div class="wrap nav-inner">
     <a class="brand" href="#top" aria-label="snow-cli home"><span class="mark" aria-hidden="true">&gt;_</span> snow-cli</a>
     <div class="nav-links">
-      <a href="#workflow">Workflow</a>
-      <a href="#low-code">Low-code</a>
-      <a href="#analytics">Analytics</a>
-      <a href="#custom-app">Custom apps</a>
       <a class="nav-docs" href="introduction/">Docs</a>
       <span class="release-badge" id="latest-release" aria-live="polite">Latest: v0.6.0</span>
       <a class="nav-cta github-link" href="https://github.com/ewatch/snow-cli" aria-label="snow-cli on GitHub">
@@ -385,9 +379,6 @@
         <button class="copy-btn" type="button" data-copy="install-cmd" aria-label="Copy install command">Copy</button>
       </div>
       <p class="install-alt">macOS &amp; Linux &middot; <a href="installation/">Windows, curl, and other install methods</a></p>
-      <div class="harnesses" aria-label="Compatible terminal agent harness examples">
-        <span>Claude Code</span><span>opencode</span><span>pi</span><span>shell scripts</span>
-      </div>
     </div>
 
     <div class="hero-console reveal" aria-label="Example snow-cli command">
