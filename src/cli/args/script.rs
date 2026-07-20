@@ -22,7 +22,7 @@ pub enum ScriptCommands {
         #[arg(long, short = 'c', group = "script_source")]
         code: Option<String>,
 
-        /// Scope in which to run the script (e.g., global, x_myapp)
+        /// Scope in which to run the script (global, a scope name, or a scope sys_id)
         #[arg(long, default_value = "global")]
         scope: String,
 

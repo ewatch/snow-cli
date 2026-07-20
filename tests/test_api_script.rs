@@ -9,7 +9,7 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
-use wiremock::matchers::{body_string_contains, header, method, path};
+use wiremock::matchers::{body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Create a temp config file for api_key auth.
@@ -330,6 +330,19 @@ async fn test_script_run_with_custom_scope() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_scope"))
+        .and(query_param("sysparm_query", "scope=x_myapp"))
+        .and(query_param("sysparm_fields", "sys_id"))
+        .and(query_param("sysparm_limit", "2"))
+        .and(query_param("sysparm_offset", "0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "842da4135c5748b288874edfa209f7de"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
         .and(path("/sys.scripts.modern.do"))
         .respond_with(
             ResponseTemplate::new(200)
@@ -344,7 +357,9 @@ async fn test_script_run_with_custom_scope() {
         .and(path("/sys.scripts.do"))
         .and(header("Cookie", "JSESSIONID=scope-session"))
         .and(header("X-UserToken", "scope-gck"))
-        .and(body_string_contains("sys_scope=x_myapp"))
+        .and(body_string_contains(
+            "sys_scope=842da4135c5748b288874edfa209f7de",
+        ))
         .and(body_string_contains("sysparm_ck=scope-gck"))
         .respond_with(
             ResponseTemplate::new(200).set_body_string("<HTML><BODY>scoped</BODY></HTML>"),
