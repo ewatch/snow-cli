@@ -46,6 +46,7 @@ const metaDescription =
 <meta property="og:title" content={pageTitle} />
 <meta property="og:description" content={metaDescription} />
 <link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
+<link rel="stylesheet" href={withBase('/pagefind/pagefind-ui.css')} />
 <style is:global>
   :root {
     --ink: #edf6f0;
@@ -136,6 +137,23 @@ const metaDescription =
     align-items: start;
     padding: 44px 0 90px;
   }
+
+  /* ---------- Sidebar search (Pagefind) ---------- */
+  .sidebar-search {
+    --pagefind-ui-scale: .8;
+    --pagefind-ui-primary: var(--signal);
+    --pagefind-ui-text: var(--ink);
+    --pagefind-ui-background: var(--paper-raised);
+    --pagefind-ui-border: var(--line-bright);
+    --pagefind-ui-tag: var(--paper-soft);
+    --pagefind-ui-border-width: 1px;
+    --pagefind-ui-border-radius: 8px;
+    --pagefind-ui-font: var(--sans);
+    margin-bottom: 26px;
+  }
+  .sidebar-search .pagefind-ui__search-input { font-family: var(--mono); font-size: 13px; }
+  .sidebar-search .pagefind-ui__result-title a { color: var(--cyan); }
+  .sidebar-search .pagefind-ui__result-link { color: var(--cyan); }
 
   /* ---------- Sidebar ---------- */
   .sidebar {
@@ -386,6 +404,7 @@ const metaDescription =
 
 <div class="wrap shell">
   <aside class="sidebar" id="sidebar" aria-label="Documentation navigation">
+    <div class="sidebar-search" id="docs-search" data-pagefind-ignore></div>
     {sidebar.map((group) => (
       <div class="side-group">
         <h2>{group.label}</h2>
@@ -410,7 +429,7 @@ const metaDescription =
   </aside>
 
   <main class="doc">
-    <article class="prose">
+    <article class="prose" data-pagefind-body>
       <slot />
     </article>
     {(prev || next) && (
@@ -461,6 +480,23 @@ const metaDescription =
   toggle?.addEventListener('click', () => {
     const open = document.body.classList.toggle('nav-open');
     toggle.setAttribute('aria-expanded', String(open));
+  });
+</script>
+
+<script src={withBase('/pagefind/pagefind-ui.js')} is:inline></script>
+<script define:vars={{ bundlePath: withBase('/pagefind/') }}>
+  // Pagefind assets are generated at build time (npm run build → postbuild),
+  // so search is inert under `astro dev` and active in preview/production.
+  window.addEventListener('DOMContentLoaded', () => {
+    if (typeof PagefindUI === 'undefined') return;
+    new PagefindUI({
+      element: '#docs-search',
+      bundlePath,
+      showSubResults: true,
+      showImages: false,
+      resetStyles: false,
+      translations: { placeholder: 'Search the docs' },
+    });
   });
 </script>
 
