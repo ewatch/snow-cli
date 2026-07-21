@@ -19,7 +19,6 @@
   </defs>
   <rect width="1200" height="630" fill="url(#background)"/>
   <rect width="1200" height="630" fill="url(#grid)"/>
-  <circle cx="600" cy="315" r="260" fill="#79d5d0" fill-opacity=".07"/>
   <g transform="translate(366 224)">
     <rect x="0" y="0" width="112" height="112" rx="22" fill="#193522" stroke="#9ee493" stroke-width="3"/>
     <text x="56" y="74" text-anchor="middle" fill="#9ee493" font-family="Menlo" font-size="44" font-weight="700">&gt;_</text>
