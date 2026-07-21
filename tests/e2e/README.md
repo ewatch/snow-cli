@@ -201,15 +201,18 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
   `docs/guides/releasing.md` step 3 (turning successful E2E artifacts into doc
   examples) still needs a human/agent pass to strip anything sensitive before
   publishing.
-- **`sn-utils-bridge` scenarios now have a real harness, but session capture
-  is unverified.** `SNOW_E2E_SN_UTILS=1` starts `scripts/e2e-snu-harness`
-  (Node + Playwright, npm-installed on demand — untouched otherwise), which
-  downloads the real SN-Utils extension from the Chrome Web Store, loads it
-  in headless Chromium, logs into `SNOW_E2E_INSTANCE_URL` with
-  `SNOW_E2E_USERNAME`/`PASSWORD` (standard ServiceNow basic-auth login form;
-  SSO instances unsupported), and opens its ScriptSync helper tab — enough
-  by itself to make `snu broker status` report `browser_connected: true`.
-  Known limits:
+- **`sn-utils-bridge` scenarios now have a real harness, confirmed against a
+  live PDI on 2026-07-17.** `SNOW_E2E_SN_UTILS=1` starts
+  `scripts/e2e-snu-harness` (Node + Playwright, npm-installed on demand —
+  untouched otherwise), which downloads the real SN-Utils extension from the
+  Chrome Web Store, loads it in headless Chromium, logs into
+  `SNOW_E2E_INSTANCE_URL` with `SNOW_E2E_USERNAME`/`PASSWORD` (standard
+  ServiceNow basic-auth login form; SSO instances unsupported), opens its
+  ScriptSync helper tab, triggers `/token` via the page's own
+  `window.snuSlashCommandShow('/token', true)`, and approves the resulting
+  one-time per-instance connection prompt in the ScriptSync tab
+  (`#instanceallow`). `snow-cli snu query incident` against the resulting
+  session returned real records end to end. Known limits:
   - The harness runs against a **dedicated isolated broker**
     (`127.0.0.1:19178`/`19179`, via the `SNOW_CLI_SNU_WS_ADDR`/
     `SNOW_CLI_SNU_BROKER_ADDR` env overrides), never the real default
@@ -222,18 +225,15 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
     patch matches on exact literal strings; if SN-Utils ships an update that
     changes them, the harness fails loudly (not silently unpatched) and the
     patch in `scripts/e2e-snu-harness/harness.js` needs updating.
-  - **SN-Utils' `/token` in-page session-capture command is triggered
-    best-effort and UNVERIFIED.** No specific trigger element was found in
-    the extension's source (only a hint of a "slash-popup" command-palette
-    concept in `sidekick.js`), so the harness sends it the same keystrokes a
-    human would type (`/`, `token`, Enter) into the logged-in ServiceNow tab
-    rather than guessing at a DOM selector — but this has never been
-    confirmed to actually land against a real instance. It reports
-    `token_capture: "attempted"` either way; if the trigger sequence is
-    wrong, session-dependent `snu` scenarios (`query`, `get-record`, etc.)
-    still fail cleanly on their own `/token` wait timeout —
-    bridge-connectivity-only scenarios (e.g. `snu broker status`) work end
-    to end regardless. First live PDI run should confirm or fix this.
+  - The connection-approval prompt is per-instance but the harness always
+    starts from a fresh browser profile, so it reappears (and gets
+    auto-approved) every run — this is expected, not a bug.
+  - `token_capture` in the harness's ready signal is `"attempted+approved"`
+    on the confirmed-working path; `"attempted (no approval prompt seen)"`
+    or `"failed"` indicate `snuSlashCommandShow` wasn't found in time
+    (`window.snusettings`/`window.snuSlashCommandShow` load asynchronously
+    after login — the harness waits up to 15s) or SN-Utils' own internals
+    changed since 2026-07-17.
 - **No parallelism.** Scenarios run sequentially in one isolated config; two
   concurrent `scripts/e2e-run` invocations would race on the same
   `e2e-scenario` profile name if pointed at the same real instance, and (with

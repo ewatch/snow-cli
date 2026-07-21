@@ -3,6 +3,8 @@ use std::io::IsTerminal;
 use crate::cli::args::{OutputFormat, ScriptArgs, ScriptCommands};
 use crate::cli::io::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::cli::output;
+use crate::client::pagination::PaginationConfig;
+use crate::models::identifiers::TableName;
 
 const FORM_SCRIPT_ENDPOINT: &str = "/sys.scripts.do";
 
@@ -99,10 +101,15 @@ async fn execute_background_script(
 
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
     let requires_form_session = endpoint_requires_form_session(&options.endpoint);
+    let scope = if requires_form_session {
+        resolve_form_scope(&mut client, &options.scope).await?
+    } else {
+        options.scope.clone()
+    };
     if requires_form_session {
         eprintln!(
             "Using ServiceNow background script endpoint: {} (scope={})",
-            options.endpoint, options.scope
+            options.endpoint, scope
         );
     }
 
@@ -110,7 +117,7 @@ async fn execute_background_script(
         .execute_background_script(
             &options.endpoint,
             script,
-            &options.scope,
+            &scope,
             crate::client::BackgroundScriptOptions {
                 rollback: options.rollback,
                 sandbox: options.sandbox,
@@ -153,6 +160,44 @@ async fn execute_background_script(
     tracing::debug!(body_len = response_body.len(), "Script execution response");
 
     Ok(response_body)
+}
+
+/// Convert a human-readable scope name to the sys_id expected by the Script
+/// Background form. The global option is the sole form value that is not a sys_id.
+async fn resolve_form_scope(
+    client: &mut crate::client::SnowClient,
+    scope: &str,
+) -> anyhow::Result<String> {
+    if scope == "global" || is_sys_id(scope) {
+        return Ok(scope.to_string());
+    }
+
+    let sys_scope = TableName::from_static("sys_scope");
+    let pagination = PaginationConfig::default().with_limit(Some(2));
+    let records = client
+        .get_table_records(
+            &sys_scope,
+            Some(&format!("scope={scope}")),
+            Some("sys_id"),
+            &pagination,
+            None,
+        )
+        .await?;
+
+    match records.as_slice() {
+        [] => anyhow::bail!(
+            "Scope '{scope}' was not found in sys_scope. Pass 'global', a scope name, or a scope sys_id."
+        ),
+        [record] => record
+            .sys_id()
+            .map(ToString::to_string)
+            .ok_or_else(|| anyhow::anyhow!("Scope '{scope}' did not return a sys_id")),
+        _ => anyhow::bail!("Scope '{scope}' matched multiple sys_scope records"),
+    }
+}
+
+fn is_sys_id(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 async fn handle_run(
@@ -429,6 +474,13 @@ mod tests {
         let raw = "<HTML><BODY>Script output</BODY></HTML>";
         let clean = sanitize_background_script_response(raw);
         assert_eq!(clean, "Script output");
+    }
+
+    #[test]
+    fn test_is_sys_id() {
+        assert!(is_sys_id("842da4135c5748b288874edfa209f7de"));
+        assert!(!is_sys_id("x_2135095_au_demo"));
+        assert!(!is_sys_id("not-a-sys-id"));
     }
 
     #[test]

@@ -23,18 +23,25 @@
 //      `snow-cli snu broker status` report browser_connected: true.
 //   5. Logs into SNOW_E2E_INSTANCE_URL with SNOW_E2E_USERNAME/PASSWORD via
 //      ServiceNow's standard basic-auth login form.
-//   6. Attempts to trigger SN-Utils' in-page `/token` session-capture
-//      command by sending it synthetic keystrokes ("/", "token", Enter) in
-//      the logged-in tab — the same input a human would type. The exact
-//      trigger element/selector was never reverse-engineered (SN-Utils'
-//      own source only hints at a "slash-popup" command-palette concept in
-//      sidekick.js), so this is a best-effort attempt, not a verified
-//      integration: it's UNTESTED against a real instance (see
-//      tests/e2e/README.md). It reports `token_capture: "attempted"` in
-//      its ready signal either way; session-dependent scenarios still fall
-//      back to their own `/token`-wait timeout if this doesn't land.
-//   7. Writes a ready-signal JSON file and blocks until SIGTERM/SIGINT, at
+//   6. Triggers SN-Utils' in-page `/token` session-capture command by calling
+//      its own `window.snuSlashCommandShow('/token', true)` entry point
+//      directly (the same function the Ctrl+//Alt+/ palette shortcut calls
+//      into) rather than simulating keystrokes, which didn't reliably land
+//      on the right frame in ServiceNow's Next Experience shell even with
+//      every documented precondition satisfied.
+//   7. Approves the resulting one-time per-instance connection prompt in the
+//      ScriptSync tab (`#instanceapprovediv` / `#instanceallow` — see
+//      scriptsync.js): the tab does not forward anything over the
+//      WebSocket, including /token, until that prompt is accepted. Since
+//      this harness always starts from a fresh browser profile, the prompt
+//      appears every run.
+//   8. Writes a ready-signal JSON file and blocks until SIGTERM/SIGINT, at
 //      which point it closes the browser and exits.
+//
+// Steps 6-7 were confirmed end to end against a real PDI on 2026-07-17:
+// `snow-cli snu query incident` returned real records through the resulting
+// browser session. `token_capture` in the ready signal is
+// "attempted+approved" on success.
 
 const { chromium } = require("playwright");
 const fs = require("fs");
@@ -184,21 +191,87 @@ async function openScriptSyncTab(context, extensionId, wsPort) {
   await page.goto(helperUrl);
   // scriptsync.js connects on DOMContentLoaded and retries every 1s.
   await page.waitForTimeout(3000);
+  return page;
 }
 
-/// Best-effort, UNVERIFIED attempt to trigger SN-Utils' in-page `/token`
-/// session-capture command by sending it the same keystrokes a human would
-/// type, rather than guessing at a specific DOM selector (none was found in
-/// the extension's source — see the file header). Synthetic keyboard input
-/// into the page is low-risk (no destructive server-side action), but has
-/// never been confirmed to actually land against a real ServiceNow tab.
+/// The first time an instance pushes anything (including /token) over the
+/// bridge, the ScriptSync tab shows a one-time per-instance approval prompt
+/// (`#instanceapprovediv`, with `#instanceallow`/`#instanceblock` buttons —
+/// see scriptsync.js) and does NOT forward the push over the WebSocket until
+/// `#instanceallow` is clicked. Without this, /token can fire correctly on
+/// the ServiceNow side and still never reach the broker. Since this harness
+/// always starts from a fresh browser profile, this prompt appears every run.
+async function approveScriptSyncInstance(scriptSyncPage, timeoutMs = 15_000) {
+  try {
+    await scriptSyncPage.locator("#instanceapprovediv").waitFor({ state: "visible", timeout: timeoutMs });
+    log("ScriptSync tab is prompting for instance approval — clicking Allow");
+    await scriptSyncPage.click("#instanceallow");
+    return true;
+  } catch (err) {
+    log(`WARNING: no ScriptSync instance-approval prompt appeared within ${timeoutMs}ms: ${err.message}`);
+    return false;
+  }
+}
+
+/// Triggers SN-Utils' in-page `/token` session-capture command — see the
+/// `/token` entry at https://snutils.com/docs/guide/slash-commands/cheatsheet:
+/// "Send the g_ck (CSRF) token to VS Code for Script Sync authentication".
+/// Normally a user opens the slash palette via Ctrl+/ (Mac) / Alt+/
+/// (Windows/Linux, https://snutils.com/docs/guide/slash-commands/getting-started),
+/// types "token", and presses Enter. This calls the page's own
+/// `snuSlashCommandShow('/token', true)` entry point directly instead —
+/// that's what the shortcut itself calls into — since simulated CDP key
+/// events didn't reliably land on the right frame in this Next Experience
+/// shell (see harness.js history / tests/e2e/README.md).
 async function attemptTokenCapture(page) {
+  const debugDir = process.env.SNU_HARNESS_DEBUG_DIR;
   try {
     await page.bringToFront();
-    await page.keyboard.press("/");
-    await page.keyboard.type("token", { delay: 50 });
-    await page.keyboard.press("Enter");
-    log("sent /token keystrokes to the ServiceNow tab (unverified trigger — see harness.js header)");
+    // window.snuSlashCommandShow is set up asynchronously after inject.js
+    // loads (chrome.storage-backed settings, etc.) — checking for it
+    // immediately after login is a race that sometimes loses.
+    await page
+      .waitForFunction(() => typeof window.snuSlashCommandShow === "function", {
+        timeout: 15_000,
+      })
+      .catch(() => {});
+    if (debugDir) {
+      await page.screenshot({ path: path.join(debugDir, "before-token.png") }).catch(() => {});
+      const diag = await page.evaluate(() => ({
+        pathname: location.pathname,
+        hasSnusettings: typeof window.snusettings !== "undefined",
+        slashoption: window.snusettings?.slashoption,
+        hasSlashShow: typeof window.snuSlashCommandShow === "function",
+        snuPopupExists: !!document.querySelector("div.snutils"),
+        hasGck: typeof window.g_ck !== "undefined" && !!window.g_ck,
+        activeElementTag: document.activeElement?.tagName,
+      }));
+      fs.writeFileSync(path.join(debugDir, "diag-before.json"), JSON.stringify(diag, null, 2));
+      log(`diagnostic: ${JSON.stringify(diag)}`);
+    }
+    // Call the page's own slash-command entry point directly rather than
+    // simulating the Ctrl+//Alt+/ keyboard shortcut: in this Next Experience
+    // shell, synthetic CDP key events sent to page.keyboard did not
+    // reliably land on whichever frame currently holds real input focus,
+    // so nothing visibly happened even though every precondition
+    // (slashoption on, snuSlashCommandShow defined, g_ck present) checked
+    // out. snuSlashCommandShow(cmd, autoRun=true) is what that shortcut
+    // itself calls into — it sets the command and dispatches its own
+    // internal Enter, sidestepping focus/iframe ambiguity entirely.
+    const invoked = await page.evaluate(() => {
+      if (typeof window.snuSlashCommandShow !== "function") return false;
+      window.snuSlashCommandShow("/token", true);
+      return true;
+    });
+    await page.waitForTimeout(1500);
+    if (debugDir) {
+      await page.screenshot({ path: path.join(debugDir, "after-token.png") }).catch(() => {});
+    }
+    if (!invoked) {
+      log("WARNING: window.snuSlashCommandShow was not found on the page");
+      return "failed";
+    }
+    log("invoked window.snuSlashCommandShow('/token', true) in the ServiceNow tab");
     return "attempted";
   } catch (err) {
     log(`WARNING: /token keystroke attempt failed: ${err.message}`);
@@ -222,13 +295,17 @@ async function main() {
 
   // Open the bridge before logging in: /token's push has nowhere to go if
   // the helper tab isn't connected yet.
-  await openScriptSyncTab(context, extensionId, wsPort);
+  const scriptSyncPage = await openScriptSyncTab(context, extensionId, wsPort);
 
   let loginOk = true;
   let tokenCapture = "skipped (login failed)";
   try {
     const snPage = await loginToServiceNow(context, instanceUrl, username, password);
     tokenCapture = await attemptTokenCapture(snPage);
+    if (tokenCapture === "attempted") {
+      const approved = await approveScriptSyncInstance(scriptSyncPage);
+      tokenCapture = approved ? "attempted+approved" : "attempted (no approval prompt seen)";
+    }
   } catch (err) {
     loginOk = false;
     log(`WARNING: ServiceNow login failed, continuing bridge-only: ${err.message}`);
