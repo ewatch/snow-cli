@@ -9,7 +9,7 @@ args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL"
 [[setup]]
 description = "Create a record to attach to via the browser session"
 args = ["snu", "create-record", "incident", "--data", "{\"short_description\":\"snow-cli e2e scenario: snu-attachment-upload\"}", "--profile", "e2e-scenario", "--output", "json"]
-capture = { sys_id = ".sys_id" }
+capture = { sys_id = ".sys_id | select(type == \"string\" and test(\"^[0-9a-f]{32}$\"))" }
 
 [[setup]]
 description = "Create a small PNG fixture file to upload"
@@ -21,9 +21,19 @@ args = ["snu", "attachment-upload", "incident", "{{sys_id}}", "--file", "{{file_
 
 [expect]
 exit_code = 0
-
-[[fuzzy]]
-expectation = "The fixture is attached to the incident via the browser session; the response references the uploaded file name and the record's sys_id."
+json_field_present = [
+  ".action == \"uploadAttachmentResponse\"",
+  ".success == true",
+  ".tableName == \"incident\"",
+  ".recordSysId | type == \"string\" and test(\"^[0-9a-f]{32}$\")",
+  ".fileName | type == \"string\" and endswith(\".png\")",
+  ".attachment.sys_id | type == \"string\" and test(\"^[0-9a-f]{32}$\")",
+  ".attachment.table_name == .tableName",
+  ".attachment.table_sys_id == .recordSysId",
+  ".attachment.file_name == .fileName",
+  ".attachment.content_type == \"image/png\"",
+  ".attachment.size_bytes | tonumber > 0",
+]
 
 [[cleanup]]
 description = "Delete the record via the browser session (cascades to attachments)"

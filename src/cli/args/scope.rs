@@ -40,12 +40,22 @@ pub enum ScopeCommands {
         /// Detail level for output payload
         #[arg(long, value_enum, default_value = "basic")]
         details: ScopeDetailLevel,
+
+        /// Cap the records enumerated per table when `--details full` lists
+        /// artifacts. Required for platform-scale scopes such as `global`.
+        #[arg(long)]
+        limit: Option<usize>,
     },
 
     /// Export normalized scope artifacts for analysis
     Inventory {
         /// Scope name (e.g., x_my_app) or scope sys_id
         scope: EncodedQueryValue,
+
+        /// Cap the records enumerated per table. Required for platform-scale
+        /// scopes such as `global` to avoid downloading the whole instance.
+        #[arg(long)]
+        limit: Option<usize>,
     },
 
     /// Move one application file to a different custom scope without changing sys_id
@@ -109,9 +119,14 @@ mod tests {
 
         match cli.command {
             Commands::Scope(args) => match args.command {
-                ScopeCommands::Inspect { scope, details } => {
+                ScopeCommands::Inspect {
+                    scope,
+                    details,
+                    limit,
+                } => {
                     assert_eq!(scope.as_str(), "x_my_app");
                     assert!(matches!(details, ScopeDetailLevel::Basic));
+                    assert_eq!(limit, None);
                 }
                 _ => panic!("Expected Scope Inspect command"),
             },
@@ -208,8 +223,9 @@ mod tests {
 
         match cli.command {
             Commands::Scope(args) => match args.command {
-                ScopeCommands::Inventory { scope } => {
+                ScopeCommands::Inventory { scope, limit } => {
                     assert_eq!(scope.as_str(), "x_my_app");
+                    assert_eq!(limit, None);
                 }
                 _ => panic!("Expected Scope Inventory command"),
             },

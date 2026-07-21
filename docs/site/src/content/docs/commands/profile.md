@@ -18,7 +18,6 @@ A profile can contain:
 - the auth method,
 - the username for basic auth or OAuth password grant,
 - OAuth client settings,
-- mTLS certificate paths,
 - browser-session / SSO entry-point metadata.
 
 The same config file also stores global settings such as the default profile and the default stdout format. Secrets are stored separately in the OS keychain.
@@ -34,7 +33,7 @@ snow-cli profile add <name> [options]
 Important options:
 
 - `--instance <url>`: instance URL such as `https://dev.service-now.com`
-- `--auth-method <basic|oauth2|api-key|mtls|browser-session>` (`saml` is accepted as a legacy alias)
+- `--auth-method <basic|oauth2|api-key|browser-session>` (`saml` is accepted as a legacy alias)
 - `--username <user>`: used for basic auth or OAuth password grant
 - `--client-id <id>`: required for OAuth2 profiles
 - `--oauth-grant-type <client-credentials|password|authorization-code>`
@@ -42,7 +41,6 @@ Important options:
 - `--oauth-redirect-host <host>`
 - `--oauth-redirect-port <port>`
 - `--oauth-redirect-path <path>`
-- `--cert-path <path>` and `--key-path <path>`: metadata for future mTLS support
 - `--sso-login-url <url>`: browser entry point for SSO/SAML login
 
 Examples:
@@ -71,7 +69,6 @@ Notes:
 - When you create the first profile, `snow-cli` makes it the default automatically.
 - If the profile already exists, use `profile edit` instead.
 - For authorization-code OAuth2, see the dedicated [PKCE guide](/oauth-authorization-code-pkce/).
-- `mtls` profile metadata is accepted, but the mTLS authenticator is not implemented yet.
 
 ## `profile edit <name>`
 

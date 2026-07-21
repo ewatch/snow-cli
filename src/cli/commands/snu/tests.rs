@@ -141,6 +141,63 @@ fn query_string_encodes_fields_and_query() {
 }
 
 #[test]
+fn create_record_result_normalizes_new_record_response() {
+    let response = SnuMessage::from_value(json!({
+        "action": "createRecordResponse",
+        "agentRequestId": "create-1",
+        "success": true,
+        "newRecord": {
+            "sys_id": "0123456789abcdef0123456789abcdef",
+            "short_description": "created through SN-Utils"
+        }
+    }))
+    .unwrap();
+
+    let result = build_create_record_result("incident", &response).unwrap();
+
+    assert_eq!(result["success"], true);
+    assert_eq!(result["table"], "incident");
+    assert_eq!(result["sys_id"], "0123456789abcdef0123456789abcdef");
+    assert_eq!(
+        result["record"],
+        json!({
+            "sys_id": "0123456789abcdef0123456789abcdef",
+            "short_description": "created through SN-Utils"
+        })
+    );
+}
+
+#[test]
+fn create_record_result_rejects_failed_response() {
+    let response = SnuMessage::from_value(json!({
+        "action": "createRecordResponse",
+        "agentRequestId": "create-1",
+        "success": false,
+        "error": "insert denied"
+    }))
+    .unwrap();
+
+    let error = build_create_record_result("incident", &response).unwrap_err();
+
+    assert!(error.to_string().contains("insert denied"));
+}
+
+#[test]
+fn create_record_result_rejects_record_without_sys_id() {
+    let response = SnuMessage::from_value(json!({
+        "action": "createRecordResponse",
+        "agentRequestId": "create-1",
+        "success": true,
+        "newRecord": {"short_description": "missing identifier"}
+    }))
+    .unwrap();
+
+    let error = build_create_record_result("incident", &response).unwrap_err();
+
+    assert!(error.to_string().contains("did not contain a sys_id"));
+}
+
+#[test]
 fn resolve_script_from_code_takes_precedence() {
     let script = resolve_script_from(
         Some("file.js".into()),

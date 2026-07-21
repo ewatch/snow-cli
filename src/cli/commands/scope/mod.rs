@@ -45,11 +45,24 @@ pub async fn handle(
             )
             .await
         }
-        ScopeCommands::Inspect { scope, details } => {
-            handle_inspect(profile, format, instance, timeout_secs, &scope, details).await
+        ScopeCommands::Inspect {
+            scope,
+            details,
+            limit,
+        } => {
+            handle_inspect(
+                profile,
+                format,
+                instance,
+                timeout_secs,
+                &scope,
+                details,
+                limit,
+            )
+            .await
         }
-        ScopeCommands::Inventory { scope } => {
-            handle_inventory(profile, format, instance, timeout_secs, &scope).await
+        ScopeCommands::Inventory { scope, limit } => {
+            handle_inventory(profile, format, instance, timeout_secs, &scope, limit).await
         }
         ScopeCommands::MoveFile {
             table,

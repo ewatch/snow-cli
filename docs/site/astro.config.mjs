@@ -1,10 +1,13 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 
-// Deployment base path. For a GitHub Pages project site set this to '/snow-cli/'
-// (and site to 'https://ewatch.github.io'); internal markdown links are
-// rewritten to match via the rehype plugin below.
-const SITE_BASE = '/';
+// Deployment base path. GitHub Pages serves this project repo at
+// https://ewatch.github.io/snow-cli/, so production builds must use the
+// '/snow-cli/' base — set via BASE_PATH in .github/workflows/pages.yml.
+// Local `astro dev`/`astro build` default to '/' so the landing page is served
+// at the root during development. Internal markdown links are rewritten to
+// match the base via the rehype plugin below.
+const SITE_BASE = process.env.BASE_PATH || '/';
 
 function rehypeBaseLinks() {
   const prefix = SITE_BASE.replace(/\/$/, '');

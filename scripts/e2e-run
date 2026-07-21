@@ -18,6 +18,16 @@ usage() {
     'Environment:' \
     '  SNOW_E2E_INSTANCE_URL, SNOW_E2E_USERNAME, SNOW_E2E_PASSWORD' \
     '      Unlock scenarios tagged requires = ["credentials"].' \
+    '  SNOW_E2E_INSTANCE_FIXTURES=1' \
+    '      Unlock scenarios tagged requires = ["instance-fixtures"]: ones that' \
+    '      need instance-specific provisioning no generic PDI has and that the' \
+    '      suite cannot self-provision (a custom application scope with a movable' \
+    '      application file, for scope/move-file). Set only after provisioning' \
+    '      those and filling in the scenario placeholders; otherwise these are' \
+    '      SKIPPED, not failed.' \
+    '  SNOW_E2E_INCLUDE_UNIMPLEMENTED=1' \
+    '      Force-run scenarios tagged requires = ["unimplemented"] (placeholders' \
+    '      for hidden, not-yet-implemented commands). Skipped by default.' \
     '  SNOW_E2E_SN_UTILS=1' \
     '      Unlock scenarios tagged requires = ["sn-utils-bridge"]. Also starts' \
     '      a headless-browser SN-Utils bridge harness (scripts/e2e-snu-harness,' \
@@ -32,6 +42,8 @@ usage() {
     '      built automatically if missing).' \
     '  SNOW_E2E_HARNESS, SNOW_E2E_MODEL' \
     '      Recorded in each result for provenance (default: this script name).' \
+    '  SNOW_E2E_ARTIFACTS_DIR' \
+    '      Override the exact artifact output directory (primarily for tests).' \
     '' \
     'Every run gets an isolated SNOW_CLI_CONFIG (a fresh temp file), so' \
     'scenarios never touch your real profiles or OS keychain entries under' \
@@ -63,7 +75,7 @@ harness=${SNOW_E2E_HARNESS:-"scripts/e2e-run"}
 model=${SNOW_E2E_MODEL:-"n/a (deterministic runner)"}
 
 version=$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' Cargo.toml)
-artifacts_dir="$repo_root/artifacts/e2e/$version"
+artifacts_dir=${SNOW_E2E_ARTIFACTS_DIR:-"$repo_root/artifacts/e2e/$version"}
 mkdir -p "$artifacts_dir"
 
 # Isolate every run from the caller's real profiles/keychain entries. Scratch
@@ -83,14 +95,18 @@ snu_harness_broker_addr="127.0.0.1:19179"
 snu_harness_pid=""
 
 cleanup() {
+  local exit_status=$?
+  trap - EXIT
+  set +e
   if [[ -n $snu_harness_pid ]] && kill -0 "$snu_harness_pid" 2>/dev/null; then
     kill -TERM "$snu_harness_pid" 2>/dev/null
-    wait "$snu_harness_pid" 2>/dev/null
+    wait "$snu_harness_pid" 2>/dev/null || true
   fi
   if [[ ${SNOW_E2E_SN_UTILS:-0} == "1" ]]; then
     SNOW_CLI_SNU_BROKER_ADDR=$snu_harness_broker_addr "$SNOW_CLI_BIN" snu broker stop >/dev/null 2>&1 || true
   fi
   rm -rf "$scratch_dir"
+  return "$exit_status"
 }
 trap cleanup EXIT
 
@@ -137,7 +153,19 @@ if [[ ${SNOW_E2E_SN_UTILS:-0} == "1" ]]; then
     fi
     sleep 0.5
   done
-  echo "SN-Utils bridge harness ready: $(cat "$snu_ready_file")" >&2
+  snu_ready_json=$(cat "$snu_ready_file")
+  if ! jq -e '
+      .ready == true
+      and .login_ok == true
+      and .token_capture == "attempted+approved"
+    ' >/dev/null <<<"$snu_ready_json"; then
+    echo "SN-Utils bridge harness did not establish an approved authenticated session." >&2
+    echo "Ready signal: $(jq -c '{ready, login_ok, token_capture}' <<<"$snu_ready_json")" >&2
+    echo "Harness log:" >&2
+    cat "$scratch_dir/snu-harness.log" >&2
+    exit 2
+  fi
+  echo "SN-Utils bridge harness ready: $snu_ready_json" >&2
 fi
 
 # Collect scenario files from the given paths (files or directories),
@@ -164,6 +192,28 @@ if [[ ${#scenario_files[@]} -eq 0 ]]; then
   exit 2
 fi
 
+# A destructive scenario invalidates the browser session shared by the SN-Utils
+# harness. Stable-partition those scenarios to the end so no later scenario can
+# depend on a session that clear/stop removed. Relative order remains exactly as
+# selected (sorted path order for directories, caller order for explicit files).
+shared_session_files=()
+session_destructive_files=()
+for file in "${scenario_files[@]}"; do
+  scenario_json=$(python3 "$lib" parse "$file")
+  if jq -e '.session_destructive == true' >/dev/null <<<"$scenario_json"; then
+    session_destructive_files+=("$file")
+  else
+    shared_session_files+=("$file")
+  fi
+done
+scenario_files=()
+for file in ${shared_session_files[@]+"${shared_session_files[@]}"}; do
+  scenario_files+=("$file")
+done
+for file in ${session_destructive_files[@]+"${session_destructive_files[@]}"}; do
+  scenario_files+=("$file")
+done
+
 # The HTTP Basic auth token (base64 of "user:pass") can surface in verbose
 # output (e.g. an Authorization header echo), so redact it alongside the raw
 # credential values. Empty when creds are unset, in which case redact is a
@@ -173,31 +223,72 @@ if [[ -n ${SNOW_E2E_USERNAME:-} && -n ${SNOW_E2E_PASSWORD:-} ]]; then
   basic_auth_token=$(printf '%s:%s' "$SNOW_E2E_USERNAME" "$SNOW_E2E_PASSWORD" | base64 | tr -d '\n')
 fi
 
-# Redact known secrets (literal substring match, not regex) from captured
-# stdout/stderr text before it is written to disk. Best-effort — see the
-# README's "known gaps" section.
-sanitize() {
-  local text=$1
-  jq -Rnr \
-    --arg t "$text" --arg pw "${SNOW_E2E_PASSWORD:-}" \
-    --arg un "${SNOW_E2E_USERNAME:-}" --arg url "${SNOW_E2E_INSTANCE_URL:-}" \
-    --arg basic "$basic_auth_token" \
+# Sanitize one complete result document at a time. Sensitive values discovered
+# under structured token/cookie keys, including JSON encoded inside stdout or
+# stderr strings, are redacted everywhere else in the document too. The text
+# fallback covers common key/value and header forms when output is not JSON.
+sanitize_artifact_json() {
+  local artifact_json=$1
+  jq \
+    --arg pw "${SNOW_E2E_PASSWORD:-}" --arg un "${SNOW_E2E_USERNAME:-}" \
+    --arg url "${SNOW_E2E_INSTANCE_URL:-}" --arg basic "$basic_auth_token" \
     '
-    def redact($s; $needle): if $needle != "" then ($s | split($needle) | join("[REDACTED]")) else $s end;
-    $t | redact(.; $pw) | redact(.; $un) | redact(.; $url) | redact(.; $basic)
-    '
+    def sensitive_key:
+      ascii_downcase | gsub("[^a-z0-9]"; "") as $key
+      | ($key == "gck" or $key == "sysparmck" or ($key | endswith("token"))
+        or $key == "jsessionid" or $key == "sessionid"
+        or $key == "authorization" or $key == "proxyauthorization"
+        or $key == "cookie" or $key == "cookies" or $key == "setcookie"
+        or $key == "sessioncookie");
+    def documents:
+      .,
+      ((.. | strings | (try fromjson catch empty))
+        | select(type == "object" or type == "array") | documents);
+    def discovered_secrets:
+      [documents | .. | objects | to_entries[]
+        | select(.key | sensitive_key) | .value | .. | strings
+        | select(length > 0 and . != "[REDACTED]")] | unique;
+    def replace_literals($secrets):
+      reduce $secrets[] as $secret (.;
+        if $secret == "" then . else split($secret) | join("[REDACTED]") end);
+    def redact_labeled_text:
+      gsub(
+        "(?im)(?<prefix>^(?:authorization|proxy-authorization|cookie|set-cookie)[[:space:]]*:[[:space:]]*)[^\\r\\n]*";
+        "${prefix}[REDACTED]"
+      )
+      | gsub(
+          "(?i)(?<prefix>(?:g[_-]?ck|sysparm[_-]?ck|session[ _-]?token|x?[ _-]?user[ _-]?token|csrf[ _-]?token|xsrf[ _-]?token|j[ _-]?session[ _-]?id|session[ _-]?cookie|set[ _-]?cookie|cookies?)[^:=]{0,3}[:=][[:space:]]*\\\"?)[^\\\"[:space:],;&}\\\\]+";
+          "${prefix}[REDACTED]"
+        );
+    def scrub($secrets):
+      if type == "object" then
+        with_entries(
+          if (.key | sensitive_key) then .value = "[REDACTED]"
+          else .value |= scrub($secrets)
+          end
+        )
+      elif type == "array" then map(scrub($secrets))
+      elif type == "string" then
+        . as $text
+        | (try ($text | fromjson) catch null) as $decoded
+        | if (($decoded | type) == "object" or ($decoded | type) == "array") then
+            $decoded | scrub($secrets) | tojson
+          else
+            $text | replace_literals($secrets) | redact_labeled_text
+          end
+      else .
+      end;
+    ([$pw, $un, $url, $basic] | map(select(length > 0))) as $known_secrets
+    | (discovered_secrets + $known_secrets | unique | sort_by(length) | reverse) as $secrets
+    | scrub($secrets)
+    ' <<<"$artifact_json"
 }
 
-# Same redaction, applied element-wise to a JSON array of argv strings.
-sanitize_argv() {
-  local argv_json=$1
-  jq -c \
-    --arg pw "${SNOW_E2E_PASSWORD:-}" --arg un "${SNOW_E2E_USERNAME:-}" --arg url "${SNOW_E2E_INSTANCE_URL:-}" \
-    --arg basic "$basic_auth_token" \
-    '
-    def redact($s; $needle): if $needle != "" then ($s | split($needle) | join("[REDACTED]")) else $s end;
-    [ .[] | redact(.; $pw) | redact(.; $un) | redact(.; $url) | redact(.; $basic) ]
-    ' <<<"$argv_json"
+sanitize_artifact_text() {
+  local text=$1 wrapped sanitized
+  wrapped=$(jq -n --arg value "$text" '{value: $value}')
+  sanitized=$(sanitize_artifact_json "$wrapped")
+  jq -r '.value' <<<"$sanitized"
 }
 
 # Runs one resolved step (JSON on stdin via $1) and sets STEP_EXIT,
@@ -286,6 +377,19 @@ for file in "${scenario_files[@]}"; do
           skip_reason="sn-utils bridge unavailable (set SNOW_E2E_SN_UTILS=1 to enable)"
         fi
         ;;
+      instance-fixtures)
+        if [[ ${SNOW_E2E_INSTANCE_FIXTURES:-0} != "1" ]]; then
+          skip_reason="instance fixtures not provisioned (set SNOW_E2E_INSTANCE_FIXTURES=1 once a staging table / custom scope exist; see the scenario header)"
+        fi
+        ;;
+      unimplemented)
+        # Placeholder scenarios for commands that are intentionally hidden and
+        # not implemented. Kept in-tree so they can be re-enabled if the command
+        # ships, but SKIPPED by default so they never fail the suite.
+        if [[ ${SNOW_E2E_INCLUDE_UNIMPLEMENTED:-0} != "1" ]]; then
+          skip_reason="command is a hidden, unimplemented placeholder (set SNOW_E2E_INCLUDE_UNIMPLEMENTED=1 to force-run)"
+        fi
+        ;;
       *)
         skip_reason="unknown requirement tag: $r"
         ;;
@@ -296,10 +400,11 @@ for file in "${scenario_files[@]}"; do
   if [[ -n $skip_reason ]]; then
     echo "SKIP: $skip_reason"
     skip_count=$((skip_count + 1))
-    jq -n --arg name "$name" --arg file "$rel_file" --arg reason "$skip_reason" \
+    skipped_result=$(jq -n --arg name "$name" --arg file "$rel_file" --arg reason "$skip_reason" \
       --arg harness "$harness" --arg model "$model" \
       '{name: $name, file: $file, status: "skipped", skip_reason: $reason, harness: $harness, model: $model}' \
-      >>"$artifacts_dir/results.jsonl"
+    )
+    sanitize_artifact_json "$skipped_result" | jq -c . >>"$artifacts_dir/results.jsonl"
     continue
   fi
 
@@ -308,7 +413,12 @@ for file in "${scenario_files[@]}"; do
   setup_failure=""
   setup_count=$(python3 "$lib" step-count "$file" setup)
   for ((i = 0; i < setup_count; i++)); do
-    step=$(python3 "$lib" resolve-step "$file" setup "$i" "$captured_json")
+    resolve_error_file="$scratch_dir/resolve-error.json"
+    if ! step=$(python3 "$lib" resolve-step "$file" setup "$i" "$captured_json" 2>"$resolve_error_file"); then
+      resolve_error=$(jq -r '.error // empty' "$resolve_error_file" 2>/dev/null || true)
+      setup_failure=${resolve_error:-"setup[$i] could not be resolved"}
+      break
+    fi
     run_resolved_step "$step"
     allow_failure=$(jq -r '.allow_failure' <<<"$step")
     if [[ $STEP_EXIT -ne 0 && $allow_failure != "true" ]]; then
@@ -331,69 +441,80 @@ for file in "${scenario_files[@]}"; do
     status="fail"
     failure_reasons+=("$setup_failure")
   else
-    step=$(python3 "$lib" resolve-step "$file" command 0 "$captured_json")
-    cmd_argv=$(jq -c '.argv' <<<"$step")
-    run_resolved_step "$step"
-    command_ran=true
-    cmd_exit=$STEP_EXIT
-    cmd_stdout=$STEP_STDOUT
-    cmd_stderr=$STEP_STDERR
-    captured_json=$(apply_capture "$step" "$captured_json")
+    resolve_error_file="$scratch_dir/resolve-error.json"
+    if step=$(python3 "$lib" resolve-step "$file" command 0 "$captured_json" 2>"$resolve_error_file"); then
+      cmd_argv=$(jq -c '.argv' <<<"$step")
+      run_resolved_step "$step"
+      command_ran=true
+      cmd_exit=$STEP_EXIT
+      cmd_stdout=$STEP_STDOUT
+      cmd_stderr=$STEP_STDERR
+      captured_json=$(apply_capture "$step" "$captured_json")
 
-    expected_exit=$(jq -r '.expect.exit_code // 0' <<<"$scenario_json")
-    exit_ok=true
-    [[ "$cmd_exit" != "$expected_exit" ]] && exit_ok=false && status="fail" && failure_reasons+=("exit code $cmd_exit != $expected_exit")
-    assertions=$(jq -c --argjson exp "$expected_exit" --argjson act "$cmd_exit" --argjson ok "$exit_ok" \
-      '. + {exit_code: {expected: $exp, actual: $act, ok: $ok}}' <<<"$assertions")
+      expected_exit=$(jq -r '.expect.exit_code // 0' <<<"$scenario_json")
+      exit_ok=true
+      [[ "$cmd_exit" != "$expected_exit" ]] && exit_ok=false && status="fail" && failure_reasons+=("exit code $cmd_exit != $expected_exit")
+      assertions=$(jq -c --argjson exp "$expected_exit" --argjson act "$cmd_exit" --argjson ok "$exit_ok" \
+        '. + {exit_code: {expected: $exp, actual: $act, ok: $ok}}' <<<"$assertions")
 
-    stdout_checks="[]"
-    while IFS= read -r needle; do
-      [[ -z $needle ]] && continue
-      if [[ $cmd_stdout == *"$needle"* ]]; then
-        ok=true
-      else
-        ok=false
-        status="fail"
-        failure_reasons+=("stdout missing: $needle")
-      fi
-      stdout_checks=$(jq -c --arg n "$needle" --argjson ok "$ok" '. + [{needle: $n, ok: $ok}]' <<<"$stdout_checks")
-    done < <(jq -r '.expect.stdout_contains[]? // empty' <<<"$scenario_json")
-    assertions=$(jq -c --argjson v "$stdout_checks" '. + {stdout_contains: $v}' <<<"$assertions")
+      stdout_checks="[]"
+      while IFS= read -r needle; do
+        [[ -z $needle ]] && continue
+        if [[ $cmd_stdout == *"$needle"* ]]; then
+          ok=true
+        else
+          ok=false
+          status="fail"
+          failure_reasons+=("stdout missing: $needle")
+        fi
+        stdout_checks=$(jq -c --arg n "$needle" --argjson ok "$ok" '. + [{needle: $n, ok: $ok}]' <<<"$stdout_checks")
+      done < <(jq -r '.expect.stdout_contains[]? // empty' <<<"$scenario_json")
+      assertions=$(jq -c --argjson v "$stdout_checks" '. + {stdout_contains: $v}' <<<"$assertions")
 
-    stderr_checks="[]"
-    while IFS= read -r needle; do
-      [[ -z $needle ]] && continue
-      if [[ $cmd_stderr == *"$needle"* ]]; then
-        ok=true
-      else
-        ok=false
-        status="fail"
-        failure_reasons+=("stderr missing: $needle")
-      fi
-      stderr_checks=$(jq -c --arg n "$needle" --argjson ok "$ok" '. + [{needle: $n, ok: $ok}]' <<<"$stderr_checks")
-    done < <(jq -r '.expect.stderr_contains[]? // empty' <<<"$scenario_json")
-    assertions=$(jq -c --argjson v "$stderr_checks" '. + {stderr_contains: $v}' <<<"$assertions")
+      stderr_checks="[]"
+      while IFS= read -r needle; do
+        [[ -z $needle ]] && continue
+        if [[ $cmd_stderr == *"$needle"* ]]; then
+          ok=true
+        else
+          ok=false
+          status="fail"
+          failure_reasons+=("stderr missing: $needle")
+        fi
+        stderr_checks=$(jq -c --arg n "$needle" --argjson ok "$ok" '. + [{needle: $n, ok: $ok}]' <<<"$stderr_checks")
+      done < <(jq -r '.expect.stderr_contains[]? // empty' <<<"$scenario_json")
+      assertions=$(jq -c --argjson v "$stderr_checks" '. + {stderr_contains: $v}' <<<"$assertions")
 
-    json_checks="[]"
-    while IFS= read -r path_expr; do
-      [[ -z $path_expr ]] && continue
-      if jq -e "$path_expr" >/dev/null 2>&1 <<<"$cmd_stdout"; then
-        ok=true
-      else
-        ok=false
-        status="fail"
-        failure_reasons+=("json field missing: $path_expr")
-      fi
-      json_checks=$(jq -c --arg p "$path_expr" --argjson ok "$ok" '. + [{path: $p, ok: $ok}]' <<<"$json_checks")
-    done < <(jq -r '.expect.json_field_present[]? // empty' <<<"$scenario_json")
-    assertions=$(jq -c --argjson v "$json_checks" '. + {json_field_present: $v}' <<<"$assertions")
+      json_checks="[]"
+      while IFS= read -r path_expr; do
+        [[ -z $path_expr ]] && continue
+        if jq -e "$path_expr" >/dev/null 2>&1 <<<"$cmd_stdout"; then
+          ok=true
+        else
+          ok=false
+          status="fail"
+          failure_reasons+=("json field missing: $path_expr")
+        fi
+        json_checks=$(jq -c --arg p "$path_expr" --argjson ok "$ok" '. + [{path: $p, ok: $ok}]' <<<"$json_checks")
+      done < <(jq -r '.expect.json_field_present[]? // empty' <<<"$scenario_json")
+      assertions=$(jq -c --argjson v "$json_checks" '. + {json_field_present: $v}' <<<"$assertions")
+    else
+      resolve_error=$(jq -r '.error // empty' "$resolve_error_file" 2>/dev/null || true)
+      status="fail"
+      failure_reasons+=("${resolve_error:-command could not be resolved}")
+    fi
   fi
 
   # --- cleanup (always runs, never gates status, warnings only) ---
   cleanup_warnings=()
   cleanup_count=$(python3 "$lib" step-count "$file" cleanup)
   for ((i = 0; i < cleanup_count; i++)); do
-    step=$(python3 "$lib" resolve-step "$file" cleanup "$i" "$captured_json")
+    resolve_error_file="$scratch_dir/resolve-error.json"
+    if ! step=$(python3 "$lib" resolve-step "$file" cleanup "$i" "$captured_json" 2>"$resolve_error_file"); then
+      resolve_error=$(jq -r '.error // empty' "$resolve_error_file" 2>/dev/null || true)
+      cleanup_warnings+=("${resolve_error:-cleanup[$i] could not be resolved}")
+      continue
+    fi
     run_resolved_step "$step"
     if [[ $STEP_EXIT -ne 0 ]]; then
       cleanup_warnings+=("cleanup[$i] ($(jq -r '.description' <<<"$step")) exited $STEP_EXIT")
@@ -411,15 +532,11 @@ for file in "${scenario_files[@]}"; do
     warn_json=$(jq -c --arg w "$w" '. + [$w]' <<<"$warn_json")
   done
 
-  sanitized_stdout=$(sanitize "$cmd_stdout")
-  sanitized_stderr=$(sanitize "$cmd_stderr")
-  sanitized_argv=$(sanitize_argv "$cmd_argv")
-
-  jq -n \
+  result_json=$(jq -n \
     --arg name "$name" --arg file "$rel_file" --arg description "$description" \
     --arg status "$status" --arg harness "$harness" --arg model "$model" \
-    --argjson argv "$sanitized_argv" --arg exit "${cmd_exit:-null}" \
-    --arg stdout "$sanitized_stdout" --arg stderr "$sanitized_stderr" \
+    --argjson argv "$cmd_argv" --arg exit "${cmd_exit:-null}" \
+    --arg stdout "$cmd_stdout" --arg stderr "$cmd_stderr" \
     --argjson assertions "$assertions" --argjson failure_reasons "$reason_json" \
     --argjson cleanup_warnings "$warn_json" --argjson fuzzy_pending "$fuzzy_pending" \
     --argjson command_ran "$command_ran" \
@@ -430,9 +547,11 @@ for file in "${scenario_files[@]}"; do
       stdout: $stdout, stderr: $stderr,
       assertions: $assertions, failure_reasons: $failure_reasons,
       cleanup_warnings: $cleanup_warnings, fuzzy_pending: $fuzzy_pending
-    }' >"$artifacts_dir/$(echo "$name" | tr '/' '-').json"
+    }')
+  result_file="$artifacts_dir/$(echo "$name" | tr '/' '-').json"
+  sanitize_artifact_json "$result_json" >"$result_file"
 
-  jq -c . "$artifacts_dir/$(echo "$name" | tr '/' '-').json" >>"$artifacts_dir/results.jsonl"
+  jq -c . "$result_file" >>"$artifacts_dir/results.jsonl"
 
   if [[ $status == pass ]]; then
     echo "PASS"
@@ -446,14 +565,17 @@ for file in "${scenario_files[@]}"; do
   done
 done
 
+sanitized_harness=$(sanitize_artifact_text "$harness")
+sanitized_model=$(sanitize_artifact_text "$model")
+
 {
   echo "# E2E run summary — snow-cli $version"
   echo ""
   echo "- pass: $pass_count"
   echo "- fail: $fail_count"
   echo "- skipped: $skip_count"
-  echo "- harness: $harness"
-  echo "- model: $model"
+  echo "- harness: $sanitized_harness"
+  echo "- model: $sanitized_model"
 } >"$artifacts_dir/summary.md"
 
 echo ""

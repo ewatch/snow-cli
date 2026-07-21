@@ -18,7 +18,7 @@ exit_code = 0
 stdout_contains = ["global"]
 
 [[fuzzy]]
-expectation = "Metadata for the global scope is returned with artifact counts."
+expectation = "Metadata for the global scope is returned with artifact counts gathered via X-Total-Count (not by enumerating records), and a warning notes that dictionary and choice counts are skipped for the platform scope."
 
 [[cleanup]]
 description = "Remove the scenario profile"

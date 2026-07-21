@@ -9,16 +9,18 @@ args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL"
 [[setup]]
 description = "Create a record to read back via the browser session"
 args = ["snu", "create-record", "incident", "--data", "{\"short_description\":\"snow-cli e2e scenario: snu-get-record\"}", "--profile", "e2e-scenario", "--output", "json"]
-capture = { sys_id = ".sys_id" }
+capture = { sys_id = ".sys_id | select(type == \"string\" and test(\"^[0-9a-f]{32}$\"))" }
 
 [command]
-args = ["snu", "get-record", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--output", "json"]
+args = ["snu", "get-record", "incident", "{{sys_id}}", "--fields", "sys_id,short_description", "--profile", "e2e-scenario", "--output", "json"]
 
 [expect]
 exit_code = 0
-
-[[fuzzy]]
-expectation = "The record read back has the sys_id we created and the short_description we sent."
+json_field_present = [
+  ".sys_id | type == \"string\" and test(\"^[0-9a-f]{32}$\")",
+  ".record.sys_id == .sys_id",
+  ".record.short_description == \"snow-cli e2e scenario: snu-get-record\"",
+]
 
 [[cleanup]]
 description = "Delete the record via the browser session"

@@ -8,13 +8,17 @@ args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL"
 
 [command]
 args = ["snu", "create-record", "incident", "--data", "{\"short_description\":\"snow-cli e2e scenario: snu-create-record\"}", "--profile", "e2e-scenario", "--output", "json"]
-capture = { sys_id = ".sys_id" }
-
-[[fuzzy]]
-expectation = "A new incident is created via the browser session with a fresh sys_id and the short_description we sent."
+capture = { sys_id = ".sys_id | select(type == \"string\" and test(\"^[0-9a-f]{32}$\"))" }
 
 [expect]
 exit_code = 0
+json_field_present = [
+  "(.sys_id | type == \"string\") and (.sys_id | test(\"^[0-9a-f]{32}$\"))",
+  ".record.sys_id == .sys_id",
+  ".record.tableName == \"incident\"",
+  ".record.field == \"short_description\"",
+  ".record.content == \"snow-cli e2e scenario: snu-create-record\"",
+]
 
 [[cleanup]]
 description = "Delete the record via the browser session"

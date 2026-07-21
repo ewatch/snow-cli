@@ -9,16 +9,23 @@ args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL"
 [[setup]]
 description = "Create a record to update via the browser session"
 args = ["snu", "create-record", "incident", "--data", "{\"short_description\":\"snow-cli e2e scenario: snu-update-record (before)\"}", "--profile", "e2e-scenario", "--output", "json"]
-capture = { sys_id = ".sys_id" }
+capture = { sys_id = ".sys_id | select(type == \"string\" and test(\"^[0-9a-f]{32}$\"))" }
 
 [command]
-args = ["snu", "update-record", "incident", "{{sys_id}}", "--field", "short_description", "--content", "snow-cli e2e scenario: snu-update-record (after)", "--profile", "e2e-scenario", "--output", "json"]
+args = ["snu", "update-record", "incident", "{{sys_id}}", "--field", "short_description", "--content", "snow-cli e2e scenario: snu-update-record (after)", "--await", "--profile", "e2e-scenario", "--output", "json"]
 
 [expect]
 exit_code = 0
-
-[[fuzzy]]
-expectation = "The record's short_description changes to '(after)' while its sys_id is unchanged."
+json_field_present = [
+  ".success == true",
+  ".awaited == true",
+  ".sys_id | type == \"string\" and test(\"^[0-9a-f]{32}$\")",
+  ".fields == [\"short_description\"]",
+  ".persisted.short_description == \"snow-cli e2e scenario: snu-update-record (after)\"",
+  ".warnings | length == 0",
+  ".response.success == true",
+  ".response.updated == 1",
+]
 
 [[cleanup]]
 description = "Delete the record via the browser session"

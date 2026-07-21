@@ -20,13 +20,19 @@ Subcommands:
          "capture": {...}, "allow_failure": bool, "description": "..."}
       $VAR substitution is applied first, then {{name}} placeholders are
       replaced using captured_json (a JSON object of previously captured
-      values). `index` is ignored for phase "command".
+      values). Resolution exits with status 2 before process invocation if a
+      placeholder is missing, null, or otherwise remains unresolved. `index`
+      is ignored for phase "command".
 """
 
 import json
 import os
+import re
 import sys
 import tomllib
+
+
+CAPTURE_PLACEHOLDER = re.compile(r"\{\{([^{}]+)\}\}")
 
 
 def load(path):
@@ -46,13 +52,37 @@ def expand_env(value):
 
 def substitute_captures(value, captured):
     if isinstance(value, str):
-        out = value
-        for k, v in captured.items():
-            out = out.replace("{{" + k + "}}", str(v))
-        return out
+        def replace(match):
+            captured_value = captured.get(match.group(1))
+            if captured_value is None:
+                return match.group(0)
+            return str(captured_value)
+
+        return CAPTURE_PLACEHOLDER.sub(replace, value)
     if isinstance(value, list):
         return [substitute_captures(v, captured) for v in value]
     return value
+
+
+def unresolved_capture_names(value):
+    if isinstance(value, str):
+        return set(CAPTURE_PLACEHOLDER.findall(value))
+    if isinstance(value, list):
+        return set().union(*(unresolved_capture_names(v) for v in value))
+    return set()
+
+
+def reject_unresolved_captures(value, phase, index):
+    names = sorted(unresolved_capture_names(value))
+    if not names:
+        return
+
+    location = phase if phase == "command" else f"{phase}[{index}]"
+    placeholders = ", ".join(f"{{{{{name}}}}}" for name in names)
+    noun = "placeholder" if len(names) == 1 else "placeholders"
+    error = f"{location} has unresolved capture {noun} {placeholders}"
+    print(json.dumps({"error": error}), file=sys.stderr)
+    raise SystemExit(2)
 
 
 def cmd_parse(path):
@@ -90,10 +120,12 @@ def cmd_resolve_step(path, phase, index, captured_json):
         resolved["kind"] = "shell"
         resolved["shell"] = substitute_captures(step["shell"], captured)
         resolved["argv"] = []
+        reject_unresolved_captures(resolved["shell"], phase, index)
     else:
         resolved["kind"] = "args"
         resolved["shell"] = ""
         resolved["argv"] = substitute_captures(step.get("args", []), captured)
+        reject_unresolved_captures(resolved["argv"], phase, index)
 
     json.dump(resolved, sys.stdout)
 

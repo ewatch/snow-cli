@@ -14,7 +14,11 @@
 //      Both patches match on exact literal strings found in the extension
 //      as of 2026-07; if SN-Utils changes them upstream, this fails loudly
 //      instead of silently patching nothing (which would silently reintroduce
-//      the collision risk).
+//      the collision risk). Separately, it widens host_permissions on the same
+//      local copy to `<all_urls>` so `chrome.tabs.captureVisibleTab` (the
+//      `snu screenshot` path) works without the interactive "click the SN
+//      Utils icon" activeTab gesture that a real user would perform — see
+//      patchExtensionForScreenshot.
 //   3. Launches headless Chromium with the patched extension loaded, using
 //      the two flag workarounds validated by hand (see README below).
 //   4. Opens the extension's ScriptSync helper tab pointed at the isolated
@@ -134,6 +138,38 @@ function patchExtensionForIsolatedPort(extDir) {
   fs.writeFileSync(scriptsyncPath, scriptsyncSrc.replace(wsNeedle, wsReplacement), "utf8");
 
   log("patched extension for isolated-port testing");
+}
+
+/// Grants the local unpacked copy the `<all_urls>` host permission so the
+/// `snu screenshot` scenario can run unattended. SN-Utils captures screenshots
+/// with `chrome.tabs.captureVisibleTab` (scriptsync.js), which Chrome gates on
+/// EITHER a gesture-granted `activeTab` (the "click the SN Utils extension icon
+/// on the tab" prompt a real user sees) OR the `<all_urls>` host permission —
+/// a narrower host match like the shipped `https://*.service-now.com/*` does
+/// NOT satisfy it. There is no reliable way to synthesize the icon-click
+/// gesture in headless Chromium, so instead we widen host_permissions on the
+/// local-only copy: an unpacked (dev-loaded) extension is granted its manifest
+/// host permissions without a prompt, so captureVisibleTab then succeeds with
+/// no user interaction. Fails loudly if the shipped host entry moved, rather
+/// than silently leaving the scenario unable to capture.
+function patchExtensionForScreenshot(extDir) {
+  const manifestPath = path.join(extDir, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const hosts = manifest.host_permissions;
+  const shippedHost = "https://*.service-now.com/*";
+  if (!Array.isArray(hosts) || !hosts.includes(shippedHost)) {
+    fail(
+      "manifest.json host_permissions no longer contains the expected " +
+        `${shippedHost} entry — SN-Utils likely shipped an update; the ` +
+        "screenshot permission patch (and tests/e2e/README.md's note about " +
+        "it) needs updating before the harness can run safely.",
+    );
+  }
+  if (!hosts.includes("<all_urls>")) {
+    hosts.push("<all_urls>");
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+    log("patched extension host_permissions with <all_urls> for screenshot capture");
+  }
 }
 
 async function launchBrowser(extDir) {
@@ -290,6 +326,7 @@ async function main() {
 
   const extDir = await downloadExtension(scratchDir);
   patchExtensionForIsolatedPort(extDir);
+  patchExtensionForScreenshot(extDir);
 
   const { context, extensionId } = await launchBrowser(extDir);
 

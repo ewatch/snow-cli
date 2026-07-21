@@ -1,15 +1,20 @@
 name = "import-set-load"
-description = "Load a row into an import set staging table (import-set: load leg)"
+description = "Load a row into a staging table and auto-transform it into an incident"
 requires = ["credentials"]
 
-# INSTANCE-SPECIFIC PREREQUISITE: import-set load targets an existing Import Set
-# staging table (a sys_import_set_row descendant). A generic PDI has none, so you
-# must create one and replace the placeholders below:
-#   * <TABLE> placeholder `u_e2e_import`: the name of a real staging table.
-#   * --data columns: match that staging table's columns (e.g. u_short_description).
-# Until a matching staging table exists, expect this to FAIL. Once it does, the
-# exit_code=0 assertion holds. The load is captured so import-set/transform can
-# reuse the import set sys_id.
+# Self-contained end-to-end import-set validation: setup provisions a staging
+# table (u_e2e_import, extending sys_import_set_row) plus an active transform
+# map (u_e2e_import -> incident) via a background script, so this runs against a
+# bare PDI with no manual setup. POST /api/now/import/<table> (what `load` calls)
+# both stages the row AND runs the transform in one call, so the response
+# reports the row `inserted` into `incident` through `u_e2e_import_map` — that is
+# the "staging table + demo transform" path, exercised in a single command.
+# Cleanup drops the fixture and deletes the created incident. Provisioning uses
+# `snow-cli script run` (/sys.scripts.do) and needs an admin-like account, the
+# same assumption the mutating SNU scenarios make.
+# NOTE: there is no separate `import-set transform` leg — that CLI subcommand is
+# not implemented precisely because the load call already transforms (see
+# src/cli/commands/import_set.rs).
 
 [[setup]]
 description = "Create the scenario profile"
@@ -19,14 +24,27 @@ args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL"
 description = "Store credentials for the scenario profile"
 shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
 
+[[setup]]
+description = "Provision the u_e2e_import staging table and transform map"
+args = ["script", "run", "--file", "tests/e2e/fixtures/import-set/provision.js", "--profile", "e2e-scenario", "--output", "json"]
+
 [command]
 args = ["import-set", "load", "u_e2e_import", "--data", "{\"u_short_description\":\"snow-cli e2e scenario: import-set-load\"}", "--profile", "e2e-scenario", "--output", "json"]
 
 [expect]
 exit_code = 0
+# Deterministic proof the demo transform ran during load: the row was inserted
+# into the incident table through our transform map. Substrings match the
+# compact JSON result entry regardless of key spacing.
+stdout_contains = ["\"inserted\"", "incident", "u_e2e_import_map"]
 
 [[fuzzy]]
-expectation = "The staging load returns an import set sys_id and per-row result (typically state 'inserted' or 'pending') for the row we sent."
+expectation = "The load stages the row and the transform map inserts it into incident; the result entry reports status 'inserted', table 'incident', and the created incident's number/sys_id."
+
+[[cleanup]]
+description = "Drop the staging table, transform map, and any created incidents"
+args = ["script", "run", "--file", "tests/e2e/fixtures/import-set/teardown.js", "--profile", "e2e-scenario", "--output", "json"]
+allow_failure = true
 
 [[cleanup]]
 description = "Remove the scenario profile"

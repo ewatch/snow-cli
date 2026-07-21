@@ -47,29 +47,9 @@ Notes:
 
 - If `--data` is omitted and stdin is piped in, the command reads JSON from stdin.
 - The request is sent to `/api/now/import/{table}`.
+- **The transform runs automatically on load.** `/api/now/import/{table}` both stages the row and runs the staging table's transform map in one call, so a successful load already inserts/updates the target record — there is no separate transform step to invoke.
 - The command prints a structured summary with counts for inserted, updated, ignored, error, and other result rows.
 - `--fail-on-error` is useful for CI or agent workflows where row-level failures must fail the command — without it, `import-set load` can exit 0 even though `summary.error` is non-zero.
-
-## `import-set transform <sys_id>`
-
-> **Not yet implemented.** This command is part of the planned interface —
-> `--help` advertises it, but running it currently exits 1 with
-> `not implemented yet`. The example below shows the intended shape only; it
-> is not runnable today.
-
-Reserved for separate transform execution.
-
-```bash
-snow-cli import-set transform <sys_id>
-```
-
-Planned status:
-
-- the command surface exists,
-- the implementation is still a placeholder,
-- some instances already run the transform automatically during `import-set load`.
-
-In other words, `import-set load` is the working path today.
 
 ## Related pages
 

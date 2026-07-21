@@ -9,20 +9,24 @@ args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL"
 [[setup]]
 description = "Create a throwaway record to delete via the browser session"
 args = ["snu", "create-record", "incident", "--data", "{\"short_description\":\"snow-cli e2e scenario: snu-delete-record\"}", "--profile", "e2e-scenario", "--output", "json"]
-capture = { sys_id = ".sys_id" }
+capture = { sys_id = ".sys_id | select(type == \"string\" and test(\"^[0-9a-f]{32}$\"))" }
 
 [command]
-args = ["snu", "delete-record", "incident", "--sys-id", "{{sys_id}}", "--profile", "e2e-scenario", "--output", "json"]
+shell = '''set -euo pipefail; result=$("$SNOW_CLI_BIN" snu delete-record incident --sys-id "{{sys_id}}" --profile e2e-scenario --output json); readback=$("$SNOW_CLI_BIN" snu get-record incident "{{sys_id}}" --fields sys_id --profile e2e-scenario --output json); jq -e '.record == null' <<<"$readback" >/dev/null; printf '%s\n' "$result"'''
 
 [expect]
 exit_code = 0
-
-[[fuzzy]]
-expectation = "The record is deleted via the browser session; a subsequent snu get-record for the same sys_id returns nothing."
+json_field_present = [
+  ".deleted == true",
+  ".sys_id | type == \"string\" and test(\"^[0-9a-f]{32}$\")",
+  ".response.success == true",
+  ".response.action == \"delete\"",
+  ".response.deleted == 1",
+]
 
 [[cleanup]]
 description = "Best-effort re-delete in case the command step failed"
-args = ["snu", "delete-record", "incident", "--sys-id", "{{sys_id}}", "--profile", "e2e-scenario"]
+shell = '''record=$("$SNOW_CLI_BIN" snu get-record incident "{{sys_id}}" --fields sys_id --profile e2e-scenario --output json) && if jq -e '.record != null' <<<"$record" >/dev/null; then "$SNOW_CLI_BIN" snu delete-record incident --sys-id "{{sys_id}}" --profile e2e-scenario --output json >/dev/null; fi'''
 allow_failure = true
 
 [[cleanup]]

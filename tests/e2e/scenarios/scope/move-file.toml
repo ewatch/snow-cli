@@ -1,6 +1,6 @@
 name = "scope-move-file"
 description = "Move an application file to a different custom scope (dry-run, no mutation)"
-requires = ["credentials"]
+requires = ["credentials", "instance-fixtures"]
 
 # INSTANCE-SPECIFIC PREREQUISITES — this scenario cannot be made self-contained
 # without provisioning a custom application scope and a movable application file,
@@ -10,8 +10,9 @@ requires = ["credentials"]
 #   * SYS_ID placeholder: a sys_id in a source application-file table (e.g.
 #     sys_script_include) that belongs to a custom scope.
 #   * --target-scope placeholder: a real custom scope name (e.g. x_your_app).
-# Until those are filled in, expect this scenario to FAIL (the record/scope will
-# not resolve). Adjust the args below, then the exit_code=0 assertion holds.
+# Because those cannot exist on a generic PDI, this is tagged requires =
+# ["instance-fixtures"] and SKIPPED by default. Fill in the args below, then set
+# SNOW_E2E_INSTANCE_FIXTURES=1 to run it; the exit_code=0 assertion then holds.
 
 [[setup]]
 description = "Create the scenario profile"

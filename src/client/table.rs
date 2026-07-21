@@ -119,6 +119,27 @@ impl SnowClient {
             fields_truncated: false,
         })
     }
+
+    /// Count matching records via the `X-Total-Count` header without
+    /// downloading them.
+    ///
+    /// Issues a single `sysparm_limit=1` request and returns the server's
+    /// reported total, or `None` when the instance omits the header. This is
+    /// how scope inspection counts artifacts for large scopes (e.g. `global`)
+    /// without paginating through every matching row.
+    pub async fn count_table_records(
+        &mut self,
+        table: &crate::models::identifiers::TableName,
+        query: Option<&str>,
+    ) -> anyhow::Result<Option<usize>> {
+        let config = pagination::PaginationConfig::default()
+            .with_page_size(1)
+            .with_limit(Some(1));
+        Ok(self
+            .get_table_records_with_meta(table, query, Some("sys_id"), &config, None)
+            .await?
+            .total)
+    }
 }
 #[cfg(test)]
 mod tests {
