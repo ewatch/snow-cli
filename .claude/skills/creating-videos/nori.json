@@ -1,7 +1,0 @@
-{
-  "name": "creating-videos",
-  "version": "1.0.1",
-  "type": "skill",
-  "description": "Use this skill to create animated explainer videos (Kurzgesagt-style motion graphics) built entirely in HTML/CSS/JS — a deterministic, seekable scene engine plus headless-Chrome frame capture, with an optional MP4 render. No video editor required.",
-  "registryURL": "http://noriskillsets.dev"
-}
