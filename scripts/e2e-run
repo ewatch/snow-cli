@@ -18,6 +18,16 @@ usage() {
     'Environment:' \
     '  SNOW_E2E_INSTANCE_URL, SNOW_E2E_USERNAME, SNOW_E2E_PASSWORD' \
     '      Unlock scenarios tagged requires = ["credentials"].' \
+    '  SNOW_E2E_INSTANCE_FIXTURES=1' \
+    '      Unlock scenarios tagged requires = ["instance-fixtures"]: ones that' \
+    '      need instance-specific provisioning no generic PDI has and that the' \
+    '      suite cannot self-provision (a custom application scope with a movable' \
+    '      application file, for scope/move-file). Set only after provisioning' \
+    '      those and filling in the scenario placeholders; otherwise these are' \
+    '      SKIPPED, not failed.' \
+    '  SNOW_E2E_INCLUDE_UNIMPLEMENTED=1' \
+    '      Force-run scenarios tagged requires = ["unimplemented"] (placeholders' \
+    '      for hidden, not-yet-implemented commands). Skipped by default.' \
     '  SNOW_E2E_SN_UTILS=1' \
     '      Unlock scenarios tagged requires = ["sn-utils-bridge"]. Also starts' \
     '      a headless-browser SN-Utils bridge harness (scripts/e2e-snu-harness,' \
@@ -284,6 +294,19 @@ for file in "${scenario_files[@]}"; do
       sn-utils-bridge)
         if [[ ${SNOW_E2E_SN_UTILS:-0} != "1" ]]; then
           skip_reason="sn-utils bridge unavailable (set SNOW_E2E_SN_UTILS=1 to enable)"
+        fi
+        ;;
+      instance-fixtures)
+        if [[ ${SNOW_E2E_INSTANCE_FIXTURES:-0} != "1" ]]; then
+          skip_reason="instance fixtures not provisioned (set SNOW_E2E_INSTANCE_FIXTURES=1 once a staging table / custom scope exist; see the scenario header)"
+        fi
+        ;;
+      unimplemented)
+        # Placeholder scenarios for commands that are intentionally hidden and
+        # not implemented. Kept in-tree so they can be re-enabled if the command
+        # ships, but SKIPPED by default so they never fail the suite.
+        if [[ ${SNOW_E2E_INCLUDE_UNIMPLEMENTED:-0} != "1" ]]; then
+          skip_reason="command is a hidden, unimplemented placeholder (set SNOW_E2E_INCLUDE_UNIMPLEMENTED=1 to force-run)"
         fi
         ;;
       *)

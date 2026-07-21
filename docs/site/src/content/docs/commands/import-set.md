@@ -47,6 +47,7 @@ Notes:
 
 - If `--data` is omitted and stdin is piped in, the command reads JSON from stdin.
 - The request is sent to `/api/now/import/{table}`.
+- **The transform runs automatically on load.** `/api/now/import/{table}` both stages the row and runs the staging table's transform map in one call, so a successful load already inserts/updates the target record — there is no separate transform step to invoke.
 - The command prints a structured summary with counts for inserted, updated, ignored, error, and other result rows.
 - `--fail-on-error` is useful for CI or agent workflows where row-level failures must fail the command — without it, `import-set load` can exit 0 even though `summary.error` is non-zero.
 

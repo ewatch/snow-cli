@@ -11,7 +11,7 @@ description = "Store credentials for the scenario profile"
 shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
 
 [command]
-args = ["scope", "inventory", "global", "--profile", "e2e-scenario", "--output", "json"]
+args = ["scope", "inventory", "global", "--limit", "50", "--profile", "e2e-scenario", "--output", "json"]
 
 [expect]
 exit_code = 0
