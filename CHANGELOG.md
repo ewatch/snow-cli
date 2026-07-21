@@ -5,7 +5,17 @@ All notable changes to `snow-cli` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows semantic versioning conventions while it is pre-1.0.
 
-## [0.6.1] - 2026-07-21
+## [0.7.0] - 2026-07-21
+
+### Added
+
+- `scope inspect` and `scope inventory` (and their read-only mirrors) now accept `--limit N` to bound artifact enumeration, threading a per-table cap through enumeration and counting via the `X-Total-Count` header instead of paginating every matching row. Enumerating the platform `global` scope unbounded is refused (pass `--limit`), and capped tables emit truncation warnings.
+- The `snu` broker and bridge listen addresses can be overridden via the `SNOW_CLI_SNU_WS_ADDR` and `SNOW_CLI_SNU_BROKER_ADDR` environment variables (defaults `127.0.0.1:1978` / `127.0.0.1:1979`), so an automated second SN-Utils connection no longer evicts an already-connected ScriptSync browser tab.
+
+### Fixed
+
+- `script run` against the background-script form endpoint now resolves a human-readable `--scope` name to its `sys_scope` sys_id before submitting, instead of sending the name verbatim; the `global` scope and raw sys_ids are passed through unchanged.
+- `snu create-record` now fails when SN-Utils returns an error or a response without a 32-hex `sys_id`, instead of reporting a false success; it also reads the `newRecord` response key.
 
 ### Changed
 
