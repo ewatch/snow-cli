@@ -1,6 +1,7 @@
 name = "snu-broker-clear"
 description = "Clear cached browser sessions from SN-Utils broker memory"
 requires = ["sn-utils-bridge"]
+session_destructive = true
 
 [command]
 args = ["snu", "broker", "clear", "--output", "json"]

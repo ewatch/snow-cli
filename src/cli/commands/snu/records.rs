@@ -58,22 +58,42 @@ pub(super) async fn handle_create_record(
         )
         .await?;
 
+    print_output(
+        &build_create_record_result(&table, &response)?,
+        output_format,
+    )
+}
+
+pub(super) fn build_create_record_result(
+    table: &str,
+    response: &SnuMessage,
+) -> anyhow::Result<Value> {
+    if response.success == Some(false) || response.error.is_some() {
+        anyhow::bail!(
+            "SN-Utils create-record failed: {}",
+            response
+                .error_text()
+                .unwrap_or_else(|| "unknown error".to_string())
+        );
+    }
     let record = response
         .extra
         .get("result")
         .or_else(|| response.extra.get("record"))
+        .or_else(|| response.extra.get("newRecord"))
         .cloned()
-        .unwrap_or_else(|| serde_json::to_value(&response).unwrap_or(Value::Null));
-    let sys_id = record.get("sys_id").and_then(Value::as_str);
-    print_output(
-        &json!({
-            "success": true,
-            "table": table,
-            "sys_id": sys_id,
-            "record": record,
-        }),
-        output_format,
-    )
+        .ok_or_else(|| anyhow!("SN-Utils create-record response did not contain a record"))?;
+    let sys_id = record
+        .get("sys_id")
+        .and_then(Value::as_str)
+        .filter(|sys_id| !sys_id.is_empty())
+        .ok_or_else(|| anyhow!("SN-Utils create-record response did not contain a sys_id"))?;
+    Ok(json!({
+        "success": true,
+        "table": table,
+        "sys_id": sys_id,
+        "record": record,
+    }))
 }
 
 pub(super) async fn handle_app_meta(

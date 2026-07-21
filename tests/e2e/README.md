@@ -29,6 +29,11 @@ description = "Create an incident record (table CRUD: create leg)"
 # SKIPPED and reported, never faked as a pass. See "requires tags" below.
 requires = ["credentials"]
 
+# Set only when this scenario clears cached sessions, stops the broker, or
+# otherwise invalidates the SN-Utils harness's shared browser session. The
+# runner stable-partitions these scenarios to the end of the selected run.
+# session_destructive = true
+
 # Steps run before the command under test, in order. Optional.
 [[setup]]
 description = "Create the scenario profile"
@@ -132,6 +137,16 @@ exits non-zero if any scenario **failed**; skipped scenarios are reported but
 do not fail the run, matching the release guide's rule that an unavailable
 test never counts as a pass (`docs/guides/releasing.md`).
 
+`SNOW_E2E_ARTIFACTS_DIR` can override the exact output directory. This is
+primarily useful for runner tests and disposable local runs.
+
+Capture placeholders are strict. If `{{name}}` refers to a missing or null
+capture, the runner does not invoke that setup, command, or cleanup step.
+Setup and command resolution errors fail the scenario; cleanup resolution
+errors are recorded as cleanup warnings so remaining cleanup can continue.
+Artifacts identify the unresolved placeholder by name without recording its
+captured value.
+
 > **`artifacts/` is git-ignored on purpose.** Redaction is best-effort
 > (see "known gaps"), so these files may still contain instance-specific
 > values. Review any artifact before copying its content into committed
@@ -144,6 +159,15 @@ file (removed on exit), so scenarios never read or write your real
 `~/.config`-style profile store. Scenarios that need an authenticated
 profile create one scoped to the run (conventionally named `e2e-scenario`)
 and remove it in cleanup.
+
+SN-Utils scenarios share one browser-harness session for efficiency. A
+scenario that clears sessions, stops the broker, or otherwise invalidates that
+session must declare `session_destructive = true`. The runner preserves the
+selected order within each group but always runs every shared-session scenario
+before every destructive scenario. Cleanup still runs immediately after each
+scenario, and the runner's exit trap terminates the browser harness and the
+isolated broker. This ordering is intentional: auto-starting a stopped broker
+does not recreate the `/token` captured at harness startup.
 
 This does **not** sandbox the OS keychain: `auth login` still writes a real
 keychain entry under the scenario's profile name. Cleanup best-effort-removes
@@ -171,15 +195,28 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
   - **SN-Utils bridge** (`requires = ["sn-utils-bridge", ...]`): the `snu *`
     leaves, which drive the browser extension bridge rather than REST. Needs
     `SNOW_E2E_SN_UTILS=1` — see the harness details in "Known gaps" below.
-- **Some credentialed scenarios need instance-specific prerequisites and will
-  FAIL until adjusted.** These carry a prominent NOTE comment at the top of the
-  file: `import-set load`/`transform` (need a real Import Set staging table),
+- **`import-set load` is self-provisioning and validates the transform too.**
+  Its setup steps create an Import Set staging table (`u_e2e_import`, extending
+  `sys_import_set_row`) and an active transform map (`u_e2e_import -> incident`)
+  via `snow-cli script run` against `tests/e2e/fixtures/import-set/`. Because
+  `POST /api/now/import/{table}` runs the transform on load, the single load call
+  inserts an incident through the map (asserted deterministically), then cleanup
+  drops the fixture and deletes the incident. Runs on any credentialed admin-like
+  account with no manual setup; provisioning uses the `/sys.scripts.do`
+  background-script endpoint, so the account needs background-script rights (as
+  the mutating SNU scenarios already assume). Verified end to end against a PDI.
+  `import-set transform` is a hidden, unimplemented CLI placeholder (the load
+  already transforms), so `import-set/transform.toml` is tagged
+  `requires = ["unimplemented"]` and SKIPPED by default.
+- **Some credentialed scenarios still need instance-specific prerequisites the
+  suite cannot self-provision, and are gated so they SKIP rather than FAIL.**
   `scope move-file` (a custom scope + movable application file — uses `--dry-run`
-  and placeholder ids), `graphql` (Now GraphQL enabled + a schema-matching
-  document), `snu context switch` (a real `sys_update_set` sys_id), and the
-  `profile sdk` leaves (need the now-sdk toolchain installed — they can BLOCK if
-  it is absent). Fill in the placeholders / provision the prerequisite before
-  relying on these.
+  and placeholder ids) is tagged `requires = ["instance-fixtures"]` and skips
+  unless `SNOW_E2E_INSTANCE_FIXTURES=1`. Others carry a NOTE comment and will
+  FAIL until adjusted: `graphql` (Now GraphQL enabled + a schema-matching
+  document) and the `profile sdk` leaves (need the now-sdk toolchain installed —
+  they can BLOCK if it is absent). `snu context switch` provisions its own
+  disposable update set and restores the current user's previous update set.
 - **`json_field_present` means "present AND truthy".** The runner checks each
   path with `jq -e`, which exits non-zero when the resolved value is `false` or
   `null`. So a field that is legitimately `false`/`null` (e.g. `auth status`'s
@@ -191,16 +228,22 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
   `#[command(hide = true)]` in `src/cli/args.rs` (currently `skill install`)
   don't appear in `--help` output, so the gate can't require a scenario for
   them. Unhide + add a scenario together when a hidden command ships.
-- **Redaction is literal-substring, not structural.** `scripts/e2e-run`
-  redacts the known `SNOW_E2E_*` env var values (URL, username, password) and
-  the derived HTTP Basic auth token (`base64(user:pass)`) wherever they appear
-  verbatim in captured stdout/stderr/argv. It does **not** redact `g_ck`
-  session tokens, cookies, `sys_id`s, or other generated values — these are
-  left intact (sys_ids are often wanted in doc examples). Because artifacts
-  are git-ignored, this is a review-before-publish gap, not a commit gap:
-  `docs/guides/releasing.md` step 3 (turning successful E2E artifacts into doc
-  examples) still needs a human/agent pass to strip anything sensitive before
-  publishing.
+- **Artifact redaction is structural and conservative, but not a publication
+  guarantee.** `scripts/e2e-run` redacts the known `SNOW_E2E_*` env var values
+  (URL, username, password), the derived HTTP Basic auth token
+  (`base64(user:pass)`), and values under token/session/cookie keys such as
+  `g_ck`, `session_token`, `X-UserToken`, and `JSESSIONID`. JSON embedded in
+  stdout or stderr is parsed and sanitized structurally; discovered values are
+  then removed from every string in the complete result document, including
+  argv, descriptions, fuzzy expectations, and `results.jsonl`. Non-JSON text
+  gets a conservative key/value and header-pattern fallback, including complete
+  `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` values.
+  Known and discovered values are replaced longest-first so overlapping
+  credentials cannot expose a secret suffix. Safe response
+  shape and values such as `sys_id` remain available for debugging. Novel
+  unlabeled secret formats can still evade pattern-based redaction, so
+  `docs/guides/releasing.md` step 3 still requires review before publishing an
+  artifact. Never force-add the `artifacts/` tree.
 - **`sn-utils-bridge` scenarios now have a real harness, confirmed against a
   live PDI on 2026-07-17.** `SNOW_E2E_SN_UTILS=1` starts
   `scripts/e2e-snu-harness` (Node + Playwright, npm-installed on demand —
@@ -224,7 +267,11 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
     `scriptsync.js`) — never redistributed, applied fresh each run. The
     patch matches on exact literal strings; if SN-Utils ships an update that
     changes them, the harness fails loudly (not silently unpatched) and the
-    patch in `scripts/e2e-snu-harness/harness.js` needs updating.
+    patch in `scripts/e2e-snu-harness/harness.js` needs updating. The same
+    local copy also has `<all_urls>` added to `host_permissions` so the
+    `snu screenshot` scenario's `chrome.tabs.captureVisibleTab` call succeeds
+    without the interactive "click the SN Utils icon" `activeTab` gesture (see
+    the screenshot note below).
   - The connection-approval prompt is per-instance but the harness always
     starts from a fresh browser profile, so it reappears (and gets
     auto-approved) every run — this is expected, not a bug.
@@ -234,6 +281,23 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
     (`window.snusettings`/`window.snuSlashCommandShow` load asynchronously
     after login — the harness waits up to 15s) or SN-Utils' own internals
     changed since 2026-07-17.
+  - The behavioral SNU scenarios require an administrator-like PDI account:
+    they create and delete incidents, run background scripts for mutations,
+    upload an attachment, and create/read/switch/delete `sys_update_set`
+    context. The context scenario also needs read access to the current user's
+    `sys_user_preference` row so it can restore the prior update set.
+  - `snu wait-token` starts its fresh-session waiter first and then targets the
+    harness ServiceNow tab with `snu slash /token`; the token captured during
+    harness startup is intentionally not accepted as evidence for this leaf.
+  - `snu screenshot` targets that same tab and fails unless the saved file is a
+    non-empty PNG. `chrome.tabs.captureVisibleTab` normally needs a manual
+    `activeTab` gesture (clicking the SN Utils extension icon on the tab), which
+    can't be synthesized in headless Chromium; the harness sidesteps this by
+    granting the local unpacked copy the `<all_urls>` host permission at load
+    time (see `patchExtensionForScreenshot`), which an unpacked extension
+    receives without a prompt, so the capture runs unattended. If a future
+    Chrome/extension change makes even that insufficient, it surfaces as a real
+    scenario failure rather than an exit-code-only pass.
 - **No parallelism.** Scenarios run sequentially in one isolated config; two
   concurrent `scripts/e2e-run` invocations would race on the same
   `e2e-scenario` profile name if pointed at the same real instance, and (with

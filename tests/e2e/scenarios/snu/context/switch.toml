@@ -2,23 +2,37 @@ name = "snu-context-switch"
 description = "Switch update set / application / domain in the browser session through SN-Utils"
 requires = ["sn-utils-bridge", "credentials"]
 
-# INSTANCE-SPECIFIC PREREQUISITE: switching context needs a real target value.
-# The placeholder below switches to an update set by sys_id — replace it with a
-# real sys_update_set sys_id on your instance. --no-reload-tab avoids reloading a
-# browser tab as a side effect. Until a real value is supplied, expect FAIL.
-
 [[setup]]
 description = "Create the scenario profile (instance context; bridge provides the session)"
 args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
 
+[[setup]]
+description = "Capture the current user's update set so cleanup can restore it"
+args = ["snu", "query", "sys_user_preference", "--query", "name=sys_update_set^user=javascript:gs.getUserID()", "--fields", "value", "--limit", "1", "--profile", "e2e-scenario", "--output", "json"]
+capture = { previous_update_set_sys_id = ".records[0].value | select(type == \"string\" and test(\"^[0-9a-f]{32}$\"))" }
+
+[[setup]]
+description = "Create a disposable update set to switch to"
+args = ["snu", "create-record", "sys_update_set", "--data", "{\"name\":\"snow-cli e2e scenario: snu-context-switch\"}", "--profile", "e2e-scenario", "--output", "json"]
+capture = { update_set_sys_id = ".sys_id | select(type == \"string\" and test(\"^[0-9a-f]{32}$\"))" }
+
 [command]
-args = ["snu", "context", "switch", "updateset", "REPLACE_WITH_UPDATE_SET_SYS_ID", "--no-reload-tab", "--profile", "e2e-scenario", "--output", "json"]
+shell = '''set -euo pipefail; result=$("$SNOW_CLI_BIN" snu context switch updateset "{{update_set_sys_id}}" --no-reload-tab --profile e2e-scenario --output json); jq -e --arg target "{{update_set_sys_id}}" '.success == true and .value == $target' <<<"$result" >/dev/null; restored=$("$SNOW_CLI_BIN" snu context switch updateset "{{previous_update_set_sys_id}}" --no-reload-tab --profile e2e-scenario --output json); jq -e --arg previous "{{previous_update_set_sys_id}}" '.success == true and .value == $previous' <<<"$restored" >/dev/null; printf '%s\n' "$result"'''
 
 [expect]
 exit_code = 0
+json_field_present = [
+  ".action == \"switchContextResponse\"",
+  ".success == true",
+  ".switchType == \"updateset\"",
+  ".reloaded == false",
+  ".value | type == \"string\" and test(\"^[0-9a-f]{32}$\")",
+]
 
-[[fuzzy]]
-expectation = "The browser session's active update set switches to the requested sys_id; the command reports the new context."
+[[cleanup]]
+description = "Best-effort restore the previous update set, then delete the disposable target"
+shell = '''"$SNOW_CLI_BIN" snu context switch updateset "{{previous_update_set_sys_id}}" --no-reload-tab --profile e2e-scenario --output json >/dev/null && "$SNOW_CLI_BIN" snu delete-record sys_update_set --sys-id "{{update_set_sys_id}}" --profile e2e-scenario --output json >/dev/null'''
+allow_failure = true
 
 [[cleanup]]
 description = "Remove the scenario profile"

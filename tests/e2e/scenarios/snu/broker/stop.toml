@@ -1,9 +1,10 @@
 name = "snu-broker-stop"
 description = "Stop the running SN-Utils broker (auto-restarts on next use)"
 requires = ["sn-utils-bridge"]
+session_destructive = true
 
-# Mutating (stops the local broker process), but harmless: the broker auto-starts
-# again the next time an snu command needs it.
+# The runner schedules this after every shared-session scenario. Although the
+# broker auto-starts on later use, a new broker has no harness-captured session.
 
 [command]
 args = ["snu", "broker", "stop", "--output", "json"]

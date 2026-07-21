@@ -2,26 +2,30 @@ name = "snu-screenshot"
 description = "Capture a browser screenshot through SN-Utils"
 requires = ["sn-utils-bridge", "credentials"]
 
-# BROWSER-ACTION PREREQUISITE: needs an active browser tab to capture. The image
-# is written to a temp --out path that cleanup removes.
-
 [[setup]]
 description = "Create the scenario profile (instance context; bridge provides the session)"
 args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
 
 [[setup]]
+description = "Build the Chrome match pattern for the harness ServiceNow tab"
+shell = '''base="$SNOW_E2E_INSTANCE_URL"; printf '%s/*' "${base%/}"'''
+capture = { tab_url = "raw" }
+
+[[setup]]
 description = "Compute a screenshot output path"
-shell = "printf '%s' \"${TMPDIR:-/tmp}/snow-cli-e2e-screenshot-$$.png\""
+shell = '''f=$(mktemp "${TMPDIR:-/tmp}/snow-cli-e2e-screenshot.XXXXXX") && mv "$f" "$f.png" && printf '%s' "$f.png"'''
 capture = { shot_path = "raw" }
 
 [command]
-args = ["snu", "screenshot", "--out", "{{shot_path}}", "--profile", "e2e-scenario", "--output", "json"]
+shell = '''set -euo pipefail; result=$("$SNOW_CLI_BIN" snu screenshot --url "{{tab_url}}" --out "{{shot_path}}" --profile e2e-scenario --output json); jq -e --arg file "{{shot_path}}" '.saved == true and .file == $file' <<<"$result" >/dev/null; test -s "{{shot_path}}"; magic=$(od -An -tx1 -N8 "{{shot_path}}" | tr -d '[:space:]'); test "$magic" = "89504e470d0a1a0a"; printf '%s\n' "$result"'''
 
 [expect]
 exit_code = 0
-
-[[fuzzy]]
-expectation = "A screenshot image is written to the --out path; the file is non-empty PNG data."
+json_field_present = [
+  ".saved == true",
+  ".file | type == \"string\" and endswith(\".png\")",
+  ".url | type == \"string\" and startswith(\"https://\")",
+]
 
 [[cleanup]]
 description = "Remove the screenshot file"
