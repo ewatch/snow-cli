@@ -35,6 +35,10 @@ jobs:
 
       - name: Build documentation
         working-directory: docs/site
+        env:
+          # Project site is served at https://ewatch.github.io/snow-cli/, so the
+          # build must emit assets and links under that base (see astro.config.mjs).
+          BASE_PATH: /snow-cli/
         run: |
           npm ci
           npm run build
