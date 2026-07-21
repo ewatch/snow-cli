@@ -199,6 +199,32 @@ const ARTIFACT_DEFINITIONS: &[ArtifactDefinition] = &[
     },
 ];
 
+/// Default per-table cap applied when enumerating scope artifacts without an
+/// explicit `--limit`. Scope inventory targets bounded custom application
+/// scopes; this keeps a mis-targeted run from paginating through an entire
+/// instance before failing.
+const DEFAULT_ENUMERATION_LIMIT: usize = 5_000;
+
+/// Maximum number of table names packed into a single `sys_dictionary` or
+/// `sys_choice` `nameIN` query. Chunking keeps the request URL bounded on
+/// scopes that define many tables.
+const DICTIONARY_QUERY_CHUNK: usize = 50;
+
+/// Whether a scope is the platform (`global`) scope, whose artifacts span the
+/// entire base instance and cannot be meaningfully enumerated in full.
+fn is_platform_scope(scope: &str) -> bool {
+    scope == "global"
+}
+
+/// Source tables already accounted for by a dedicated artifact type. Used to
+/// classify everything else in `sys_metadata` as `other`.
+fn known_metadata_source_tables() -> Vec<&'static str> {
+    let mut tables: Vec<&'static str> = ARTIFACT_DEFINITIONS.iter().map(|def| def.table).collect();
+    tables.push("sys_dictionary");
+    tables.push("sys_choice");
+    tables
+}
+
 pub(super) async fn handle_inspect(
     profile: &str,
     format: &OutputFormat,
@@ -206,23 +232,37 @@ pub(super) async fn handle_inspect(
     timeout_secs: Option<u64>,
     scope_input: &EncodedQueryValue,
     details: ScopeDetailLevel,
+    limit: Option<usize>,
 ) -> anyhow::Result<()> {
-    let collected = collect_scope_data(profile, instance, timeout_secs, scope_input).await?;
-    let rows = collected.to_inventory_rows();
-
-    let payload = ScopeInspectOutput {
-        scope: collected.scope,
-        details: match details {
-            ScopeDetailLevel::Basic => "basic".to_string(),
-            ScopeDetailLevel::Full => "full".to_string(),
-        },
-        summary: collected.summary,
-        artifacts: if matches!(details, ScopeDetailLevel::Full) {
-            Some(rows)
-        } else {
-            None
-        },
-        warnings: collected.warnings,
+    let payload = match details {
+        // `basic` needs only counts, so tally them via `X-Total-Count`
+        // instead of downloading every matching record. This keeps inspect
+        // cheap and reliable even for platform-scale scopes like `global`.
+        ScopeDetailLevel::Basic => {
+            let counted =
+                collect_scope_summary(profile, instance, timeout_secs, scope_input).await?;
+            ScopeInspectOutput {
+                scope: counted.scope,
+                details: "basic".to_string(),
+                summary: counted.summary,
+                artifacts: None,
+                warnings: counted.warnings,
+            }
+        }
+        // `full` lists the artifacts themselves, so it must enumerate them
+        // under the same bounds and guards as `inventory`.
+        ScopeDetailLevel::Full => {
+            let collected =
+                collect_scope_data(profile, instance, timeout_secs, scope_input, limit).await?;
+            let rows = collected.to_inventory_rows();
+            ScopeInspectOutput {
+                scope: collected.scope,
+                details: "full".to_string(),
+                summary: collected.summary,
+                artifacts: Some(rows),
+                warnings: collected.warnings,
+            }
+        }
     };
 
     match format {
@@ -245,8 +285,9 @@ pub(super) async fn handle_inventory(
     instance: Option<&str>,
     timeout_secs: Option<u64>,
     scope_input: &EncodedQueryValue,
+    limit: Option<usize>,
 ) -> anyhow::Result<()> {
-    let collected = collect_scope_data(profile, instance, timeout_secs, scope_input).await?;
+    let collected = collect_scope_data(profile, instance, timeout_secs, scope_input, limit).await?;
     let rows = collected.to_inventory_rows();
 
     match format {
@@ -271,15 +312,52 @@ pub(super) async fn handle_inventory(
         }
     }
 }
-pub(super) async fn collect_scope_data(
-    profile: &str,
-    instance: Option<&str>,
-    timeout_secs: Option<u64>,
-    scope_input: &EncodedQueryValue,
-) -> anyhow::Result<CollectedScopeData> {
-    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
-    let pagination = PaginationConfig::default();
+/// Scope plus artifact counts, produced without enumerating records.
+pub(super) struct CollectedScopeSummary {
+    pub(super) scope: ScopeInfo,
+    pub(super) summary: ScopeSummary,
+    pub(super) warnings: Vec<String>,
+}
 
+/// Tallies artifact counts into a [`ScopeSummary`]. Only artifact types with
+/// at least one record are recorded, matching [`ScopeSummary::from_rows`].
+#[derive(Default)]
+struct CountAccumulator {
+    total: usize,
+    artifact_counts: BTreeMap<String, usize>,
+    category_counts: BTreeMap<String, usize>,
+}
+
+impl CountAccumulator {
+    fn add(&mut self, category: &str, artifact_type: &str, count: usize) {
+        if count == 0 {
+            return;
+        }
+        self.total += count;
+        *self
+            .artifact_counts
+            .entry(artifact_type.to_string())
+            .or_insert(0) += count;
+        *self
+            .category_counts
+            .entry(category.to_string())
+            .or_insert(0) += count;
+    }
+
+    fn into_summary(self) -> ScopeSummary {
+        ScopeSummary {
+            total_artifacts: self.total,
+            artifact_counts: self.artifact_counts,
+            category_counts: self.category_counts,
+        }
+    }
+}
+
+/// Resolve a scope name or sys_id to its `sys_scope` record.
+pub(super) async fn resolve_scope(
+    client: &mut crate::client::SnowClient,
+    scope_input: &EncodedQueryValue,
+) -> anyhow::Result<ScopeInfo> {
     let scope_query = format!("scope={scope_input}^ORsys_id={scope_input}");
     let sys_scope = TableName::from_static("sys_scope");
     let scopes = client
@@ -287,7 +365,7 @@ pub(super) async fn collect_scope_data(
             &sys_scope,
             Some(&scope_query),
             Some("sys_id,scope,name,version"),
-            &pagination,
+            &PaginationConfig::default(),
             None,
         )
         .await?;
@@ -296,12 +374,104 @@ pub(super) async fn collect_scope_data(
         .first()
         .ok_or_else(|| anyhow::anyhow!("Scope '{scope_input}' was not found in sys_scope"))?;
 
-    let scope = ScopeInfo {
+    Ok(ScopeInfo {
         sys_id: field_text(scope_record, "sys_id"),
         scope: field_text(scope_record, "scope"),
         name: field_text(scope_record, "name"),
         version: field_text(scope_record, "version"),
-    };
+    })
+}
+
+/// Count scope artifacts using the Table API's `X-Total-Count` header, without
+/// downloading the records. This is what makes `inspect` viable for the
+/// `global` scope, whose artifacts span the entire base instance.
+///
+/// Counts trust the server-side `sys_scope` filter; unlike full enumeration
+/// they cannot re-validate each record's `sys_scope` field, so a table that
+/// silently ignores the filter would be over-counted. That trade-off is what
+/// keeps the operation bounded.
+pub(super) async fn collect_scope_summary(
+    profile: &str,
+    instance: Option<&str>,
+    timeout_secs: Option<u64>,
+    scope_input: &EncodedQueryValue,
+) -> anyhow::Result<CollectedScopeSummary> {
+    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+    let scope = resolve_scope(&mut client, scope_input).await?;
+    let platform = is_platform_scope(&scope.scope);
+
+    let mut warnings = Vec::new();
+    let mut acc = CountAccumulator::default();
+
+    for definition in ARTIFACT_DEFINITIONS {
+        let count =
+            count_scope_records(&mut client, &scope.sys_id, definition.table, &mut warnings).await;
+        acc.add(definition.category, definition.artifact_type, count);
+    }
+
+    // "other" = sys_metadata rows in the scope not already backed by a
+    // dedicated artifact type, counted exactly with a single `NOT IN` query.
+    let known = known_metadata_source_tables().join(",");
+    let other_query = format!("sys_scope={}^sys_class_nameNOT IN{}", scope.sys_id, known);
+    let sys_metadata = TableName::from_static("sys_metadata");
+    match client
+        .count_table_records(&sys_metadata, Some(&other_query))
+        .await
+    {
+        Ok(Some(count)) => acc.add("other", "other", count),
+        Ok(None) => warnings.push(
+            "Could not count other sys_metadata artifacts: instance did not report X-Total-Count"
+                .to_string(),
+        ),
+        Err(err) => warnings.push(format!(
+            "Failed to count other sys_metadata artifacts: {err}"
+        )),
+    }
+
+    // Dictionary and choice counts require the scope's table names, which
+    // makes them unbounded for the platform scope. Skip them there.
+    if platform {
+        warnings.push(format!(
+            "Skipped dictionary and choice counts for platform scope '{}' to avoid unbounded queries; primary artifact counts remain exact",
+            scope.scope
+        ));
+    } else {
+        let table_names = fetch_scope_table_names(&mut client, &scope.sys_id, &mut warnings).await;
+        if !table_names.is_empty() {
+            let refs = table_names.iter().map(String::as_str).collect::<Vec<_>>();
+            let dictionary = count_dictionary_fields(&mut client, &refs, &mut warnings).await;
+            acc.add("data_model_logic", "dictionary_fields", dictionary);
+            let choices = count_choice_records(&mut client, &refs, &mut warnings).await;
+            acc.add("data_model_logic", "choices", choices);
+        }
+    }
+
+    Ok(CollectedScopeSummary {
+        scope,
+        summary: acc.into_summary(),
+        warnings,
+    })
+}
+
+pub(super) async fn collect_scope_data(
+    profile: &str,
+    instance: Option<&str>,
+    timeout_secs: Option<u64>,
+    scope_input: &EncodedQueryValue,
+    limit: Option<usize>,
+) -> anyhow::Result<CollectedScopeData> {
+    let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+    let scope = resolve_scope(&mut client, scope_input).await?;
+
+    // Enumerating every artifact in the platform scope means downloading much
+    // of the instance. Require an explicit cap rather than trying.
+    if is_platform_scope(&scope.scope) && limit.is_none() {
+        anyhow::bail!(
+            "Refusing to enumerate platform scope '{}' unbounded; pass --limit N to cap records per table",
+            scope.scope
+        );
+    }
+    let per_table_limit = Some(limit.unwrap_or(DEFAULT_ENUMERATION_LIMIT));
 
     let mut warnings = Vec::new();
     let mut artifact_sets = Vec::new();
@@ -312,6 +482,7 @@ pub(super) async fn collect_scope_data(
             &scope.sys_id,
             definition.table,
             definition.fields,
+            per_table_limit,
             &mut warnings,
         )
         .await;
@@ -338,7 +509,13 @@ pub(super) async fn collect_scope_data(
 
     let table_name_refs = table_names.iter().map(String::as_str).collect::<Vec<_>>();
 
-    let dictionary = fetch_dictionary_records(&mut client, &table_name_refs, &mut warnings).await;
+    let dictionary = fetch_dictionary_records(
+        &mut client,
+        &table_name_refs,
+        per_table_limit,
+        &mut warnings,
+    )
+    .await;
     artifact_sets.push(CollectedArtifactSet {
         category: "data_model_logic".to_string(),
         artifact_type: "dictionary_fields".to_string(),
@@ -347,7 +524,13 @@ pub(super) async fn collect_scope_data(
         records: dictionary,
     });
 
-    let choices = fetch_choice_records(&mut client, &table_name_refs, &mut warnings).await;
+    let choices = fetch_choice_records(
+        &mut client,
+        &table_name_refs,
+        per_table_limit,
+        &mut warnings,
+    )
+    .await;
     artifact_sets.push(CollectedArtifactSet {
         category: "data_model_logic".to_string(),
         artifact_type: "choices".to_string(),
@@ -366,6 +549,7 @@ pub(super) async fn collect_scope_data(
         &scope.scope,
         &scope.sys_id,
         &known_source_tables,
+        per_table_limit,
         &mut warnings,
     )
     .await;
@@ -388,22 +572,145 @@ pub(super) async fn collect_scope_data(
     Ok(data)
 }
 
+/// Remaining records allowed before hitting `limit`, or `None` when unbounded.
+fn remaining_budget(limit: Option<usize>, have: usize) -> Option<usize> {
+    limit.map(|lim| lim.saturating_sub(have))
+}
+
+/// Keep only syntactically valid table names, warning about the rest.
+fn valid_table_names<'a>(
+    table_names: &[&'a str],
+    target: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<&'a str> {
+    table_names
+        .iter()
+        .filter(|name| match name.parse::<TableName>() {
+            Ok(_) => true,
+            Err(err) => {
+                warnings.push(format!(
+                    "Skipped {target} query for invalid table name '{name}': {err}"
+                ));
+                false
+            }
+        })
+        .copied()
+        .collect()
+}
+
+async fn count_scope_records(
+    client: &mut crate::client::SnowClient,
+    scope_sys_id: &str,
+    table: &'static str,
+    warnings: &mut Vec<String>,
+) -> usize {
+    let query = format!("sys_scope={scope_sys_id}");
+    let table_name = TableName::from_static(table);
+    match client.count_table_records(&table_name, Some(&query)).await {
+        Ok(Some(count)) => count,
+        Ok(None) => {
+            warnings.push(format!(
+                "Could not count {table}: instance did not report X-Total-Count"
+            ));
+            0
+        }
+        Err(err) => {
+            warnings.push(format!("Failed to count {table}: {err}"));
+            0
+        }
+    }
+}
+
+async fn fetch_scope_table_names(
+    client: &mut crate::client::SnowClient,
+    scope_sys_id: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let records = fetch_records_for_scope(
+        client,
+        scope_sys_id,
+        "sys_db_object",
+        "sys_id,name,label,super_class",
+        Some(DEFAULT_ENUMERATION_LIMIT),
+        warnings,
+    )
+    .await;
+    records
+        .iter()
+        .filter_map(|record| record.get_str("name").map(ToString::to_string))
+        .collect()
+}
+
+async fn count_dictionary_fields(
+    client: &mut crate::client::SnowClient,
+    table_names: &[&str],
+    warnings: &mut Vec<String>,
+) -> usize {
+    let names = valid_table_names(table_names, "sys_dictionary", warnings);
+    let sys_dictionary = TableName::from_static("sys_dictionary");
+    let mut total = 0;
+    for chunk in names.chunks(DICTIONARY_QUERY_CHUNK) {
+        let query = build_dictionary_query(chunk);
+        match client
+            .count_table_records(&sys_dictionary, Some(&query))
+            .await
+        {
+            Ok(Some(count)) => total += count,
+            Ok(None) => warnings.push(
+                "Could not count sys_dictionary: instance did not report X-Total-Count".to_string(),
+            ),
+            Err(err) => warnings.push(format!("Failed to count sys_dictionary: {err}")),
+        }
+    }
+    total
+}
+
+async fn count_choice_records(
+    client: &mut crate::client::SnowClient,
+    table_names: &[&str],
+    warnings: &mut Vec<String>,
+) -> usize {
+    let names = valid_table_names(table_names, "sys_choice", warnings);
+    let sys_choice = TableName::from_static("sys_choice");
+    let mut total = 0;
+    for chunk in names.chunks(DICTIONARY_QUERY_CHUNK) {
+        let query = format!("nameIN{}", chunk.join(","));
+        match client.count_table_records(&sys_choice, Some(&query)).await {
+            Ok(Some(count)) => total += count,
+            Ok(None) => warnings.push(
+                "Could not count sys_choice: instance did not report X-Total-Count".to_string(),
+            ),
+            Err(err) => warnings.push(format!("Failed to count sys_choice: {err}")),
+        }
+    }
+    total
+}
+
 pub(super) async fn fetch_records_for_scope(
     client: &mut crate::client::SnowClient,
     scope_sys_id: &str,
     table: &'static str,
     fields: &str,
+    limit: Option<usize>,
     warnings: &mut Vec<String>,
 ) -> Vec<Record> {
     let query = format!("sys_scope={scope_sys_id}");
     let fields = format!("{fields},sys_scope");
-    let pagination = PaginationConfig::default();
+    let pagination = PaginationConfig::default().with_limit(limit);
     let table_name = TableName::from_static(table);
     match client
-        .get_table_records(&table_name, Some(&query), Some(&fields), &pagination, None)
+        .get_table_records_with_meta(&table_name, Some(&query), Some(&fields), &pagination, None)
         .await
     {
-        Ok(records) => {
+        Ok(result) => {
+            if result.truncated {
+                warnings.push(truncation_warning(
+                    table,
+                    result.records.len(),
+                    result.total,
+                ));
+            }
+            let records = result.records;
             if records.is_empty() {
                 return records;
             }
@@ -443,81 +750,97 @@ pub(super) async fn fetch_records_for_scope(
 pub(super) async fn fetch_dictionary_records(
     client: &mut crate::client::SnowClient,
     table_names: &[&str],
+    limit: Option<usize>,
     warnings: &mut Vec<String>,
 ) -> Vec<Record> {
-    if table_names.is_empty() {
+    let names = valid_table_names(table_names, "sys_dictionary", warnings);
+    if names.is_empty() {
         return Vec::new();
     }
 
-    for table_name in table_names {
-        if let Err(err) = table_name.parse::<TableName>() {
-            warnings.push(format!(
-                "Skipped sys_dictionary query for invalid table name '{table_name}': {err}"
-            ));
-            return Vec::new();
-        }
-    }
-
-    let query = build_dictionary_query(table_names);
-    let pagination = PaginationConfig::default().with_page_size(200);
     let sys_dictionary = TableName::from_static("sys_dictionary");
-
-    match client
-        .get_table_records(
-            &sys_dictionary,
-            Some(&query),
-            Some("sys_id,name,element,column_label,internal_type,reference"),
-            &pagination,
-            None,
-        )
-        .await
-    {
-        Ok(records) => records,
-        Err(err) => {
-            warnings.push(format!("Failed to query sys_dictionary: {err}"));
-            Vec::new()
+    let mut records = Vec::new();
+    for chunk in names.chunks(DICTIONARY_QUERY_CHUNK) {
+        let remaining = remaining_budget(limit, records.len());
+        if remaining == Some(0) {
+            break;
+        }
+        let query = build_dictionary_query(chunk);
+        let pagination = PaginationConfig::default()
+            .with_page_size(200)
+            .with_limit(remaining);
+        match client
+            .get_table_records_with_meta(
+                &sys_dictionary,
+                Some(&query),
+                Some("sys_id,name,element,column_label,internal_type,reference"),
+                &pagination,
+                None,
+            )
+            .await
+        {
+            Ok(result) => {
+                if result.truncated {
+                    warnings.push(truncation_warning(
+                        "sys_dictionary",
+                        records.len() + result.records.len(),
+                        result.total,
+                    ));
+                }
+                records.extend(result.records);
+            }
+            Err(err) => warnings.push(format!("Failed to query sys_dictionary: {err}")),
         }
     }
+    records
 }
 
 pub(super) async fn fetch_choice_records(
     client: &mut crate::client::SnowClient,
     table_names: &[&str],
+    limit: Option<usize>,
     warnings: &mut Vec<String>,
 ) -> Vec<Record> {
-    if table_names.is_empty() {
+    let names = valid_table_names(table_names, "sys_choice", warnings);
+    if names.is_empty() {
         return Vec::new();
     }
 
-    for table_name in table_names {
-        if let Err(err) = table_name.parse::<TableName>() {
-            warnings.push(format!(
-                "Skipped sys_choice query for invalid table name '{table_name}': {err}"
-            ));
-            return Vec::new();
-        }
-    }
-
-    let query = format!("nameIN{}", table_names.join(","));
-    let pagination = PaginationConfig::default().with_page_size(200);
     let sys_choice = TableName::from_static("sys_choice");
-
-    match client
-        .get_table_records(
-            &sys_choice,
-            Some(&query),
-            Some("sys_id,name,element,value,label,inactive"),
-            &pagination,
-            None,
-        )
-        .await
-    {
-        Ok(records) => records,
-        Err(err) => {
-            warnings.push(format!("Failed to query sys_choice: {err}"));
-            Vec::new()
+    let mut records = Vec::new();
+    for chunk in names.chunks(DICTIONARY_QUERY_CHUNK) {
+        let remaining = remaining_budget(limit, records.len());
+        if remaining == Some(0) {
+            break;
+        }
+        let query = format!("nameIN{}", chunk.join(","));
+        let pagination = PaginationConfig::default()
+            .with_page_size(200)
+            .with_limit(remaining);
+        match client
+            .get_table_records_with_meta(
+                &sys_choice,
+                Some(&query),
+                Some("sys_id,name,element,value,label,inactive"),
+                &pagination,
+                None,
+            )
+            .await
+        {
+            Ok(result) => {
+                if result.truncated {
+                    warnings.push(truncation_warning(
+                        "sys_choice",
+                        records.len() + result.records.len(),
+                        result.total,
+                    ));
+                }
+                records.extend(result.records);
+            }
+            Err(err) => warnings.push(format!("Failed to query sys_choice: {err}")),
         }
     }
+    records
 }
 
 pub(super) async fn fetch_other_metadata_rows(
@@ -525,13 +848,14 @@ pub(super) async fn fetch_other_metadata_rows(
     scope: &str,
     scope_sys_id: &str,
     known_source_tables: &HashSet<String>,
+    limit: Option<usize>,
     warnings: &mut Vec<String>,
 ) -> Vec<ScopeInventoryRow> {
     let query = format!("sys_scope={scope_sys_id}");
-    let pagination = PaginationConfig::default();
+    let pagination = PaginationConfig::default().with_limit(limit);
     let sys_metadata = TableName::from_static("sys_metadata");
     let metadata_records = match client
-        .get_table_records(
+        .get_table_records_with_meta(
             &sys_metadata,
             Some(&query),
             Some("sys_id,name,sys_class_name"),
@@ -540,7 +864,16 @@ pub(super) async fn fetch_other_metadata_rows(
         )
         .await
     {
-        Ok(records) => records,
+        Ok(result) => {
+            if result.truncated {
+                warnings.push(truncation_warning(
+                    "sys_metadata",
+                    result.records.len(),
+                    result.total,
+                ));
+            }
+            result.records
+        }
         Err(err) => {
             warnings.push(format!(
                 "Failed to query sys_metadata for other artifacts: {err}"
@@ -574,6 +907,16 @@ pub(super) async fn fetch_other_metadata_rows(
             })
         })
         .collect()
+}
+
+/// Warning shown when a per-table cap prevented fetching every matching row.
+pub(super) fn truncation_warning(table: &str, returned: usize, total: Option<usize>) -> String {
+    match total {
+        Some(total) => format!(
+            "Truncated {table} at {returned} of {total} records; pass --limit to raise the cap"
+        ),
+        None => format!("Truncated {table} at {returned} records; pass --limit to raise the cap"),
+    }
 }
 
 pub(super) fn build_dictionary_query(table_names: &[&str]) -> String {
@@ -621,4 +964,59 @@ pub(super) fn map_inventory_rows(
             name: field_text(record, name_field),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod count_tests {
+    use super::*;
+
+    #[test]
+    fn is_platform_scope_only_matches_global() {
+        assert!(is_platform_scope("global"));
+        assert!(!is_platform_scope("x_my_app"));
+        assert!(!is_platform_scope("sn_ot_incident_mgmt"));
+    }
+
+    #[test]
+    fn known_metadata_source_tables_covers_definitions_and_derived() {
+        let tables = known_metadata_source_tables();
+        assert!(tables.contains(&"sys_script_include"));
+        assert!(tables.contains(&"sys_dictionary"));
+        assert!(tables.contains(&"sys_choice"));
+        assert_eq!(tables.len(), ARTIFACT_DEFINITIONS.len() + 2);
+    }
+
+    #[test]
+    fn count_accumulator_sums_and_skips_zero() {
+        let mut acc = CountAccumulator::default();
+        acc.add("server_logic", "script_includes", 3);
+        acc.add("server_logic", "business_rules", 0); // skipped
+        acc.add("client_logic", "ui_actions", 2);
+        let summary = acc.into_summary();
+
+        assert_eq!(summary.total_artifacts, 5);
+        assert_eq!(summary.artifact_counts.get("script_includes"), Some(&3));
+        assert_eq!(summary.artifact_counts.get("business_rules"), None);
+        assert_eq!(summary.category_counts.get("server_logic"), Some(&3));
+        assert_eq!(summary.category_counts.get("client_logic"), Some(&2));
+    }
+
+    #[test]
+    fn remaining_budget_saturates_and_passes_through_none() {
+        assert_eq!(remaining_budget(None, 10), None);
+        assert_eq!(remaining_budget(Some(5), 2), Some(3));
+        assert_eq!(remaining_budget(Some(5), 8), Some(0));
+    }
+
+    #[test]
+    fn truncation_warning_includes_total_when_known() {
+        assert_eq!(
+            truncation_warning("sys_script", 5000, Some(12000)),
+            "Truncated sys_script at 5000 of 12000 records; pass --limit to raise the cap"
+        );
+        assert_eq!(
+            truncation_warning("sys_script", 5000, None),
+            "Truncated sys_script at 5000 records; pass --limit to raise the cap"
+        );
+    }
 }

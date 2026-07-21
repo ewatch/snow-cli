@@ -343,12 +343,22 @@ pub enum ReadOnlyScopeCommands {
         /// Detail level for output payload
         #[arg(long, value_enum, default_value = "basic")]
         details: ScopeDetailLevel,
+
+        /// Cap the records enumerated per table when `--details full` lists
+        /// artifacts. Required for platform-scale scopes such as `global`.
+        #[arg(long)]
+        limit: Option<usize>,
     },
 
     /// Export normalized scope artifacts for analysis
     Inventory {
         /// Scope name (e.g., x_my_app) or scope sys_id
         scope: EncodedQueryValue,
+
+        /// Cap the records enumerated per table. Required for platform-scale
+        /// scopes such as `global` to avoid downloading the whole instance.
+        #[arg(long)]
+        limit: Option<usize>,
     },
 }
 
@@ -752,8 +762,16 @@ impl ReadOnlyScopeCommands {
                 show_source_table,
                 show_sys_id,
             },
-            Self::Inspect { scope, details } => ScopeCommands::Inspect { scope, details },
-            Self::Inventory { scope } => ScopeCommands::Inventory { scope },
+            Self::Inspect {
+                scope,
+                details,
+                limit,
+            } => ScopeCommands::Inspect {
+                scope,
+                details,
+                limit,
+            },
+            Self::Inventory { scope, limit } => ScopeCommands::Inventory { scope, limit },
         }
     }
 }

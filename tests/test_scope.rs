@@ -4,7 +4,7 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
-use wiremock::matchers::{body_string_contains, header, method, path, query_param};
+use wiremock::matchers::{body_string_contains, header, method, path, path_regex, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -72,6 +72,49 @@ async fn mount_scope_inventory_mocks(server: &MockServer) {
     }
 }
 
+/// Mounts mocks for the count-based `scope inspect --details basic` path,
+/// which tallies artifacts via the `X-Total-Count` header (one
+/// `sysparm_limit=1` request per table) instead of enumerating records.
+async fn mount_scope_count_mocks(server: &MockServer) {
+    // Scope resolution.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_scope"))
+        .and(query_param(
+            "sysparm_query",
+            "scope=x_my_app^ORsys_id=x_my_app",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"sys_id": "scope123", "scope": "x_my_app", "name": "My App", "version": "1.2.3"}
+            ]
+        })))
+        .mount(server)
+        .await;
+
+    // Table-name enumeration backing the dictionary/choice counts. This uses
+    // full pagination (sysparm_limit=100), distinct from the count queries.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_db_object"))
+        .and(query_param("sysparm_limit", "100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "tbl-1", "name": "x_my_app_table", "sys_scope": "scope123"}]
+        })))
+        .mount(server)
+        .await;
+
+    // Every count query issues sysparm_limit=1 and reads X-Total-Count.
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/now/table/.+"))
+        .and(query_param("sysparm_limit", "1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "2")
+                .set_body_json(serde_json::json!({"result": [{"sys_id": "x"}]})),
+        )
+        .mount(server)
+        .await;
+}
+
 async fn mount_scope_list_search_mocks(server: &MockServer, search: &str) {
     let scope_query =
         format!("scope={search}^ORsys_id={search}^ORscopeLIKE{search}^ORnameLIKE{search}");
@@ -119,7 +162,7 @@ async fn mount_scope_list_search_mocks(server: &MockServer, search: &str) {
 #[tokio::test]
 async fn test_scope_inspect_basic_json() {
     let server = MockServer::start().await;
-    mount_scope_inventory_mocks(&server).await;
+    mount_scope_count_mocks(&server).await;
 
     let (_dir, config_path) = api_key_config();
 
@@ -130,8 +173,39 @@ async fn test_scope_inspect_basic_json() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"scope\":\"x_my_app\""))
+        .stdout(predicate::str::contains("\"details\":\"basic\""))
         .stdout(predicate::str::contains("\"artifact_counts\""))
-        .stdout(predicate::str::contains("\"total_artifacts\":8"));
+        // Counts come from X-Total-Count (2 per table), not enumerated rows.
+        .stdout(predicate::str::contains("\"script_includes\":2"))
+        .stdout(predicate::str::contains("\"dictionary_fields\":2"));
+}
+
+#[tokio::test]
+async fn test_scope_inventory_platform_scope_requires_limit() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_scope"))
+        .and(query_param("sysparm_query", "scope=global^ORsys_id=global"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"sys_id": "global-id", "scope": "global", "name": "Global", "version": ""}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args(["--instance", &server.uri(), "scope", "inventory", "global"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Refusing to enumerate platform scope 'global'",
+        ));
 }
 
 #[tokio::test]
