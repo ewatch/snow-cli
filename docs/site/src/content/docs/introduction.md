@@ -29,8 +29,6 @@ With `snow-cli`, you can:
 - use `snow-cli-ro` or `--read-only` for a reduced read-only policy,
 - generate shell completions.
 
-The `seed` command surface exists for declarative test-data workflows, but its implementation is still planned.
-
 ## Command style
 
 Commands use a noun-verb structure:

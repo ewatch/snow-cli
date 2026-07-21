@@ -50,27 +50,6 @@ Notes:
 - The command prints a structured summary with counts for inserted, updated, ignored, error, and other result rows.
 - `--fail-on-error` is useful for CI or agent workflows where row-level failures must fail the command — without it, `import-set load` can exit 0 even though `summary.error` is non-zero.
 
-## `import-set transform <sys_id>`
-
-> **Not yet implemented.** This command is part of the planned interface —
-> `--help` advertises it, but running it currently exits 1 with
-> `not implemented yet`. The example below shows the intended shape only; it
-> is not runnable today.
-
-Reserved for separate transform execution.
-
-```bash
-snow-cli import-set transform <sys_id>
-```
-
-Planned status:
-
-- the command surface exists,
-- the implementation is still a placeholder,
-- some instances already run the transform automatically during `import-set load`.
-
-In other words, `import-set load` is the working path today.
-
 ## Related pages
 
 - [`data` command reference](/commands/data/)

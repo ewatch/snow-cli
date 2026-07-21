@@ -64,7 +64,6 @@ changing or resetting that default.
 | [`auth`](/commands/auth/) | Log in, log out, inspect auth status, and print tokens |
 | [`table`](/commands/table/) | CRUD operations, schema inspection, and aggregate stats for ServiceNow tables |
 | [`data`](/commands/data/) | Export, validate, and import data artifacts |
-| [`seed`](/commands/seed/) | Planned test-data workflows |
 | [`scope`](/commands/scope/) | List scopes, inspect scopes, export inventory, and move files between scopes |
 | [`attachment`](/commands/attachment/) | List, download, and upload attachments |
 | [`import-set`](/commands/import-set/) | Load records into staging tables |

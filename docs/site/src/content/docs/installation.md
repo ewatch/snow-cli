@@ -143,7 +143,7 @@ Before contributing changes, run:
 ```bash
 cargo fmt -- --check
 cargo test
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 ```
 
 ## Configuration file

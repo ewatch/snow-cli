@@ -16,7 +16,6 @@ The config file contains non-secret settings such as:
 - authentication method,
 - username,
 - OAuth client ID and grant settings,
-- mTLS certificate paths (metadata only; authenticator not yet implemented),
 - browser-session / SSO entry-point metadata,
 - default profile name,
 - default output format.
