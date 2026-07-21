@@ -5,6 +5,12 @@ All notable changes to `snow-cli` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows semantic versioning conventions while it is pre-1.0.
 
+## [0.6.1] - 2026-07-21
+
+### Changed
+
+- Updated dependencies: `indicatif` 0.18.5 → 0.18.6, `clap_complete` 4.6.5 → 4.6.7, `rand` 0.10.1 → 0.10.2, `open` 5.3.6 → 5.4.0, and `uuid` 1.23.4 → 1.23.5.
+
 ## [0.6.0] - 2026-07-17
 
 ### Added
