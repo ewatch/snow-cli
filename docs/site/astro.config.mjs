@@ -1,5 +1,15 @@
 // @ts-check
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'astro/config';
+
+// Single source of truth for the displayed snow-cli version: the crate version
+// in the repo-root Cargo.toml, read at build time and injected via Vite so the
+// docs badge/footer track releases with no manual edits. Resolved relative to
+// this config (which runs in place, unbundled) rather than the cwd.
+const CRATE_VERSION =
+  readFileSync(new URL('../../Cargo.toml', import.meta.url), 'utf8').match(
+    /^version\s*=\s*"([^"]+)"/m,
+  )?.[1] ?? '0.0.0';
 
 // Deployment base path. GitHub Pages serves this project repo at
 // https://ewatch.github.io/snow-cli/, so production builds must use the
@@ -36,5 +46,10 @@ export default defineConfig({
       theme: 'everforest-dark',
     },
     rehypePlugins: [rehypeBaseLinks],
+  },
+  vite: {
+    define: {
+      __SNOW_CLI_VERSION__: JSON.stringify(CRATE_VERSION),
+    },
   },
 });
