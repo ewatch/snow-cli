@@ -36,8 +36,8 @@ You will see a plan like this and be asked to confirm:
 
 ```text
 Plan:
-  Download: https://github.com/ewatch/snow-cli/releases/download/v0.6.0/snow-cli-0.6.0-aarch64-apple-darwin.tar.xz
-  Release:  v0.6.0
+  Download: https://github.com/ewatch/snow-cli/releases/download/v0.7.0/snow-cli-0.7.0-aarch64-apple-darwin.tar.xz
+  Release:  v0.7.0
   Install to: /Users/you/.local/bin
   Binaries: snow-cli, snow-cli-ro
 

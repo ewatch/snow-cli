@@ -7,6 +7,9 @@ on:
     paths:
       - docs/site/**
       - .github/workflows/pages.yml
+      # The docs read the displayed version from Cargo.toml at build time, so a
+      # version bump must redeploy the site even when no docs/site file changed.
+      - Cargo.toml
   workflow_dispatch:
 
 permissions:
