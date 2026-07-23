@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -12,7 +13,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout};
 
-use crate::snu::bridge::{BridgeConfig, BridgeError, BridgeManager, Matcher};
+use crate::snu::bridge::{
+    BridgeConfig, BridgeError, BridgeManager, Matcher, env_loopback_socket_addr,
+};
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
 pub const DEFAULT_SNU_BROKER_ADDR: &str = "127.0.0.1:1979";
@@ -20,9 +23,8 @@ pub const DEFAULT_SNU_BROKER_ADDR: &str = "127.0.0.1:1979";
 /// Resolves the broker's CLI-facing IPC address, honoring `SNOW_CLI_SNU_BROKER_ADDR`
 /// when set (see [`crate::snu::bridge::ws_addr`] for the matching browser-facing
 /// override and why one is needed).
-fn broker_addr() -> String {
-    std::env::var("SNOW_CLI_SNU_BROKER_ADDR")
-        .unwrap_or_else(|_| DEFAULT_SNU_BROKER_ADDR.to_string())
+fn broker_addr() -> anyhow::Result<SocketAddr> {
+    env_loopback_socket_addr("SNOW_CLI_SNU_BROKER_ADDR", DEFAULT_SNU_BROKER_ADDR)
 }
 const BROKER_READY_TIMEOUT_SECS: u64 = 5;
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 1800;
@@ -149,9 +151,9 @@ struct Broker {
 }
 
 impl Broker {
-    fn new(idle_timeout: Duration, manager: BridgeManager) -> Self {
+    fn new(idle_timeout: Duration, manager: BridgeManager, ipc_addr: SocketAddr) -> Self {
         Self {
-            state: Mutex::new(BrokerState::new(idle_timeout)),
+            state: Mutex::new(BrokerState::new(idle_timeout, ipc_addr)),
             manager,
         }
     }
@@ -166,10 +168,11 @@ struct BrokerState {
     in_flight: usize,
     shutdown: bool,
     idle_timeout: Duration,
+    ipc_addr: SocketAddr,
 }
 
 impl BrokerState {
-    fn new(idle_timeout: Duration) -> Self {
+    fn new(idle_timeout: Duration, ipc_addr: SocketAddr) -> Self {
         Self {
             sessions_by_origin: HashMap::new(),
             meta_by_origin: HashMap::new(),
@@ -179,6 +182,7 @@ impl BrokerState {
             in_flight: 0,
             shutdown: false,
             idle_timeout,
+            ipc_addr,
         }
     }
 
@@ -206,7 +210,7 @@ impl BrokerState {
 
         BrokerStatus {
             version: env!("CARGO_PKG_VERSION").to_string(),
-            ipc_addr: broker_addr(),
+            ipc_addr: self.ipc_addr.to_string(),
             browser_connected,
             session_count: self.sessions_by_origin.len(),
             latest_instance_url: self
@@ -311,26 +315,25 @@ impl BrokerState {
 }
 
 pub struct BrokerBridge {
-    addr: String,
+    addr: SocketAddr,
 }
 
 impl BrokerBridge {
     pub async fn connect_or_spawn() -> anyhow::Result<Self> {
-        if connect_once().await.is_err() {
+        let addr = broker_addr()?;
+        if connect_once(addr).await.is_err() {
+            BridgeConfig::from_env()?;
             spawn_broker()?;
-            wait_until_ready().await?;
+            wait_until_ready(addr).await?;
         }
 
-        Ok(Self {
-            addr: broker_addr(),
-        })
+        Ok(Self { addr })
     }
 
     pub async fn connect_existing() -> anyhow::Result<Self> {
-        connect_once().await?;
-        Ok(Self {
-            addr: broker_addr(),
-        })
+        let addr = broker_addr()?;
+        connect_once(addr).await?;
+        Ok(Self { addr })
     }
 
     pub async fn send_banner(&self, message: &str, timeout_secs: u64) -> anyhow::Result<()> {
@@ -491,6 +494,7 @@ pub async fn stop_broker() -> anyhow::Result<()> {
 /// Clear cached browser sessions from a running broker. Returns the cleared
 /// origins, or an empty list when no broker is running (nothing to clear).
 pub async fn clear_broker_sessions(origin: Option<String>) -> anyhow::Result<Vec<String>> {
+    broker_addr()?;
     match BrokerBridge::connect_existing().await {
         Ok(bridge) => bridge.clear_sessions(origin).await,
         Err(_) => Ok(Vec::new()),
@@ -499,12 +503,13 @@ pub async fn clear_broker_sessions(origin: Option<String>) -> anyhow::Result<Vec
 
 pub async fn run_broker_server() -> anyhow::Result<()> {
     let idle_timeout = idle_timeout();
-    let ipc_addr = broker_addr();
-    let listener = TcpListener::bind(&ipc_addr)
+    let ipc_addr = broker_addr()?;
+    let bridge_config = BridgeConfig::from_env()?;
+    let listener = TcpListener::bind(ipc_addr)
         .await
         .with_context(|| format!("failed to bind SN-Utils broker IPC on {ipc_addr}"))?;
-    let (manager, mut sessions_rx) = BridgeManager::start(BridgeConfig::default());
-    let broker = Arc::new(Broker::new(idle_timeout, manager));
+    let (manager, mut sessions_rx) = BridgeManager::start(bridge_config);
+    let broker = Arc::new(Broker::new(idle_timeout, manager, ipc_addr));
 
     // Reload any persisted browser sessions so a freshly (re)spawned broker
     // doesn't force a new `/token` for instances that already authenticated.
@@ -1035,8 +1040,8 @@ fn message_response(message: SnuMessage) -> BrokerResponse {
 /// foreign listener as a live broker would make every subsequent request fail
 /// confusingly. Requiring a parseable `ok` response also flushes out a stale
 /// broker that accepts but no longer answers.
-async fn connect_once() -> anyhow::Result<()> {
-    let stream = TcpStream::connect(broker_addr()).await?;
+async fn connect_once(addr: SocketAddr) -> anyhow::Result<()> {
+    let stream = TcpStream::connect(addr).await?;
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
 
@@ -1076,6 +1081,10 @@ fn spawn_broker() -> anyhow::Result<()> {
 /// close, or a command runner that reaps its child group), forcing a fresh
 /// `/token` on the next command.
 #[cfg(unix)]
+#[allow(
+    unsafe_code,
+    reason = "pre_exec requires unsafe; the closure only calls async-signal-safe setsid"
+)]
 fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
 
@@ -1123,17 +1132,14 @@ fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()> {
     command.spawn().map(|_| ())
 }
 
-async fn wait_until_ready() -> anyhow::Result<()> {
+async fn wait_until_ready(addr: SocketAddr) -> anyhow::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(BROKER_READY_TIMEOUT_SECS);
     loop {
-        if connect_once().await.is_ok() {
+        if connect_once(addr).await.is_ok() {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err(anyhow!(
-                "timed out waiting for SN-Utils broker on {}",
-                broker_addr()
-            ));
+            return Err(anyhow!("timed out waiting for SN-Utils broker on {}", addr));
         }
         sleep(Duration::from_millis(100)).await;
     }
@@ -1318,7 +1324,10 @@ mod tests {
     }
 
     fn state() -> BrokerState {
-        BrokerState::new(Duration::from_secs(300))
+        BrokerState::new(
+            Duration::from_secs(300),
+            SocketAddr::from(([127, 0, 0, 1], 1979)),
+        )
     }
 
     fn instance_with_token(url: &str, token: &str) -> SnuInstance {
