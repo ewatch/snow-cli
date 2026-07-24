@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -18,7 +18,8 @@ use crate::snu::bridge::{
 };
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
-pub const DEFAULT_SNU_BROKER_ADDR: &str = "127.0.0.1:1979";
+pub const DEFAULT_SNU_BROKER_ADDR: SocketAddr =
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1979);
 
 /// Resolves the broker's CLI-facing IPC address, honoring `SNOW_CLI_SNU_BROKER_ADDR`
 /// when set (see [`crate::snu::bridge::ws_addr`] for the matching browser-facing

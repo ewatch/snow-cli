@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -18,7 +18,7 @@ use tokio_tungstenite::{
 
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
-pub const DEFAULT_SNU_WS_ADDR: &str = "127.0.0.1:1978";
+pub const DEFAULT_SNU_WS_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1978);
 
 /// Resolves the SN-Utils bridge WebSocket address, honoring `SNOW_CLI_SNU_WS_ADDR`
 /// when set. This is a single machine-wide port by default (the helper tab has
@@ -31,14 +31,13 @@ pub fn ws_addr() -> anyhow::Result<SocketAddr> {
 
 pub(crate) fn env_loopback_socket_addr(
     variable: &str,
-    default: &str,
+    default: SocketAddr,
 ) -> anyhow::Result<SocketAddr> {
-    let value = match std::env::var(variable) {
-        Ok(value) => value,
-        Err(std::env::VarError::NotPresent) => default.to_string(),
-        Err(error) => return Err(error).with_context(|| format!("failed to read {variable}")),
-    };
-    loopback_socket_addr(&value, variable)
+    match std::env::var(variable) {
+        Ok(value) => loopback_socket_addr(&value, variable),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(error) => Err(error).with_context(|| format!("failed to read {variable}")),
+    }
 }
 
 fn loopback_socket_addr(value: &str, source: &str) -> anyhow::Result<SocketAddr> {
@@ -156,7 +155,7 @@ pub struct BridgeConfig {
 impl Default for BridgeConfig {
     fn default() -> Self {
         Self {
-            addr: SocketAddr::from(([127, 0, 0, 1], 1978)),
+            addr: DEFAULT_SNU_WS_ADDR,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
             connect_timeout: Duration::from_secs(HELPER_CONNECT_TIMEOUT_SECS),
             rebind_delay: DEFAULT_REBIND_DELAY,
