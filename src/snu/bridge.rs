@@ -1,8 +1,9 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use anyhow::{Context, bail};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
@@ -17,15 +18,36 @@ use tokio_tungstenite::{
 
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
-pub const DEFAULT_SNU_WS_ADDR: &str = "127.0.0.1:1978";
+pub const DEFAULT_SNU_WS_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1978);
 
 /// Resolves the SN-Utils bridge WebSocket address, honoring `SNOW_CLI_SNU_WS_ADDR`
 /// when set. This is a single machine-wide port by default (the helper tab has
 /// no way to discover a non-default one), so an override is the only way to run
 /// an isolated broker instance — e.g. driving a headless browser in tests
 /// without evicting a real, already-connected ScriptSync tab.
-pub fn ws_addr() -> String {
-    std::env::var("SNOW_CLI_SNU_WS_ADDR").unwrap_or_else(|_| DEFAULT_SNU_WS_ADDR.to_string())
+pub fn ws_addr() -> anyhow::Result<SocketAddr> {
+    env_loopback_socket_addr("SNOW_CLI_SNU_WS_ADDR", DEFAULT_SNU_WS_ADDR)
+}
+
+pub(crate) fn env_loopback_socket_addr(
+    variable: &str,
+    default: SocketAddr,
+) -> anyhow::Result<SocketAddr> {
+    match std::env::var(variable) {
+        Ok(value) => loopback_socket_addr(&value, variable),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(error) => Err(error).with_context(|| format!("failed to read {variable}")),
+    }
+}
+
+fn loopback_socket_addr(value: &str, source: &str) -> anyhow::Result<SocketAddr> {
+    let addr = value
+        .parse::<SocketAddr>()
+        .with_context(|| format!("{source} must be an IP socket address, got '{value}'"))?;
+    if !addr.ip().is_loopback() {
+        bail!("{source} must use a loopback IP address, got '{addr}'");
+    }
+    Ok(addr)
 }
 
 /// Maximum time to wait for the SN-Utils ScriptSync helper tab to *connect* to
@@ -48,7 +70,7 @@ pub enum BridgeError {
     #[error(
         "timed out waiting {0}s for the SN-Utils ScriptSync helper tab to connect on ws://{1}. Is SN-Utils installed and the ScriptSync helper tab open? It auto-connects within ~1s when running."
     )]
-    NotConnected(u64, String),
+    NotConnected(u64, SocketAddr),
     #[error("SN-Utils helper tab disconnected")]
     Disconnected,
     #[error("timed out waiting {secs}s for {what}")]
@@ -58,7 +80,7 @@ pub enum BridgeError {
     #[error(
         "SN-Utils bridge port {0} is already in use. Only one bridge can own this port at a time, so this usually means the `sn-scriptsync` VS Code extension or another process is bound to it. Stop the other owner and retry; the broker keeps retrying the port automatically."
     )]
-    PortConflict(String),
+    PortConflict(SocketAddr),
     #[error("failed to encode SN-Utils payload: {0}")]
     Encode(#[from] serde_json::Error),
 }
@@ -124,7 +146,7 @@ fn instance_matches_session(instance: &SnuInstance, target_origin: Option<&str>)
 }
 
 pub struct BridgeConfig {
-    pub addr: String,
+    pub addr: SocketAddr,
     pub heartbeat_interval: Duration,
     pub connect_timeout: Duration,
     pub rebind_delay: Duration,
@@ -133,11 +155,20 @@ pub struct BridgeConfig {
 impl Default for BridgeConfig {
     fn default() -> Self {
         Self {
-            addr: ws_addr(),
+            addr: DEFAULT_SNU_WS_ADDR,
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
             connect_timeout: Duration::from_secs(HELPER_CONNECT_TIMEOUT_SECS),
             rebind_delay: DEFAULT_REBIND_DELAY,
         }
+    }
+}
+
+impl BridgeConfig {
+    pub fn from_env() -> anyhow::Result<Self> {
+        Ok(Self {
+            addr: ws_addr()?,
+            ..Self::default()
+        })
     }
 }
 
@@ -239,7 +270,7 @@ impl BridgeManager {
     /// Wait for a helper tab to be connected, up to `max_wait`.
     pub async fn wait_connected(&self, max_wait: Duration) -> Result<(), BridgeError> {
         if !self.inner.ws_bound.load(Ordering::Relaxed) {
-            return Err(BridgeError::PortConflict(self.inner.config.addr.clone()));
+            return Err(BridgeError::PortConflict(self.inner.config.addr));
         }
         let mut rx = self.inner.connected_tx.subscribe();
         let wait = async {
@@ -254,9 +285,9 @@ impl BridgeManager {
         };
         timeout(max_wait, wait).await.map_err(|_| {
             if self.inner.ws_bound.load(Ordering::Relaxed) {
-                BridgeError::NotConnected(max_wait.as_secs(), self.inner.config.addr.clone())
+                BridgeError::NotConnected(max_wait.as_secs(), self.inner.config.addr)
             } else {
-                BridgeError::PortConflict(self.inner.config.addr.clone())
+                BridgeError::PortConflict(self.inner.config.addr)
             }
         })
     }
@@ -342,7 +373,7 @@ impl BridgeManager {
         target_origin: Option<&str>,
     ) -> Result<SnuInstance, BridgeError> {
         if !self.inner.ws_bound.load(Ordering::Relaxed) {
-            return Err(BridgeError::PortConflict(self.inner.config.addr.clone()));
+            return Err(BridgeError::PortConflict(self.inner.config.addr));
         }
 
         let matcher = Matcher::Session {
@@ -369,7 +400,7 @@ impl BridgeManager {
             _ = self.never_connected_within(connect_budget) => {
                 return Err(BridgeError::NotConnected(
                     connect_budget.as_secs(),
-                    self.inner.config.addr.clone(),
+                    self.inner.config.addr,
                 ));
             }
         };
@@ -680,7 +711,7 @@ mod tests {
 
     type HelperSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-    fn test_config(addr: String, heartbeat: Duration) -> BridgeConfig {
+    fn test_config(addr: SocketAddr, heartbeat: Duration) -> BridgeConfig {
         BridgeConfig {
             addr,
             heartbeat_interval: heartbeat,
@@ -697,7 +728,7 @@ mod tests {
         SocketAddr,
     ) {
         let (manager, sessions) =
-            BridgeManager::start(test_config("127.0.0.1:0".to_string(), heartbeat));
+            BridgeManager::start(test_config(([127, 0, 0, 1], 0).into(), heartbeat));
         let addr = manager
             .wait_bound(Duration::from_secs(2))
             .await
@@ -879,8 +910,7 @@ mod tests {
         let squatter = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = squatter.local_addr().unwrap();
 
-        let (manager, _sessions) =
-            BridgeManager::start(test_config(addr.to_string(), Duration::from_secs(60)));
+        let (manager, _sessions) = BridgeManager::start(test_config(addr, Duration::from_secs(60)));
         // Give the accept loop a moment to fail its first bind attempt.
         sleep(Duration::from_millis(150)).await;
 
@@ -922,5 +952,19 @@ mod tests {
         )
         .await;
         assert!(request.await.unwrap().is_ok());
+    }
+
+    #[test]
+    fn socket_address_requires_loopback_ip() {
+        assert_eq!(
+            loopback_socket_addr("127.0.0.1:1978", "test address").unwrap(),
+            SocketAddr::from(([127, 0, 0, 1], 1978))
+        );
+        assert!(loopback_socket_addr("[::1]:1978", "test address").is_ok());
+
+        let error = loopback_socket_addr("0.0.0.0:1978", "test address").unwrap_err();
+        assert!(error.to_string().contains("loopback IP address"));
+        let error = loopback_socket_addr("localhost:1978", "test address").unwrap_err();
+        assert!(error.to_string().contains("IP socket address"));
     }
 }
