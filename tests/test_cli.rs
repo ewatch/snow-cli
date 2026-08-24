@@ -29,6 +29,31 @@ fn test_version_flag() {
 }
 
 #[test]
+fn test_snu_rejects_non_loopback_websocket_address_before_spawning_broker() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["snu", "check-connection"])
+        .env("SNOW_CLI_SNU_BROKER_ADDR", "127.0.0.1:0")
+        .env("SNOW_CLI_SNU_WS_ADDR", "0.0.0.0:1978")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "SNOW_CLI_SNU_WS_ADDR must use a loopback IP address",
+        ));
+}
+
+#[test]
+fn test_snu_clear_rejects_non_loopback_broker_address() {
+    cargo_bin_cmd!("snow-cli")
+        .args(["snu", "broker", "clear"])
+        .env("SNOW_CLI_SNU_BROKER_ADDR", "0.0.0.0:1979")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "SNOW_CLI_SNU_BROKER_ADDR must use a loopback IP address",
+        ));
+}
+
+#[test]
 fn test_no_args_shows_help() {
     cargo_bin_cmd!("snow-cli")
         .assert()
