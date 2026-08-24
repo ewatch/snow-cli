@@ -88,6 +88,7 @@ members = ["."]
 resolver = "3"
 
 [lints.rust]
+unsafe_code = "deny"
 unused = { level = "warn", priority = -1 }
 
 [lints.clippy]
