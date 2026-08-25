@@ -359,6 +359,9 @@ impl BridgeManager {
             Ok(response) => response,
             Err(BridgeError::Timeout { .. }) => {
                 let after = self.helper_status().await;
+                if after.generation != before.generation {
+                    return Err(BridgeError::Disconnected);
+                }
                 if before.advertises_instance_gates() || after.advertises_instance_gates() {
                     return Err(BridgeError::GateStateUnavailable(
                         "helper capability refresh timed out".to_string(),
@@ -1066,6 +1069,25 @@ mod tests {
         assert_eq!(status.generation, 2);
         assert!(status.build.is_none());
         assert!(status.instance_gates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn capability_negotiation_fails_when_helper_generation_changes() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut first_helper = connect_helper(addr).await;
+        let requester = manager.clone();
+        let negotiation = tokio::spawn(async move { requester.negotiate_capabilities(2).await });
+        let capability_request = first_helper.next().await.unwrap().unwrap();
+        assert!(
+            capability_request
+                .to_text()
+                .unwrap()
+                .contains("agentGetCapabilities")
+        );
+
+        let _replacement = connect_helper(addr).await;
+        let error = negotiation.await.unwrap().unwrap_err();
+        assert!(matches!(error, BridgeError::Disconnected));
     }
 
     #[tokio::test]

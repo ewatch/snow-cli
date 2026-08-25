@@ -236,7 +236,9 @@ debugger calls) are intentionally not exposed by `snow-cli snu`.
 
 ## `snu screenshot`
 
-Capture a screenshot through the helper tab.
+Capture a screenshot through the helper tab. The selected instance must have
+an active `/token` session so the CLI can preflight its `browserDebugger` gate,
+even when targeting the tab by ID or URL pattern.
 
 ```bash
 snow-cli snu screenshot --url 'https://dev12345.service-now.com/*' --out incident.png

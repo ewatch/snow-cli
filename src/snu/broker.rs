@@ -170,6 +170,10 @@ struct SessionMeta {
 struct Broker {
     state: Mutex<BrokerState>,
     manager: BridgeManager,
+    /// Legacy background-script responses have no usable correlation id, so
+    /// only one may be in flight or concurrent callers could consume each
+    /// other's action-matched response.
+    legacy_action_lock: Mutex<()>,
 }
 
 impl Broker {
@@ -177,6 +181,7 @@ impl Broker {
         Self {
             state: Mutex::new(BrokerState::new(idle_timeout, ipc_addr)),
             manager,
+            legacy_action_lock: Mutex::new(()),
         }
     }
 }
@@ -827,21 +832,20 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
         BrokerRequest::SendActionWithLegacyFallback {
             mut current_payload,
             correlation_id,
-            legacy_payload,
+            mut legacy_payload,
             legacy_expected_action,
             timeout_secs,
         } => {
             let preflight = preflight_for_dispatch(broker, &current_payload, timeout_secs).await?;
             let result = if preflight.decision == GateDecision::LegacyUnrestricted {
-                broker
-                    .manager
-                    .request(
-                        &legacy_payload,
-                        Matcher::Action(legacy_expected_action),
-                        timeout_secs,
-                    )
-                    .await
-                    .map_err(anyhow::Error::from)
+                let _legacy_guard = broker.legacy_action_lock.lock().await;
+                send_legacy_action_with_refresh(
+                    broker,
+                    &mut legacy_payload,
+                    &legacy_expected_action,
+                    timeout_secs,
+                )
+                .await
             } else {
                 send_action_with_refresh(
                     broker,
@@ -1048,13 +1052,18 @@ async fn send_action_with_refresh(
     // Auth-flavored failure: probe with the same session before prompting. A
     // working probe means the token is fine and the failure was an ACL denial
     // on the target table — re-running /token would not help.
-    if matches!(
-        probe_session(broker, &instance, timeout_secs).await,
-        Ok(true)
-    ) {
-        return Err(anyhow!(
-            "ServiceNow denied this action, but the browser session is still valid — this is a permissions (ACL) problem on the target table, not an expired token, so re-running /token will not help: {text}"
-        ));
+    match probe_session(broker, &instance, timeout_secs).await {
+        Ok(true) => {
+            return Err(anyhow!(
+                "ServiceNow denied this action, but the browser session is still valid — this is a permissions (ACL) problem on the target table, not an expired token, so re-running /token will not help: {text}"
+            ));
+        }
+        Ok(false) => {}
+        Err(error) => {
+            return Err(error.context(
+                "could not verify the browser session after an authentication-like action failure; the cached session was preserved",
+            ));
+        }
     }
 
     // Refresh only the instance this action targeted, so a `/token` from a
@@ -1072,6 +1081,87 @@ async fn send_action_with_refresh(
         .request(
             payload,
             Matcher::Correlation(correlation_id.to_string()),
+            timeout_secs,
+        )
+        .await?;
+    mark_payload_verified(broker, payload).await;
+    Ok(message)
+}
+
+/// Legacy helpers identify background-script replies only by action name. The
+/// caller serializes these requests with `legacy_action_lock`; this function
+/// retains the same probe-before-refresh behavior as correlated current actions.
+async fn send_legacy_action_with_refresh(
+    broker: &Broker,
+    payload: &mut Value,
+    expected_action: &str,
+    timeout_secs: u64,
+) -> anyhow::Result<SnuMessage> {
+    let first = broker
+        .manager
+        .request(
+            payload,
+            Matcher::Action(expected_action.to_string()),
+            timeout_secs,
+        )
+        .await;
+    let text = match first {
+        Ok(message) => {
+            mark_payload_verified(broker, payload).await;
+            return Ok(message);
+        }
+        Err(BridgeError::ActionFailed(text)) => text,
+        Err(error) => return Err(error.into()),
+    };
+
+    if is_transient_helper_text(&text) {
+        sleep(HELPER_SETTLE_DELAY).await;
+        preflight_for_dispatch(broker, payload, timeout_secs).await?;
+        let message = broker
+            .manager
+            .request(
+                payload,
+                Matcher::Action(expected_action.to_string()),
+                timeout_secs,
+            )
+            .await?;
+        mark_payload_verified(broker, payload).await;
+        return Ok(message);
+    }
+
+    let instance = payload
+        .get("instance")
+        .and_then(|value| serde_json::from_value::<SnuInstance>(value.clone()).ok());
+    let (Some(instance), true) = (instance, is_stale_token_text(&text)) else {
+        return Err(BridgeError::ActionFailed(text).into());
+    };
+
+    match probe_session(broker, &instance, timeout_secs).await {
+        Ok(true) => {
+            return Err(anyhow!(
+                "ServiceNow denied this action, but the browser session is still valid — this is a permissions (ACL) problem, not an expired token, so re-running /token will not help: {text}"
+            ));
+        }
+        Ok(false) => {}
+        Err(error) => {
+            return Err(error.context(
+                "could not verify the browser session after an authentication-like legacy action failure; the cached session was preserved",
+            ));
+        }
+    }
+
+    let target_origin = normalize_origin(&instance.url);
+    let fresh = refresh_session(broker, timeout_secs, target_origin.as_deref()).await?;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("instance".to_string(), serde_json::to_value(&fresh)?);
+    }
+    sleep(HELPER_SETTLE_DELAY).await;
+    preflight_for_dispatch(broker, payload, timeout_secs).await?;
+    let message = broker
+        .manager
+        .request(
+            payload,
+            Matcher::Action(expected_action.to_string()),
             timeout_secs,
         )
         .await?;
@@ -1622,6 +1712,7 @@ mod tests {
     async fn community_agent_actions_are_dispatched_and_correlated() {
         for action_name in [
             "agentGetContext",
+            "switchContext",
             "agentGetFormState",
             "agentSetField",
             "agentRunUiAction",
@@ -1674,6 +1765,103 @@ mod tests {
                 .await
                 .unwrap();
             assert!(request.await.unwrap().is_ok(), "action: {action_name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn screenshot_dispatch_uses_selected_instance_for_gate_preflight() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        let request_broker = Arc::clone(&broker);
+        let payload = serde_json::json!({
+            "action": "takeScreenshot",
+            "agentRequestId": "screenshot-1",
+            "tabId": 42,
+            "instance": {
+                "name": "dev",
+                "url": "https://dev.service-now.com",
+                "g_ck": "token"
+            }
+        });
+        let request = tokio::spawn(async move {
+            dispatch(
+                BrokerRequest::SendAction {
+                    payload,
+                    correlation_id: "screenshot-1".into(),
+                    timeout_secs: 2,
+                },
+                &request_broker,
+            )
+            .await
+        });
+
+        answer_capabilities(&mut helper, "auto").await;
+        let action = helper.next().await.unwrap().unwrap();
+        let action: Value = serde_json::from_str(action.to_text().unwrap()).unwrap();
+        assert_eq!(action["action"], "takeScreenshot");
+        assert_eq!(action["instance"]["url"], "https://dev.service-now.com");
+        helper
+            .send(Message::Text(
+                serde_json::json!({
+                    "action": "takeScreenshotResponse",
+                    "agentRequestId": "screenshot-1",
+                    "success": true
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        assert!(request.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn rest_write_actions_negotiate_their_gate_and_dispatch() {
+        for method in ["POST", "PUT", "PATCH", "DELETE"] {
+            let (broker, mut helper) = gated_test_bridge().await;
+            let request_broker = Arc::clone(&broker);
+            let correlation_id = format!("rest-{method}");
+            let payload = serde_json::json!({
+                "action": "agentRestApi",
+                "agentRequestId": correlation_id,
+                "method": method,
+                "endpoint": "/api/now/table/incident",
+                "instance": {
+                    "name": "dev",
+                    "url": "https://dev.service-now.com",
+                    "g_ck": "token"
+                }
+            });
+            let request_correlation_id = correlation_id.clone();
+            let request = tokio::spawn(async move {
+                dispatch(
+                    BrokerRequest::SendAction {
+                        payload,
+                        correlation_id: request_correlation_id,
+                        timeout_secs: 2,
+                    },
+                    &request_broker,
+                )
+                .await
+            });
+
+            answer_capabilities(&mut helper, "auto").await;
+            let action = helper.next().await.unwrap().unwrap();
+            let action: Value = serde_json::from_str(action.to_text().unwrap()).unwrap();
+            assert_eq!(action["action"], "agentRestApi");
+            assert_eq!(action["method"], method);
+            helper
+                .send(Message::Text(
+                    serde_json::json!({
+                        "action": "agentRestApiResponse",
+                        "agentRequestId": correlation_id,
+                        "success": true
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            assert!(request.await.unwrap().is_ok(), "REST method: {method}");
         }
     }
 

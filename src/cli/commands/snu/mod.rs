@@ -305,17 +305,15 @@ pub async fn handle(
             if url.is_none() && tab_id.is_none() {
                 return Err(anyhow!("missing required option: --url or --tab-id"));
             }
-            let bridge = connect_bridge(
-                timeout_secs,
-                Some("snow-cli SN-Utils bridge connected. This command does not require /token."),
-            )
-            .await?;
+            let (bridge, instance) =
+                connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let correlation_id = correlation_id("screenshot");
             let payload = json!({
                 "action": "takeScreenshot",
                 "agentRequestId": correlation_id,
                 "url": url,
                 "tabId": tab_id,
+                "instance": instance,
                 "appName": "snow-cli",
             });
             let response = bridge
