@@ -12,6 +12,8 @@ The release workflow publishes these binary archives:
 | --- | --- | --- |
 | macOS Intel | `x86_64-apple-darwin` | `macos-latest` |
 | macOS Apple Silicon | `aarch64-apple-darwin` | `macos-latest` |
+| Linux x64 | `x86_64-unknown-linux-gnu` | `ubuntu-latest` via `cross` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | `ubuntu-latest` via `cross` |
 | Windows x64 | `x86_64-pc-windows-msvc` | `windows-latest` |
 
 It also publishes a consolidated `SHA256SUMS` file covering the archive assets above.
@@ -63,9 +65,6 @@ approves publication:
 
 4. The `Release` GitHub Actions workflow builds the archives and publishes them
    to a GitHub Release for that tag.
-
-You can also create a release from the GitHub UI. The workflow listens for the
-`release.published` event and uploads the same curated archive assets to the release.
 
 ## Manual rebuild
 
