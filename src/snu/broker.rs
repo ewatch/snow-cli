@@ -810,8 +810,14 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             timeout_secs,
         } => {
             let preflight = preflight_for_dispatch(broker, &payload, timeout_secs).await?;
-            let result =
-                send_action_with_refresh(broker, &mut payload, &correlation_id, timeout_secs).await;
+            let result = send_action_with_refresh(
+                broker,
+                &mut payload,
+                &correlation_id,
+                timeout_secs,
+                preflight.generation,
+            )
+            .await;
             let message = explain_approval_timeout(result, &preflight)?;
             Ok(message_response(message))
         }
@@ -823,7 +829,12 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             let preflight = preflight_for_dispatch(broker, &payload, timeout_secs).await?;
             let result = broker
                 .manager
-                .request(&payload, Matcher::Action(expected_action), timeout_secs)
+                .request_on_generation(
+                    &payload,
+                    Matcher::Action(expected_action),
+                    timeout_secs,
+                    preflight.generation,
+                )
                 .await
                 .map_err(anyhow::Error::from);
             let message = explain_approval_timeout(result, &preflight)?;
@@ -844,6 +855,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                     &mut legacy_payload,
                     &legacy_expected_action,
                     timeout_secs,
+                    preflight.generation,
                 )
                 .await
             } else {
@@ -852,6 +864,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                     &mut current_payload,
                     &correlation_id,
                     timeout_secs,
+                    preflight.generation,
                 )
                 .await
             };
@@ -1008,13 +1021,15 @@ async fn send_action_with_refresh(
     payload: &mut Value,
     correlation_id: &str,
     timeout_secs: u64,
+    expected_generation: Option<u64>,
 ) -> anyhow::Result<SnuMessage> {
     let first = broker
         .manager
-        .request(
+        .request_on_generation(
             payload,
             Matcher::Correlation(correlation_id.to_string()),
             timeout_secs,
+            expected_generation,
         )
         .await;
 
@@ -1029,13 +1044,14 @@ async fn send_action_with_refresh(
 
     if is_transient_helper_text(&text) {
         sleep(HELPER_SETTLE_DELAY).await;
-        preflight_for_dispatch(broker, payload, timeout_secs).await?;
+        let retry_preflight = preflight_for_dispatch(broker, payload, timeout_secs).await?;
         let message = broker
             .manager
-            .request(
+            .request_on_generation(
                 payload,
                 Matcher::Correlation(correlation_id.to_string()),
                 timeout_secs,
+                retry_preflight.generation,
             )
             .await?;
         mark_payload_verified(broker, payload).await;
@@ -1075,13 +1091,14 @@ async fn send_action_with_refresh(
         object.insert("instance".to_string(), serde_json::to_value(&fresh)?);
     }
     sleep(HELPER_SETTLE_DELAY).await;
-    preflight_for_dispatch(broker, payload, timeout_secs).await?;
+    let retry_preflight = preflight_for_dispatch(broker, payload, timeout_secs).await?;
     let message = broker
         .manager
-        .request(
+        .request_on_generation(
             payload,
             Matcher::Correlation(correlation_id.to_string()),
             timeout_secs,
+            retry_preflight.generation,
         )
         .await?;
     mark_payload_verified(broker, payload).await;
@@ -1096,13 +1113,15 @@ async fn send_legacy_action_with_refresh(
     payload: &mut Value,
     expected_action: &str,
     timeout_secs: u64,
+    expected_generation: Option<u64>,
 ) -> anyhow::Result<SnuMessage> {
     let first = broker
         .manager
-        .request(
+        .request_on_generation(
             payload,
             Matcher::Action(expected_action.to_string()),
             timeout_secs,
+            expected_generation,
         )
         .await;
     let text = match first {
@@ -1116,13 +1135,19 @@ async fn send_legacy_action_with_refresh(
 
     if is_transient_helper_text(&text) {
         sleep(HELPER_SETTLE_DELAY).await;
-        preflight_for_dispatch(broker, payload, timeout_secs).await?;
+        let retry_preflight = preflight_for_dispatch(broker, payload, timeout_secs).await?;
+        if retry_preflight.decision != GateDecision::LegacyUnrestricted {
+            anyhow::bail!(
+                "SN-Utils helper changed protocol generation while retrying a legacy action; retry the command"
+            );
+        }
         let message = broker
             .manager
-            .request(
+            .request_on_generation(
                 payload,
                 Matcher::Action(expected_action.to_string()),
                 timeout_secs,
+                retry_preflight.generation,
             )
             .await?;
         mark_payload_verified(broker, payload).await;
@@ -1156,13 +1181,19 @@ async fn send_legacy_action_with_refresh(
         object.insert("instance".to_string(), serde_json::to_value(&fresh)?);
     }
     sleep(HELPER_SETTLE_DELAY).await;
-    preflight_for_dispatch(broker, payload, timeout_secs).await?;
+    let retry_preflight = preflight_for_dispatch(broker, payload, timeout_secs).await?;
+    if retry_preflight.decision != GateDecision::LegacyUnrestricted {
+        anyhow::bail!(
+            "SN-Utils helper changed protocol generation while refreshing a legacy action; retry the command"
+        );
+    }
     let message = broker
         .manager
-        .request(
+        .request_on_generation(
             payload,
             Matcher::Action(expected_action.to_string()),
             timeout_secs,
+            retry_preflight.generation,
         )
         .await?;
     mark_payload_verified(broker, payload).await;
@@ -1212,7 +1243,7 @@ async fn probe_session(
         .await
     {
         Ok(_) => Ok(true),
-        Err(BridgeError::ActionFailed(text)) if is_stale_token_text(&text) => Ok(false),
+        Err(BridgeError::ActionFailed(text)) if is_probe_stale_token_text(&text) => Ok(false),
         Err(error) => Err(error.into()),
     }
 }
@@ -1265,6 +1296,11 @@ async fn refresh_session(
 /// because the `g_ck` token is expired/invalid, meaning we should refresh it
 /// from SN-Utils and retry. This classifies application-level error text, not
 /// socket state — socket death is a typed [`BridgeError`] from the manager.
+fn is_probe_stale_token_text(text: &str) -> bool {
+    let text = text.to_lowercase();
+    text.contains("http 401") || text.contains("not authenticated") || text.contains("unauthorized")
+}
+
 fn is_stale_token_text(text: &str) -> bool {
     let text = text.to_lowercase();
     text.contains("http 401")
@@ -2077,6 +2113,8 @@ mod tests {
         }
         assert!(!is_transient_helper_text("User is not authenticated"));
         assert!(is_stale_token_text("User is not authenticated"));
+        assert!(is_probe_stale_token_text("HTTP 401 Unauthorized"));
+        assert!(!is_probe_stale_token_text("HTTP 403 Forbidden"));
     }
 
     #[test]

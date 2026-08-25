@@ -149,7 +149,7 @@ impl HelperStatus {
 /// Compatibility result of actively negotiating with one helper generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityNegotiation {
-    Legacy,
+    Legacy { generation: u64 },
     Gated(Box<HelperStatus>),
 }
 
@@ -166,6 +166,10 @@ pub enum GateDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreflightResult {
+    /// Helper WebSocket generation whose negotiated state produced this
+    /// decision. Gated and legacy decisions must dispatch on this generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

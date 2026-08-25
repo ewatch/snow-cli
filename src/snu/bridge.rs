@@ -368,10 +368,13 @@ impl BridgeManager {
                     ));
                 }
                 let mut status = self.inner.helper_status.lock().await;
-                if status.generation == before.generation {
-                    status.security_gate_support = HelperSecurityGateSupport::LegacyUnrestricted;
+                if status.generation != before.generation {
+                    return Err(BridgeError::Disconnected);
                 }
-                return Ok(CapabilityNegotiation::Legacy);
+                status.security_gate_support = HelperSecurityGateSupport::LegacyUnrestricted;
+                return Ok(CapabilityNegotiation::Legacy {
+                    generation: status.generation,
+                });
             }
             Err(BridgeError::Paused) => return Err(BridgeError::Paused),
             Err(error) => {
@@ -387,11 +390,22 @@ impl BridgeManager {
         let report = HelperCapabilitiesReport::from_value(Value::Object(response.extra))
             .map_err(|error| BridgeError::GateStateUnavailable(error.to_string()))?;
         if !report.supports_instance_gates() {
-            let mut status = self.inner.helper_status.lock().await;
-            if status.generation == before.generation {
-                status.security_gate_support = HelperSecurityGateSupport::LegacyUnrestricted;
+            if before.advertises_instance_gates()
+                || before.security_gate_support == HelperSecurityGateSupport::Gated
+            {
+                return Err(BridgeError::GateStateUnavailable(
+                    "helper advertised instance security gates but its capability refresh omitted them"
+                        .to_string(),
+                ));
             }
-            return Ok(CapabilityNegotiation::Legacy);
+            let mut status = self.inner.helper_status.lock().await;
+            if status.generation != before.generation {
+                return Err(BridgeError::Disconnected);
+            }
+            status.security_gate_support = HelperSecurityGateSupport::LegacyUnrestricted;
+            return Ok(CapabilityNegotiation::Legacy {
+                generation: status.generation,
+            });
         }
 
         let mut status = self.inner.helper_status.lock().await;
@@ -414,6 +428,7 @@ impl BridgeManager {
     ) -> Result<PreflightResult, BridgeError> {
         let Some(gate) = gate_for_payload(payload) else {
             return Ok(PreflightResult {
+                generation: None,
                 origin: payload_origin(payload),
                 gate: None,
                 decision: GateDecision::NotGated,
@@ -421,7 +436,8 @@ impl BridgeManager {
         };
         let origin = payload_origin(payload);
         match self.negotiate_capabilities(timeout_secs).await? {
-            CapabilityNegotiation::Legacy => Ok(PreflightResult {
+            CapabilityNegotiation::Legacy { generation } => Ok(PreflightResult {
+                generation: Some(generation),
                 origin,
                 gate: Some(gate),
                 decision: GateDecision::LegacyUnrestricted,
@@ -442,6 +458,7 @@ impl BridgeManager {
                     GateMode::Auto => GateDecision::Automatic,
                 };
                 Ok(PreflightResult {
+                    generation: Some(status.generation),
                     origin: Some(origin),
                     gate: Some(gate),
                     decision,
@@ -474,6 +491,20 @@ impl BridgeManager {
         matcher: Matcher,
         timeout_secs: u64,
     ) -> Result<SnuMessage, BridgeError> {
+        self.request_on_generation(payload, matcher, timeout_secs, None)
+            .await
+    }
+
+    /// Send only if the active helper is still the generation whose gate state
+    /// was preflighted. The generation check and socket enqueue happen under
+    /// the same connection lock, closing the reconnect race between them.
+    pub async fn request_on_generation(
+        &self,
+        payload: &Value,
+        matcher: Matcher,
+        timeout_secs: u64,
+        expected_generation: Option<u64>,
+    ) -> Result<SnuMessage, BridgeError> {
         let connect_budget = Duration::from_secs(
             timeout_secs.min(self.inner.config.connect_timeout.as_secs().max(1)),
         );
@@ -490,6 +521,9 @@ impl BridgeManager {
             let Some(conn) = conn_guard.as_ref() else {
                 return Err(BridgeError::Disconnected);
             };
+            if expected_generation.is_some_and(|expected| expected != conn.generation) {
+                return Err(BridgeError::Disconnected);
+            }
             let (tx, rx) = oneshot::channel();
             self.inner.waiters.lock().await.push(Waiter {
                 generation: Some(conn.generation),
@@ -1069,6 +1103,69 @@ mod tests {
         assert_eq!(status.generation, 2);
         assert!(status.build.is_none());
         assert!(status.instance_gates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn advertised_gated_helper_cannot_downgrade_to_legacy() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut helper = connect_helper(addr).await;
+        send_json(
+            &mut helper,
+            json!({
+                "action": "helperBuildInfo",
+                "extensionName": "SN Utils",
+                "extensionVersion": "10.1.9.0",
+                "debuggerAvailable": true,
+                "capabilities": {"protocolVersion": 1, "instanceSecurityGates": 1}
+            }),
+        )
+        .await;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !manager.helper_status().await.advertises_instance_gates() {
+            assert!(Instant::now() < deadline);
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let requester = manager.clone();
+        let negotiation = tokio::spawn(async move { requester.negotiate_capabilities(2).await });
+        let request = helper.next().await.unwrap().unwrap();
+        let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
+        send_json(
+            &mut helper,
+            json!({
+                "action": "agentGetCapabilitiesResponse",
+                "agentRequestId": request["agentRequestId"],
+                "success": true,
+                "capabilities": {"protocolVersion": 1}
+            }),
+        )
+        .await;
+        let error = negotiation.await.unwrap().unwrap_err();
+        assert!(matches!(error, BridgeError::GateStateUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn generation_bound_request_is_not_sent_after_reconnect() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let _first_helper = connect_helper(addr).await;
+        let mut replacement = connect_helper(addr).await;
+        let payload = json!({"action": "mutation", "agentRequestId": "bound-1"});
+        let error = manager
+            .request_on_generation(
+                &payload,
+                Matcher::Correlation("bound-1".to_string()),
+                1,
+                Some(1),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, BridgeError::Disconnected));
+        assert!(
+            timeout(Duration::from_millis(100), replacement.next())
+                .await
+                .is_err(),
+            "stale-generation payload reached replacement helper"
+        );
     }
 
     #[tokio::test]
