@@ -29,7 +29,10 @@ All `snu` subcommands also accept the global flags from the [command overview](/
 - execute background scripts through the helper tab
 - open slash commands
 - activate tabs
-- switch update set / application / domain context
+- inspect or switch update set / application / domain context
+- call ServiceNow REST endpoints through the browser session
+- inspect and interact with live forms and pages
+- fetch reference/parent options
 - take screenshots
 - upload attachments
 
@@ -51,7 +54,13 @@ snow-cli snu schema incident
 snow-cli snu execute-bg-script --code 'gs.info("hello from SN-Utils")'
 snow-cli snu slash /tn
 snow-cli snu tab activate 'https://dev12345.service-now.com/incident.do*' --open-if-not-found
+snow-cli snu context get
 snow-cli snu context switch application x_my_app --tab-url 'https://dev12345.service-now.com/*'
+snow-cli snu rest get /api/now/table/incident --query-param sysparm_limit=1
+snow-cli snu records parent-options sys_db_object --fields sys_id,name --limit 10
+snow-cli snu page form-state --fields number,state
+snow-cli snu page set-field short_description 'Updated but not submitted'
+snow-cli snu page navigate https://dev12345.service-now.com/incident_list.do
 snow-cli snu screenshot --url 'https://dev12345.service-now.com/*' --out incident.png
 snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png
 ```
@@ -152,7 +161,7 @@ snow-cli snu schema incident
 
 ## `snu execute-bg-script`
 
-Run a server-side background script through the browser helper session. The command prints the helper's returned `data` payload.
+Run a server-side background script through the correlated Agent API. The command prints the helper's returned script output.
 
 ```bash
 snow-cli snu execute-bg-script --code 'gs.info("hello from SN-Utils")'
@@ -178,13 +187,51 @@ Activate or open a matching tab.
 snow-cli snu tab activate 'https://dev12345.service-now.com/*' --open-if-not-found
 ```
 
-## `snu context switch <type> <value>`
+## `snu context get|switch`
 
-Switch update set, application, or domain context in the browser session.
+Read the current application/update-set context, or switch update set,
+application, or domain context in the browser session.
 
 ```bash
+snow-cli snu context get
 snow-cli snu context switch application x_my_app --tab-url 'https://dev12345.service-now.com/*'
 ```
+
+## `snu rest <method> <endpoint>`
+
+Use the helper's correlated Agent REST API with the active browser session.
+Endpoints must be instance-relative. GET is available in `snow-cli-ro`; write
+methods are blocked there.
+
+```bash
+snow-cli snu rest get /api/now/table/incident --query-param sysparm_limit=1
+snow-cli snu rest patch /api/now/table/incident/<sys_id> --data '{"state":"2"}'
+```
+
+## `snu records parent-options`
+
+Fetch reference/parent choices with a bounded Table API query.
+
+```bash
+snow-cli snu records parent-options sys_db_object --fields sys_id,name --limit 10
+```
+
+## `snu page`
+
+Drive the community Agent API for a live ServiceNow tab. `form-state` is a
+read; `set-field` changes the unsaved form, while `run-ui-action`, `click`, and
+`navigate` can cause browser or instance side effects.
+
+```bash
+snow-cli snu page form-state --fields number,state --url 'https://dev12345.service-now.com/*'
+snow-cli snu page set-field short_description 'Updated but not submitted'
+snow-cli snu page run-ui-action save
+snow-cli snu page click '#sysverb_update'
+snow-cli snu page navigate https://dev12345.service-now.com/incident_list.do
+```
+
+SN-Utils Pro-only Agent actions (`agentCodeSearch` and all `agentCdp*` browser
+debugger calls) are intentionally not exposed by `snow-cli snu`.
 
 ## `snu screenshot`
 
@@ -208,7 +255,7 @@ snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png
 - `snow-cli snu` commands auto-start a local broker that owns the SN-Utils WebSocket port and idles out when unused.
 - The `g_ck` token is not stored as a reusable credential. The broker keeps live browser-session metadata in memory per instance while it is running.
 - If a command waits for session metadata, run `/token` in a ServiceNow tab.
-- Some helper actions are available in the SN-Utils extension but are not yet exposed as `snow-cli` commands, including `get_file_structure`, `get_form_state`, `set_field`, `run_ui_action`, `navigate`, `navigate_and_screenshot`, `rest_request`, and `refresh_preview`.
+- Community Agent API calls use correlated responses. Pro-only code search and CDP debugger actions remain intentionally unsupported.
 
 ### Targeting a specific instance
 

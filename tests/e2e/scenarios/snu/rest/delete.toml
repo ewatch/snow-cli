@@ -1,0 +1,20 @@
+name = "snu-rest-delete"
+description = "Delete a disposable incident through the SN-Utils Agent REST API"
+requires = ["sn-utils-bridge", "credentials"]
+
+[[setup]]
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+[[setup]]
+args = ["snu", "create-record", "incident", "--data", "{\"short_description\":\"snow-cli e2e: snu-rest-delete\"}", "--profile", "e2e-scenario", "--output", "json"]
+capture = { sys_id = ".sys_id" }
+
+[command]
+args = ["snu", "rest", "delete", "/api/now/table/incident/{{sys_id}}", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+json_field_present = [".success == true"]
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

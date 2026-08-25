@@ -1,0 +1,21 @@
+name = "snu-rest-post"
+description = "Create a disposable incident through the SN-Utils Agent REST API"
+requires = ["sn-utils-bridge", "credentials"]
+
+[[setup]]
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+args = ["snu", "rest", "post", "/api/now/table/incident", "--data", "{\"short_description\":\"snow-cli e2e: snu-rest-post\"}", "--profile", "e2e-scenario", "--output", "json"]
+capture = { sys_id = ".data.result.sys_id" }
+
+[expect]
+exit_code = 0
+json_field_present = [".success == true", ".data.result.sys_id | type == \"string\""]
+
+[[cleanup]]
+args = ["snu", "rest", "delete", "/api/now/table/incident/{{sys_id}}", "--profile", "e2e-scenario"]
+allow_failure = true
+[[cleanup]]
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

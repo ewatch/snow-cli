@@ -231,30 +231,24 @@ pub(super) fn build_bulk_delete_script(table: &str, query: &str, limit: u32) -> 
     )
 }
 
-/// Run a generated mutation script over the SN-Utils `executeBackgroundScript`
-/// bridge (the proven channel) and return the parsed JSON result the script
-/// printed. Errors out when the script reported `success: false`.
+/// Run a generated mutation script over the correlated SN-Utils Agent API and
+/// return the parsed JSON result the script printed. Errors out when the script
+/// reported `success: false`.
 pub(super) async fn run_bg_mutation(
     bridge: &BrokerBridge,
     instance: &SnuInstance,
     script: &str,
     timeout_secs: u64,
 ) -> anyhow::Result<Value> {
-    let response = bridge
-        .send_action_and_wait_for_action(
-            &json!({
-                "action": "executeBackgroundScript",
-                "content": script,
-                "instance": instance,
-                "appName": "snow-cli",
-            }),
-            "responseFromBackgroundScript",
-            timeout_secs,
-        )
-        .await?;
+    let mut payload = Map::new();
+    payload.insert("script".to_string(), Value::String(script.to_string()));
+    payload.insert("instance".to_string(), serde_json::to_value(instance)?);
+    let response =
+        send_agent_action(bridge, "agentRunBackgroundScript", payload, timeout_secs).await?;
     let data = response
         .extra
-        .get("data")
+        .get("output")
+        .or_else(|| response.extra.get("data"))
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("SN-Utils background script response did not contain data"))?;
     let result = parse_mutation_result(data)?;

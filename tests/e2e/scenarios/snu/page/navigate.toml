@@ -1,0 +1,17 @@
+name = "snu-page-navigate"
+description = "Navigate a ServiceNow tab through the community Agent API"
+requires = ["sn-utils-bridge", "credentials"]
+
+[[setup]]
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[command]
+args = ["snu", "page", "navigate", "$SNOW_E2E_INSTANCE_URL/incident_list.do", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+json_field_present = [".success == true", ".tabId | type == \"number\"", ".url | type == \"string\""]
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

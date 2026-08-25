@@ -258,6 +258,13 @@ mod tests {
             (serde_json::json!({"action": "runSlashCommand"}), None),
             (serde_json::json!({"action": "activateTab"}), None),
             (serde_json::json!({"action": "switchContext"}), None),
+            (serde_json::json!({"action": "agentGetContext"}), None),
+            (serde_json::json!({"action": "agentGetParentOptions"}), None),
+            (serde_json::json!({"action": "agentGetFormState"}), None),
+            (serde_json::json!({"action": "agentSetField"}), None),
+            (serde_json::json!({"action": "agentRunUiAction"}), None),
+            (serde_json::json!({"action": "agentClickElement"}), None),
+            (serde_json::json!({"action": "agentNavigate"}), None),
             (
                 serde_json::json!({"action": "executeBackgroundScript"}),
                 Some(GateName::BackgroundScripts),

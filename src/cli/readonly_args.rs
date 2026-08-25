@@ -5,7 +5,9 @@ use crate::cli::args::{
     ApiArgs, ApiCommands, AttachmentArgs, AttachmentCommands, AuthArgs, AuthCommands,
     CodesearchArgs, CodesearchCommands, Commands, ConfigArgs, DEFAULT_SNU_TIMEOUT_SECS, DataArgs,
     DataCommands, OutputFormat, ScopeArgs, ScopeCommands, ScopeDetailLevel, ScopeListKind, SnuArgs,
-    SnuCommands, TableArgs, TableCommands,
+    SnuCommands, SnuContextArgs, SnuContextCommands, SnuPageArgs, SnuPageCommands,
+    SnuPageTargetArgs, SnuRecordsArgs, SnuRestArgs, SnuRestCommands, SnuRestReadArgs, TableArgs,
+    TableCommands,
 };
 use crate::models::identifiers::{EncodedQueryValue, SysId, TableName};
 
@@ -546,6 +548,18 @@ pub enum ReadOnlySnuCommands {
         timeout_secs: u64,
     },
 
+    /// Read the current ServiceNow browser-session context
+    Context(ReadOnlySnuContextArgs),
+
+    /// Send a read-only REST request through the browser session
+    Rest(ReadOnlySnuRestArgs),
+
+    /// Read state from a live ServiceNow browser page
+    Page(ReadOnlySnuPageArgs),
+
+    /// Read Agent API record metadata
+    Records(SnuRecordsArgs),
+
     /// Capture a browser screenshot through SN-Utils
     Screenshot {
         /// Browser tab URL/pattern to capture
@@ -563,6 +577,52 @@ pub enum ReadOnlySnuCommands {
         /// Seconds to wait for helper/session/response
         #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
         timeout_secs: u64,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct ReadOnlySnuContextArgs {
+    #[command(subcommand)]
+    pub command: ReadOnlySnuContextCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReadOnlySnuContextCommands {
+    /// Get the current application scope and update set through the Agent API
+    Get {
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct ReadOnlySnuRestArgs {
+    #[command(subcommand)]
+    pub command: ReadOnlySnuRestCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReadOnlySnuRestCommands {
+    /// Send a GET request
+    Get(SnuRestReadArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ReadOnlySnuPageArgs {
+    #[command(subcommand)]
+    pub command: ReadOnlySnuPageCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReadOnlySnuPageCommands {
+    /// Read fields and metadata from the active form
+    FormState {
+        /// Comma-separated field names; omit to read all form fields
+        #[arg(long, value_delimiter = ',')]
+        fields: Vec<String>,
+        #[command(flatten)]
+        target: SnuPageTargetArgs,
     },
 }
 
@@ -870,6 +930,26 @@ impl ReadOnlySnuCommands {
                 app_id,
                 timeout_secs,
             },
+            Self::Context(context) => SnuCommands::Context(SnuContextArgs {
+                command: match context.command {
+                    ReadOnlySnuContextCommands::Get { timeout_secs } => {
+                        SnuContextCommands::Get { timeout_secs }
+                    }
+                },
+            }),
+            Self::Rest(rest) => SnuCommands::Rest(SnuRestArgs {
+                command: match rest.command {
+                    ReadOnlySnuRestCommands::Get(request) => SnuRestCommands::Get(request),
+                },
+            }),
+            Self::Page(page) => SnuCommands::Page(SnuPageArgs {
+                command: match page.command {
+                    ReadOnlySnuPageCommands::FormState { fields, target } => {
+                        SnuPageCommands::FormState { fields, target }
+                    }
+                },
+            }),
+            Self::Records(records) => SnuCommands::Records(records),
             Self::Screenshot {
                 url,
                 tab_id,
@@ -963,7 +1043,42 @@ mod tests {
         assert!(!help.contains("execute-bg-script"));
         assert!(!help.contains("attachment-upload"));
         assert!(!help.contains("slash"));
-        assert!(!help.contains("context"));
+        assert!(help.contains("context"));
+        assert!(help.contains("rest"));
+        assert!(help.contains("page"));
+        assert!(help.contains("records"));
+
+        let context_help = ReadOnlyCli::command()
+            .find_subcommand("snu")
+            .and_then(|snu| snu.find_subcommand("context"))
+            .expect("read-only context subcommand exists")
+            .clone()
+            .render_long_help()
+            .to_string();
+        assert!(context_help.contains("get"));
+        assert!(!context_help.contains("switch"));
+
+        let rest_help = ReadOnlyCli::command()
+            .find_subcommand("snu")
+            .and_then(|snu| snu.find_subcommand("rest"))
+            .expect("read-only rest subcommand exists")
+            .clone()
+            .render_long_help()
+            .to_string();
+        assert!(rest_help.contains("get"));
+        assert!(!rest_help.contains("post"));
+        assert!(!rest_help.contains("delete"));
+
+        let page_help = ReadOnlyCli::command()
+            .find_subcommand("snu")
+            .and_then(|snu| snu.find_subcommand("page"))
+            .expect("read-only page subcommand exists")
+            .clone()
+            .render_long_help()
+            .to_string();
+        assert!(page_help.contains("form-state"));
+        assert!(!page_help.contains("set-field"));
+        assert!(!page_help.contains("run-ui-action"));
     }
 
     #[test]

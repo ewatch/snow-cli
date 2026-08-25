@@ -33,6 +33,29 @@ fn broker_status(instances: Vec<InstanceSummary>, browser_connected: bool) -> Br
 }
 
 #[test]
+fn agent_response_output_redacts_embedded_session_token() {
+    let response = SnuMessage {
+        action: Some("testResponse".to_string()),
+        agent_request_id: Some("request-id".to_string()),
+        instance: Some(SnuInstance {
+            name: "dev".to_string(),
+            url: "https://dev.service-now.com".to_string(),
+            g_ck: Some("must-not-leak".to_string()),
+            scope: Some("global".to_string()),
+        }),
+        success: Some(true),
+        error: None,
+        extra: Map::new(),
+    };
+
+    let value = response_value(&response).unwrap();
+    let serialized = value.to_string();
+    assert!(!serialized.contains("must-not-leak"));
+    assert!(value.get("agentRequestId").is_none());
+    assert_eq!(value["instance"]["has_g_ck"], true);
+}
+
+#[test]
 fn check_connection_result_reflects_probe_and_state() {
     let status = broker_status(
         vec![instance_summary("https://dev.service-now.com", true)],
