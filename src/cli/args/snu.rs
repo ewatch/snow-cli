@@ -364,7 +364,7 @@ pub enum SnuRestCommands {
 pub struct SnuRestReadArgs {
     /// Instance-relative REST endpoint
     pub endpoint: String,
-    /// Query parameter in key=value form; repeat for multiple values
+    /// Query parameter in key=value form; repeat for multiple unique keys
     #[arg(long = "query-param")]
     pub query_params: Vec<String>,
     /// Seconds to wait for helper/session/response
@@ -379,7 +379,7 @@ pub struct SnuRestWriteArgs {
     /// JSON request body
     #[arg(long)]
     pub data: Option<String>,
-    /// Query parameter in key=value form; repeat for multiple values
+    /// Query parameter in key=value form; repeat for multiple unique keys
     #[arg(long = "query-param")]
     pub query_params: Vec<String>,
     /// Seconds to wait for helper/session/response

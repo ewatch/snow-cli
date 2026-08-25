@@ -69,6 +69,13 @@ enum BrokerRequest {
         expected_action: String,
         timeout_secs: u64,
     },
+    SendActionWithLegacyFallback {
+        current_payload: Value,
+        correlation_id: String,
+        legacy_payload: Value,
+        legacy_expected_action: String,
+        timeout_secs: u64,
+    },
     RefreshSession {
         timeout_secs: u64,
         #[serde(default)]
@@ -412,6 +419,30 @@ impl BrokerBridge {
         self.request(BrokerRequest::SendActionForAction {
             payload: payload.clone(),
             expected_action: expected_action.to_string(),
+            timeout_secs,
+        })
+        .await?
+        .message
+        .ok_or_else(|| anyhow!("SN-Utils broker did not return an action response"))
+    }
+
+    /// Dispatch a correlated current-helper action, but select a proven legacy
+    /// protocol action when capability negotiation identifies an older helper.
+    /// Selection happens in the broker immediately before dispatch so a
+    /// mutation can never be sent once through each protocol.
+    pub async fn send_action_and_wait_with_legacy_fallback(
+        &self,
+        current_payload: &Value,
+        correlation_id: &str,
+        legacy_payload: &Value,
+        legacy_expected_action: &str,
+        timeout_secs: u64,
+    ) -> anyhow::Result<SnuMessage> {
+        self.request(BrokerRequest::SendActionWithLegacyFallback {
+            current_payload: current_payload.clone(),
+            correlation_id: correlation_id.to_string(),
+            legacy_payload: legacy_payload.clone(),
+            legacy_expected_action: legacy_expected_action.to_string(),
             timeout_secs,
         })
         .await?
@@ -790,6 +821,36 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 .request(&payload, Matcher::Action(expected_action), timeout_secs)
                 .await
                 .map_err(anyhow::Error::from);
+            let message = explain_approval_timeout(result, &preflight)?;
+            Ok(message_response(message))
+        }
+        BrokerRequest::SendActionWithLegacyFallback {
+            mut current_payload,
+            correlation_id,
+            legacy_payload,
+            legacy_expected_action,
+            timeout_secs,
+        } => {
+            let preflight = preflight_for_dispatch(broker, &current_payload, timeout_secs).await?;
+            let result = if preflight.decision == GateDecision::LegacyUnrestricted {
+                broker
+                    .manager
+                    .request(
+                        &legacy_payload,
+                        Matcher::Action(legacy_expected_action),
+                        timeout_secs,
+                    )
+                    .await
+                    .map_err(anyhow::Error::from)
+            } else {
+                send_action_with_refresh(
+                    broker,
+                    &mut current_payload,
+                    &correlation_id,
+                    timeout_secs,
+                )
+                .await
+            };
             let message = explain_approval_timeout(result, &preflight)?;
             Ok(message_response(message))
         }
@@ -1504,9 +1565,18 @@ mod tests {
         for mode in ["approve", "auto"] {
             let (broker, mut helper) = gated_test_bridge().await;
             let request_broker = Arc::clone(&broker);
-            let payload = serde_json::json!({
-                "action": "executeBackgroundScript",
+            let current_payload = serde_json::json!({
+                "action": "agentRunBackgroundScript",
                 "agentRequestId": "action-1",
+                "script": "gs.info('test')",
+                "instance": {
+                    "name": "dev",
+                    "url": "https://dev.service-now.com",
+                    "g_ck": "token"
+                }
+            });
+            let legacy_payload = serde_json::json!({
+                "action": "executeBackgroundScript",
                 "content": "gs.info('test')",
                 "instance": {
                     "name": "dev",
@@ -1516,9 +1586,11 @@ mod tests {
             });
             let request = tokio::spawn(async move {
                 dispatch(
-                    BrokerRequest::SendAction {
-                        payload,
+                    BrokerRequest::SendActionWithLegacyFallback {
+                        current_payload,
                         correlation_id: "action-1".into(),
+                        legacy_payload,
+                        legacy_expected_action: "responseFromBackgroundScript".into(),
                         timeout_secs: 2,
                     },
                     &request_broker,
@@ -1529,7 +1601,7 @@ mod tests {
             answer_capabilities(&mut helper, mode).await;
             let action = helper.next().await.unwrap().unwrap();
             let action: Value = serde_json::from_str(action.to_text().unwrap()).unwrap();
-            assert_eq!(action["action"], "executeBackgroundScript");
+            assert_eq!(action["action"], "agentRunBackgroundScript");
             helper
                 .send(Message::Text(
                     serde_json::json!({
@@ -1547,12 +1619,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn community_agent_actions_are_dispatched_and_correlated() {
+        for action_name in [
+            "agentGetContext",
+            "agentGetFormState",
+            "agentSetField",
+            "agentRunUiAction",
+            "agentClickElement",
+            "agentNavigate",
+            "agentGetParentOptions",
+            "agentRestApi",
+        ] {
+            let (broker, mut helper) = gated_test_bridge().await;
+            let request_broker = Arc::clone(&broker);
+            let correlation_id = format!("{action_name}-1");
+            let mut payload = serde_json::json!({
+                "action": action_name,
+                "agentRequestId": correlation_id,
+                "instance": {
+                    "name": "dev",
+                    "url": "https://dev.service-now.com",
+                    "g_ck": "token"
+                }
+            });
+            if action_name == "agentRestApi" {
+                payload["method"] = Value::String("GET".to_string());
+            }
+            let request_correlation_id = correlation_id.clone();
+            let request = tokio::spawn(async move {
+                dispatch(
+                    BrokerRequest::SendAction {
+                        payload,
+                        correlation_id: request_correlation_id,
+                        timeout_secs: 2,
+                    },
+                    &request_broker,
+                )
+                .await
+            });
+
+            let action = helper.next().await.unwrap().unwrap();
+            let action: Value = serde_json::from_str(action.to_text().unwrap()).unwrap();
+            assert_eq!(action["action"], action_name);
+            helper
+                .send(Message::Text(
+                    serde_json::json!({
+                        "action": format!("{action_name}Response"),
+                        "agentRequestId": correlation_id,
+                        "success": true
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            assert!(request.await.unwrap().is_ok(), "action: {action_name}");
+        }
+    }
+
+    #[tokio::test]
     async fn legacy_helper_is_labeled_and_action_is_dispatched() {
         let (broker, mut helper) = gated_test_bridge().await;
         let request_broker = Arc::clone(&broker);
-        let payload = serde_json::json!({
-            "action": "executeBackgroundScript",
+        let current_payload = serde_json::json!({
+            "action": "agentRunBackgroundScript",
             "agentRequestId": "legacy-1",
+            "script": "gs.info('legacy')",
+            "instance": {
+                "name": "dev",
+                "url": "https://dev.service-now.com",
+                "g_ck": "token"
+            }
+        });
+        let legacy_payload = serde_json::json!({
+            "action": "executeBackgroundScript",
             "content": "gs.info('legacy')",
             "instance": {
                 "name": "dev",
@@ -1562,9 +1702,11 @@ mod tests {
         });
         let request = tokio::spawn(async move {
             dispatch(
-                BrokerRequest::SendAction {
-                    payload,
+                BrokerRequest::SendActionWithLegacyFallback {
+                    current_payload,
                     correlation_id: "legacy-1".into(),
+                    legacy_payload,
+                    legacy_expected_action: "responseFromBackgroundScript".into(),
                     timeout_secs: 2,
                 },
                 &request_broker,
@@ -1598,7 +1740,7 @@ mod tests {
         helper
             .send(Message::Text(
                 serde_json::json!({
-                    "agentRequestId": "legacy-1",
+                    "action": "responseFromBackgroundScript",
                     "success": true
                 })
                 .to_string()

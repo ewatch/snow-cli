@@ -240,11 +240,8 @@ pub(super) async fn run_bg_mutation(
     script: &str,
     timeout_secs: u64,
 ) -> anyhow::Result<Value> {
-    let mut payload = Map::new();
-    payload.insert("script".to_string(), Value::String(script.to_string()));
-    payload.insert("instance".to_string(), serde_json::to_value(instance)?);
     let response =
-        send_agent_action(bridge, "agentRunBackgroundScript", payload, timeout_secs).await?;
+        send_background_script_action(bridge, instance, script.to_string(), timeout_secs).await?;
     let data = response
         .extra
         .get("output")

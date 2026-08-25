@@ -100,12 +100,8 @@ pub async fn handle(
             let script = resolve_script(file, code)?;
             let (bridge, instance) =
                 connect_and_wait_for_session(timeout_secs, target_origin).await?;
-            let mut payload = Map::new();
-            payload.insert("script".to_string(), Value::String(script));
-            payload.insert("instance".to_string(), serde_json::to_value(instance)?);
             let response =
-                send_agent_action(&bridge, "agentRunBackgroundScript", payload, timeout_secs)
-                    .await?;
+                send_background_script_action(&bridge, &instance, script, timeout_secs).await?;
             print_background_script_response(response, output_format)
         }
         SnuCommands::CreateRecord {

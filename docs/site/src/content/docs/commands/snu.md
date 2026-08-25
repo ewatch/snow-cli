@@ -200,8 +200,9 @@ snow-cli snu context switch application x_my_app --tab-url 'https://dev12345.ser
 ## `snu rest <method> <endpoint>`
 
 Use the helper's correlated Agent REST API with the active browser session.
-Endpoints must be instance-relative. GET is available in `snow-cli-ro`; write
-methods are blocked there.
+Endpoints must be safe instance-relative paths. Repeat `--query-param` for
+multiple unique keys; duplicate keys are rejected rather than silently
+collapsed. GET is available in `snow-cli-ro`; write methods are blocked there.
 
 ```bash
 snow-cli snu rest get /api/now/table/incident --query-param sysparm_limit=1
