@@ -24,6 +24,7 @@ fn broker_status(instances: Vec<InstanceSummary>, browser_connected: bool) -> Br
         version: "0.0.0-test".to_string(),
         ipc_addr: "127.0.0.1:1979".to_string(),
         browser_connected,
+        helper: crate::snu::gates::HelperStatus::default(),
         session_count: instances.len(),
         latest_instance_url: latest,
         instances,

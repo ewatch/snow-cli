@@ -48,6 +48,15 @@ impl SnuMessage {
         self.agent_request_id.as_deref() == Some(correlation_id)
     }
 
+    pub fn error_code(&self) -> Option<&str> {
+        self.error
+            .as_ref()
+            .and_then(Value::as_object)
+            .and_then(|error| error.get("code"))
+            .or_else(|| self.extra.get("code"))
+            .and_then(Value::as_str)
+    }
+
     pub fn error_text(&self) -> Option<String> {
         match &self.error {
             Some(Value::String(text)) => Some(text.clone()),

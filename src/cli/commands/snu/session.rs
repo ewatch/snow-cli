@@ -72,15 +72,50 @@ pub(super) async fn handle_check_connection(
     // cheap probe query. Verification failure is reported in the snapshot, not
     // propagated, so the connectivity half of the output always arrives.
     let verification = if verify {
-        Some(bridge.verify_session(timeout_secs, target_origin).await)
+        Some(
+            bridge
+                .verify_session(timeout_secs, target_origin.clone())
+                .await,
+        )
     } else {
         None
     };
+    let capability_error = bridge
+        .refresh_helper_capabilities(timeout_secs)
+        .await
+        .err()
+        .map(|error| error.to_string());
     let status = crate::snu::broker::broker_status().await?;
-    print_output(
-        &build_check_connection_result(&status, browser_responsive, verification),
-        output_format,
-    )
+    let selected_origin = target_origin.or_else(|| {
+        status
+            .latest_instance_url
+            .as_deref()
+            .and_then(crate::snu::protocol::normalize_origin)
+    });
+    let mut result = build_check_connection_result(&status, browser_responsive, verification);
+    if let Some(object) = result.as_object_mut() {
+        if let Some(origin) = selected_origin {
+            object.insert(
+                "selected_instance_origin".to_string(),
+                Value::String(origin.clone()),
+            );
+            object.insert(
+                "selected_instance_security_gates".to_string(),
+                status
+                    .helper
+                    .instance_gates
+                    .get(&origin)
+                    .map_or(Value::Null, |snapshot| json!(snapshot)),
+            );
+        }
+        if let Some(error) = capability_error {
+            object.insert(
+                "helper_capabilities_error".to_string(),
+                Value::String(error),
+            );
+        }
+    }
+    print_output(&result, output_format)
 }
 
 /// Report instance metadata from the broker's session state (URL, origin,
@@ -109,6 +144,7 @@ pub(super) fn build_check_connection_result(
         "broker_version": status.version,
         "ipc_addr": status.ipc_addr,
         "browser_connected": status.browser_connected,
+        "helper": status.helper,
         "session_count": status.session_count,
         "latest_instance_url": status.latest_instance_url,
         "instances": status.instances,

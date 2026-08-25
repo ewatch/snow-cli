@@ -16,6 +16,7 @@ use tokio::time::{sleep, timeout};
 use crate::snu::bridge::{
     BridgeConfig, BridgeError, BridgeManager, Matcher, env_loopback_socket_addr,
 };
+use crate::snu::gates::{GateDecision, HelperStatus, PreflightResult};
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
 pub const DEFAULT_SNU_BROKER_ADDR: SocketAddr =
@@ -44,6 +45,9 @@ const TOKEN_EXPIRED_BANNER: &str = "snow-cli: ServiceNow rejected the saved sess
 enum BrokerRequest {
     Ping,
     Status,
+    RefreshCapabilities {
+        timeout_secs: u64,
+    },
     Stop,
     SendBanner {
         message: String,
@@ -85,6 +89,8 @@ enum BrokerRequest {
 struct BrokerResponse {
     ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     message: Option<SnuMessage>,
@@ -98,11 +104,19 @@ struct BrokerResponse {
     token_valid: Option<bool>,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct BrokerClientError {
+    pub code: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokerStatus {
     pub version: String,
     pub ipc_addr: String,
     pub browser_connected: bool,
+    pub helper: HelperStatus,
     pub session_count: usize,
     pub latest_instance_url: Option<String>,
     /// Every instance the broker currently holds a browser session for, so the
@@ -187,7 +201,7 @@ impl BrokerState {
         }
     }
 
-    fn status(&self, browser_connected: bool) -> BrokerStatus {
+    fn status(&self, browser_connected: bool, helper: HelperStatus) -> BrokerStatus {
         let mut instances: Vec<InstanceSummary> = self
             .sessions_by_origin
             .iter()
@@ -213,6 +227,7 @@ impl BrokerState {
             version: env!("CARGO_PKG_VERSION").to_string(),
             ipc_addr: self.ipc_addr.to_string(),
             browser_connected,
+            helper,
             session_count: self.sessions_by_origin.len(),
             latest_instance_url: self
                 .latest_origin
@@ -335,6 +350,16 @@ impl BrokerBridge {
         let addr = broker_addr()?;
         connect_once(addr).await?;
         Ok(Self { addr })
+    }
+
+    pub async fn refresh_helper_capabilities(
+        &self,
+        timeout_secs: u64,
+    ) -> anyhow::Result<BrokerStatus> {
+        self.request(BrokerRequest::RefreshCapabilities { timeout_secs })
+            .await?
+            .status
+            .ok_or_else(|| anyhow!("SN-Utils broker did not return helper capability status"))
     }
 
     pub async fn send_banner(&self, message: &str, timeout_secs: u64) -> anyhow::Result<()> {
@@ -465,12 +490,15 @@ impl BrokerBridge {
         if response.ok {
             Ok(response)
         } else {
-            Err(anyhow!(
-                "{}",
-                response
+            Err(BrokerClientError {
+                code: response
+                    .error_code
+                    .unwrap_or_else(|| "SNU_BROKER_ERROR".to_string()),
+                message: response
                     .error
-                    .unwrap_or_else(|| "SN-Utils broker request failed".to_string())
-            ))
+                    .unwrap_or_else(|| "SN-Utils broker request failed".to_string()),
+            }
+            .into())
         }
     }
 }
@@ -610,6 +638,12 @@ async fn handle_client_inner(stream: TcpStream, broker: Arc<Broker>) -> anyhow::
         Ok(response) => response,
         Err(error) => BrokerResponse {
             ok: false,
+            error_code: Some(
+                error
+                    .downcast_ref::<BridgeError>()
+                    .map_or("SNU_BROKER_ERROR", BridgeError::code)
+                    .to_string(),
+            ),
             error: Some(error.to_string()),
             message: None,
             instance: None,
@@ -654,13 +688,31 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             // The manager tracks connectivity from its own accept/read loops,
             // so this reflects the actual socket state, not a guess.
             let browser_connected = broker.manager.is_connected();
+            let helper = broker.manager.helper_status().await;
             let state = broker.state.lock().await;
             Ok(BrokerResponse {
                 ok: true,
+                error_code: None,
                 error: None,
                 message: None,
                 instance: None,
-                status: Some(state.status(browser_connected)),
+                status: Some(state.status(browser_connected, helper)),
+                cleared: None,
+                token_valid: None,
+            })
+        }
+        BrokerRequest::RefreshCapabilities { timeout_secs } => {
+            broker.manager.negotiate_capabilities(timeout_secs).await?;
+            let browser_connected = broker.manager.is_connected();
+            let helper = broker.manager.helper_status().await;
+            let state = broker.state.lock().await;
+            Ok(BrokerResponse {
+                ok: true,
+                error_code: None,
+                error: None,
+                message: None,
+                instance: None,
+                status: Some(state.status(browser_connected, helper)),
                 cleared: None,
                 token_valid: None,
             })
@@ -707,6 +759,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             persist_broker_sessions(broker).await;
             Ok(BrokerResponse {
                 ok: true,
+                error_code: None,
                 error: None,
                 message: None,
                 instance: Some(instance),
@@ -720,9 +773,10 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             correlation_id,
             timeout_secs,
         } => {
-            let message =
-                send_action_with_refresh(broker, &mut payload, &correlation_id, timeout_secs)
-                    .await?;
+            let preflight = preflight_for_dispatch(broker, &payload, timeout_secs).await?;
+            let result =
+                send_action_with_refresh(broker, &mut payload, &correlation_id, timeout_secs).await;
+            let message = explain_approval_timeout(result, &preflight)?;
             Ok(message_response(message))
         }
         BrokerRequest::SendActionForAction {
@@ -730,10 +784,13 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             expected_action,
             timeout_secs,
         } => {
-            let message = broker
+            let preflight = preflight_for_dispatch(broker, &payload, timeout_secs).await?;
+            let result = broker
                 .manager
                 .request(&payload, Matcher::Action(expected_action), timeout_secs)
-                .await?;
+                .await
+                .map_err(anyhow::Error::from);
+            let message = explain_approval_timeout(result, &preflight)?;
             Ok(message_response(message))
         }
         BrokerRequest::RefreshSession {
@@ -743,6 +800,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             let instance = refresh_session(broker, timeout_secs, origin.as_deref()).await?;
             Ok(BrokerResponse {
                 ok: true,
+                error_code: None,
                 error: None,
                 message: None,
                 instance: Some(instance),
@@ -773,6 +831,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             }
             Ok(BrokerResponse {
                 ok: true,
+                error_code: None,
                 error: None,
                 message: None,
                 instance: None,
@@ -798,6 +857,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             persist_broker_sessions(broker).await;
             Ok(BrokerResponse {
                 ok: true,
+                error_code: None,
                 error: None,
                 message: None,
                 instance: None,
@@ -806,6 +866,55 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 token_valid: None,
             })
         }
+    }
+}
+
+async fn preflight_for_dispatch(
+    broker: &Broker,
+    payload: &Value,
+    timeout_secs: u64,
+) -> anyhow::Result<PreflightResult> {
+    let preflight = broker.manager.preflight(payload, timeout_secs).await?;
+    if preflight.decision == GateDecision::Blocked {
+        return Err(BridgeError::GateBlocked {
+            gate: preflight
+                .gate
+                .map(|gate| gate.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            origin: preflight
+                .origin
+                .clone()
+                .unwrap_or_else(|| "unknown instance".to_string()),
+        }
+        .into());
+    }
+    Ok(preflight)
+}
+
+fn explain_approval_timeout(
+    result: anyhow::Result<SnuMessage>,
+    preflight: &PreflightResult,
+) -> anyhow::Result<SnuMessage> {
+    match result {
+        Err(error)
+            if preflight.decision == GateDecision::ApprovalRequired
+                && error
+                    .downcast_ref::<BridgeError>()
+                    .is_some_and(|error| matches!(error, BridgeError::Timeout { .. })) =>
+        {
+            Err(BridgeError::ApprovalTimeout {
+                gate: preflight
+                    .gate
+                    .map(|gate| gate.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                origin: preflight
+                    .origin
+                    .clone()
+                    .unwrap_or_else(|| "unknown instance".to_string()),
+            }
+            .into())
+        }
+        result => result,
     }
 }
 
@@ -855,6 +964,7 @@ async fn send_action_with_refresh(
 
     if is_transient_helper_text(&text) {
         sleep(HELPER_SETTLE_DELAY).await;
+        preflight_for_dispatch(broker, payload, timeout_secs).await?;
         let message = broker
             .manager
             .request(
@@ -895,6 +1005,7 @@ async fn send_action_with_refresh(
         object.insert("instance".to_string(), serde_json::to_value(&fresh)?);
     }
     sleep(HELPER_SETTLE_DELAY).await;
+    preflight_for_dispatch(broker, payload, timeout_secs).await?;
     let message = broker
         .manager
         .request(
@@ -1015,6 +1126,7 @@ fn is_stale_token_text(text: &str) -> bool {
 fn ok_response() -> BrokerResponse {
     BrokerResponse {
         ok: true,
+        error_code: None,
         error: None,
         message: None,
         instance: None,
@@ -1027,6 +1139,7 @@ fn ok_response() -> BrokerResponse {
 fn message_response(message: SnuMessage) -> BrokerResponse {
     BrokerResponse {
         ok: true,
+        error_code: None,
         error: None,
         message: Some(message),
         instance: None,
@@ -1314,6 +1427,231 @@ fn session_snapshot_is_fresh(saved_at: u64, now: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    async fn gated_test_bridge() -> (
+        Arc<Broker>,
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) {
+        let config = BridgeConfig {
+            addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            heartbeat_interval: Duration::from_secs(60),
+            connect_timeout: Duration::from_secs(2),
+            rebind_delay: Duration::from_millis(50),
+        };
+        let (manager, _sessions) = BridgeManager::start(config);
+        let ws_addr = manager
+            .wait_bound(Duration::from_secs(2))
+            .await
+            .expect("bridge bound");
+        let (mut helper, _) = tokio_tungstenite::connect_async(format!("ws://{ws_addr}"))
+            .await
+            .unwrap();
+        let hello = helper.next().await.unwrap().unwrap();
+        assert!(hello.to_text().unwrap().contains("hostHello"));
+        (
+            Arc::new(Broker::new(
+                Duration::from_secs(300),
+                manager,
+                SocketAddr::from(([127, 0, 0, 1], 1979)),
+            )),
+            helper,
+        )
+    }
+
+    async fn answer_capabilities(
+        helper: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        mode: &str,
+    ) {
+        let capability_request = helper.next().await.unwrap().unwrap();
+        let capability_request: Value =
+            serde_json::from_str(capability_request.to_text().unwrap()).unwrap();
+        assert_eq!(capability_request["action"], "agentGetCapabilities");
+        helper
+            .send(Message::Text(
+                serde_json::json!({
+                    "action": "agentGetCapabilitiesResponse",
+                    "agentRequestId": capability_request["agentRequestId"],
+                    "success": true,
+                    "capabilities": {"protocolVersion": 1, "instanceSecurityGates": 1},
+                    "instanceGates": {
+                        "https://dev.service-now.com": {
+                            "revision": 1,
+                            "gates": {
+                                "backgroundScripts": mode,
+                                "deleteRecords": "approve",
+                                "createArtifacts": "auto",
+                                "restRequest": "auto",
+                                "browserDebugger": "auto"
+                            }
+                        }
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn approve_and_auto_actions_are_dispatched() {
+        for mode in ["approve", "auto"] {
+            let (broker, mut helper) = gated_test_bridge().await;
+            let request_broker = Arc::clone(&broker);
+            let payload = serde_json::json!({
+                "action": "executeBackgroundScript",
+                "agentRequestId": "action-1",
+                "content": "gs.info('test')",
+                "instance": {
+                    "name": "dev",
+                    "url": "https://dev.service-now.com",
+                    "g_ck": "token"
+                }
+            });
+            let request = tokio::spawn(async move {
+                dispatch(
+                    BrokerRequest::SendAction {
+                        payload,
+                        correlation_id: "action-1".into(),
+                        timeout_secs: 2,
+                    },
+                    &request_broker,
+                )
+                .await
+            });
+
+            answer_capabilities(&mut helper, mode).await;
+            let action = helper.next().await.unwrap().unwrap();
+            let action: Value = serde_json::from_str(action.to_text().unwrap()).unwrap();
+            assert_eq!(action["action"], "executeBackgroundScript");
+            helper
+                .send(Message::Text(
+                    serde_json::json!({
+                        "action": "responseFromBackgroundScript",
+                        "agentRequestId": "action-1",
+                        "success": true
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            assert!(request.await.unwrap().is_ok(), "gate mode: {mode}");
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_helper_is_labeled_and_action_is_dispatched() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        let request_broker = Arc::clone(&broker);
+        let payload = serde_json::json!({
+            "action": "executeBackgroundScript",
+            "agentRequestId": "legacy-1",
+            "content": "gs.info('legacy')",
+            "instance": {
+                "name": "dev",
+                "url": "https://dev.service-now.com",
+                "g_ck": "token"
+            }
+        });
+        let request = tokio::spawn(async move {
+            dispatch(
+                BrokerRequest::SendAction {
+                    payload,
+                    correlation_id: "legacy-1".into(),
+                    timeout_secs: 2,
+                },
+                &request_broker,
+            )
+            .await
+        });
+
+        let capability_request = helper.next().await.unwrap().unwrap();
+        let capability_request: Value =
+            serde_json::from_str(capability_request.to_text().unwrap()).unwrap();
+        helper
+            .send(Message::Text(
+                serde_json::json!({
+                    "action": "agentGetCapabilitiesResponse",
+                    "agentRequestId": capability_request["agentRequestId"],
+                    "success": true,
+                    "tier": "community"
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let action = helper.next().await.unwrap().unwrap();
+        assert!(
+            action
+                .to_text()
+                .unwrap()
+                .contains("executeBackgroundScript")
+        );
+        helper
+            .send(Message::Text(
+                serde_json::json!({
+                    "agentRequestId": "legacy-1",
+                    "success": true
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        assert!(request.await.unwrap().is_ok());
+        assert_eq!(
+            broker.manager.helper_status().await.security_gate_support,
+            crate::snu::gates::HelperSecurityGateSupport::LegacyUnrestricted
+        );
+    }
+
+    #[tokio::test]
+    async fn blocked_action_never_reaches_helper_socket() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        let request_broker = Arc::clone(&broker);
+        let payload = serde_json::json!({
+            "action": "executeBackgroundScript",
+            "agentRequestId": "action-1",
+            "content": "TOP_SECRET_SCRIPT",
+            "instance": {
+                "name": "dev",
+                "url": "https://dev.service-now.com",
+                "g_ck": "TOP_SECRET_TOKEN"
+            }
+        });
+        let request = tokio::spawn(async move {
+            dispatch(
+                BrokerRequest::SendAction {
+                    payload,
+                    correlation_id: "action-1".into(),
+                    timeout_secs: 2,
+                },
+                &request_broker,
+            )
+            .await
+        });
+
+        answer_capabilities(&mut helper, "off").await;
+
+        let error = request.await.unwrap().unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("backgroundScripts") && text.contains("blocks actions"));
+        assert!(!text.contains("TOP_SECRET"));
+        assert!(
+            timeout(Duration::from_millis(150), helper.next())
+                .await
+                .is_err()
+        );
+    }
 
     fn instance(url: &str) -> SnuInstance {
         SnuInstance {
@@ -1385,12 +1723,12 @@ mod tests {
         let mut state = state();
         let origin = "https://a.service-now.com:443";
         state.remember_session(&instance("https://a.service-now.com"));
-        let before_verify = state.status(true);
+        let before_verify = state.status(true, HelperStatus::default());
         assert!(before_verify.instances[0].captured_at.is_some());
         assert!(before_verify.instances[0].last_verified_at.is_none());
 
         state.mark_verified(origin);
-        let after_verify = state.status(true);
+        let after_verify = state.status(true, HelperStatus::default());
         assert!(after_verify.instances[0].last_verified_at.is_some());
     }
 
@@ -1471,7 +1809,10 @@ mod tests {
             ]
         );
         assert!(state.latest_session().is_none());
-        assert_eq!(state.status(false).session_count, 0);
+        assert_eq!(
+            state.status(false, HelperStatus::default()).session_count,
+            0
+        );
     }
 
     #[test]
@@ -1480,7 +1821,7 @@ mod tests {
         state.remember_session(&instance("https://a.service-now.com"));
         state.remember_session(&instance("https://b.service-now.com"));
 
-        let status = state.status(true);
+        let status = state.status(true, HelperStatus::default());
         assert_eq!(status.instances.len(), 2);
         let latest: Vec<&str> = status
             .instances
