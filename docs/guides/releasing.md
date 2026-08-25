@@ -1,7 +1,8 @@
 # Releasing snow-cli
 
-snow-cli uses [`cargo-dist`](https://github.com/axodotdev/cargo-dist) to build
-release archives for GitHub Releases.
+snow-cli uses the repository's `Release` GitHub Actions workflow to build and
+package release archives. macOS and Windows build with Cargo on native runners;
+Linux targets build through `cross`.
 
 ## Release assets
 
@@ -36,8 +37,8 @@ release:
 3. Update user documentation from successful E2E artifacts only. Examples must
    not contain credentials, instance URLs, sys_ids, or unstable generated
    values.
-4. Verify the final candidate's version metadata, release notes, cargo-dist
-   configuration, build, tests, formatting, and lint checks.
+4. Verify the final candidate's version metadata, release notes, release
+   workflow configuration, host release build, tests, formatting, and lint checks.
 
 The local SN-Utils bridge protocol tests are required. Live ServiceNow or
 browser-helper smoke tests are reported separately as passed, failed, or
@@ -73,15 +74,15 @@ from GitHub Actions and provide the release tag, for example `v0.3.1`.
 
 ## Local validation
 
-To validate the cargo-dist configuration locally:
+Build both binaries for the host platform with the locked dependency graph:
 
 ```bash
-cargo install cargo-dist --version 0.28.0 --locked
-dist plan
+cargo build --release --locked --bins
+target/release/snow-cli --version
+target/release/snow-cli-ro --version
 ```
 
-To build a specific archive locally:
-
-```bash
-dist build --artifacts=local --target x86_64-apple-darwin --tag v0.3.1
-```
+The `Release` workflow is the authoritative cross-platform packaging check. It
+builds the configured target matrix, verifies both binaries exist in every
+archive, checks versioned asset names, and produces `SHA256SUMS` before
+publishing the draft release.

@@ -5,6 +5,31 @@ All notable changes to `snow-cli` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows semantic versioning conventions while it is pre-1.0.
 
+## [0.8.0] - 2026-08-25
+
+### Added
+
+- Added SN-Utils helper capability negotiation with redacted build, license-tier, and per-instance security-gate status in `snu check-connection`.
+- Added community Agent API commands for context reads, browser-session REST requests, parent/reference options, live form state, field updates, UI actions, element clicks, and navigation. Pro-only code search and CDP debugger actions remain intentionally excluded.
+- Added read-only mirrors for safe SN-Utils context, REST GET, form-state, and records-metadata operations while keeping page and instance mutations unavailable in `snow-cli-ro`.
+
+### Changed
+
+- Background-script commands now use the correlated `agentRunBackgroundScript` API with an atomic `executeBackgroundScript` fallback for legacy helpers.
+- The SN-Utils E2E harness now supports current and legacy authorization interfaces, extension metadata capture, disposable gate configuration, and deterministic page-tab targeting.
+- Screenshots now resolve the selected instance session before dispatch so the `browserDebugger` gate can be preflighted for URL-pattern and tab-id targets.
+
+### Security
+
+- Gated actions are classified and preflighted before reaching the browser socket. Blocked, unauthorized, unavailable, paused, and approval-timeout states return structured, secret-free errors while the browser extension remains the final enforcement and approval authority.
+- Gate decisions are bound atomically to the helper WebSocket generation and negotiated support state; stale revisions, reconnect races, omitted instance authorization, and contradictory capability downgrades fail closed.
+- Hardened Agent REST endpoint validation, response token redaction, session-probe handling, and serialized legacy mutation dispatch.
+
+### Validation
+
+- Passed the complete local test, Clippy, formatting, documentation-build, and 78-command E2E coverage gates.
+- Passed the reviewed live SN-Utils matrix: 32 passed, 0 failed, 0 skipped with current helper authorization and all disposable security gates enabled in automatic mode.
+
 ## [0.7.0] - 2026-07-21
 
 ### Added
