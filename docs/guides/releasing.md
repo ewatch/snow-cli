@@ -1,7 +1,8 @@
 # Releasing snow-cli
 
-snow-cli uses [`cargo-dist`](https://github.com/axodotdev/cargo-dist) to build
-release archives for GitHub Releases.
+snow-cli uses the repository's `Release` GitHub Actions workflow to build and
+package release archives. macOS and Windows build with Cargo on native runners;
+Linux targets build through `cross`.
 
 ## Release assets
 
@@ -11,6 +12,8 @@ The release workflow publishes these binary archives:
 | --- | --- | --- |
 | macOS Intel | `x86_64-apple-darwin` | `macos-latest` |
 | macOS Apple Silicon | `aarch64-apple-darwin` | `macos-latest` |
+| Linux x64 | `x86_64-unknown-linux-gnu` | `ubuntu-latest` via `cross` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | `ubuntu-latest` via `cross` |
 | Windows x64 | `x86_64-pc-windows-msvc` | `windows-latest` |
 
 It also publishes a consolidated `SHA256SUMS` file covering the archive assets above.
@@ -29,15 +32,19 @@ release:
 
 1. Run the reviewer against the release fixed point, specification, and
    repository standards.
-2. Run the E2E command matrix and save sanitized evidence under
-   `artifacts/e2e/<version>/`. Each scenario records the exact command,
+2. Run the E2E command matrix and save sanitized scenario evidence under
+   `artifacts/e2e/<version>/`. Release-level gate summaries and any additional
+   publication-safe evidence copies may be stored under
+   `artifacts/release/<version>/`. Each scenario records the exact command,
    arguments, exit code, sanitized stdout and stderr, assertion result, and
    harness/model metadata.
 3. Update user documentation from successful E2E artifacts only. Examples must
    not contain credentials, instance URLs, sys_ids, or unstable generated
    values.
-4. Verify the final candidate's version metadata, release notes, cargo-dist
-   configuration, build, tests, formatting, and lint checks.
+4. Prepare the release commit or PR: update `Cargo.toml`, `Cargo.lock`, and
+   `CHANGELOG.md`, then verify the final candidate's version metadata, release
+   notes, release workflow configuration, host release build, tests, formatting,
+   and lint checks.
 
 The local SN-Utils bridge protocol tests are required. Live ServiceNow or
 browser-helper smoke tests are reported separately as passed, failed, or
@@ -48,23 +55,20 @@ documentation for the new candidate.
 
 ### Publish after approval
 
-After the release manager declares the candidate ready and a human explicitly
-approves publication:
+After the release manager declares the versioned candidate ready and a human
+explicitly approves publication:
 
-1. Update the package version in `Cargo.toml`.
-2. Commit the version change.
-3. Create and push a matching `v*` tag:
+1. Merge the approved release PR if the version commit is not already on the
+   default branch.
+2. Create and push a matching `v*` tag from that default-branch release commit:
 
    ```bash
    git tag v0.3.1
    git push origin v0.3.1
    ```
 
-4. The `Release` GitHub Actions workflow builds the archives and publishes them
+3. The `Release` GitHub Actions workflow builds the archives and publishes them
    to a GitHub Release for that tag.
-
-You can also create a release from the GitHub UI. The workflow listens for the
-`release.published` event and uploads the same curated archive assets to the release.
 
 ## Manual rebuild
 
@@ -73,15 +77,15 @@ from GitHub Actions and provide the release tag, for example `v0.3.1`.
 
 ## Local validation
 
-To validate the cargo-dist configuration locally:
+Build both binaries for the host platform with the locked dependency graph:
 
 ```bash
-cargo install cargo-dist --version 0.28.0 --locked
-dist plan
+cargo build --release --locked --bins
+target/release/snow-cli --version
+target/release/snow-cli-ro --version
 ```
 
-To build a specific archive locally:
-
-```bash
-dist build --artifacts=local --target x86_64-apple-darwin --tag v0.3.1
-```
+The `Release` workflow is the authoritative cross-platform packaging check. It
+builds the configured target matrix, verifies both binaries exist in every
+archive, checks versioned asset names, and produces `SHA256SUMS` before
+publishing the draft release.
