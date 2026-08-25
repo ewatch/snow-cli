@@ -32,15 +32,19 @@ release:
 
 1. Run the reviewer against the release fixed point, specification, and
    repository standards.
-2. Run the E2E command matrix and save sanitized evidence under
-   `artifacts/e2e/<version>/`. Each scenario records the exact command,
+2. Run the E2E command matrix and save sanitized scenario evidence under
+   `artifacts/e2e/<version>/`. Release-level gate summaries and any additional
+   publication-safe evidence copies may be stored under
+   `artifacts/release/<version>/`. Each scenario records the exact command,
    arguments, exit code, sanitized stdout and stderr, assertion result, and
    harness/model metadata.
 3. Update user documentation from successful E2E artifacts only. Examples must
    not contain credentials, instance URLs, sys_ids, or unstable generated
    values.
-4. Verify the final candidate's version metadata, release notes, release
-   workflow configuration, host release build, tests, formatting, and lint checks.
+4. Prepare the release commit or PR: update `Cargo.toml`, `Cargo.lock`, and
+   `CHANGELOG.md`, then verify the final candidate's version metadata, release
+   notes, release workflow configuration, host release build, tests, formatting,
+   and lint checks.
 
 The local SN-Utils bridge protocol tests are required. Live ServiceNow or
 browser-helper smoke tests are reported separately as passed, failed, or
@@ -51,19 +55,19 @@ documentation for the new candidate.
 
 ### Publish after approval
 
-After the release manager declares the candidate ready and a human explicitly
-approves publication:
+After the release manager declares the versioned candidate ready and a human
+explicitly approves publication:
 
-1. Update the package version in `Cargo.toml`.
-2. Commit the version change.
-3. Create and push a matching `v*` tag:
+1. Merge the approved release PR if the version commit is not already on the
+   default branch.
+2. Create and push a matching `v*` tag from that default-branch release commit:
 
    ```bash
    git tag v0.3.1
    git push origin v0.3.1
    ```
 
-4. The `Release` GitHub Actions workflow builds the archives and publishes them
+3. The `Release` GitHub Actions workflow builds the archives and publishes them
    to a GitHub Release for that tag.
 
 ## Manual rebuild
