@@ -253,8 +253,9 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
   ServiceNow basic-auth login form; SSO instances unsupported), opens its
   ScriptSync helper tab, triggers `/token` via the page's own
   `window.snuSlashCommandShow('/token', true)`, and approves the resulting
-  one-time per-instance connection prompt in the ScriptSync tab
-  (`#instanceallow`). `snow-cli snu query incident` against the resulting
+  one-time per-instance connection prompt in the ScriptSync tab. The harness
+  verifies the displayed origin before using either the current modal
+  (`#modal-instance-allow`) or legacy panel (`#instanceallow`). `snow-cli snu query incident` against the resulting
   session returned real records end to end. Known limits:
   - The harness runs against a **dedicated isolated broker**
     (`127.0.0.1:19178`/`19179`, via the `SNOW_CLI_SNU_WS_ADDR`/
@@ -274,9 +275,14 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
     the screenshot note below).
   - The connection-approval prompt is per-instance but the harness always
     starts from a fresh browser profile, so it reappears (and gets
-    auto-approved) every run — this is expected, not a bug.
+    auto-approved) every run — this is expected, not a bug. Focused security
+    tests may set test-profile gates with `SNU_HARNESS_GATE_MODES`, a JSON
+    object whose keys are the five helper gate names and whose values are
+    `off`, `approve`, or `auto`; this only modifies the disposable unpacked
+    extension profile.
   - `token_capture` in the harness's ready signal is `"attempted+approved"`
-    on the confirmed-working path; `"attempted (no approval prompt seen)"`
+    on the confirmed-working path; the same signal records `extension_version`
+    and `authorization_ui` (`current_modal` or `legacy_panel`). `"attempted (no approval prompt seen)"`
     or `"failed"` indicate `snuSlashCommandShow` wasn't found in time
     (`window.snusettings`/`window.snuSlashCommandShow` load asynchronously
     after login — the harness waits up to 15s) or SN-Utils' own internals

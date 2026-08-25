@@ -100,19 +100,8 @@ pub async fn handle(
             let script = resolve_script(file, code)?;
             let (bridge, instance) =
                 connect_and_wait_for_session(timeout_secs, target_origin).await?;
-            let payload = json!({
-                "action": "executeBackgroundScript",
-                "content": script,
-                "instance": instance,
-                "appName": "snow-cli",
-            });
-            let response = bridge
-                .send_action_and_wait_for_action(
-                    &payload,
-                    "responseFromBackgroundScript",
-                    timeout_secs,
-                )
-                .await?;
+            let response =
+                send_background_script_action(&bridge, &instance, script, timeout_secs).await?;
             print_background_script_response(response, output_format)
         }
         SnuCommands::CreateRecord {
@@ -227,6 +216,13 @@ pub async fn handle(
                 .await?;
             print_response_value(response, output_format)
         }
+        SnuCommands::Rest(rest_args) => {
+            handle_rest(rest_args.command, target_origin, output_format).await
+        }
+        SnuCommands::Page(page_args) => handle_page(page_args.command, output_format).await,
+        SnuCommands::Records(records_args) => {
+            handle_records_agent(records_args.command, target_origin, output_format).await
+        }
         SnuCommands::Tab(tab_args) => {
             match tab_args.command {
                 SnuTabCommands::Activate {
@@ -259,6 +255,21 @@ pub async fn handle(
             }
         }
         SnuCommands::Context(context_args) => match context_args.command {
+            SnuContextCommands::Get { timeout_secs } => {
+                let (bridge, instance) =
+                    connect_and_wait_for_session(timeout_secs, target_origin).await?;
+                let correlation_id = correlation_id("context_get");
+                let payload = json!({
+                    "action": "agentGetContext",
+                    "agentRequestId": correlation_id,
+                    "instance": instance,
+                    "appName": "snow-cli",
+                });
+                let response = bridge
+                    .send_action_and_wait(&payload, &correlation_id, timeout_secs)
+                    .await?;
+                print_response_value(response, output_format)
+            }
             SnuContextCommands::Switch {
                 switch_type,
                 value,
@@ -294,17 +305,15 @@ pub async fn handle(
             if url.is_none() && tab_id.is_none() {
                 return Err(anyhow!("missing required option: --url or --tab-id"));
             }
-            let bridge = connect_bridge(
-                timeout_secs,
-                Some("snow-cli SN-Utils bridge connected. This command does not require /token."),
-            )
-            .await?;
+            let (bridge, instance) =
+                connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let correlation_id = correlation_id("screenshot");
             let payload = json!({
                 "action": "takeScreenshot",
                 "agentRequestId": correlation_id,
                 "url": url,
                 "tabId": tab_id,
+                "instance": instance,
                 "appName": "snow-cli",
             });
             let response = bridge
@@ -378,12 +387,14 @@ pub async fn handle(
     }
 }
 
+mod agent;
 mod browser;
 mod mutations;
 mod records;
 mod response;
 mod session;
 
+use agent::*;
 use browser::*;
 use mutations::*;
 use records::*;

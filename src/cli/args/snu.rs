@@ -227,7 +227,16 @@ pub enum SnuCommands {
     /// Browser tab operations through SN-Utils
     Tab(SnuTabArgs),
 
-    /// Switch browser session context through SN-Utils
+    /// Call ServiceNow REST endpoints through the browser session Agent API
+    Rest(SnuRestArgs),
+
+    /// Read or interact with a live ServiceNow browser page through the Agent API
+    Page(SnuPageArgs),
+
+    /// Agent API record metadata operations
+    Records(SnuRecordsArgs),
+
+    /// Switch or inspect browser session context through SN-Utils
     Context(SnuContextArgs),
 
     /// Capture a browser screenshot through SN-Utils
@@ -332,6 +341,165 @@ pub enum SnuTabCommands {
 }
 
 #[derive(Args, Debug)]
+pub struct SnuRestArgs {
+    #[command(subcommand)]
+    pub command: SnuRestCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnuRestCommands {
+    /// Send a GET request
+    Get(SnuRestReadArgs),
+    /// Send a POST request
+    Post(SnuRestWriteArgs),
+    /// Send a PUT request
+    Put(SnuRestWriteArgs),
+    /// Send a PATCH request
+    Patch(SnuRestWriteArgs),
+    /// Send a DELETE request
+    Delete(SnuRestReadArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct SnuRestReadArgs {
+    /// Instance-relative REST endpoint
+    pub endpoint: String,
+    /// Query parameter in key=value form; repeat for multiple unique keys
+    #[arg(long = "query-param")]
+    pub query_params: Vec<String>,
+    /// Seconds to wait for helper/session/response
+    #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+    pub timeout_secs: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct SnuRestWriteArgs {
+    /// Instance-relative REST endpoint
+    pub endpoint: String,
+    /// JSON request body
+    #[arg(long)]
+    pub data: Option<String>,
+    /// Query parameter in key=value form; repeat for multiple unique keys
+    #[arg(long = "query-param")]
+    pub query_params: Vec<String>,
+    /// Seconds to wait for helper/session/response
+    #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+    pub timeout_secs: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct SnuPageArgs {
+    #[command(subcommand)]
+    pub command: SnuPageCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnuPageCommands {
+    /// Read fields and metadata from the active form
+    FormState {
+        /// Comma-separated field names; omit to read all form fields
+        #[arg(long, value_delimiter = ',')]
+        fields: Vec<String>,
+        #[command(flatten)]
+        target: SnuPageTargetArgs,
+    },
+    /// Set a field on the active form without submitting it
+    SetField {
+        field: String,
+        value: String,
+        /// Display value for reference fields
+        #[arg(long)]
+        display_value: Option<String>,
+        #[command(flatten)]
+        target: SnuPageTargetArgs,
+    },
+    /// Run a named UI action on the active form
+    RunUiAction {
+        /// UI action name; defaults to save
+        #[arg(default_value = "save")]
+        action_name: String,
+        /// Do not suppress native alert/confirm dialogs
+        #[arg(long)]
+        no_suppress_dialogs: bool,
+        #[command(flatten)]
+        target: SnuPageTargetArgs,
+    },
+    /// Click an element matching a CSS selector
+    Click {
+        selector: String,
+        /// Do not suppress native alert/confirm dialogs
+        #[arg(long)]
+        no_suppress_dialogs: bool,
+        #[command(flatten)]
+        target: SnuPageTargetArgs,
+    },
+    /// Navigate a ServiceNow tab, opening one when necessary
+    Navigate {
+        url: String,
+        /// Specific tab to navigate
+        #[arg(long)]
+        tab_id: Option<u64>,
+        /// Always open a new tab
+        #[arg(long)]
+        new_tab: bool,
+        /// URL pattern used to find an existing ServiceNow tab
+        #[arg(long, default_value = "https://*.service-now.com/*")]
+        find_url: String,
+        /// Return before the destination finishes loading
+        #[arg(long)]
+        no_wait_for_load: bool,
+        /// Preserve dirty-form navigation guards
+        #[arg(long)]
+        keep_unsaved_guard: bool,
+        /// Seconds to wait for helper/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct SnuPageTargetArgs {
+    /// Browser tab URL pattern to target
+    #[arg(long, default_value = "https://*.service-now.com/*")]
+    pub url: String,
+    /// Specific browser tab id to target
+    #[arg(long)]
+    pub tab_id: Option<u64>,
+    /// Seconds to wait for helper/response
+    #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+    pub timeout_secs: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct SnuRecordsArgs {
+    #[command(subcommand)]
+    pub command: SnuRecordsCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SnuRecordsCommands {
+    /// Fetch reference/parent choices from a table
+    ParentOptions {
+        table: String,
+        /// Encoded query
+        #[arg(long)]
+        query: Option<String>,
+        /// Comma-separated fields to return
+        #[arg(long, default_value = "sys_id,name")]
+        fields: String,
+        /// Field the caller should treat as the option label
+        #[arg(long, default_value = "name")]
+        name_field: String,
+        /// Maximum rows
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+}
+
+#[derive(Args, Debug)]
 pub struct SnuContextArgs {
     #[command(subcommand)]
     pub command: SnuContextCommands,
@@ -339,6 +507,13 @@ pub struct SnuContextArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum SnuContextCommands {
+    /// Get the current application scope and update set through the Agent API
+    Get {
+        /// Seconds to wait for helper/session/response
+        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+        timeout_secs: u64,
+    },
+
     /// Switch update set, application, or domain in the browser session
     Switch {
         /// Context type to switch
@@ -613,6 +788,82 @@ mod tests {
                     assert_eq!(data, None);
                 }
                 _ => panic!("Expected Snu UpdateRecord command"),
+            },
+            _ => panic!("Expected Snu command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_snu_rest_patch() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "snu",
+            "rest",
+            "patch",
+            "/api/now/table/incident/abc",
+            "--data",
+            "{\"state\":\"2\"}",
+            "--query-param",
+            "sysparm_fields=sys_id,state",
+        ]);
+
+        match cli.command {
+            Commands::Snu(args) => match args.command {
+                SnuCommands::Rest(rest) => match rest.command {
+                    SnuRestCommands::Patch(request) => {
+                        assert_eq!(request.endpoint, "/api/now/table/incident/abc");
+                        assert_eq!(request.data.as_deref(), Some("{\"state\":\"2\"}"));
+                        assert_eq!(request.query_params, ["sysparm_fields=sys_id,state"]);
+                    }
+                    _ => panic!("Expected Snu Rest Patch command"),
+                },
+                _ => panic!("Expected Snu Rest command"),
+            },
+            _ => panic!("Expected Snu command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_snu_page_form_state() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "snu",
+            "page",
+            "form-state",
+            "--fields",
+            "number,state",
+            "--tab-id",
+            "42",
+        ]);
+
+        match cli.command {
+            Commands::Snu(args) => match args.command {
+                SnuCommands::Page(page) => match page.command {
+                    SnuPageCommands::FormState { fields, target } => {
+                        assert_eq!(fields, ["number", "state"]);
+                        assert_eq!(target.tab_id, Some(42));
+                    }
+                    _ => panic!("Expected Snu Page FormState command"),
+                },
+                _ => panic!("Expected Snu Page command"),
+            },
+            _ => panic!("Expected Snu command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_snu_context_get() {
+        let cli = Cli::parse_from(["snow-cli", "snu", "context", "get"]);
+
+        match cli.command {
+            Commands::Snu(args) => match args.command {
+                SnuCommands::Context(context) => match context.command {
+                    SnuContextCommands::Get { timeout_secs } => {
+                        assert_eq!(timeout_secs, DEFAULT_SNU_TIMEOUT_SECS);
+                    }
+                    _ => panic!("Expected Snu Context Get command"),
+                },
+                _ => panic!("Expected Snu Context command"),
             },
             _ => panic!("Expected Snu command"),
         }

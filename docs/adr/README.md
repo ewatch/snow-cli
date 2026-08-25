@@ -47,3 +47,4 @@ What becomes easier or harder as a result of this decision?
 | 0005 | Structured JSON error output   | Accepted |
 | 0006 | Profile resolution and command UX simplification | Accepted |
 | 0007 | Release validation pipeline | Accepted |
+| 0008 | SN-Utils security-gate negotiation | Accepted |

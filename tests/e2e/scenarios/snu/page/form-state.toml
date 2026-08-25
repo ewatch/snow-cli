@@ -1,0 +1,23 @@
+name = "snu-page-form-state"
+description = "Read active form state through the community Agent API"
+requires = ["sn-utils-bridge", "credentials"]
+
+[[setup]]
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+[[setup]]
+args = ["snu", "query", "incident", "--fields", "sys_id", "--limit", "1", "--profile", "e2e-scenario", "--output", "json"]
+capture = { sys_id = ".records[0].sys_id" }
+[[setup]]
+args = ["snu", "page", "navigate", "$SNOW_E2E_INSTANCE_URL/incident.do?sys_id={{sys_id}}", "--new-tab", "--profile", "e2e-scenario", "--output", "json"]
+capture = { tab_id = ".tabId" }
+
+[command]
+args = ["snu", "page", "form-state", "--fields", "number,state", "--tab-id", "{{tab_id}}", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+json_field_present = [".success == true", ".table == \"incident\"", ".fields.number.value | type == \"string\""]
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

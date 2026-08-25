@@ -16,6 +16,11 @@ use tokio_tungstenite::{
     tungstenite::{Bytes, Message},
 };
 
+use crate::snu::gates::{
+    CapabilityNegotiation, GateDecision, GateMode, GateSnapshot, HelperBuildInfo,
+    HelperCapabilitiesReport, HelperLicenseInfo, HelperSecurityGateSupport, HelperStatus,
+    PreflightResult, gate_for_payload, payload_origin,
+};
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
 pub const DEFAULT_SNU_WS_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1978);
@@ -77,12 +82,35 @@ pub enum BridgeError {
     Timeout { secs: u64, what: String },
     #[error("SN-Utils action failed: {0}")]
     ActionFailed(String),
+    #[error("SN-Utils agent access is paused in the helper tab; resume agents there and retry")]
+    Paused,
+    #[error("SN-Utils security-gate state is unavailable: {0}")]
+    GateStateUnavailable(String),
+    #[error("SN-Utils helper has not authorized instance {0}")]
+    GateUnauthorized(String),
+    #[error("SN-Utils security gate {gate} blocks actions for {origin}")]
+    GateBlocked { gate: String, origin: String },
+    #[error("timed out awaiting browser approval for SN-Utils security gate {gate} on {origin}")]
+    ApprovalTimeout { gate: String, origin: String },
     #[error(
         "SN-Utils bridge port {0} is already in use. Only one bridge can own this port at a time, so this usually means the `sn-scriptsync` VS Code extension or another process is bound to it. Stop the other owner and retry; the broker keeps retrying the port automatically."
     )]
     PortConflict(SocketAddr),
     #[error("failed to encode SN-Utils payload: {0}")]
     Encode(#[from] serde_json::Error),
+}
+
+impl BridgeError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Paused => "SNU_PAUSED",
+            Self::GateStateUnavailable(_) => "SNU_GATE_STATE_UNAVAILABLE",
+            Self::GateUnauthorized(_) => "SNU_GATE_UNAUTHORIZED",
+            Self::GateBlocked { .. } => "SNU_GATE_BLOCKED",
+            Self::ApprovalTimeout { .. } => "SNU_APPROVAL_TIMEOUT",
+            _ => "SNU_BRIDGE_ERROR",
+        }
+    }
 }
 
 /// What a pending request is waiting for on the helper-tab socket.
@@ -202,6 +230,9 @@ struct Inner {
     /// `false` while another process owns the WebSocket port.
     ws_bound: AtomicBool,
     generation: AtomicU64,
+    /// Metadata and gate snapshots belonging only to the active WebSocket
+    /// generation. Replaced atomically whenever a helper reconnects.
+    helper_status: Mutex<HelperStatus>,
     /// Banner queued while no helper tab is connected, delivered on the next
     /// connection so banners never block waiting for an accept.
     pending_banner: Mutex<Option<String>>,
@@ -236,6 +267,7 @@ impl BridgeManager {
             // immediately) reports otherwise.
             ws_bound: AtomicBool::new(true),
             generation: AtomicU64::new(0),
+            helper_status: Mutex::new(HelperStatus::default()),
             pending_banner: Mutex::new(None),
         });
 
@@ -247,6 +279,11 @@ impl BridgeManager {
 
     pub fn is_connected(&self) -> bool {
         *self.inner.connected_tx.borrow()
+    }
+
+    /// Return redacted metadata for the active helper connection generation.
+    pub async fn helper_status(&self) -> HelperStatus {
+        self.inner.helper_status.lock().await.clone()
     }
 
     /// Wait until the listener is bound, returning the actual local address.
@@ -292,6 +329,166 @@ impl BridgeManager {
         })
     }
 
+    /// Actively refresh helper capabilities for the current generation. Helpers
+    /// that answer without security-gate support are explicitly legacy; a
+    /// current helper advertising gates fails closed when refresh is unavailable.
+    pub async fn negotiate_capabilities(
+        &self,
+        timeout_secs: u64,
+    ) -> Result<CapabilityNegotiation, BridgeError> {
+        let connect_budget = Duration::from_secs(
+            timeout_secs.min(self.inner.config.connect_timeout.as_secs().max(1)),
+        );
+        self.wait_connected(connect_budget).await?;
+        let before = self.helper_status().await;
+        let correlation_id = format!("snow_caps_{}", uuid::Uuid::new_v4().simple());
+        let payload = serde_json::json!({
+            "action": "agentGetCapabilities",
+            "agentRequestId": correlation_id,
+            "appName": "snow-cli",
+        });
+        let negotiation_timeout = timeout_secs.clamp(1, 2);
+        let response = self
+            .request(
+                &payload,
+                Matcher::Correlation(correlation_id),
+                negotiation_timeout,
+            )
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(BridgeError::Timeout { .. }) => {
+                let after = self.helper_status().await;
+                if after.generation != before.generation {
+                    return Err(BridgeError::Disconnected);
+                }
+                if before.advertises_instance_gates() || after.advertises_instance_gates() {
+                    return Err(BridgeError::GateStateUnavailable(
+                        "helper capability refresh timed out".to_string(),
+                    ));
+                }
+                let mut status = self.inner.helper_status.lock().await;
+                if status.generation != before.generation {
+                    return Err(BridgeError::Disconnected);
+                }
+                if status.advertises_instance_gates()
+                    || status.security_gate_support == HelperSecurityGateSupport::Gated
+                {
+                    return Err(BridgeError::GateStateUnavailable(
+                        "helper advertised instance security gates while capability refresh timed out"
+                            .to_string(),
+                    ));
+                }
+                status.security_gate_support = HelperSecurityGateSupport::LegacyUnrestricted;
+                return Ok(CapabilityNegotiation::Legacy {
+                    generation: status.generation,
+                });
+            }
+            Err(BridgeError::Paused) => return Err(BridgeError::Paused),
+            Err(error) => {
+                let after = self.helper_status().await;
+                if before.advertises_instance_gates() || after.advertises_instance_gates() {
+                    return Err(BridgeError::GateStateUnavailable(
+                        "helper capability refresh failed".to_string(),
+                    ));
+                }
+                return Err(error);
+            }
+        };
+        let report = HelperCapabilitiesReport::from_value(Value::Object(response.extra))
+            .map_err(|error| BridgeError::GateStateUnavailable(error.to_string()))?;
+        if !report.supports_instance_gates() {
+            if before.advertises_instance_gates()
+                || before.security_gate_support == HelperSecurityGateSupport::Gated
+            {
+                return Err(BridgeError::GateStateUnavailable(
+                    "helper advertised instance security gates but its capability refresh omitted them"
+                        .to_string(),
+                ));
+            }
+            let mut status = self.inner.helper_status.lock().await;
+            if status.generation != before.generation {
+                return Err(BridgeError::Disconnected);
+            }
+            if status.advertises_instance_gates()
+                || status.security_gate_support == HelperSecurityGateSupport::Gated
+            {
+                return Err(BridgeError::GateStateUnavailable(
+                    "helper advertised instance security gates during capability refresh but its response omitted them"
+                        .to_string(),
+                ));
+            }
+            status.security_gate_support = HelperSecurityGateSupport::LegacyUnrestricted;
+            return Ok(CapabilityNegotiation::Legacy {
+                generation: status.generation,
+            });
+        }
+
+        let mut status = self.inner.helper_status.lock().await;
+        if status.generation != before.generation {
+            return Err(BridgeError::Disconnected);
+        }
+        status.security_gate_support = HelperSecurityGateSupport::Gated;
+        let refreshed_instance_gates = report.instance_gates;
+        for (origin, snapshot) in &refreshed_instance_gates {
+            status.apply_gate_snapshot(origin.clone(), snapshot.clone());
+        }
+        let mut negotiated = status.clone();
+        // Authorization for this dispatch comes only from the active refresh.
+        // Cached push snapshots remain useful for status display, but an origin
+        // omitted by the refresh must not remain authorized from old state.
+        negotiated.instance_gates = refreshed_instance_gates;
+        Ok(CapabilityNegotiation::Gated(Box::new(negotiated)))
+    }
+
+    /// Produce a redacted, advisory decision immediately before dispatch. A
+    /// gated helper omitting the selected origin is unauthorized, not legacy.
+    pub async fn preflight(
+        &self,
+        payload: &Value,
+        timeout_secs: u64,
+    ) -> Result<PreflightResult, BridgeError> {
+        let Some(gate) = gate_for_payload(payload) else {
+            return Ok(PreflightResult {
+                generation: None,
+                origin: payload_origin(payload),
+                gate: None,
+                decision: GateDecision::NotGated,
+            });
+        };
+        let origin = payload_origin(payload);
+        match self.negotiate_capabilities(timeout_secs).await? {
+            CapabilityNegotiation::Legacy { generation } => Ok(PreflightResult {
+                generation: Some(generation),
+                origin,
+                gate: Some(gate),
+                decision: GateDecision::LegacyUnrestricted,
+            }),
+            CapabilityNegotiation::Gated(status) => {
+                let origin = origin.ok_or_else(|| {
+                    BridgeError::GateStateUnavailable(format!(
+                        "action requires {gate}, but its instance origin is unknown"
+                    ))
+                })?;
+                let snapshot = status
+                    .instance_gates
+                    .get(&origin)
+                    .ok_or_else(|| BridgeError::GateUnauthorized(origin.clone()))?;
+                let decision = match snapshot.gates.mode(gate) {
+                    GateMode::Off => GateDecision::Blocked,
+                    GateMode::Approve => GateDecision::ApprovalRequired,
+                    GateMode::Auto => GateDecision::Automatic,
+                };
+                Ok(PreflightResult {
+                    generation: Some(status.generation),
+                    origin: Some(origin),
+                    gate: Some(gate),
+                    decision,
+                })
+            }
+        }
+    }
+
     /// Show a banner in the helper tab, strictly best-effort: sent immediately
     /// when a tab is connected, otherwise queued for the next connection.
     /// Never waits for a connection and never fails the caller.
@@ -316,6 +513,53 @@ impl BridgeManager {
         matcher: Matcher,
         timeout_secs: u64,
     ) -> Result<SnuMessage, BridgeError> {
+        self.request_bound(payload, matcher, timeout_secs, None, None)
+            .await
+    }
+
+    /// Send only if the active helper is still the generation whose gate state
+    /// was preflighted. The generation check and socket enqueue happen under
+    /// the same connection lock, closing the reconnect race between them.
+    pub async fn request_on_generation(
+        &self,
+        payload: &Value,
+        matcher: Matcher,
+        timeout_secs: u64,
+        expected_generation: Option<u64>,
+    ) -> Result<SnuMessage, BridgeError> {
+        self.request_bound(payload, matcher, timeout_secs, expected_generation, None)
+            .await
+    }
+
+    /// Additionally require the helper's current negotiated support state at
+    /// enqueue time. Legacy fallbacks use this to prevent same-generation build
+    /// metadata from racing a prior legacy classification.
+    pub async fn request_on_generation_with_support(
+        &self,
+        payload: &Value,
+        matcher: Matcher,
+        timeout_secs: u64,
+        expected_generation: Option<u64>,
+        expected_support: HelperSecurityGateSupport,
+    ) -> Result<SnuMessage, BridgeError> {
+        self.request_bound(
+            payload,
+            matcher,
+            timeout_secs,
+            expected_generation,
+            Some(expected_support),
+        )
+        .await
+    }
+
+    async fn request_bound(
+        &self,
+        payload: &Value,
+        matcher: Matcher,
+        timeout_secs: u64,
+        expected_generation: Option<u64>,
+        expected_support: Option<HelperSecurityGateSupport>,
+    ) -> Result<SnuMessage, BridgeError> {
         let connect_budget = Duration::from_secs(
             timeout_secs.min(self.inner.config.connect_timeout.as_secs().max(1)),
         );
@@ -332,6 +576,23 @@ impl BridgeManager {
             let Some(conn) = conn_guard.as_ref() else {
                 return Err(BridgeError::Disconnected);
             };
+            if expected_generation.is_some_and(|expected| expected != conn.generation) {
+                return Err(BridgeError::Disconnected);
+            }
+            let status_guard = if expected_support.is_some() {
+                Some(self.inner.helper_status.lock().await)
+            } else {
+                None
+            };
+            if let (Some(expected_support), Some(status)) =
+                (expected_support, status_guard.as_ref())
+                && (status.generation != conn.generation
+                    || status.security_gate_support != expected_support)
+            {
+                return Err(BridgeError::GateStateUnavailable(
+                    "helper capability state changed after preflight".to_string(),
+                ));
+            }
             let (tx, rx) = oneshot::channel();
             self.inner.waiters.lock().await.push(Waiter {
                 generation: Some(conn.generation),
@@ -341,6 +602,7 @@ impl BridgeManager {
             conn.outbound
                 .send(Message::Text(text.into()))
                 .map_err(|_| BridgeError::Disconnected)?;
+            drop(status_guard);
             rx
         };
 
@@ -353,6 +615,9 @@ impl BridgeManager {
             .map_err(|_| BridgeError::Disconnected)??;
 
         if checks_failure && (message.success == Some(false) || message.error.is_some()) {
+            if message.error_code() == Some("E_PAUSED") {
+                return Err(BridgeError::Paused);
+            }
             return Err(BridgeError::ActionFailed(
                 message
                     .error_text()
@@ -426,6 +691,19 @@ impl BridgeManager {
             std::future::pending::<()>().await;
         }
     }
+}
+
+fn host_hello_message() -> Message {
+    Message::Text(
+        serde_json::json!({
+            "action": "hostHello",
+            "hostKind": "standalone",
+            "appName": "snow-cli",
+            "protocolVersion": 1,
+        })
+        .to_string()
+        .into(),
+    )
 }
 
 fn banner_message(message: &str) -> Message {
@@ -523,6 +801,11 @@ async fn attach_connection(
         );
     }
 
+    *inner.helper_status.lock().await = HelperStatus {
+        generation,
+        ..HelperStatus::default()
+    };
+    let _ = outbound_tx.send(host_hello_message());
     if let Some(banner) = inner.pending_banner.lock().await.take() {
         let _ = outbound_tx.send(banner_message(&banner));
     }
@@ -601,7 +884,7 @@ async fn reader_loop(
                     tracing::debug!(%text, "ignoring SN-Utils informational array message");
                 }
                 Ok(value) => match SnuMessage::from_value(value) {
-                    Ok(msg) => deliver_message(&inner, msg).await,
+                    Ok(msg) => deliver_message(&inner, msg, generation).await,
                     Err(error) => {
                         tracing::warn!(%error, %text, "unparseable SN-Utils message; ignoring");
                     }
@@ -614,7 +897,7 @@ async fn reader_loop(
                 .map_err(anyhow::Error::from)
                 .and_then(SnuMessage::from_value)
             {
-                Ok(msg) => deliver_message(&inner, msg).await,
+                Ok(msg) => deliver_message(&inner, msg, generation).await,
                 Err(error) => {
                     tracing::warn!(%error, "invalid binary JSON from SN-Utils helper tab; ignoring");
                 }
@@ -634,7 +917,8 @@ async fn reader_loop(
 
 /// Route a parsed message: capture any embedded session unconditionally, then
 /// fulfill every waiter whose matcher accepts it.
-async fn deliver_message(inner: &Inner, msg: SnuMessage) {
+async fn deliver_message(inner: &Inner, msg: SnuMessage, generation: u64) {
+    capture_helper_metadata(inner, &msg, generation).await;
     if let Some(instance) = &msg.instance
         && instance
             .g_ck
@@ -654,6 +938,54 @@ async fn deliver_message(inner: &Inner, msg: SnuMessage) {
         }
     }
     *waiters = remaining;
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GateUpdate {
+    instance_origin: String,
+    revision: u64,
+    gates: crate::snu::gates::InstanceGates,
+}
+
+async fn capture_helper_metadata(inner: &Inner, msg: &SnuMessage, generation: u64) {
+    let Some(action) = msg.action.as_deref() else {
+        return;
+    };
+    let value = Value::Object(msg.extra.clone());
+    let mut status = inner.helper_status.lock().await;
+    if status.generation != generation {
+        return;
+    }
+    match action {
+        "helperBuildInfo" => {
+            if let Ok(build) = serde_json::from_value::<HelperBuildInfo>(value) {
+                if build.capabilities.instance_security_gates.unwrap_or(0) > 0 {
+                    status.security_gate_support = HelperSecurityGateSupport::Gated;
+                }
+                status.build = Some(build);
+            }
+        }
+        "helperLicenseInfo" => {
+            if let Ok(license) = serde_json::from_value::<HelperLicenseInfo>(value) {
+                status.license = Some(license);
+            }
+        }
+        "helperGatesUpdated" => {
+            if let Ok(update) = serde_json::from_value::<GateUpdate>(value)
+                && let Some(origin) = normalize_origin(&update.instance_origin)
+            {
+                status.apply_gate_snapshot(
+                    origin,
+                    GateSnapshot {
+                        revision: update.revision,
+                        gates: update.gates,
+                    },
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Periodically ping the helper tab and reap connections whose inbound side
@@ -736,10 +1068,18 @@ mod tests {
         (manager, sessions, addr)
     }
 
-    async fn connect_helper(addr: SocketAddr) -> HelperSocket {
+    async fn connect_helper_raw(addr: SocketAddr) -> HelperSocket {
         let (socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
             .await
             .expect("helper connects");
+        socket
+    }
+
+    async fn connect_helper(addr: SocketAddr) -> HelperSocket {
+        let mut socket = connect_helper_raw(addr).await;
+        let hello = socket.next().await.unwrap().unwrap();
+        let hello: Value = serde_json::from_str(hello.to_text().unwrap()).unwrap();
+        assert_eq!(hello["action"], "hostHello");
         socket
     }
 
@@ -773,6 +1113,259 @@ mod tests {
                 .contains(correlation_id)
         );
         handle
+    }
+
+    #[tokio::test]
+    async fn connection_announces_host_and_scopes_helper_state_to_generation() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut helper = connect_helper_raw(addr).await;
+
+        let hello = helper.next().await.unwrap().unwrap();
+        let hello: Value = serde_json::from_str(hello.to_text().unwrap()).unwrap();
+        assert_eq!(hello["action"], "hostHello");
+        assert_eq!(hello["hostKind"], "standalone");
+
+        send_json(
+            &mut helper,
+            json!({
+                "action": "helperBuildInfo",
+                "extensionName": "SN Utils",
+                "extensionVersion": "10.1.9.0",
+                "debuggerAvailable": true,
+                "capabilities": {"protocolVersion": 1, "instanceSecurityGates": 1}
+            }),
+        )
+        .await;
+        send_json(
+            &mut helper,
+            json!({
+                "action": "helperGatesUpdated",
+                "instanceOrigin": "https://DEV.service-now.com",
+                "revision": 7,
+                "gates": {
+                    "backgroundScripts": "off",
+                    "deleteRecords": "approve",
+                    "createArtifacts": "auto",
+                    "restRequest": "auto",
+                    "browserDebugger": "auto"
+                }
+            }),
+        )
+        .await;
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let status = manager.helper_status().await;
+            if status.build.is_some() && !status.instance_gates.is_empty() {
+                assert_eq!(status.generation, 1);
+                assert_eq!(
+                    status.instance_gates["https://dev.service-now.com:443"].revision,
+                    7
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline, "helper state was not captured");
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let _replacement = connect_helper(addr).await;
+        let status = manager.helper_status().await;
+        assert_eq!(status.generation, 2);
+        assert!(status.build.is_none());
+        assert!(status.instance_gates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn refreshed_gate_omission_does_not_reuse_cached_authorization() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut helper = connect_helper(addr).await;
+        send_json(
+            &mut helper,
+            json!({
+                "action": "helperGatesUpdated",
+                "instanceOrigin": "https://dev.service-now.com",
+                "revision": 1,
+                "gates": {
+                    "backgroundScripts": "auto",
+                    "deleteRecords": "auto",
+                    "createArtifacts": "auto",
+                    "restRequest": "auto",
+                    "browserDebugger": "auto"
+                }
+            }),
+        )
+        .await;
+        let requester = manager.clone();
+        let preflight = tokio::spawn(async move {
+            requester
+                .preflight(
+                    &json!({
+                        "action": "agentRunBackgroundScript",
+                        "instance": {"url": "https://dev.service-now.com"}
+                    }),
+                    2,
+                )
+                .await
+        });
+        let request = helper.next().await.unwrap().unwrap();
+        let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
+        send_json(
+            &mut helper,
+            json!({
+                "action": "agentGetCapabilitiesResponse",
+                "agentRequestId": request["agentRequestId"],
+                "success": true,
+                "capabilities": {"protocolVersion": 1, "instanceSecurityGates": 1},
+                "instanceGates": {}
+            }),
+        )
+        .await;
+        let error = preflight.await.unwrap().unwrap_err();
+        assert!(matches!(error, BridgeError::GateUnauthorized(_)));
+    }
+
+    #[tokio::test]
+    async fn gated_metadata_arriving_during_refresh_prevents_legacy_downgrade() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut helper = connect_helper(addr).await;
+        let requester = manager.clone();
+        let negotiation = tokio::spawn(async move { requester.negotiate_capabilities(2).await });
+        let request = helper.next().await.unwrap().unwrap();
+        let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
+        send_json(
+            &mut helper,
+            json!({
+                "action": "helperBuildInfo",
+                "extensionName": "SN Utils",
+                "extensionVersion": "10.1.9.0",
+                "debuggerAvailable": true,
+                "capabilities": {"protocolVersion": 1, "instanceSecurityGates": 1}
+            }),
+        )
+        .await;
+        send_json(
+            &mut helper,
+            json!({
+                "action": "agentGetCapabilitiesResponse",
+                "agentRequestId": request["agentRequestId"],
+                "success": true,
+                "capabilities": {"protocolVersion": 1}
+            }),
+        )
+        .await;
+        let error = negotiation.await.unwrap().unwrap_err();
+        assert!(matches!(error, BridgeError::GateStateUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn advertised_gated_helper_cannot_downgrade_to_legacy() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut helper = connect_helper(addr).await;
+        send_json(
+            &mut helper,
+            json!({
+                "action": "helperBuildInfo",
+                "extensionName": "SN Utils",
+                "extensionVersion": "10.1.9.0",
+                "debuggerAvailable": true,
+                "capabilities": {"protocolVersion": 1, "instanceSecurityGates": 1}
+            }),
+        )
+        .await;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !manager.helper_status().await.advertises_instance_gates() {
+            assert!(Instant::now() < deadline);
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        let requester = manager.clone();
+        let negotiation = tokio::spawn(async move { requester.negotiate_capabilities(2).await });
+        let request = helper.next().await.unwrap().unwrap();
+        let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
+        send_json(
+            &mut helper,
+            json!({
+                "action": "agentGetCapabilitiesResponse",
+                "agentRequestId": request["agentRequestId"],
+                "success": true,
+                "capabilities": {"protocolVersion": 1}
+            }),
+        )
+        .await;
+        let error = negotiation.await.unwrap().unwrap_err();
+        assert!(matches!(error, BridgeError::GateStateUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn legacy_bound_request_is_not_sent_after_same_generation_metadata_upgrade() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut helper = connect_helper(addr).await;
+        {
+            let mut status = manager.inner.helper_status.lock().await;
+            status.generation = 1;
+            status.security_gate_support = HelperSecurityGateSupport::Gated;
+        }
+        let payload = json!({"action": "executeBackgroundScript"});
+        let error = manager
+            .request_on_generation_with_support(
+                &payload,
+                Matcher::Action("responseFromBackgroundScript".to_string()),
+                1,
+                Some(1),
+                HelperSecurityGateSupport::LegacyUnrestricted,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, BridgeError::GateStateUnavailable(_)));
+        assert!(
+            timeout(Duration::from_millis(100), helper.next())
+                .await
+                .is_err(),
+            "legacy payload reached helper after gated metadata arrived"
+        );
+    }
+
+    #[tokio::test]
+    async fn generation_bound_request_is_not_sent_after_reconnect() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let _first_helper = connect_helper(addr).await;
+        let mut replacement = connect_helper(addr).await;
+        let payload = json!({"action": "mutation", "agentRequestId": "bound-1"});
+        let error = manager
+            .request_on_generation(
+                &payload,
+                Matcher::Correlation("bound-1".to_string()),
+                1,
+                Some(1),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, BridgeError::Disconnected));
+        assert!(
+            timeout(Duration::from_millis(100), replacement.next())
+                .await
+                .is_err(),
+            "stale-generation payload reached replacement helper"
+        );
+    }
+
+    #[tokio::test]
+    async fn capability_negotiation_fails_when_helper_generation_changes() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut first_helper = connect_helper(addr).await;
+        let requester = manager.clone();
+        let negotiation = tokio::spawn(async move { requester.negotiate_capabilities(2).await });
+        let capability_request = first_helper.next().await.unwrap().unwrap();
+        assert!(
+            capability_request
+                .to_text()
+                .unwrap()
+                .contains("agentGetCapabilities")
+        );
+
+        let _replacement = connect_helper(addr).await;
+        let error = negotiation.await.unwrap().unwrap_err();
+        assert!(matches!(error, BridgeError::Disconnected));
     }
 
     #[tokio::test]

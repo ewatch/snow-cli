@@ -4,11 +4,19 @@ pub(super) fn print_response_value(
     response: SnuMessage,
     output_format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let mut value = serde_json::to_value(&response)?;
+    let value = response_value(&response)?;
+    print_output(&value, output_format)
+}
+
+pub(super) fn response_value(response: &SnuMessage) -> anyhow::Result<Value> {
+    let mut value = serde_json::to_value(response)?;
     if let Value::Object(map) = &mut value {
         map.remove("agentRequestId");
+        if let Some(instance) = &response.instance {
+            map.insert("instance".to_string(), redact_session_for_output(instance));
+        }
     }
-    print_output(&value, output_format)
+    Ok(value)
 }
 
 pub(super) fn print_background_script_response(
@@ -17,9 +25,10 @@ pub(super) fn print_background_script_response(
 ) -> anyhow::Result<()> {
     let data = response
         .extra
-        .get("data")
+        .get("output")
+        .or_else(|| response.extra.get("data"))
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("SN-Utils background script response did not contain data"))?;
+        .ok_or_else(|| anyhow!("SN-Utils background script response did not contain output"))?;
 
     match output_format {
         OutputFormat::Json | OutputFormat::Text => match serde_json::from_str::<Value>(data) {

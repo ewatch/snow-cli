@@ -90,6 +90,21 @@ fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutpu
         ));
     }
 
+    if let Some(broker_error) = error.downcast_ref::<crate::snu::broker::BrokerClientError>() {
+        return Some((
+            ErrorOutput {
+                error: ErrorBody {
+                    code: broker_error.code.clone(),
+                    message: broker_error.message.clone(),
+                    status: None,
+                    detail: None,
+                    instance: None,
+                },
+            },
+            1,
+        ));
+    }
+
     if let Some(api_error) = error.downcast_ref::<ApiError>() {
         let exit_code = if api_error.status == 404 { 4 } else { 5 };
         return Some((
@@ -244,6 +259,17 @@ mod tests {
         assert!(json.contains("Unknown field incidentSecret"));
         assert!(!json.contains("must-not-appear"));
         assert!(!json.contains("privateData"));
+    }
+
+    #[test]
+    fn snu_broker_error_keeps_machine_readable_code() {
+        let error = anyhow::Error::new(crate::snu::broker::BrokerClientError {
+            code: "SNU_GATE_BLOCKED".to_string(),
+            message: "backgroundScripts is blocked".to_string(),
+        });
+        let (output, exit_code) = known_error_output_and_exit_code(&error).unwrap();
+        assert_eq!(output.error.code, "SNU_GATE_BLOCKED");
+        assert_eq!(exit_code, 1);
     }
 
     #[test]

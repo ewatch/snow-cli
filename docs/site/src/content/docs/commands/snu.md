@@ -12,24 +12,30 @@ All `snu` subcommands also accept the global flags from the [command overview](/
 > extension being connected to the local broker. Open a ServiceNow browser
 > tab with SN-Utils installed and run `/token` there first — without a live
 > connection, helper-dependent commands time out waiting for session
-> metadata. The exceptions are the broker subcommands (`snu broker status`,
-> `snu broker stop`, `snu broker clear`) and `snu check-connection`, which
-> work standalone and don't require an active helper tab.
+> metadata. The broker subcommands (`snu broker status`, `snu broker stop`,
+> `snu broker clear`) and `snu check-connection` can work without an active
+> helper tab. `snu get-instance-info` reads broker-cached session metadata and
+> therefore also works while the helper is disconnected when a cached session
+> exists.
 
 ## What it is for
 
 `snu` is the browser-session bridge for actions that need the live SN-Utils helper tab:
 
 - check whether the helper bridge is connected
-- inspect instance connection info
+- inspect broker-cached instance connection info
 - wait for `/token` and print the live browser session metadata
+- create records and inspect scoped application metadata
 - list tables and fetch records through the active ServiceNow session
 - fetch table schema metadata
 - update or delete records through the live browser helper session
 - execute background scripts through the helper tab
 - open slash commands
 - activate tabs
-- switch update set / application / domain context
+- inspect or switch update set / application / domain context
+- call ServiceNow REST endpoints through the browser session
+- inspect and interact with live forms and pages
+- fetch reference/parent options
 - take screenshots
 - upload attachments
 
@@ -40,6 +46,8 @@ Use [`script`](/commands/script/) for background scripts. That command runs dire
 ```bash
 snow-cli snu check-connection
 snow-cli snu get-instance-info
+snow-cli snu create-record incident --data '{"short_description":"Created through SN-Utils"}'
+snow-cli snu app-meta x_my_app
 snow-cli snu list-tables
 snow-cli snu get-record incident <sys_id> --fields sys_id,number,short_description
 snow-cli snu update-record incident <sys_id> --field state --content 2
@@ -51,7 +59,13 @@ snow-cli snu schema incident
 snow-cli snu execute-bg-script --code 'gs.info("hello from SN-Utils")'
 snow-cli snu slash /tn
 snow-cli snu tab activate 'https://dev12345.service-now.com/incident.do*' --open-if-not-found
+snow-cli snu context get
 snow-cli snu context switch application x_my_app --tab-url 'https://dev12345.service-now.com/*'
+snow-cli snu rest get /api/now/table/incident --query-param sysparm_limit=1
+snow-cli snu records parent-options sys_db_object --fields sys_id,name --limit 10
+snow-cli snu page form-state --fields number,state
+snow-cli snu page set-field short_description 'Updated but not submitted'
+snow-cli snu page navigate https://dev12345.service-now.com/incident_list.do
 snow-cli snu screenshot --url 'https://dev12345.service-now.com/*' --out incident.png
 snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png
 ```
@@ -74,10 +88,34 @@ transient helper-tab errors are retried automatically.
 
 ## `snu get-instance-info`
 
-Get instance connection info from the helper.
+Read instance connection information from the broker's cached session state.
+This does not query the helper directly. If the broker restarted, its persisted
+session cache can supply the metadata while the helper is disconnected.
 
 ```bash
 snow-cli snu get-instance-info
+```
+
+## `snu create-record <table>`
+
+Create a record through the active browser session. Pass field values as a JSON
+object with `--data`; use `--scope` when the transaction must run in a specific
+application scope. This is a mutating command, is governed by the
+`createArtifacts` gate, and is unavailable in `snow-cli-ro`.
+
+```bash
+snow-cli snu create-record incident --data '{"short_description":"Created through SN-Utils"}'
+snow-cli snu create-record x_my_table --scope x_my_app --data '{"name":"Example"}'
+```
+
+## `snu app-meta <app_id>`
+
+Read artifacts and metadata for an application scope through the helper. The
+application identifier can be a scope name or sys_id. This operation is
+read-only and is available in `snow-cli-ro`.
+
+```bash
+snow-cli snu app-meta x_my_app
 ```
 
 ## `snu list-tables`
@@ -152,7 +190,7 @@ snow-cli snu schema incident
 
 ## `snu execute-bg-script`
 
-Run a server-side background script through the browser helper session. The command prints the helper's returned `data` payload.
+Run a server-side background script through the correlated Agent API. The command prints the helper's returned script output.
 
 ```bash
 snow-cli snu execute-bg-script --code 'gs.info("hello from SN-Utils")'
@@ -178,17 +216,58 @@ Activate or open a matching tab.
 snow-cli snu tab activate 'https://dev12345.service-now.com/*' --open-if-not-found
 ```
 
-## `snu context switch <type> <value>`
+## `snu context get|switch`
 
-Switch update set, application, or domain context in the browser session.
+Read the current application/update-set context, or switch update set,
+application, or domain context in the browser session.
 
 ```bash
+snow-cli snu context get
 snow-cli snu context switch application x_my_app --tab-url 'https://dev12345.service-now.com/*'
 ```
 
+## `snu rest <method> <endpoint>`
+
+Use the helper's correlated Agent REST API with the active browser session.
+Endpoints must be safe instance-relative paths. Repeat `--query-param` for
+multiple unique keys; duplicate keys are rejected rather than silently
+collapsed. GET is available in `snow-cli-ro`; write methods are blocked there.
+
+```bash
+snow-cli snu rest get /api/now/table/incident --query-param sysparm_limit=1
+snow-cli snu rest patch /api/now/table/incident/<sys_id> --data '{"state":"2"}'
+```
+
+## `snu records parent-options`
+
+Fetch reference/parent choices with a bounded Table API query.
+
+```bash
+snow-cli snu records parent-options sys_db_object --fields sys_id,name --limit 10
+```
+
+## `snu page`
+
+Drive the community Agent API for a live ServiceNow tab. `form-state` is a
+read; `set-field` changes the unsaved form, while `run-ui-action`, `click`, and
+`navigate` can cause browser or instance side effects.
+
+```bash
+snow-cli snu page form-state --fields number,state --url 'https://dev12345.service-now.com/*'
+snow-cli snu page set-field short_description 'Updated but not submitted'
+snow-cli snu page run-ui-action save
+snow-cli snu page click '#sysverb_update'
+snow-cli snu page navigate https://dev12345.service-now.com/incident_list.do
+```
+
+SN-Utils Pro-only Agent actions (`agentCodeSearch` and all `agentCdp*` browser
+debugger calls) are intentionally not exposed by `snow-cli snu`.
+
 ## `snu screenshot`
 
-Capture a screenshot through the helper tab.
+Capture a screenshot through the helper tab. The selected instance must have
+an active `/token` session so the CLI can preflight its `browserDebugger` gate,
+even when targeting the tab by ID or URL pattern.
 
 ```bash
 snow-cli snu screenshot --url 'https://dev12345.service-now.com/*' --out incident.png
@@ -208,7 +287,7 @@ snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png
 - `snow-cli snu` commands auto-start a local broker that owns the SN-Utils WebSocket port and idles out when unused.
 - The `g_ck` token is not stored as a reusable credential. The broker keeps live browser-session metadata in memory per instance while it is running.
 - If a command waits for session metadata, run `/token` in a ServiceNow tab.
-- Some helper actions are available in the SN-Utils extension but are not yet exposed as `snow-cli` commands, including `get_file_structure`, `get_form_state`, `set_field`, `run_ui_action`, `navigate`, `navigate_and_screenshot`, `rest_request`, and `refresh_preview`.
+- Community Agent API calls use correlated responses. Pro-only code search and CDP debugger actions remain intentionally unsupported.
 
 ### Targeting a specific instance
 
@@ -260,8 +339,10 @@ snow-cli snu broker clear                                          # all instanc
 snow-cli snu broker clear --instance https://dev12345.service-now.com  # just one
 ```
 
-The next command for a cleared instance re-prompts for `/token`. Clearing is
-broker-memory only; it does not affect the ServiceNow session in the browser.
+The next command for a cleared instance re-prompts for `/token`. Clearing
+removes the selected session from broker memory and updates or removes the
+persisted broker cache. It does not log out or otherwise affect the ServiceNow
+session in the browser.
 
 The `sn-scriptsync` VS Code extension and `snow-cli snu` are still mutually
 exclusive because both need the same SN-Utils browser port. Stop `sn-scriptsync`

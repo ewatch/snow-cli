@@ -6,7 +6,8 @@ use thiserror::Error;
 use crate::cli::args::{
     ApiCommands, AttachmentCommands, AuthCommands, CodesearchCommands, Commands, ConfigCommands,
     DataCommands, ImportSetCommands, ProfileSdkCommands, ScopeCommands, ScriptCommands,
-    SeedCommands, SkillCommands, SnuCommands, SnuContextCommands, TableCommands,
+    SeedCommands, SkillCommands, SnuCommands, SnuContextCommands, SnuPageCommands, SnuRestCommands,
+    TableCommands,
 };
 
 static ACTIVE_POLICY_MODE: AtomicU8 = AtomicU8::new(PolicyMode::FullAccess as u8);
@@ -319,10 +320,33 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             | SnuCommands::AppMeta { .. }
             | SnuCommands::Query { .. }
             | SnuCommands::Schema { .. }
+            | SnuCommands::Records(_)
             | SnuCommands::Slash { .. }
             | SnuCommands::Tab(_)
             | SnuCommands::Screenshot { .. }
             | SnuCommands::Broker(_) => PolicyDecision::Allow,
+            SnuCommands::Rest(rest_args) => match &rest_args.command {
+                SnuRestCommands::Get(_) => PolicyDecision::Allow,
+                SnuRestCommands::Post(_)
+                | SnuRestCommands::Put(_)
+                | SnuRestCommands::Patch(_)
+                | SnuRestCommands::Delete(_) => deny(
+                    "snu rest write",
+                    CommandCapability::RawApiWrite,
+                    "read-only policy allows SN-Utils Agent API REST GET only",
+                ),
+            },
+            SnuCommands::Page(page_args) => match &page_args.command {
+                SnuPageCommands::FormState { .. } => PolicyDecision::Allow,
+                SnuPageCommands::SetField { .. }
+                | SnuPageCommands::RunUiAction { .. }
+                | SnuPageCommands::Click { .. }
+                | SnuPageCommands::Navigate { .. } => deny(
+                    "snu page mutation",
+                    CommandCapability::RemoteWrite,
+                    "read-only policy allows form-state reads only",
+                ),
+            },
             SnuCommands::UpdateRecord { .. } => deny(
                 "snu update-record",
                 CommandCapability::RemoteWrite,
@@ -344,6 +368,7 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 "read-only policy does not allow background script execution through SN-Utils",
             ),
             SnuCommands::Context(context_args) => match &context_args.command {
+                SnuContextCommands::Get { .. } => PolicyDecision::Allow,
                 SnuContextCommands::Switch { .. } => deny(
                     "snu context switch",
                     CommandCapability::RemoteWrite,
@@ -518,6 +543,32 @@ mod tests {
                 timeout_secs: 1,
             },
         }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::Context(SnuContextArgs {
+                command: SnuContextCommands::Get { timeout_secs: 1 },
+            }),
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::Rest(SnuRestArgs {
+                command: SnuRestCommands::Get(SnuRestReadArgs {
+                    endpoint: "/api/now/table/incident".to_string(),
+                    query_params: Vec::new(),
+                    timeout_secs: 1,
+                }),
+            }),
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::Page(SnuPageArgs {
+                command: SnuPageCommands::FormState {
+                    fields: vec!["number".to_string()],
+                    target: SnuPageTargetArgs {
+                        url: "https://*.service-now.com/*".to_string(),
+                        tab_id: None,
+                        timeout_secs: 1,
+                    },
+                },
+            }),
+        }));
     }
 
     #[test]
@@ -550,6 +601,30 @@ mod tests {
                 code: Some("gs.info('x')".to_string()),
                 timeout_secs: 1,
             },
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::Rest(SnuRestArgs {
+                command: SnuRestCommands::Patch(SnuRestWriteArgs {
+                    endpoint: "/api/now/table/incident/abc".to_string(),
+                    data: Some("{}".to_string()),
+                    query_params: Vec::new(),
+                    timeout_secs: 1,
+                }),
+            }),
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::Page(SnuPageArgs {
+                command: SnuPageCommands::SetField {
+                    field: "state".to_string(),
+                    value: "2".to_string(),
+                    display_value: None,
+                    target: SnuPageTargetArgs {
+                        url: "https://*.service-now.com/*".to_string(),
+                        tab_id: None,
+                        timeout_secs: 1,
+                    },
+                },
+            }),
         }));
     }
 

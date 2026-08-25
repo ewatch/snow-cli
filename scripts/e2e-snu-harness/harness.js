@@ -33,9 +33,10 @@
 //      into) rather than simulating keystrokes, which didn't reliably land
 //      on the right frame in ServiceNow's Next Experience shell even with
 //      every documented precondition satisfied.
-//   7. Approves the resulting one-time per-instance connection prompt in the
-//      ScriptSync tab (`#instanceapprovediv` / `#instanceallow` — see
-//      scriptsync.js): the tab does not forward anything over the
+//   7. Verifies the requested origin and approves the resulting one-time
+//      per-instance connection prompt in either the legacy panel
+//      (`#instanceapprovediv` / `#instanceallow`) or current modal
+//      (`#new-instance-modal` / `#modal-instance-allow`). The tab does not forward anything over the
 //      WebSocket, including /token, until that prompt is accepted. Since
 //      this harness always starts from a fresh browser profile, the prompt
 //      appears every run.
@@ -200,6 +201,44 @@ async function launchBrowser(extDir) {
   return { context, extensionId, userDataDir };
 }
 
+async function configureTestGateModes(scriptSyncPage, instanceUrl) {
+  const raw = process.env.SNU_HARNESS_GATE_MODES;
+  if (!raw) return null;
+  let modes;
+  try {
+    modes = JSON.parse(raw);
+  } catch (err) {
+    fail(`SNU_HARNESS_GATE_MODES must be a JSON object: ${err.message}`);
+  }
+  const knownGates = new Set([
+    "backgroundScripts",
+    "deleteRecords",
+    "createArtifacts",
+    "restRequest",
+    "browserDebugger",
+  ]);
+  for (const [gate, mode] of Object.entries(modes)) {
+    if (!knownGates.has(gate) || !["off", "approve", "auto"].includes(mode)) {
+      fail(`invalid test gate setting ${gate}=${mode}`);
+    }
+  }
+  const origin = new URL(instanceUrl).origin.toLowerCase();
+  await scriptSyncPage.evaluate(
+    async ({ origin, modes }) => {
+      const current = await chrome.storage.local.get("instanceSecurityGates");
+      const all = current.instanceSecurityGates || {};
+      all[origin] = { ...(all[origin] || {}), ...modes };
+      await chrome.storage.local.set({ instanceSecurityGates: all });
+      if (typeof window.broadcastInstanceSecurityGates === "function") {
+        window.broadcastInstanceSecurityGates();
+      }
+    },
+    { origin, modes },
+  );
+  log(`configured test-only security gates for ${origin}`);
+  return modes;
+}
+
 async function loginToServiceNow(context, instanceUrl, username, password) {
   const page = await context.newPage();
   const loginUrl = new URL("/login.do", instanceUrl).toString();
@@ -237,15 +276,33 @@ async function openScriptSyncTab(context, extensionId, wsPort) {
 /// `#instanceallow` is clicked. Without this, /token can fire correctly on
 /// the ServiceNow side and still never reach the broker. Since this harness
 /// always starts from a fresh browser profile, this prompt appears every run.
-async function approveScriptSyncInstance(scriptSyncPage, timeoutMs = 15_000) {
+async function approveScriptSyncInstance(scriptSyncPage, expectedInstanceUrl, timeoutMs = 15_000) {
   try {
-    await scriptSyncPage.locator("#instanceapprovediv").waitFor({ state: "visible", timeout: timeoutMs });
-    log("ScriptSync tab is prompting for instance approval — clicking Allow");
-    await scriptSyncPage.click("#instanceallow");
-    return true;
+    const allowButtons = scriptSyncPage.locator("#modal-instance-allow:visible, #instanceallow:visible");
+    await allowButtons.first().waitFor({ state: "visible", timeout: timeoutMs });
+    const currentUi = await scriptSyncPage.locator("#modal-instance-allow").isVisible();
+    const originSelector = currentUi ? "#modal-instance-url" : "#instanceurl";
+    const displayedUrl = (await scriptSyncPage.locator(originSelector).textContent())?.trim();
+    let displayedOrigin;
+    let expectedOrigin;
+    try {
+      displayedOrigin = new URL(displayedUrl).origin;
+      expectedOrigin = new URL(expectedInstanceUrl).origin;
+    } catch {
+      fail(`instance approval prompt contained an invalid URL: ${displayedUrl || "<empty>"}`);
+    }
+    if (displayedOrigin !== expectedOrigin) {
+      fail(
+        `refusing to authorize unexpected instance origin ${displayedOrigin}; expected ${expectedOrigin}`,
+      );
+    }
+    const ui = currentUi ? "current_modal" : "legacy_panel";
+    log(`ScriptSync ${ui} is prompting for ${displayedOrigin} — clicking Allow`);
+    await allowButtons.first().click();
+    return ui;
   } catch (err) {
     log(`WARNING: no ScriptSync instance-approval prompt appeared within ${timeoutMs}ms: ${err.message}`);
-    return false;
+    return null;
   }
 }
 
@@ -325,6 +382,9 @@ async function main() {
     process.env.SNU_HARNESS_READY_FILE || path.join(scratchDir, "snu-harness-ready.json");
 
   const extDir = await downloadExtension(scratchDir);
+  const extensionVersion = JSON.parse(
+    fs.readFileSync(path.join(extDir, "manifest.json"), "utf8"),
+  ).version;
   patchExtensionForIsolatedPort(extDir);
   patchExtensionForScreenshot(extDir);
 
@@ -336,12 +396,23 @@ async function main() {
 
   let loginOk = true;
   let tokenCapture = "skipped (login failed)";
+  let authorizationUi = null;
+  let configuredGateModes = null;
   try {
     const snPage = await loginToServiceNow(context, instanceUrl, username, password);
     tokenCapture = await attemptTokenCapture(snPage);
     if (tokenCapture === "attempted") {
-      const approved = await approveScriptSyncInstance(scriptSyncPage);
-      tokenCapture = approved ? "attempted+approved" : "attempted (no approval prompt seen)";
+      authorizationUi = await approveScriptSyncInstance(scriptSyncPage, instanceUrl);
+      tokenCapture = authorizationUi
+        ? "attempted+approved"
+        : "attempted (no approval prompt seen)";
+      if (authorizationUi) {
+        // The current modal persists its visible defaults asynchronously when
+        // Allow is clicked. Apply test overrides only after that callback has
+        // settled, otherwise it can race and overwrite the requested modes.
+        await scriptSyncPage.waitForTimeout(250);
+        configuredGateModes = await configureTestGateModes(scriptSyncPage, instanceUrl);
+      }
     }
   } catch (err) {
     loginOk = false;
@@ -355,8 +426,11 @@ async function main() {
         ready: true,
         pid: process.pid,
         ws_port: wsPort,
+        extension_version: extensionVersion,
         login_ok: loginOk,
         token_capture: tokenCapture,
+        authorization_ui: authorizationUi,
+        configured_gate_modes: configuredGateModes,
       },
       null,
       2,
