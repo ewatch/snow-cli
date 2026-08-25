@@ -579,15 +579,19 @@ impl BridgeManager {
             if expected_generation.is_some_and(|expected| expected != conn.generation) {
                 return Err(BridgeError::Disconnected);
             }
-            if let Some(expected_support) = expected_support {
-                let status = self.inner.helper_status.lock().await;
-                if status.generation != conn.generation
-                    || status.security_gate_support != expected_support
-                {
-                    return Err(BridgeError::GateStateUnavailable(
-                        "helper capability state changed after preflight".to_string(),
-                    ));
-                }
+            let status_guard = if expected_support.is_some() {
+                Some(self.inner.helper_status.lock().await)
+            } else {
+                None
+            };
+            if let (Some(expected_support), Some(status)) =
+                (expected_support, status_guard.as_ref())
+                && (status.generation != conn.generation
+                    || status.security_gate_support != expected_support)
+            {
+                return Err(BridgeError::GateStateUnavailable(
+                    "helper capability state changed after preflight".to_string(),
+                ));
             }
             let (tx, rx) = oneshot::channel();
             self.inner.waiters.lock().await.push(Waiter {
@@ -598,6 +602,7 @@ impl BridgeManager {
             conn.outbound
                 .send(Message::Text(text.into()))
                 .map_err(|_| BridgeError::Disconnected)?;
+            drop(status_guard);
             rx
         };
 
