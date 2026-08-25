@@ -1141,11 +1141,12 @@ async fn send_legacy_action_with_refresh(
 ) -> anyhow::Result<SnuMessage> {
     let first = broker
         .manager
-        .request_on_generation(
+        .request_on_generation_with_support(
             payload,
             Matcher::Action(expected_action.to_string()),
             timeout_secs,
             expected_generation,
+            crate::snu::gates::HelperSecurityGateSupport::LegacyUnrestricted,
         )
         .await;
     let text = match first {
@@ -1167,11 +1168,12 @@ async fn send_legacy_action_with_refresh(
         }
         let message = broker
             .manager
-            .request_on_generation(
+            .request_on_generation_with_support(
                 payload,
                 Matcher::Action(expected_action.to_string()),
                 timeout_secs,
                 retry_preflight.generation,
+                crate::snu::gates::HelperSecurityGateSupport::LegacyUnrestricted,
             )
             .await?;
         mark_payload_verified(broker, payload).await;
@@ -1213,11 +1215,12 @@ async fn send_legacy_action_with_refresh(
     }
     let message = broker
         .manager
-        .request_on_generation(
+        .request_on_generation_with_support(
             payload,
             Matcher::Action(expected_action.to_string()),
             timeout_secs,
             retry_preflight.generation,
+            crate::snu::gates::HelperSecurityGateSupport::LegacyUnrestricted,
         )
         .await?;
     mark_payload_verified(broker, payload).await;

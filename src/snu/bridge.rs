@@ -513,7 +513,7 @@ impl BridgeManager {
         matcher: Matcher,
         timeout_secs: u64,
     ) -> Result<SnuMessage, BridgeError> {
-        self.request_on_generation(payload, matcher, timeout_secs, None)
+        self.request_bound(payload, matcher, timeout_secs, None, None)
             .await
     }
 
@@ -526,6 +526,39 @@ impl BridgeManager {
         matcher: Matcher,
         timeout_secs: u64,
         expected_generation: Option<u64>,
+    ) -> Result<SnuMessage, BridgeError> {
+        self.request_bound(payload, matcher, timeout_secs, expected_generation, None)
+            .await
+    }
+
+    /// Additionally require the helper's current negotiated support state at
+    /// enqueue time. Legacy fallbacks use this to prevent same-generation build
+    /// metadata from racing a prior legacy classification.
+    pub async fn request_on_generation_with_support(
+        &self,
+        payload: &Value,
+        matcher: Matcher,
+        timeout_secs: u64,
+        expected_generation: Option<u64>,
+        expected_support: HelperSecurityGateSupport,
+    ) -> Result<SnuMessage, BridgeError> {
+        self.request_bound(
+            payload,
+            matcher,
+            timeout_secs,
+            expected_generation,
+            Some(expected_support),
+        )
+        .await
+    }
+
+    async fn request_bound(
+        &self,
+        payload: &Value,
+        matcher: Matcher,
+        timeout_secs: u64,
+        expected_generation: Option<u64>,
+        expected_support: Option<HelperSecurityGateSupport>,
     ) -> Result<SnuMessage, BridgeError> {
         let connect_budget = Duration::from_secs(
             timeout_secs.min(self.inner.config.connect_timeout.as_secs().max(1)),
@@ -545,6 +578,16 @@ impl BridgeManager {
             };
             if expected_generation.is_some_and(|expected| expected != conn.generation) {
                 return Err(BridgeError::Disconnected);
+            }
+            if let Some(expected_support) = expected_support {
+                let status = self.inner.helper_status.lock().await;
+                if status.generation != conn.generation
+                    || status.security_gate_support != expected_support
+                {
+                    return Err(BridgeError::GateStateUnavailable(
+                        "helper capability state changed after preflight".to_string(),
+                    ));
+                }
             }
             let (tx, rx) = oneshot::channel();
             self.inner.waiters.lock().await.push(Waiter {
@@ -1246,6 +1289,35 @@ mod tests {
         .await;
         let error = negotiation.await.unwrap().unwrap_err();
         assert!(matches!(error, BridgeError::GateStateUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn legacy_bound_request_is_not_sent_after_same_generation_metadata_upgrade() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut helper = connect_helper(addr).await;
+        {
+            let mut status = manager.inner.helper_status.lock().await;
+            status.generation = 1;
+            status.security_gate_support = HelperSecurityGateSupport::Gated;
+        }
+        let payload = json!({"action": "executeBackgroundScript"});
+        let error = manager
+            .request_on_generation_with_support(
+                &payload,
+                Matcher::Action("responseFromBackgroundScript".to_string()),
+                1,
+                Some(1),
+                HelperSecurityGateSupport::LegacyUnrestricted,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, BridgeError::GateStateUnavailable(_)));
+        assert!(
+            timeout(Duration::from_millis(100), helper.next())
+                .await
+                .is_err(),
+            "legacy payload reached helper after gated metadata arrived"
+        );
     }
 
     #[tokio::test]
