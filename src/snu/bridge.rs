@@ -371,6 +371,14 @@ impl BridgeManager {
                 if status.generation != before.generation {
                     return Err(BridgeError::Disconnected);
                 }
+                if status.advertises_instance_gates()
+                    || status.security_gate_support == HelperSecurityGateSupport::Gated
+                {
+                    return Err(BridgeError::GateStateUnavailable(
+                        "helper advertised instance security gates while capability refresh timed out"
+                            .to_string(),
+                    ));
+                }
                 status.security_gate_support = HelperSecurityGateSupport::LegacyUnrestricted;
                 return Ok(CapabilityNegotiation::Legacy {
                     generation: status.generation,
@@ -402,6 +410,14 @@ impl BridgeManager {
             if status.generation != before.generation {
                 return Err(BridgeError::Disconnected);
             }
+            if status.advertises_instance_gates()
+                || status.security_gate_support == HelperSecurityGateSupport::Gated
+            {
+                return Err(BridgeError::GateStateUnavailable(
+                    "helper advertised instance security gates during capability refresh but its response omitted them"
+                        .to_string(),
+                ));
+            }
             status.security_gate_support = HelperSecurityGateSupport::LegacyUnrestricted;
             return Ok(CapabilityNegotiation::Legacy {
                 generation: status.generation,
@@ -413,10 +429,16 @@ impl BridgeManager {
             return Err(BridgeError::Disconnected);
         }
         status.security_gate_support = HelperSecurityGateSupport::Gated;
-        for (origin, snapshot) in report.instance_gates {
-            status.apply_gate_snapshot(origin, snapshot);
+        let refreshed_instance_gates = report.instance_gates;
+        for (origin, snapshot) in &refreshed_instance_gates {
+            status.apply_gate_snapshot(origin.clone(), snapshot.clone());
         }
-        Ok(CapabilityNegotiation::Gated(Box::new(status.clone())))
+        let mut negotiated = status.clone();
+        // Authorization for this dispatch comes only from the active refresh.
+        // Cached push snapshots remain useful for status display, but an origin
+        // omitted by the refresh must not remain authorized from old state.
+        negotiated.instance_gates = refreshed_instance_gates;
+        Ok(CapabilityNegotiation::Gated(Box::new(negotiated)))
     }
 
     /// Produce a redacted, advisory decision immediately before dispatch. A
@@ -1103,6 +1125,88 @@ mod tests {
         assert_eq!(status.generation, 2);
         assert!(status.build.is_none());
         assert!(status.instance_gates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn refreshed_gate_omission_does_not_reuse_cached_authorization() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut helper = connect_helper(addr).await;
+        send_json(
+            &mut helper,
+            json!({
+                "action": "helperGatesUpdated",
+                "instanceOrigin": "https://dev.service-now.com",
+                "revision": 1,
+                "gates": {
+                    "backgroundScripts": "auto",
+                    "deleteRecords": "auto",
+                    "createArtifacts": "auto",
+                    "restRequest": "auto",
+                    "browserDebugger": "auto"
+                }
+            }),
+        )
+        .await;
+        let requester = manager.clone();
+        let preflight = tokio::spawn(async move {
+            requester
+                .preflight(
+                    &json!({
+                        "action": "agentRunBackgroundScript",
+                        "instance": {"url": "https://dev.service-now.com"}
+                    }),
+                    2,
+                )
+                .await
+        });
+        let request = helper.next().await.unwrap().unwrap();
+        let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
+        send_json(
+            &mut helper,
+            json!({
+                "action": "agentGetCapabilitiesResponse",
+                "agentRequestId": request["agentRequestId"],
+                "success": true,
+                "capabilities": {"protocolVersion": 1, "instanceSecurityGates": 1},
+                "instanceGates": {}
+            }),
+        )
+        .await;
+        let error = preflight.await.unwrap().unwrap_err();
+        assert!(matches!(error, BridgeError::GateUnauthorized(_)));
+    }
+
+    #[tokio::test]
+    async fn gated_metadata_arriving_during_refresh_prevents_legacy_downgrade() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut helper = connect_helper(addr).await;
+        let requester = manager.clone();
+        let negotiation = tokio::spawn(async move { requester.negotiate_capabilities(2).await });
+        let request = helper.next().await.unwrap().unwrap();
+        let request: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
+        send_json(
+            &mut helper,
+            json!({
+                "action": "helperBuildInfo",
+                "extensionName": "SN Utils",
+                "extensionVersion": "10.1.9.0",
+                "debuggerAvailable": true,
+                "capabilities": {"protocolVersion": 1, "instanceSecurityGates": 1}
+            }),
+        )
+        .await;
+        send_json(
+            &mut helper,
+            json!({
+                "action": "agentGetCapabilitiesResponse",
+                "agentRequestId": request["agentRequestId"],
+                "success": true,
+                "capabilities": {"protocolVersion": 1}
+            }),
+        )
+        .await;
+        let error = negotiation.await.unwrap().unwrap_err();
+        assert!(matches!(error, BridgeError::GateStateUnavailable(_)));
     }
 
     #[tokio::test]

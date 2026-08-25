@@ -850,6 +850,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             let preflight = preflight_for_dispatch(broker, &current_payload, timeout_secs).await?;
             let result = if preflight.decision == GateDecision::LegacyUnrestricted {
                 let _legacy_guard = broker.legacy_action_lock.lock().await;
+                refresh_payload_instance_from_cache(broker, &mut legacy_payload).await?;
                 send_legacy_action_with_refresh(
                     broker,
                     &mut legacy_payload,
@@ -1103,6 +1104,29 @@ async fn send_action_with_refresh(
         .await?;
     mark_payload_verified(broker, payload).await;
     Ok(message)
+}
+
+/// Replace a queued action's session with the broker's newest session for the
+/// same origin. This is required after waiting on the legacy serialization lock:
+/// an earlier caller may have refreshed the token while this caller was queued.
+async fn refresh_payload_instance_from_cache(
+    broker: &Broker,
+    payload: &mut Value,
+) -> anyhow::Result<()> {
+    let origin = payload
+        .pointer("/instance/url")
+        .and_then(Value::as_str)
+        .and_then(normalize_origin);
+    let Some(origin) = origin else {
+        return Ok(());
+    };
+    let current = broker.state.lock().await.session_for_origin(&origin);
+    if let Some(current) = current
+        && let Some(object) = payload.as_object_mut()
+    {
+        object.insert("instance".to_string(), serde_json::to_value(current)?);
+    }
+    Ok(())
 }
 
 /// Legacy helpers identify background-script replies only by action name. The
@@ -2017,6 +2041,29 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn queued_legacy_payload_uses_newest_cached_session() {
+        let (broker, _helper) = gated_test_bridge().await;
+        broker.state.lock().await.remember_session(&SnuInstance {
+            name: "dev".to_string(),
+            url: "https://dev.service-now.com".to_string(),
+            g_ck: Some("fresh-token".to_string()),
+            scope: None,
+        });
+        let mut payload = serde_json::json!({
+            "action": "executeBackgroundScript",
+            "instance": {
+                "name": "dev",
+                "url": "https://dev.service-now.com",
+                "g_ck": "stale-token"
+            }
+        });
+        refresh_payload_instance_from_cache(&broker, &mut payload)
+            .await
+            .unwrap();
+        assert_eq!(payload["instance"]["g_ck"], "fresh-token");
     }
 
     fn instance(url: &str) -> SnuInstance {
