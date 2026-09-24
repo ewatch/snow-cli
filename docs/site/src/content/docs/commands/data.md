@@ -21,7 +21,7 @@ Important options:
 - `--query <encoded-query>`: restrict exported rows
 - `--fields <a,b,c>`: only export selected fields
 - `--limit <n>`: maximum records to export
-- `--order-by <field>`: sort the export
+- `--order-by <spec>`: sort the export (`field`, `-field` or `field:desc`, comma-separated); sent as `ORDERBY` clauses in the query. Dataset package specs accept the same syntax in a table's `order_by`
 - `-o, --out <path>`: write to a file instead of stdout
 
 Examples:

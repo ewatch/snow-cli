@@ -4,7 +4,9 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
-use wiremock::matchers::{body_string_contains, header, method, path, query_param};
+use wiremock::matchers::{
+    body_string_contains, header, method, path, query_param, query_param_is_missing,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -32,12 +34,15 @@ async fn test_data_export_json_output() {
     Mock::given(method("GET"))
         .and(path("/api/now/table/incident"))
         .and(header("Authorization", "Bearer test-api-token"))
-        .and(query_param("sysparm_query", "active=true"))
+        .and(query_param(
+            "sysparm_query",
+            "active=true^ORDERBYDESCnumber",
+        ))
         .and(query_param(
             "sysparm_fields",
             "sys_id,number,short_description",
         ))
-        .and(query_param("sysparm_orderby", "number"))
+        .and(query_param_is_missing("sysparm_orderby"))
         .and(query_param("sysparm_offset", "0"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
@@ -68,7 +73,7 @@ async fn test_data_export_json_output() {
             "--fields",
             "sys_id,number,short_description",
             "--order-by",
-            "number",
+            "-number",
         ])
         .assert()
         .success()
@@ -702,7 +707,7 @@ async fn test_data_validate_accepts_inherited_fields() {
         .and(path("/api/now/table/sys_dictionary"))
         .and(query_param(
             "sysparm_query",
-            "nameINincident,task^elementISNOTEMPTY^element!=sys_tags",
+            "nameINincident,task^elementISNOTEMPTY^element!=sys_tags^ORDERBYelement",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
@@ -871,7 +876,10 @@ async fn test_data_import_package_remaps_references() {
             .and(path("/api/now/table/sys_dictionary"))
             .and(query_param(
                 "sysparm_query",
-                format!("name={}^elementISNOTEMPTY^element!=sys_tags", table),
+                format!(
+                    "name={}^elementISNOTEMPTY^element!=sys_tags^ORDERBYelement",
+                    table
+                ),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": if table == "u_parent" {
@@ -1051,7 +1059,10 @@ async fn test_data_import_package_dry_run_reports_plan_without_writes() {
             .and(path("/api/now/table/sys_dictionary"))
             .and(query_param(
                 "sysparm_query",
-                format!("name={}^elementISNOTEMPTY^element!=sys_tags", table),
+                format!(
+                    "name={}^elementISNOTEMPTY^element!=sys_tags^ORDERBYelement",
+                    table
+                ),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": if table == "u_parent" {

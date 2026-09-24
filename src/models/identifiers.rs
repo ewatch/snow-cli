@@ -29,6 +29,13 @@ impl fmt::Display for IdentifierError {
 
 impl std::error::Error for IdentifierError {}
 
+impl IdentifierError {
+    /// Build an error for a sibling parse-don't-validate model type.
+    pub(crate) fn from_message(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
 fn err(message: impl Into<String>) -> IdentifierError {
     IdentifierError(message.into())
 }

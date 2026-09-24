@@ -44,7 +44,7 @@ pub(super) async fn handle_export_package(
                 table_spec.query.as_deref(),
                 fetch_fields.as_deref(),
                 &pagination,
-                table_spec.order_by.as_deref(),
+                table_spec.order_by.as_ref(),
             )
             .await?;
         raw_records_by_table.insert(table_name.clone(), records);
@@ -418,13 +418,14 @@ pub(super) async fn fetch_table_schema(
         .with_limit(None);
 
     let sys_dictionary = TableName::from_static("sys_dictionary");
+    let order_by: OrderBy = "element".parse()?;
     let records = client
         .get_table_records(
             &sys_dictionary,
             Some(&query),
             Some("element,internal_type,mandatory,read_only,default_value"),
             &pagination,
-            Some("element"),
+            Some(&order_by),
         )
         .await?;
 

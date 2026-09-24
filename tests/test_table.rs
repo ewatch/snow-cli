@@ -232,9 +232,9 @@ async fn test_table_list_with_query_params() {
 
     Mock::given(method("GET"))
         .and(path("/api/now/table/incident"))
-        .and(query_param("sysparm_query", "active=true"))
+        .and(query_param("sysparm_query", "active=true^ORDERBYnumber"))
         .and(query_param("sysparm_fields", "sys_id,number"))
-        .and(query_param("sysparm_orderby", "number"))
+        .and(query_param_is_missing("sysparm_orderby"))
         .and(query_param("sysparm_offset", "0"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
@@ -268,6 +268,70 @@ async fn test_table_list_with_query_params() {
         .assert()
         .success()
         .stdout(predicate::str::contains("INC001"));
+}
+
+// Regression (servicenow-cli-120.1): the Table API ignores `sysparm_orderby`,
+// so sorting must travel inside `sysparm_query`, and `-field` must parse as a
+// value rather than as an unknown short flag.
+#[tokio::test]
+async fn test_table_list_order_by_descending_without_query() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param(
+            "sysparm_query",
+            "ORDERBYDESCsys_created_on^ORDERBYnumber",
+        ))
+        .and(query_param_is_missing("sysparm_orderby"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC009"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+            "--order-by",
+            "-sys_created_on,number",
+            "--limit",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("INC009"));
+}
+
+#[tokio::test]
+async fn test_table_list_invalid_order_by_is_rejected() {
+    let (_dir, config_path) = api_key_config();
+
+    // No mock needed: the sort spec is rejected before any HTTP request.
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            "http://localhost:1",
+            "table",
+            "list",
+            "incident",
+            "--order-by",
+            "sys_created_on:newest",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid sort direction"));
 }
 
 #[tokio::test]
@@ -771,7 +835,7 @@ async fn test_table_schema_compact() {
         .and(path("/api/now/table/sys_dictionary"))
         .and(query_param(
             "sysparm_query",
-            "name=incident^elementISNOTEMPTY^element!=sys_tags",
+            "name=incident^elementISNOTEMPTY^element!=sys_tags^ORDERBYname^ORDERBYelement",
         ))
         .and(query_param(
             "sysparm_fields",
@@ -862,7 +926,7 @@ async fn test_table_schema_include_inherited() {
         .and(path("/api/now/table/sys_dictionary"))
         .and(query_param(
             "sysparm_query",
-            "nameINSTANCEOFincident^elementISNOTEMPTY^element!=sys_tags",
+            "nameINSTANCEOFincident^elementISNOTEMPTY^element!=sys_tags^ORDERBYname^ORDERBYelement",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
@@ -903,7 +967,7 @@ async fn test_table_schema_handles_link_object_internal_type() {
         .and(path("/api/now/table/sys_dictionary"))
         .and(query_param(
             "sysparm_query",
-            "name=incident^elementISNOTEMPTY^element!=sys_tags",
+            "name=incident^elementISNOTEMPTY^element!=sys_tags^ORDERBYname^ORDERBYelement",
         ))
         .and(query_param(
             "sysparm_fields",

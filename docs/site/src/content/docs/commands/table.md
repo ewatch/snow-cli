@@ -22,7 +22,7 @@ Important options:
 - `--fields <a,b,c>`: comma-separated field list (default: a compact table-aware projection; pass `'*'` for all fields)
 - `--limit <n>`: maximum number of records to return (default: 20)
 - `--all`: fetch every matching record instead of the bounded default
-- `--order-by <field>`: sort by a field
+- `--order-by <spec>`: sort results. `field` sorts ascending, `-field` or `field:desc` descending; comma-separate several keys (`-priority,number`). Sent as `ORDERBY`/`ORDERBYDESC` clauses appended to `--query`, because the Table API has no separate sort parameter
 - `--full`: return complete field content instead of capping long values
 
 Examples:
@@ -30,6 +30,7 @@ Examples:
 ```bash
 snow-cli table list incident --query 'active=true' --limit 20
 snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name
+snow-cli table list incident --fields number,sys_created_on --order-by -sys_created_on --limit 5  # newest first
 snow-cli table list incident --all --fields '*' --full   # everything, uncapped
 ```
 

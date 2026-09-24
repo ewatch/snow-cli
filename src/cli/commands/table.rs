@@ -6,6 +6,7 @@ use crate::cli::output;
 use crate::cli::truncation;
 use crate::client::pagination::PaginationConfig;
 use crate::models::identifiers::TableName;
+use crate::models::order_by::OrderBy;
 use crate::models::record::SingleRecordResponse;
 
 pub async fn handle(
@@ -44,7 +45,7 @@ pub async fn handle(
                     query.as_deref(),
                     effective_fields.as_deref(),
                     &pagination,
-                    order_by.as_deref(),
+                    order_by.as_ref(),
                 )
                 .await?;
 
@@ -378,13 +379,14 @@ async fn handle_schema(
         .with_limit(None);
 
     let sys_dictionary = TableName::from_static("sys_dictionary");
+    let order_by: OrderBy = "name,element".parse()?;
     let records = client
         .get_table_records(
             &sys_dictionary,
             Some(&query),
             Some(fields),
             &pagination,
-            Some("name,element"),
+            Some(&order_by),
         )
         .await?;
 

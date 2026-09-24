@@ -5,6 +5,12 @@ All notable changes to `snow-cli` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows semantic versioning conventions while it is pre-1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- `table list --order-by` and `data export --order-by` now sort. They previously sent `sysparm_orderby`, which the Table API ignores, so results came back in default order. Sort keys are now appended to `sysparm_query` as `ORDERBY`/`ORDERBYDESC` clauses; `-field` and `field:desc` sort descending, several keys can be comma-separated, and invalid specs are rejected before any request. Dataset package `order_by` entries use the same syntax.
+
 ## [0.8.0] - 2026-08-25
 
 ### Added

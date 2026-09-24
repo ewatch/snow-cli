@@ -30,7 +30,7 @@ pub(super) async fn handle_export(
             export.query.as_deref(),
             export.fields.as_deref(),
             &pagination,
-            export.order_by.as_deref(),
+            export.order_by.as_ref(),
         )
         .await?;
 

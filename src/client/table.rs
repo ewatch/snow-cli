@@ -11,7 +11,7 @@ impl SnowClient {
         query: Option<&str>,
         fields: Option<&str>,
         pagination: &pagination::PaginationConfig,
-        order_by: Option<&str>,
+        order_by: Option<&crate::models::order_by::OrderBy>,
     ) -> anyhow::Result<Vec<crate::models::record::Record>> {
         Ok(self
             .get_table_records_with_meta(table, query, fields, pagination, order_by)
@@ -24,15 +24,20 @@ impl SnowClient {
     /// Like [`Self::get_table_records`], but also captures `X-Total-Count`
     /// from the first response and reports whether the returned records are
     /// a truncated subset of all matching rows.
+    ///
+    /// The Table API has no sort parameter, so `order_by` is appended to
+    /// `sysparm_query` as `ORDERBY`/`ORDERBYDESC` clauses.
     pub async fn get_table_records_with_meta(
         &mut self,
         table: &crate::models::identifiers::TableName,
         query: Option<&str>,
         fields: Option<&str>,
         pagination: &pagination::PaginationConfig,
-        order_by: Option<&str>,
+        order_by: Option<&crate::models::order_by::OrderBy>,
     ) -> anyhow::Result<pagination::TableListResult> {
         let path = format!("/api/now/table/{table}");
+        let ordered_query = order_by.map(|order| order.apply_to_query(query));
+        let query = ordered_query.as_deref().or(query);
         let mut all_records = Vec::new();
         let mut offset: usize = 0;
         let page_size = pagination.page_size;
@@ -58,9 +63,6 @@ impl SnowClient {
             }
             if let Some(f) = fields {
                 params.push(("sysparm_fields", f.to_string()));
-            }
-            if let Some(o) = order_by {
-                params.push(("sysparm_orderby", o.to_string()));
             }
 
             // Convert to &str pairs for the request
@@ -145,7 +147,7 @@ impl SnowClient {
 mod tests {
     use super::*;
     use crate::client::test_support::*;
-    use wiremock::matchers::{method, path, query_param};
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -182,9 +184,9 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/api/now/table/incident"))
-            .and(query_param("sysparm_query", "active=true"))
+            .and(query_param("sysparm_query", "active=true^ORDERBYnumber"))
             .and(query_param("sysparm_fields", "sys_id,number"))
-            .and(query_param("sysparm_orderby", "number"))
+            .and(query_param_is_missing("sysparm_orderby"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": [{"sys_id": "1", "number": "INC001"}]
             })))
@@ -199,7 +201,7 @@ mod tests {
                 Some("active=true"),
                 Some("sys_id,number"),
                 &pagination,
-                Some("number"),
+                Some(&"number".parse().unwrap()),
             )
             .await
             .unwrap();

@@ -138,7 +138,7 @@ pub(super) struct DatasetTableSpec {
     #[serde(default)]
     pub(super) limit: Option<usize>,
     #[serde(default)]
-    pub(super) order_by: Option<String>,
+    pub(super) order_by: Option<OrderBy>,
     #[serde(default)]
     pub(super) depends_on: Vec<String>,
     #[serde(default)]
@@ -269,7 +269,7 @@ pub(super) struct ExportRequest {
     pub(super) query: Option<String>,
     pub(super) fields: Option<String>,
     pub(super) limit: Option<usize>,
-    pub(super) order_by: Option<String>,
+    pub(super) order_by: Option<OrderBy>,
     pub(super) out_path: Option<String>,
 }
 
