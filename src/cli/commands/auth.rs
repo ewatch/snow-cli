@@ -672,9 +672,11 @@ async fn handle_logout(profile_name: &str) -> anyhow::Result<()> {
 ///
 /// `credentials_present` only means a credential is stored or set in the
 /// environment; it says nothing about whether the instance accepts it. With
-/// `verify`, one authenticated request is made and the outcome is reported as
-/// `verified`; a failed verification also returns the underlying error so the
-/// process exits non-zero with the structured error on stderr.
+/// `verify`, one authenticated identity request is made and the outcome is
+/// reported as `verified`, together with the session user, its round-trip
+/// latency, and a best-effort build tag. A failed verification also returns
+/// the underlying error so the process exits non-zero with the structured
+/// error on stderr.
 async fn handle_status(
     profile_name: &str,
     format: &OutputFormat,
@@ -733,20 +735,33 @@ async fn handle_status(
         return output::print_output(&result, format);
     }
 
+    let started = std::time::Instant::now();
     let verification = async {
         let mut client =
             crate::client::build_client_with_timeout(profile_name, instance, timeout_secs)?;
-        client.current_user().await
+        let user = client.current_user().await?;
+        anyhow::Ok((client, user))
     }
     .await;
 
     match verification {
-        Ok(user) => {
+        Ok((mut client, user)) => {
+            let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let build = client.build_tag().await.unwrap_or_else(|error| {
+                tracing::debug!(error = %error, "Instance build tag is not readable");
+                None
+            });
             result.insert("verified".into(), true.into());
             result.insert(
                 "verified_user".into(),
-                user.map(|user| user.user_name).into(),
+                user.as_ref().map(|user| user.user_name.clone()).into(),
             );
+            result.insert(
+                "verified_user_sys_id".into(),
+                user.map(|user| user.sys_id).into(),
+            );
+            result.insert("latency_ms".into(), latency_ms.into());
+            result.insert("build".into(), build.into());
             output::print_output(&result, format)
         }
         Err(error) => {

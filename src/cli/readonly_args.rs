@@ -12,7 +12,7 @@ use crate::cli::args::{
 use crate::models::identifiers::{EncodedQueryValue, SysId, TableName};
 use crate::models::order_by::OrderBy;
 
-const READ_ONLY_AFTER_HELP: &str = "First-time setup (standalone):\n  1) Create a profile\n     snow-cli-ro profile add default --instance https://dev123.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli-ro auth login --password '<password>'\n\n  3) Verify\n     snow-cli-ro ping\n\nRead-only workflows:\n  1) List recent incidents\n     snow-cli-ro table list incident --query 'active=true' --limit 20\n\n  2) Fetch a record\n     snow-cli-ro table get incident <sys_id>\n\n  3) Inspect schema or app metadata\n     snow-cli-ro table schema incident --extended\n     snow-cli-ro scope inspect x_my_app\n\n  4) Call a read-oriented custom API\n     snow-cli-ro api get /api/x_myapp/status\n\nNotes:\n  - snow-cli-ro runs with a locked read-only policy for remote access.\n  - Local profile and credential management is allowed so it can be used standalone.\n  - Remote write commands and `auth token` (credential export) are blocked.\n  - Raw API access is limited to GET.\n  - GET is allowed by HTTP convention; use read-only ServiceNow credentials for stronger guarantees.";
+const READ_ONLY_AFTER_HELP: &str = "First-time setup (standalone):\n  1) Create a profile\n     snow-cli-ro profile add default --instance https://dev123.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli-ro auth login --password '<password>'\n\n  3) Verify credentials and connectivity\n     snow-cli-ro auth status --verify\n\nRead-only workflows:\n  1) List recent incidents\n     snow-cli-ro table list incident --query 'active=true' --limit 20\n\n  2) Fetch a record\n     snow-cli-ro table get incident <sys_id>\n\n  3) Inspect schema or app metadata\n     snow-cli-ro table schema incident --extended\n     snow-cli-ro scope inspect x_my_app\n\n  4) Call a read-oriented custom API\n     snow-cli-ro api get /api/x_myapp/status\n\nNotes:\n  - snow-cli-ro runs with a locked read-only policy for remote access.\n  - Local profile and credential management is allowed so it can be used standalone.\n  - Remote write commands and `auth token` (credential export) are blocked.\n  - Raw API access is limited to GET.\n  - GET is allowed by HTTP convention; use read-only ServiceNow credentials for stronger guarantees.";
 
 /// ❄️ snow-cli-ro — read-only ServiceNow CLI for agents
 #[derive(Parser, Debug)]
@@ -57,9 +57,6 @@ pub enum ReadOnlyCommands {
 
     /// Authentication operations (login, logout, status)
     Auth(ReadOnlyAuthArgs),
-
-    /// Check connectivity and identity: instance, user, build, and latency
-    Ping,
 
     /// Read Table API records, schema, and aggregate stats
     Table(ReadOnlyTableArgs),
@@ -155,7 +152,7 @@ pub enum ReadOnlyAuthCommands {
 
     /// Show current authentication status
     Status {
-        /// Also make one authenticated request to confirm the instance accepts the credentials
+        /// Make one authenticated request: confirms the credentials and reports the session user, latency, and build
         #[arg(long)]
         verify: bool,
     },
@@ -673,7 +670,6 @@ impl ReadOnlyCommands {
             Self::Auth(args) => Commands::Auth(AuthArgs {
                 command: args.command.into_full_command(),
             }),
-            Self::Ping => Commands::Ping,
             Self::Table(args) => Commands::Table(TableArgs {
                 command: args.command.into_full_command(),
             }),

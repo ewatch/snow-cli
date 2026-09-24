@@ -43,7 +43,6 @@ export const sidebar: NavGroup[] = [
         children: [
           { label: 'profile', href: '/commands/profile/' },
           { label: 'auth', href: '/commands/auth/' },
-          { label: 'ping', href: '/commands/ping/' },
           { label: 'table', href: '/commands/table/' },
           { label: 'data', href: '/commands/data/' },
           { label: 'scope', href: '/commands/scope/' },

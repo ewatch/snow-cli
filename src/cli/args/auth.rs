@@ -72,7 +72,7 @@ pub enum AuthCommands {
 
     /// Show current authentication status
     Status {
-        /// Also make one authenticated request to confirm the instance accepts the credentials
+        /// Make one authenticated request: confirms the credentials and reports the session user, latency, and build
         #[arg(long)]
         verify: bool,
     },

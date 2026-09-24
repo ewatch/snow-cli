@@ -1,10 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Wiremock-backed integration tests for `auth status` and `ping`.
+//! Wiremock-backed integration tests for `auth status`.
 //!
 //! Regression coverage for servicenow-cli-120.3: a stored credential is not
 //! proof that the instance accepts it, so `auth status` reports
-//! `credentials_present` and only `--verify` / `ping` talk to the server.
+//! `credentials_present` and only `--verify` talks to the server.
 
 mod common;
 
@@ -192,10 +192,8 @@ fn test_auth_status_honours_output_format() {
         .stdout(predicate::str::is_match(r#"^\{"profile":"default".*\}\n$"#).unwrap());
 }
 
-// --- ping ---
-
 #[tokio::test]
-async fn test_ping_reports_user_build_and_latency() {
+async fn test_auth_status_verify_reports_identity_build_and_latency() {
     let server = MockServer::start().await;
     mount_current_user(&server, 2).await;
     Mock::given(method("GET"))
@@ -207,7 +205,7 @@ async fn test_ping_reports_user_build_and_latency() {
         .await;
     let (_dir, config_path) = api_key_config();
 
-    // `ping` is read-only, so it must also be available in snow-cli-ro.
+    // Verification is read-only, so it must behave the same in snow-cli-ro.
     for binary in ["snow-cli", "snow-cli-ro"] {
         let mut command = if binary == "snow-cli" {
             cargo_bin_cmd!("snow-cli")
@@ -217,21 +215,21 @@ async fn test_ping_reports_user_build_and_latency() {
         let assert = command
             .env("SNOW_CLI_CONFIG", &config_path)
             .env("SNOW_CLI_API_TOKEN", "test-api-token")
-            .args(["--instance", &server.uri(), "ping"])
+            .args(["--instance", &server.uri(), "auth", "status", "--verify"])
             .assert()
             .success();
-        let ping = stdout_json(assert.get_output());
+        let status = stdout_json(assert.get_output());
 
-        assert_eq!(ping["user"], "admin", "{binary}");
-        assert_eq!(ping["user_sys_id"], ADMIN_SYS_ID);
-        assert_eq!(ping["build"], "glide-zurich-07-01-2026__patch1");
-        assert!(ping["latency_ms"].is_u64());
-        assert!(ping["instance"].as_str().unwrap().starts_with("http://"));
+        assert_eq!(status["verified"], true, "{binary}");
+        assert_eq!(status["verified_user"], "admin");
+        assert_eq!(status["verified_user_sys_id"], ADMIN_SYS_ID);
+        assert_eq!(status["build"], "glide-zurich-07-01-2026__patch1");
+        assert!(status["latency_ms"].is_u64());
     }
 }
 
 #[tokio::test]
-async fn test_ping_tolerates_unreadable_build_properties() {
+async fn test_auth_status_verify_tolerates_unreadable_build_properties() {
     let server = MockServer::start().await;
     mount_current_user(&server, 1).await;
     Mock::given(method("GET"))
@@ -247,28 +245,12 @@ async fn test_ping_tolerates_unreadable_build_properties() {
     let assert = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
-        .args(["--instance", &server.uri(), "ping"])
+        .args(["--instance", &server.uri(), "auth", "status", "--verify"])
         .assert()
         .success()
         .stderr("");
-    let ping = stdout_json(assert.get_output());
+    let status = stdout_json(assert.get_output());
 
-    assert_eq!(ping["user"], "admin");
-    assert!(ping["build"].is_null());
-}
-
-#[tokio::test]
-async fn test_ping_fails_on_rejected_credentials() {
-    let server = MockServer::start().await;
-    mount_unauthorized(&server).await;
-    let (_dir, config_path) = api_key_config();
-
-    cargo_bin_cmd!("snow-cli")
-        .env("SNOW_CLI_CONFIG", &config_path)
-        .env("SNOW_CLI_API_TOKEN", "wrong-token")
-        .args(["--instance", &server.uri(), "ping"])
-        .assert()
-        .code(5)
-        .stdout("")
-        .stderr(predicate::str::contains("\"code\":\"UNAUTHORIZED\""));
+    assert_eq!(status["verified"], true);
+    assert!(status["build"].is_null());
 }

@@ -9,8 +9,7 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ### Added
 
-- `ping` reports the instance, session user (`user`, `user_sys_id`), best-effort build tag, and latency from one cheap authenticated request. It is available in `snow-cli-ro`.
-- `auth status --verify` makes one authenticated request and reports `verified` (plus `verified_user` or `verification_error`), exiting non-zero when the instance rejects the credentials.
+- `auth status --verify` makes one authenticated request and reports `verified`, the session user (`verified_user`, `verified_user_sys_id`), `latency_ms`, and a best-effort `build`. On failure it reports `verification_error` and exits non-zero. It is available in `snow-cli-ro`.
 
 ### Changed
 

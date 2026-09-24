@@ -228,8 +228,6 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 "read-only policy does not allow exporting reusable credentials",
             ),
         },
-        // `ping` issues one-row reads of sys_user and sys_properties.
-        Commands::Ping => PolicyDecision::Allow,
         Commands::Table(args) => match &args.command {
             TableCommands::List { .. }
             | TableCommands::Get { .. }
@@ -439,7 +437,6 @@ mod tests {
         assert_allowed(Commands::Auth(AuthArgs {
             command: AuthCommands::Status { verify: true },
         }));
-        assert_allowed(Commands::Ping);
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::List {
                 table: "incident".parse().unwrap(),
