@@ -1,6 +1,6 @@
 use clap::{Args, Subcommand};
 
-const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login\n  printf '%s' \"$SNOW_PASSWORD\" | snow-cli auth login --password-stdin\n  snow-cli auth status --verify\n  snow-cli auth token\n  snow-cli auth logout";
+const AUTH_AFTER_HELP: &str = "Examples:\n  snow-cli auth login\n  snow-cli auth login --no-verify   # store only, e.g. offline setup\n  printf '%s' \"$SNOW_PASSWORD\" | snow-cli auth login --password-stdin\n  snow-cli auth status --verify\n  snow-cli auth token\n  snow-cli auth logout";
 
 const AUTH_LOGIN_AFTER_HELP: &str = "Examples:\n  snow-cli auth login\n  printf '%s' \"$SNOW_PASSWORD\" | snow-cli auth login --password-stdin\n  printf '%s' \"$SNOW_API_TOKEN\" | snow-cli auth login --token-stdin\n  printf '%s' \"$SNOW_CLIENT_SECRET\" | snow-cli auth login --client-secret-stdin\n  snow-cli auth login --no-browser\n  snow-cli auth login --session-cookie 'JSESSIONID=...; glide_user_route=...'\n\nTip:\n  Prefer interactive prompts or --*-stdin flags over command-line secret flags, which can leak through shell history and process listings.\n  If a required secret flag is omitted and stdin is a TTY, you will be prompted securely.\n  For OAuth2 authorization-code profiles, snow-cli opens the authorization URL and waits for a local redirect callback. Public PKCE clients can omit --client-secret.\n  For browser-session profiles, provide the full Cookie header value from your authenticated browser session via --session-cookie or the SNOW_SESSION_COOKIE environment variable. The token is not stored.";
 // --- Auth ---
@@ -65,6 +65,10 @@ pub enum AuthCommands {
         /// Mark the now-sdk alias as default
         #[arg(long, requires = "also_now_sdk")]
         set_now_sdk_default: bool,
+
+        /// Store the credentials without making a verification request (offline setup)
+        #[arg(long)]
+        no_verify: bool,
     },
 
     /// Clear stored credentials for the active profile

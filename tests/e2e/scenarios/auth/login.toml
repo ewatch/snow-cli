@@ -1,5 +1,5 @@
 name = "auth-login"
-description = "Authenticate a profile and store credentials in the OS keychain"
+description = "Store credentials in the OS keychain and verify them against the instance"
 requires = ["credentials"]
 
 # NOTE: unlike other scenarios, the command under test is itself the login. It
@@ -17,11 +17,11 @@ shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --pro
 
 [expect]
 exit_code = 0
-stdout_contains = ["authenticated", "e2e-scenario"]
-json_field_present = ['.status', '.profile']
+stdout_contains = ['"status":"verified"', "e2e-scenario"]
+json_field_present = ['.status', '.profile', '.verified_user']
 
 [[fuzzy]]
-expectation = "status is authenticated for profile e2e-scenario; a subsequent `auth status` reports authenticated=true."
+expectation = "status is verified for profile e2e-scenario after one identity request, verified_user is the scenario username, and a subsequent `auth status --verify` reports verified=true."
 
 [[cleanup]]
 description = "Clear stored credentials"

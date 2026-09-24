@@ -1,10 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-//! Wiremock-backed integration tests for `auth status`.
+//! Wiremock-backed integration tests for `auth status` and `auth login`.
 //!
-//! Regression coverage for servicenow-cli-120.3: a stored credential is not
-//! proof that the instance accepts it, so `auth status` reports
-//! `credentials_present` and only `--verify` talks to the server.
+//! Regression coverage for servicenow-cli-120.3 and -120.23: a stored
+//! credential is not proof that the instance accepts it, so `auth status`
+//! reports `credentials_present`, only `--verify` talks to the server, and
+//! `auth login` verifies stored secrets unless `--no-verify` is given.
 
 mod common;
 
@@ -254,4 +255,178 @@ async fn test_auth_status_verify_tolerates_unreadable_build_properties() {
 
     assert_eq!(status["verified"], true);
     assert!(status["build"].is_null());
+}
+
+// --- auth login ---
+
+/// Config for a basic-auth profile pointing at `instance`.
+fn basic_config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "{instance}"
+auth_method = "basic"
+username = "admin"
+"#
+    ))
+}
+
+fn login_command(
+    config_path: &std::path::Path,
+    keychain_store: &std::path::Path,
+) -> assert_cmd::Command {
+    let mut command = cargo_bin_cmd!("snow-cli");
+    command
+        .env("SNOW_CLI_CONFIG", config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env_remove("SNOW_CLI_PASSWORD")
+        .env_remove("SNOW_CLI_API_TOKEN");
+    command
+}
+
+#[tokio::test]
+async fn test_auth_login_basic_verifies_stored_password() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_user"))
+        // base64("admin:secret")
+        .and(header("Authorization", "Basic YWRtaW46c2VjcmV0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": ADMIN_SYS_ID, "user_name": "admin"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config_path) = basic_config(&server.uri());
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
+    let assert = login_command(&config_path, &keychain_store)
+        .args(["auth", "login", "--password", "secret"])
+        .assert()
+        .success();
+    let login = stdout_json(assert.get_output());
+
+    assert_eq!(login["status"], "verified");
+    assert_eq!(login["verified_user"], "admin");
+    assert_eq!(login["verified_user_sys_id"], ADMIN_SYS_ID);
+    assert_eq!(login["instance"], server.uri());
+}
+
+#[tokio::test]
+async fn test_auth_login_rejected_password_fails_but_keeps_secret() {
+    let server = MockServer::start().await;
+    mount_unauthorized(&server).await;
+    let (_dir, config_path) = basic_config(&server.uri());
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
+    let assert = login_command(&config_path, &keychain_store)
+        .args(["auth", "login", "--password", "wrong"])
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("\"code\":\"UNAUTHORIZED\""));
+    let login = stdout_json(assert.get_output());
+
+    assert_eq!(login["status"], "stored");
+    assert_eq!(login["verified"], false);
+    assert_eq!(login["verification_error"], "UNAUTHORIZED");
+    // Kept so a retry after fixing the account does not need re-entry.
+    assert_eq!(
+        common::read_test_keychain_entry(&keychain_store, "snow-cli", "dev:password").unwrap(),
+        "wrong"
+    );
+}
+
+#[test]
+fn test_auth_login_network_failure_reports_request_failed() {
+    let (_dir, config_path) = basic_config("http://127.0.0.1:1");
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
+    let assert = login_command(&config_path, &keychain_store)
+        .args([
+            "--timeout-secs",
+            "5",
+            "auth",
+            "login",
+            "--password",
+            "secret",
+        ])
+        .assert()
+        .failure();
+    let login = stdout_json(assert.get_output());
+
+    assert_eq!(login["status"], "stored");
+    assert_eq!(login["verification_error"], "REQUEST_FAILED");
+}
+
+#[test]
+fn test_auth_login_no_verify_stores_without_request() {
+    // Unreachable instance: --no-verify must not make any request.
+    let (_dir, config_path) = basic_config("http://127.0.0.1:1");
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
+    let assert = login_command(&config_path, &keychain_store)
+        .args(["auth", "login", "--password", "secret", "--no-verify"])
+        .assert()
+        .success();
+    let login = stdout_json(assert.get_output());
+
+    assert_eq!(login["status"], "stored");
+    assert!(login.get("verified").is_none());
+    assert_eq!(
+        common::read_test_keychain_entry(&keychain_store, "snow-cli", "dev:password").unwrap(),
+        "secret"
+    );
+}
+
+#[tokio::test]
+async fn test_auth_login_oauth_client_credentials_verifies_with_new_secret() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth_token.do"))
+        .and(wiremock::matchers::body_string_contains(
+            "client_secret=new-secret",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "fresh-access-token",
+            "token_type": "Bearer",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_user"))
+        .and(header("Authorization", "Bearer fresh-access-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": ADMIN_SYS_ID, "user_name": "integration.user"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config_path) = common::create_temp_config(&format!(
+        r#"
+default_profile = "default"
+
+[profiles.default]
+instance = "{}"
+auth_method = "oauth2"
+client_id = "client-id"
+oauth_grant_type = "client_credentials"
+"#,
+        server.uri()
+    ));
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
+    let assert = login_command(&config_path, &keychain_store)
+        .env_remove("SNOW_CLI_CLIENT_SECRET")
+        .args(["auth", "login", "--client-secret", "new-secret"])
+        .assert()
+        .success();
+    let login = stdout_json(assert.get_output());
+
+    assert_eq!(login["status"], "verified");
+    assert_eq!(login["verified_user"], "integration.user");
 }

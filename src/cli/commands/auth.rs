@@ -41,7 +41,14 @@ pub async fn handle(
             also_now_sdk,
             now_sdk_alias,
             set_now_sdk_default,
+            no_verify,
         } => {
+            let output = LoginOutput {
+                format,
+                instance,
+                timeout_secs,
+                verify: !no_verify,
+            };
             handle_login(
                 profile_name,
                 password,
@@ -56,10 +63,11 @@ pub async fn handle(
                 also_now_sdk,
                 now_sdk_alias,
                 set_now_sdk_default,
+                &output,
             )
             .await
         }
-        AuthCommands::Logout => handle_logout(profile_name).await,
+        AuthCommands::Logout => handle_logout(profile_name, format).await,
         AuthCommands::Status { verify } => {
             handle_status(profile_name, format, instance, timeout_secs, verify).await
         }
@@ -75,6 +83,10 @@ pub async fn handle(
 ///
 /// For OAuth2 password grant, both `--client-secret` and `--password` are required
 /// (two separate keychain entries).
+///
+/// Stored secrets (basic, API key, OAuth client credentials / password grant)
+/// are verified with one identity request unless `--no-verify` is given; see
+/// [`report_stored_login`].
 #[allow(clippy::too_many_arguments)]
 async fn handle_login(
     profile_name: &str,
@@ -90,6 +102,7 @@ async fn handle_login(
     also_now_sdk: bool,
     now_sdk_alias: Option<String>,
     set_now_sdk_default: bool,
+    output: &LoginOutput<'_>,
 ) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
     let profile = config
@@ -125,7 +138,6 @@ async fn handle_login(
             )?;
 
             let mut result = serde_json::json!({
-                "status": "authenticated",
                 "profile": profile_name,
                 "auth_method": profile.auth_method,
                 "credential_type": "password",
@@ -137,7 +149,7 @@ async fn handle_login(
                     "set_default": set_now_sdk_default,
                 });
             }
-            println!("{}", serde_json::to_string(&result)?);
+            report_stored_login(profile_name, result, output).await?;
         }
         AuthMethod::ApiKey => {
             let tok = resolve_secret(token, token_stdin, "API token: ", is_tty, || {
@@ -146,12 +158,11 @@ async fn handle_login(
             credentials::store_credential(profile_name, "api_token", &tok)?;
 
             let result = serde_json::json!({
-                "status": "authenticated",
                 "profile": profile_name,
                 "auth_method": profile.auth_method,
                 "credential_type": "api_token",
             });
-            println!("{}", serde_json::to_string(&result)?);
+            report_stored_login(profile_name, result, output).await?;
         }
         AuthMethod::Oauth2 => {
             let grant_type = profile
@@ -182,8 +193,9 @@ async fn handle_login(
                     &serde_json::to_string(&oauth_token)?,
                 )?;
 
+                // The authorization-code exchange itself proves the login.
                 let result = serde_json::json!({
-                    "status": "authenticated",
+                    "status": "verified",
                     "profile": profile_name,
                     "auth_method": profile.auth_method,
                     "oauth_grant_type": grant_type,
@@ -192,7 +204,7 @@ async fn handle_login(
                     "scope": oauth_token.scope.or_else(|| profile.oauth_scope.clone()),
                     "has_refresh_token": oauth_token.refresh_token.is_some(),
                 });
-                println!("{}", serde_json::to_string(&result)?);
+                output::print_output(&result, output.format)?;
             } else {
                 let secret = resolve_secret(
                     client_secret,
@@ -217,8 +229,8 @@ async fn handle_login(
                     credentials::store_credential(profile_name, "password", &pw)?;
                 }
 
+                // Only the secret is stored here; verification fetches a token with it.
                 let result = serde_json::json!({
-                    "status": "authenticated",
                     "profile": profile_name,
                     "auth_method": profile.auth_method,
                     "oauth_grant_type": grant_type,
@@ -228,7 +240,7 @@ async fn handle_login(
                         vec!["client_secret"]
                     },
                 });
-                println!("{}", serde_json::to_string(&result)?);
+                report_stored_login(profile_name, result, output).await?;
             }
         }
         AuthMethod::BrowserSession => {
@@ -253,7 +265,7 @@ async fn handle_login(
                 "export_hint": export_hint,
                 "note": "Browser session tokens are not stored. Set SNOW_SESSION_COOKIE in your environment for future requests.",
             });
-            println!("{}", serde_json::to_string(&result)?);
+            output::print_output(&result, output.format)?;
         }
         other => {
             anyhow::bail!("Auth method {:?} does not support `auth login`.", other);
@@ -521,6 +533,65 @@ fn random_hex_nonce() -> String {
     nonce
 }
 
+/// Output and verification settings shared by the `auth login` branches.
+struct LoginOutput<'a> {
+    format: &'a OutputFormat,
+    instance: Option<&'a str>,
+    timeout_secs: Option<u64>,
+    verify: bool,
+}
+
+/// Finish a login that stored a secret without contacting the instance.
+///
+/// Unless `--no-verify` was given, makes one identity request with the stored
+/// credentials. Reports `status: "verified"` with the session user on success,
+/// or `status: "stored"` otherwise. A failed verification keeps the stored
+/// secret (so a transient network error does not discard a correct one and a
+/// retry needs no re-entry), prints `verified: false` with the error code, and
+/// returns the error so the process exits non-zero.
+async fn report_stored_login(
+    profile_name: &str,
+    mut result: serde_json::Value,
+    output: &LoginOutput<'_>,
+) -> anyhow::Result<()> {
+    if !output.verify {
+        result["status"] = "stored".into();
+        return output::print_output(&result, output.format);
+    }
+
+    match verify_credentials(profile_name, output.instance, output.timeout_secs).await {
+        Ok((client, user)) => {
+            result["status"] = "verified".into();
+            result["instance"] = client.base_url().into();
+            result["verified_user"] = user.as_ref().map(|u| u.user_name.clone()).into();
+            result["verified_user_sys_id"] = user.map(|u| u.sys_id).into();
+            output::print_output(&result, output.format)
+        }
+        Err(error) => {
+            result["status"] = "stored".into();
+            result["verified"] = false.into();
+            result["verification_error"] = verification_error_code(&error).into();
+            output::print_output(&result, output.format)?;
+            Err(error)
+        }
+    }
+}
+
+/// Make one authenticated identity request with the profile's current credentials.
+async fn verify_credentials(
+    profile_name: &str,
+    instance: Option<&str>,
+    timeout_secs: Option<u64>,
+) -> anyhow::Result<(
+    crate::client::SnowClient,
+    Option<crate::client::CurrentUser>,
+)> {
+    let mut client =
+        crate::client::build_client_with_timeout(profile_name, instance, timeout_secs)?;
+    let user = client.current_user().await?;
+    Ok((client, user))
+}
+
 fn store_basic_login(
     profile_name: &str,
     instance: &str,
@@ -640,7 +711,7 @@ fn read_secret_from_stdin(label: &str) -> anyhow::Result<String> {
 /// `auth logout` — Remove stored credentials for the active profile.
 ///
 /// Removes all credential types associated with the profile's auth method.
-async fn handle_logout(profile_name: &str) -> anyhow::Result<()> {
+async fn handle_logout(profile_name: &str, format: &OutputFormat) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
     let profile = config
         .active_profile(Some(profile_name))
@@ -663,9 +734,7 @@ async fn handle_logout(profile_name: &str) -> anyhow::Result<()> {
         "status": "logged_out",
         "profile": profile_name,
     });
-    println!("{}", serde_json::to_string(&result)?);
-
-    Ok(())
+    output::print_output(&result, format)
 }
 
 /// `auth status` — Report whether credentials are available for the active profile.
@@ -735,13 +804,7 @@ async fn handle_status(
     }
 
     let started = std::time::Instant::now();
-    let verification = async {
-        let mut client =
-            crate::client::build_client_with_timeout(profile_name, instance, timeout_secs)?;
-        let user = client.current_user().await?;
-        anyhow::Ok((client, user))
-    }
-    .await;
+    let verification = verify_credentials(profile_name, instance, timeout_secs).await;
 
     match verification {
         Ok((mut client, user)) => {

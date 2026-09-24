@@ -43,6 +43,7 @@ Important options:
 - `--also-now-sdk`: for basic auth, also write the successful login into `now-sdk`
 - `--now-sdk-alias <name>`: destination alias name when using `--also-now-sdk`
 - `--set-now-sdk-default`: mark that `now-sdk` alias as default
+- `--no-verify`: store the credentials without contacting the instance (offline setup)
 
 Examples:
 
@@ -53,6 +54,38 @@ printf '%s' "$SNOW_API_TOKEN" | snow-cli auth login --token-stdin
 printf '%s' "$SNOW_CLIENT_SECRET" | snow-cli auth login --client-secret-stdin
 printf '%s' "$SNOW_SESSION_COOKIE" | snow-cli auth login --session-cookie-stdin
 ```
+
+### Verification
+
+After storing a password, API token, or OAuth client secret (client-credentials
+or password grant), `auth login` makes one identity request with it, the same
+check as [`auth status --verify`](#auth-status):
+
+```json
+{
+  "status": "verified",
+  "profile": "dev",
+  "auth_method": "basic",
+  "credential_type": "password",
+  "instance": "https://dev.service-now.com",
+  "verified_user": "admin",
+  "verified_user_sys_id": "6816f79cc0a8016401c5a33be04be441"
+}
+```
+
+If the instance rejects the credentials or cannot be reached, the output
+reports `"status": "stored"`, `"verified": false`, and a `verification_error`
+code; the structured error is written to stderr and the command exits non-zero
+(`5` for API errors such as `UNAUTHORIZED`). The secret stays stored, so a
+network hiccup does not discard a correct password and you can retry with
+`auth status --verify`; run `auth login` again to replace a wrong one. With
+`--also-now-sdk`, the `now-sdk` alias is written before verification in the
+same way.
+
+`--no-verify` skips the request and reports `"status": "stored"`.
+Authorization-code logins report `"status": "verified"` because the token
+exchange itself proves the credentials. Browser-session logins report
+`"status": "ready"`: the cookie is validated locally but not stored.
 
 ### OAuth authorization-code login
 
