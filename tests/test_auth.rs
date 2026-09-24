@@ -73,7 +73,8 @@ fn test_auth_status_reports_credentials_present_without_server_check() {
     let status = stdout_json(assert.get_output());
 
     assert_eq!(status["credentials_present"], true);
-    assert_eq!(status["authenticated"], true);
+    // Removed on purpose: it read as "the instance accepted the credentials".
+    assert!(status.get("authenticated").is_none());
     assert_eq!(status["instance"], "http://127.0.0.1:1");
     assert!(status.get("verified").is_none());
 }

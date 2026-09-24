@@ -91,14 +91,14 @@ Sample output when credentials are stored:
   "auth_method": "basic",
   "credential_types": ["password"],
   "credentials_present": true,
-  "authenticated": true,
   "username": "admin"
 }
 ```
 
 `credentials_present` only confirms that credentials are available in the
 keychain or environment. It does **not** prove the instance accepts them.
-`authenticated` is a deprecated alias with the same value, kept for one release.
+Earlier releases called this field `authenticated`; it was renamed because the
+old name suggested a server check that never happened.
 
 Add `--verify` to make one authenticated request. This is the command to use
 to check credentials, identity, and connectivity in a single call:

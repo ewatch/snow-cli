@@ -2,7 +2,7 @@ name = "auth-status"
 description = "Report auth status for a profile with no stored credentials (no instance required)"
 
 # Reads the isolated SNOW_CLI_CONFIG scratch file and the local credential
-# store only; with no credentials stored it reports authenticated=false
+# store only; with no credentials stored it reports credentials_present=false
 # without contacting the instance.
 requires = ["none"]
 
@@ -15,15 +15,15 @@ args = ["auth", "status", "--profile", "e2e-auth-status"]
 
 [expect]
 exit_code = 0
-# NB: `.authenticated` is legitimately `false` here, and the harness's
+# NB: `.credentials_present` is legitimately `false` here, and the harness's
 # json_field_present uses `jq -e`, which treats a false/null value as absent.
-# So we assert authenticated=false via stdout_contains and keep only truthy
-# fields in json_field_present.
-stdout_contains = ["e2e-auth-status", '"authenticated": false', "basic"]
+# So we assert credentials_present=false via stdout_contains (compact JSON)
+# and keep only truthy fields in json_field_present.
+stdout_contains = ["e2e-auth-status", '"credentials_present":false', "basic"]
 json_field_present = ['.auth_method', '.profile']
 
 [[fuzzy]]
-expectation = "authenticated is false (no password was stored for this profile), and auth_method is basic with username e2e-user."
+expectation = "credentials_present is false (no password was stored for this profile), there is no verified field because --verify was not passed, and auth_method is basic with username e2e-user."
 
 [[cleanup]]
 description = "Remove the scenario profile"

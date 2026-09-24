@@ -725,10 +725,9 @@ async fn handle_status(
         );
         present
     };
+    // Deliberately not called `authenticated`: a stored credential says nothing
+    // about whether the instance accepts it. `--verify` reports `verified`.
     result.insert("credentials_present".into(), credentials_present.into());
-    // Deprecated alias of `credentials_present`, kept for one release. It never
-    // meant the instance accepted the credentials; use `--verify` for that.
-    result.insert("authenticated".into(), credentials_present.into());
     result.insert("username".into(), serde_json::to_value(&profile.username)?);
 
     if !verify {

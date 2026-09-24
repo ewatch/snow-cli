@@ -13,7 +13,7 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ### Changed
 
-- `auth status` reports `credentials_present` instead of implying that stored credentials were accepted; `authenticated` remains as a deprecated alias with the same value for one release. The output now honours `--output`.
+- **Breaking:** `auth status` no longer reports `authenticated`. That field only meant a credential was stored, yet read as "the instance accepted it". It is replaced by `credentials_present`; use `auth status --verify` and its `verified` field for a real server check. The output now honours `--output` and is compact JSON by default.
 - `table schema` now returns the effective schema by default: columns inherited from parent tables are included (found by walking `sys_db_object.super_class`), each column is tagged with its defining `table`, and a child override replaces the parent definition. Use `--own-only` for columns defined on the table itself. `--include-inherited` is still accepted but hidden, since it is now the default; it previously returned only the table's own columns because `nameINSTANCEOF` does not work on `sys_dictionary.name`. `data validate` also uses the deduplicated effective schema.
 
 ### Fixed
