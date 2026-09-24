@@ -334,6 +334,49 @@ async fn test_table_list_invalid_order_by_is_rejected() {
         .stderr(predicate::str::contains("Invalid sort direction"));
 }
 
+// Regression (servicenow-cli-120.2): the structured error carries the
+// ServiceNow message and a specific code, and the raw body is not logged.
+#[tokio::test]
+async fn test_table_list_invalid_table_reports_servicenow_message_only() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/u_does_not_exist"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {"message": "Invalid table u_does_not_exist", "detail": null},
+            "status": "failure"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    let assert = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "u_does_not_exist",
+            "--limit",
+            "1",
+        ])
+        .assert()
+        .code(5)
+        .stdout("");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "unexpected stderr: {stderr}");
+    let error: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(error["error"]["code"], "INVALID_TABLE");
+    assert_eq!(error["error"]["message"], "Invalid table u_does_not_exist");
+    assert_eq!(error["error"]["status"], 400);
+    assert!(error["error"].get("detail").is_none());
+}
+
 #[tokio::test]
 async fn test_table_list_empty_result() {
     let server = MockServer::start().await;

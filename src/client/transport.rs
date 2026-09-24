@@ -348,13 +348,15 @@ impl SnowClient {
             if !status.is_success() {
                 let status_code = status.as_u16();
                 let body_text = response.text().await.ok();
-                let api_error =
-                    ApiError::from_status(status_code, &self.base_url, body_text.clone());
+                let body_len = body_text.as_ref().map_or(0, String::len);
+                let api_error = ApiError::from_status(status_code, &self.base_url, body_text);
 
-                tracing::error!(
+                // The structured error on stderr is the user-facing report. The raw
+                // body stays out of logs; SNOW_CLI_DEBUG_HTTP is the opt-in way to see it.
+                tracing::debug!(
                     code = %api_error.code,
                     status = status_code,
-                    detail = ?body_text,
+                    body_len,
                     "API request failed"
                 );
 

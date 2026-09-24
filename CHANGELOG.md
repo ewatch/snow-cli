@@ -13,6 +13,7 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ### Fixed
 
+- API errors now report the ServiceNow cause. The standard `{"error":{"message","detail"}}` envelope is surfaced in the structured JSON error after secret scrubbing and length bounding, with specific codes `INVALID_TABLE`, `RECORD_NOT_FOUND`, and `ACL_DENIED` where the message is unambiguous. The default-level `API request failed` log line that printed the raw response body on stderr is now a body-free `debug` event.
 - `table list --order-by` and `data export --order-by` now sort. They previously sent `sysparm_orderby`, which the Table API ignores, so results came back in default order. Sort keys are now appended to `sysparm_query` as `ORDERBY`/`ORDERBYDESC` clauses; `-field` and `field:desc` sort descending, several keys can be comma-separated, and invalid specs are rejected before any request. Dataset package `order_by` entries use the same syntax.
 
 ## [0.8.0] - 2026-08-25

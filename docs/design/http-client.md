@@ -70,10 +70,10 @@ ServiceNow API errors are mapped to the standard error format:
 
 ```rust
 pub struct ApiError {
-    pub code: String,        // e.g., "TABLE_NOT_FOUND"
-    pub message: String,     // Human-readable summary
+    pub code: String,        // e.g., "INVALID_TABLE"
+    pub message: String,     // ServiceNow error.message, or a generic summary
     pub status: u16,         // HTTP status code
-    pub detail: Option<String>, // ServiceNow error body
+    pub detail: Option<String>, // ServiceNow error.detail, or a redaction note
     pub instance: String,    // Instance URL for context
 }
 ```
@@ -90,3 +90,20 @@ pub struct ApiError {
 | 500+        | `SERVER_ERROR`          | ServiceNow internal error        |
 | timeout     | `REQUEST_TIMEOUT`       | Request timed out                |
 | conn error  | `CONNECTION_ERROR`      | Could not connect to instance    |
+
+When the response body is the standard ServiceNow envelope
+(`{"error":{"message":"...","detail":"..."},"status":"failure"}`), `message` and
+`detail` come from the envelope after secret scrubbing (credential-like
+`key=value` pairs, `Authorization`/`Bearer` values, control characters) and
+bounding to 500 characters each. An unambiguous message refines the code:
+
+| Condition                                   | Error Code         |
+|---------------------------------------------|--------------------|
+| message starts with `Invalid table`         | `INVALID_TABLE`    |
+| 404 with `No Record found`                  | `RECORD_NOT_FOUND` |
+| 403 mentioning `ACL` in message or detail   | `ACL_DENIED`       |
+
+Any other body (HTML, unknown JSON) is never echoed: `detail` reports only its
+size unless `SNOW_CLI_DEBUG_HTTP_INCLUDE_SENSITIVE` is set. Failed requests are
+logged at `debug` level without the body; `SNOW_CLI_DEBUG_HTTP` is the opt-in
+way to inspect raw responses.
