@@ -6,7 +6,6 @@ use crate::cli::output;
 use crate::cli::truncation;
 use crate::client::pagination::PaginationConfig;
 use crate::models::identifiers::TableName;
-use crate::models::order_by::OrderBy;
 use crate::models::record::SingleRecordResponse;
 
 pub async fn handle(
@@ -168,7 +167,8 @@ pub async fn handle(
         TableCommands::Schema {
             table,
             extended,
-            include_inherited,
+            own_only,
+            include_inherited: _,
         } => {
             handle_schema(
                 profile,
@@ -177,7 +177,7 @@ pub async fn handle(
                 timeout_secs,
                 &table,
                 extended,
-                include_inherited,
+                own_only,
             )
             .await
         }
@@ -344,8 +344,10 @@ fn numify(value: &serde_json::Value) -> serde_json::Value {
 ///
 /// Queries sys_dictionary for the given table to retrieve column names, types,
 /// and labels. With `--extended`, also shows required, read-only, max_length,
-/// default_value, and reference table. With `--include-inherited`, queries
-/// parent tables as well (e.g., `incident` extends `task`).
+/// default_value, and reference table. By default the effective schema is
+/// returned, including columns inherited from parent tables (e.g. `incident`
+/// extends `task`), each tagged with its defining table; `--own-only` limits
+/// the output to columns defined on the table itself.
 async fn handle_schema(
     profile: &str,
     format: &OutputFormat,
@@ -353,18 +355,16 @@ async fn handle_schema(
     timeout_secs: Option<u64>,
     table: &TableName,
     extended: bool,
-    include_inherited: bool,
+    own_only: bool,
 ) -> anyhow::Result<()> {
     tracing::info!("Fetching schema for table: {}", table);
 
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
-    // Build the base query: get columns for this table (exclude table-level metadata rows)
-    let query = if include_inherited {
-        // Use INSTANCEOF to get the table and all parent tables
-        format!("nameINSTANCEOF{table}^elementISNOTEMPTY^element!=sys_tags")
+    let tables = if own_only {
+        vec![table.clone()]
     } else {
-        format!("name={table}^elementISNOTEMPTY^element!=sys_tags")
+        crate::cli::commands::dictionary::fetch_table_hierarchy(&mut client, table).await?
     };
 
     // Select fields based on compact vs extended mode
@@ -374,21 +374,9 @@ async fn handle_schema(
         "element,internal_type,column_label,name"
     };
 
-    let pagination = crate::client::pagination::PaginationConfig::default()
-        .with_page_size(500)
-        .with_limit(None);
-
-    let sys_dictionary = TableName::from_static("sys_dictionary");
-    let order_by: OrderBy = "name,element".parse()?;
-    let records = client
-        .get_table_records(
-            &sys_dictionary,
-            Some(&query),
-            Some(fields),
-            &pagination,
-            Some(&order_by),
-        )
-        .await?;
+    let records =
+        crate::cli::commands::dictionary::fetch_dictionary_columns(&mut client, &tables, fields)
+            .await?;
 
     if records.is_empty() {
         output::print_status(
@@ -405,10 +393,10 @@ async fn handle_schema(
             column: r.get_str("element").unwrap_or("").to_string(),
             r#type: field_value_as_text(r, "internal_type").unwrap_or_default(),
             label: r.get_str("column_label").unwrap_or("").to_string(),
-            table: if include_inherited {
-                Some(r.get_str("name").unwrap_or("").to_string())
-            } else {
+            table: if own_only {
                 None
+            } else {
+                Some(r.get_str("name").unwrap_or("").to_string())
             },
             required: if extended {
                 Some(r.get_str("mandatory").unwrap_or("false") == "true")

@@ -835,7 +835,7 @@ async fn test_table_schema_compact() {
         .and(path("/api/now/table/sys_dictionary"))
         .and(query_param(
             "sysparm_query",
-            "name=incident^elementISNOTEMPTY^element!=sys_tags^ORDERBYname^ORDERBYelement",
+            "name=incident^elementISNOTEMPTY^element!=sys_tags^ORDERBYelement",
         ))
         .and(query_param(
             "sysparm_fields",
@@ -857,9 +857,18 @@ async fn test_table_schema_compact() {
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
-        .args(["--instance", &server.uri(), "table", "schema", "incident"])
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "schema",
+            "incident",
+            "--own-only",
+        ])
         .assert()
         .success()
+        // --own-only skips the hierarchy walk and the per-column table tag.
+        .stdout(predicate::str::contains("\"table\"").not())
         .stdout(predicate::str::contains("number"))
         .stdout(predicate::str::contains("string"))
         .stdout(predicate::str::contains("Number"))
@@ -918,45 +927,106 @@ async fn test_table_schema_extended() {
         .stdout(predicate::str::contains("true")); // required=true
 }
 
-#[tokio::test]
-async fn test_table_schema_include_inherited() {
-    let server = MockServer::start().await;
-
+/// Mount `sys_db_object` rows for the `incident -> task` hierarchy.
+async fn mount_incident_hierarchy(server: &MockServer) {
     Mock::given(method("GET"))
-        .and(path("/api/now/table/sys_dictionary"))
-        .and(query_param(
-            "sysparm_query",
-            "nameINSTANCEOFincident^elementISNOTEMPTY^element!=sys_tags^ORDERBYname^ORDERBYelement",
-        ))
+        .and(path("/api/now/table/sys_db_object"))
+        .and(query_param("sysparm_query", "name=incident"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": [
-                {"element": "number", "internal_type": "string", "column_label": "Number", "name": "task"},
-                {"element": "category", "internal_type": "string", "column_label": "Category", "name": "incident"}
-            ]
+            "result": [{
+                "name": "incident",
+                "super_class": {"link": "https://x/api/now/table/sys_db_object/t", "value": "task-sys-id"}
+            }]
         })))
-        .expect(1)
-        .mount(&server)
+        .mount(server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_db_object"))
+        .and(query_param("sysparm_query", "sys_id=task-sys-id"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"name": "task", "super_class": ""}]
+        })))
+        .mount(server)
+        .await;
+}
 
-    let (_dir, config_path) = api_key_config();
+// Regression (servicenow-cli-88): `nameINSTANCEOF` on sys_dictionary.name is
+// an exact match, so inherited columns were never returned. The effective
+// schema now walks sys_db_object.super_class and queries `nameIN<chain>`.
+#[tokio::test]
+async fn test_table_schema_includes_inherited_columns_by_default() {
+    for extra_args in [&[][..], &["--include-inherited"][..]] {
+        let server = MockServer::start().await;
+        mount_incident_hierarchy(&server).await;
 
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/sys_dictionary"))
+            .and(query_param(
+                "sysparm_query",
+                "nameINincident,task^elementISNOTEMPTY^element!=sys_tags^ORDERBYelement",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [
+                    {"element": "category", "internal_type": "string", "column_label": "Category", "name": "incident"},
+                    {"element": "short_description", "internal_type": "string", "column_label": "Short description", "name": "task"},
+                    {"element": "state", "internal_type": "integer", "column_label": "Task state", "name": "task"},
+                    {"element": "state", "internal_type": "integer", "column_label": "Incident state", "name": "incident"}
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_dir, config_path) = api_key_config();
+
+        let uri = server.uri();
+        let mut args = vec!["--instance", uri.as_str(), "table", "schema", "incident"];
+        args.extend_from_slice(extra_args);
+
+        let assert = cargo_bin_cmd!("snow-cli")
+            .env("SNOW_CLI_CONFIG", &config_path)
+            .env("SNOW_CLI_API_TOKEN", "test-api-token")
+            .args(&args)
+            .assert()
+            .success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+        let columns: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+        let summary: Vec<(&str, &str, &str)> = columns
+            .iter()
+            .map(|c| {
+                (
+                    c["column"].as_str().unwrap(),
+                    c["table"].as_str().unwrap(),
+                    c["label"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("category", "incident", "Category"),
+                ("short_description", "task", "Short description"),
+                // The incident override wins over the task definition.
+                ("state", "incident", "Incident state"),
+            ],
+            "args: {extra_args:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_table_schema_own_only_conflicts_with_include_inherited() {
     cargo_bin_cmd!("snow-cli")
-        .env("SNOW_CLI_CONFIG", &config_path)
-        .env("SNOW_CLI_API_TOKEN", "test-api-token")
         .args([
-            "--instance",
-            &server.uri(),
             "table",
             "schema",
             "incident",
+            "--own-only",
             "--include-inherited",
         ])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("number"))
-        .stdout(predicate::str::contains("task"))
-        .stdout(predicate::str::contains("category"))
-        .stdout(predicate::str::contains("incident"));
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 #[tokio::test]
@@ -967,7 +1037,7 @@ async fn test_table_schema_handles_link_object_internal_type() {
         .and(path("/api/now/table/sys_dictionary"))
         .and(query_param(
             "sysparm_query",
-            "name=incident^elementISNOTEMPTY^element!=sys_tags^ORDERBYname^ORDERBYelement",
+            "name=incident^elementISNOTEMPTY^element!=sys_tags^ORDERBYelement",
         ))
         .and(query_param(
             "sysparm_fields",

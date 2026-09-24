@@ -116,8 +116,12 @@ pub enum TableCommands {
         #[arg(long)]
         extended: bool,
 
-        /// Include fields inherited from parent tables (e.g., incident inherits from task)
+        /// Only show columns defined on this table, not those inherited from parent tables
         #[arg(long)]
+        own_only: bool,
+
+        /// Deprecated: inherited columns are now included by default
+        #[arg(long, hide = true, conflicts_with = "own_only")]
         include_inherited: bool,
     },
 

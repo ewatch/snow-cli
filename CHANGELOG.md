@@ -7,6 +7,10 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ## [Unreleased]
 
+### Changed
+
+- `table schema` now returns the effective schema by default: columns inherited from parent tables are included (found by walking `sys_db_object.super_class`), each column is tagged with its defining `table`, and a child override replaces the parent definition. Use `--own-only` for columns defined on the table itself. `--include-inherited` is still accepted but hidden, since it is now the default; it previously returned only the table's own columns because `nameINSTANCEOF` does not work on `sys_dictionary.name`. `data validate` also uses the deduplicated effective schema.
+
 ### Fixed
 
 - `table list --order-by` and `data export --order-by` now sort. They previously sent `sysparm_orderby`, which the Table API ignores, so results came back in default order. Sort keys are now appended to `sysparm_query` as `ORDERBY`/`ORDERBYDESC` clauses; `-field` and `field:desc` sort descending, several keys can be comma-separated, and invalid specs are rejected before any request. Dataset package `order_by` entries use the same syntax.

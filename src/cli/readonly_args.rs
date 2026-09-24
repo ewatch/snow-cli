@@ -220,8 +220,12 @@ pub enum ReadOnlyTableCommands {
         #[arg(long)]
         extended: bool,
 
-        /// Include fields inherited from parent tables
+        /// Only show columns defined on this table, not those inherited from parent tables
         #[arg(long)]
+        own_only: bool,
+
+        /// Deprecated: inherited columns are now included by default
+        #[arg(long, hide = true, conflicts_with = "own_only")]
         include_inherited: bool,
     },
 
@@ -758,10 +762,12 @@ impl ReadOnlyTableCommands {
             Self::Schema {
                 table,
                 extended,
+                own_only,
                 include_inherited,
             } => TableCommands::Schema {
                 table,
                 extended,
+                own_only,
                 include_inherited,
             },
             Self::Stats {

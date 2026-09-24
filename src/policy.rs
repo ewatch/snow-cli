@@ -460,6 +460,7 @@ mod tests {
             command: TableCommands::Schema {
                 table: "incident".parse().unwrap(),
                 extended: false,
+                own_only: false,
                 include_inherited: false,
             },
         }));

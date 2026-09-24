@@ -400,34 +400,15 @@ pub(super) async fn fetch_table_schema(
     timeout_secs: Option<u64>,
     table: &str,
 ) -> anyhow::Result<Vec<SchemaField>> {
+    let table: TableName = table.parse()?;
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
-    let table_names = fetch_table_hierarchy(&mut client, table).await?;
-    let query = if table_names.len() == 1 {
-        format!(
-            "name={}^elementISNOTEMPTY^element!=sys_tags",
-            table_names[0]
-        )
-    } else {
-        format!(
-            "nameIN{}^elementISNOTEMPTY^element!=sys_tags",
-            table_names.join(",")
-        )
-    };
-    let pagination = PaginationConfig::default()
-        .with_page_size(500)
-        .with_limit(None);
-
-    let sys_dictionary = TableName::from_static("sys_dictionary");
-    let order_by: OrderBy = "element".parse()?;
-    let records = client
-        .get_table_records(
-            &sys_dictionary,
-            Some(&query),
-            Some("element,internal_type,mandatory,read_only,default_value"),
-            &pagination,
-            Some(&order_by),
-        )
-        .await?;
+    let hierarchy = dictionary::fetch_table_hierarchy(&mut client, &table).await?;
+    let records = dictionary::fetch_dictionary_columns(
+        &mut client,
+        &hierarchy,
+        "name,element,internal_type,mandatory,read_only,default_value",
+    )
+    .await?;
 
     Ok(records
         .into_iter()
@@ -466,76 +447,6 @@ pub(super) async fn fetch_table_schema(
         })
         .filter(|field| !field.name.is_empty())
         .collect())
-}
-
-pub(super) async fn fetch_table_hierarchy(
-    client: &mut crate::client::SnowClient,
-    table: &str,
-) -> anyhow::Result<Vec<String>> {
-    let mut table_names = Vec::new();
-    let mut current = match fetch_table_definition_by_name(client, table).await {
-        Ok(current) => current,
-        Err(error) if is_not_found_error(&error) => None,
-        Err(error) => return Err(error),
-    };
-
-    while let Some(definition) = current {
-        let next_super_class = definition.super_class_sys_id.clone();
-        table_names.push(definition.name);
-        current = match next_super_class {
-            Some(sys_id) if !sys_id.is_empty() => {
-                fetch_table_definition_by_sys_id(client, &sys_id).await?
-            }
-            _ => None,
-        };
-    }
-
-    if table_names.is_empty() {
-        table_names.push(table.to_string());
-    }
-
-    Ok(table_names)
-}
-
-pub(super) async fn fetch_table_definition_by_name(
-    client: &mut crate::client::SnowClient,
-    table: &str,
-) -> anyhow::Result<Option<TableDefinition>> {
-    let query = format!("name={table}");
-    fetch_table_definition(client, &query).await
-}
-
-pub(super) async fn fetch_table_definition_by_sys_id(
-    client: &mut crate::client::SnowClient,
-    sys_id: &str,
-) -> anyhow::Result<Option<TableDefinition>> {
-    let query = format!("sys_id={sys_id}");
-    fetch_table_definition(client, &query).await
-}
-
-pub(super) async fn fetch_table_definition(
-    client: &mut crate::client::SnowClient,
-    query: &str,
-) -> anyhow::Result<Option<TableDefinition>> {
-    let pagination = PaginationConfig::default().with_limit(Some(1));
-    let sys_db_object = TableName::from_static("sys_db_object");
-    let records = client
-        .get_table_records(
-            &sys_db_object,
-            Some(query),
-            Some("name,super_class"),
-            &pagination,
-            None,
-        )
-        .await?;
-
-    Ok(records.into_iter().next().map(|record| TableDefinition {
-        name: record.get_str("name").unwrap_or_default().to_string(),
-        super_class_sys_id: record
-            .fields
-            .get("super_class")
-            .and_then(json_value_as_text),
-    }))
 }
 
 pub(super) fn read_dataset_input(file: &str) -> anyhow::Result<DatasetInput> {
@@ -1052,13 +963,6 @@ pub(super) fn extract_reference_marker(
     serde_json::from_value::<ReferencePlaceholder>(value.clone())
         .ok()
         .map(|placeholder| placeholder.reference)
-}
-
-pub(super) fn is_not_found_error(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<crate::client::error::ApiError>()
-        .map(|api_error| api_error.status == 404)
-        .unwrap_or(false)
 }
 
 pub(super) fn write_export_file(

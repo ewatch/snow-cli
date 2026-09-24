@@ -113,12 +113,6 @@ pub(super) struct SchemaField {
     pub(super) default_value: Option<String>,
 }
 
-#[derive(Debug)]
-pub(super) struct TableDefinition {
-    pub(super) name: String,
-    pub(super) super_class_sys_id: Option<String>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct DatasetExportSpec {
     pub(super) version: u8,

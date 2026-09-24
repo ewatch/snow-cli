@@ -127,7 +127,12 @@ snow-cli table delete incident 46d44a4b2f13000044e0bfc8fb99b6fd --yes
 
 ## `table schema <table>`
 
-Inspect table columns using `sys_dictionary`.
+Inspect table columns using `sys_dictionary`. By default the output is the
+table's effective schema: columns defined on the table plus those inherited
+from its parent tables (for example `incident` inherits `short_description`,
+`priority`, and `state` from `task`). Each column carries a `table` field naming
+the table that defines it; when a child table overrides a parent column, only
+the child's definition is shown.
 
 ```bash
 snow-cli table schema <table> [options]
@@ -136,14 +141,14 @@ snow-cli table schema <table> [options]
 Important options:
 
 - `--extended`: include metadata such as required, read-only, max length, default, and reference table
-- `--include-inherited`: include fields inherited from parent tables
+- `--own-only`: only show columns defined on the table itself, without inherited columns
 
 Examples:
 
 ```bash
 snow-cli table schema incident
 snow-cli table schema incident --extended
-snow-cli table schema incident --extended --include-inherited
+snow-cli table schema incident --own-only
 ```
 
 This is especially useful before building imports, exports, or scripted automation.
