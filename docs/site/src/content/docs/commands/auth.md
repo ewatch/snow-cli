@@ -79,6 +79,7 @@ Show the current authentication state for the active profile.
 
 ```bash
 snow-cli auth status
+snow-cli auth status --verify
 ```
 
 Sample output when credentials are stored:
@@ -89,15 +90,30 @@ Sample output when credentials are stored:
   "instance": "https://dev.service-now.com",
   "auth_method": "basic",
   "credential_types": ["password"],
+  "credentials_present": true,
   "authenticated": true,
   "username": "admin"
 }
 ```
 
-The `authenticated` field confirms that credentials are present in the
-keychain or environment. It does **not** verify that they are still valid
-against the instance — a 401 on the first API call means the stored
-password has changed or expired.
+`credentials_present` only confirms that credentials are available in the
+keychain or environment. It does **not** prove the instance accepts them.
+`authenticated` is a deprecated alias with the same value, kept for one release.
+
+Add `--verify` to make one authenticated request. The output then also
+includes `verified` and, on success, `verified_user`:
+
+```json
+{ "...": "...", "credentials_present": true, "verified": true, "verified_user": "admin" }
+```
+
+When verification fails, the output reports `"verified": false` with a
+`verification_error` code (for example `UNAUTHORIZED`, or `REQUEST_FAILED` for
+network errors), the structured error is written to stderr, and the command
+exits non-zero. Use [`ping`](/commands/ping/) for connectivity, identity,
+build, and latency in one call.
+
+The output honours `--output` like other commands.
 
 Use `snow-cli auth login` to update stale credentials.
 

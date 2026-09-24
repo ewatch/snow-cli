@@ -121,6 +121,9 @@ pub enum Commands {
     /// Authentication operations
     Auth(AuthArgs),
 
+    /// Check connectivity and identity: instance, user, build, and latency
+    Ping,
+
     /// Table API operations (CRUD on any ServiceNow table)
     Table(TableArgs),
 

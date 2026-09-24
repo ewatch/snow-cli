@@ -116,7 +116,25 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
         cli::args::Commands::Profile(args) => {
             cli::commands::config::handle(args, &active_profile, &effective_output).await
         }
-        cli::args::Commands::Auth(args) => cli::commands::auth::handle(args, &active_profile).await,
+        cli::args::Commands::Auth(args) => {
+            cli::commands::auth::handle(
+                args,
+                &active_profile,
+                &effective_output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
+        }
+        cli::args::Commands::Ping => {
+            cli::commands::ping::handle(
+                &active_profile,
+                &effective_output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
+        }
         cli::args::Commands::Table(args) => {
             cli::commands::table::handle(
                 args,
@@ -231,6 +249,7 @@ pub fn command_uses_connection(command: &cli::args::Commands) -> bool {
     matches!(
         command,
         cli::args::Commands::Auth(_)
+            | cli::args::Commands::Ping
             | cli::args::Commands::Table(_)
             | cli::args::Commands::Data(_)
             | cli::args::Commands::Seed(_)
@@ -268,8 +287,9 @@ mod tests {
     #[test]
     fn connection_commands_show_profile_hint() {
         assert!(command_uses_connection(&Commands::Auth(AuthArgs {
-            command: AuthCommands::Status,
+            command: AuthCommands::Status { verify: false },
         })));
+        assert!(command_uses_connection(&Commands::Ping));
         assert!(command_uses_connection(&Commands::Table(TableArgs {
             command: TableCommands::List {
                 table: "incident".parse().unwrap(),

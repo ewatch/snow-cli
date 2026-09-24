@@ -217,7 +217,7 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             // not grant any additional remote access beyond what the credentials' own
             // ServiceNow ACLs allow. They are permitted so snow-cli-ro can bootstrap
             // authentication on its own.
-            AuthCommands::Status | AuthCommands::Login { .. } | AuthCommands::Logout => {
+            AuthCommands::Status { .. } | AuthCommands::Login { .. } | AuthCommands::Logout => {
                 PolicyDecision::Allow
             }
             // `auth token` exports a reusable credential/bearer token that could be
@@ -228,6 +228,8 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 "read-only policy does not allow exporting reusable credentials",
             ),
         },
+        // `ping` issues one-row reads of sys_user and sys_properties.
+        Commands::Ping => PolicyDecision::Allow,
         Commands::Table(args) => match &args.command {
             TableCommands::List { .. }
             | TableCommands::Get { .. }
@@ -435,8 +437,9 @@ mod tests {
             }),
         }));
         assert_allowed(Commands::Auth(AuthArgs {
-            command: AuthCommands::Status,
+            command: AuthCommands::Status { verify: true },
         }));
+        assert_allowed(Commands::Ping);
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::List {
                 table: "incident".parse().unwrap(),

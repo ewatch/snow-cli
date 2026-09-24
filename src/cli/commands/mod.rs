@@ -8,6 +8,7 @@ pub mod data;
 pub(crate) mod dictionary;
 pub mod graphql;
 pub mod import_set;
+pub mod ping;
 pub mod scope;
 pub mod script;
 pub mod seed;

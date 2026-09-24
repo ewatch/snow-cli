@@ -7,8 +7,14 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ## [Unreleased]
 
+### Added
+
+- `ping` reports the instance, session user (`user`, `user_sys_id`), best-effort build tag, and latency from one cheap authenticated request. It is available in `snow-cli-ro`.
+- `auth status --verify` makes one authenticated request and reports `verified` (plus `verified_user` or `verification_error`), exiting non-zero when the instance rejects the credentials.
+
 ### Changed
 
+- `auth status` reports `credentials_present` instead of implying that stored credentials were accepted; `authenticated` remains as a deprecated alias with the same value for one release. The output now honours `--output`.
 - `table schema` now returns the effective schema by default: columns inherited from parent tables are included (found by walking `sys_db_object.super_class`), each column is tagged with its defining `table`, and a child override replaces the parent definition. Use `--own-only` for columns defined on the table itself. `--include-inherited` is still accepted but hidden, since it is now the default; it previously returned only the table's own columns because `nameINSTANCEOF` does not work on `sys_dictionary.name`. `data validate` also uses the deduplicated effective schema.
 
 ### Fixed

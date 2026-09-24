@@ -62,6 +62,7 @@ changing or resetting that default.
 |---|---|
 | [`profile`](/commands/profile/) | Create, edit, inspect, and switch connection profiles |
 | [`auth`](/commands/auth/) | Log in, log out, inspect auth status, and print tokens |
+| [`ping`](/commands/ping/) | Check connectivity and identity: instance, user, build, and latency |
 | [`table`](/commands/table/) | CRUD operations, schema inspection, and aggregate stats for ServiceNow tables |
 | [`data`](/commands/data/) | Export, validate, and import data artifacts |
 | [`scope`](/commands/scope/) | List scopes, inspect scopes, export inventory, and move files between scopes |
