@@ -9,6 +9,7 @@ pub mod pagination;
 
 mod core;
 mod debug;
+mod identity;
 mod session;
 mod table;
 #[cfg(test)]
@@ -19,6 +20,7 @@ pub use core::{
     BackgroundScriptOptions, ClientConfig, ClientResponse, ExternalResponse, FormSession,
     SnowClient,
 };
+pub use identity::CurrentUser;
 pub use transport::{fetch_skill_resource, post_oauth_token_form};
 
 pub(crate) use core::resolve_authenticated_url;

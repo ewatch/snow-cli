@@ -220,9 +220,9 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
 - **`json_field_present` means "present AND truthy".** The runner checks each
   path with `jq -e`, which exits non-zero when the resolved value is `false` or
   `null`. So a field that is legitimately `false`/`null` (e.g. `auth status`'s
-  `.authenticated` for a profile with no stored credential) cannot be asserted
+  `.credentials_present` for a profile with no stored credential) cannot be asserted
   via `json_field_present` — assert it through `stdout_contains` (e.g.
-  `'"authenticated": false'`) and reserve `json_field_present` for
+  `'"credentials_present":false'`) and reserve `json_field_present` for
   always-truthy fields.
 - **Hidden commands are invisible to the coverage gate.** Subcommands marked
   `#[command(hide = true)]` in `src/cli/args.rs` (currently `skill install`)

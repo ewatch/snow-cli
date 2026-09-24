@@ -5,6 +5,22 @@ All notable changes to `snow-cli` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows semantic versioning conventions while it is pre-1.0.
 
+## [Unreleased]
+
+### Added
+
+- `auth status --verify` makes one authenticated request and reports `verified`, the session user (`verified_user`, `verified_user_sys_id`), `latency_ms`, and a best-effort `build`. On failure it reports `verification_error` and exits non-zero. It is available in `snow-cli-ro`.
+
+### Changed
+
+- **Breaking:** `auth status` no longer reports `authenticated`. That field only meant a credential was stored, yet read as "the instance accepted it". It is replaced by `credentials_present`; use `auth status --verify` and its `verified` field for a real server check. The output now honours `--output` and is compact JSON by default.
+- `table schema` now returns the effective schema by default: columns inherited from parent tables are included (found by walking `sys_db_object.super_class`), each column is tagged with its defining `table`, and a child override replaces the parent definition. Use `--own-only` for columns defined on the table itself. `--include-inherited` is still accepted but hidden, since it is now the default; it previously returned only the table's own columns because `nameINSTANCEOF` does not work on `sys_dictionary.name`. `data validate` also uses the deduplicated effective schema.
+
+### Fixed
+
+- API errors now report the ServiceNow cause. The standard `{"error":{"message","detail"}}` envelope is surfaced in the structured JSON error after secret scrubbing and length bounding, with specific codes `INVALID_TABLE`, `RECORD_NOT_FOUND`, and `ACL_DENIED` where the message is unambiguous. The default-level `API request failed` log line that printed the raw response body on stderr is now a body-free `debug` event.
+- `table list --order-by` and `data export --order-by` now sort. They previously sent `sysparm_orderby`, which the Table API ignores, so results came back in default order. Sort keys are now appended to `sysparm_query` as `ORDERBY`/`ORDERBYDESC` clauses; `-field` and `field:desc` sort descending, several keys can be comma-separated, and invalid specs are rejected before any request. Dataset package `order_by` entries use the same syntax.
+
 ## [0.8.0] - 2026-08-25
 
 ### Added

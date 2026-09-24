@@ -1,6 +1,7 @@
 use clap::{Args, Subcommand};
 
 use crate::models::identifiers::TableName;
+use crate::models::order_by::OrderBy;
 
 const DATA_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export sys_user --fields sys_id,user_name,email --out users.json\n  snow-cli data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli data validate --file export.json\n  snow-cli data import --file export.json\n  snow-cli data import --file users.json --import-set-table imp_user";
 
@@ -36,9 +37,10 @@ pub enum DataCommands {
         #[arg(long)]
         limit: Option<usize>,
 
-        /// Field to order results by
-        #[arg(long)]
-        order_by: Option<String>,
+        /// Sort order: field (ascending), -field or field:desc (descending);
+        /// comma-separate several keys. Sent as ORDERBY clauses in the query.
+        #[arg(long, allow_hyphen_values = true)]
+        order_by: Option<OrderBy>,
 
         /// Write the exported artifact to a file instead of stdout
         #[arg(long = "out", short = 'o')]

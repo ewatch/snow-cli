@@ -113,12 +113,6 @@ pub(super) struct SchemaField {
     pub(super) default_value: Option<String>,
 }
 
-#[derive(Debug)]
-pub(super) struct TableDefinition {
-    pub(super) name: String,
-    pub(super) super_class_sys_id: Option<String>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct DatasetExportSpec {
     pub(super) version: u8,
@@ -138,7 +132,7 @@ pub(super) struct DatasetTableSpec {
     #[serde(default)]
     pub(super) limit: Option<usize>,
     #[serde(default)]
-    pub(super) order_by: Option<String>,
+    pub(super) order_by: Option<OrderBy>,
     #[serde(default)]
     pub(super) depends_on: Vec<String>,
     #[serde(default)]
@@ -269,7 +263,7 @@ pub(super) struct ExportRequest {
     pub(super) query: Option<String>,
     pub(super) fields: Option<String>,
     pub(super) limit: Option<usize>,
-    pub(super) order_by: Option<String>,
+    pub(super) order_by: Option<OrderBy>,
     pub(super) out_path: Option<String>,
 }
 

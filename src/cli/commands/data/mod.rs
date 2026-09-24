@@ -7,9 +7,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::args::{DataArgs, DataCommands, OutputFormat};
+use crate::cli::commands::dictionary;
 use crate::cli::output;
 use crate::client::pagination::PaginationConfig;
 use crate::models::identifiers::TableName;
+use crate::models::order_by::OrderBy;
 use crate::models::record::{Record, SingleRecordResponse};
 
 const LONG_RUNNING_TIMEOUT_SECS: u64 = 180;

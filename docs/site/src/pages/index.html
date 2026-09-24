@@ -774,7 +774,7 @@
   },
   {
     "reasoning": "Query Customer Updates for that application and request the latest records first.",
-    "command": "snow-cli --profile dev --read-only --output json table list sys_update_xml --query 'application=<application-sys-id>' --fields sys_id,name,type,action,sys_updated_on,sys_updated_by,update_set --order-by=-sys_updated_on --limit 10",
+    "command": "snow-cli --profile dev --read-only --output json table list sys_update_xml --query 'application=<application-sys-id>' --fields sys_id,name,type,action,sys_updated_on,sys_updated_by,update_set --order-by -sys_updated_on --limit 10",
     "output": "{\"total\":6,\"returned\":6,\"truncated\":false,\"records\":[{\"action\":\"INSERT_OR_UPDATE\",\"sys_updated_on\":\"2026-07-14 15:51:12\",\"type\":\"Flow\"}]}\n\n[Output excerpt; identifiers and 5 records omitted]",
     "learning": "The app-specific update records include a Flow update written on 2026-07-14 at 15:51:12. The page masks the captured application identifier."
   },

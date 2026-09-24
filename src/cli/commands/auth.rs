@@ -12,14 +12,21 @@ use crate::auth::oauth2::{
     oauth_redirect_path, oauth_redirect_port, pkce_code_challenge_s256,
     validate_oauth_redirect_host,
 };
-use crate::cli::args::{AuthArgs, AuthCommands};
+use crate::cli::args::{AuthArgs, AuthCommands, OutputFormat};
+use crate::cli::output;
 use crate::config::credentials;
 use crate::config::now_sdk;
 use crate::config::profile::{AppConfig, AuthMethod, OAuthGrantType, Profile};
 
 const OAUTH_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
-pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
+pub async fn handle(
+    args: AuthArgs,
+    profile_name: &str,
+    format: &OutputFormat,
+    instance: Option<&str>,
+    timeout_secs: Option<u64>,
+) -> anyhow::Result<()> {
     match args.command {
         AuthCommands::Login {
             password,
@@ -53,7 +60,9 @@ pub async fn handle(args: AuthArgs, profile_name: &str) -> anyhow::Result<()> {
             .await
         }
         AuthCommands::Logout => handle_logout(profile_name).await,
-        AuthCommands::Status => handle_status(profile_name).await,
+        AuthCommands::Status { verify } => {
+            handle_status(profile_name, format, instance, timeout_secs, verify).await
+        }
         AuthCommands::Token => handle_token(profile_name).await,
     }
 }
@@ -659,47 +668,118 @@ async fn handle_logout(profile_name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `auth status` — Check if credentials are available for the active profile.
-async fn handle_status(profile_name: &str) -> anyhow::Result<()> {
+/// `auth status` — Report whether credentials are available for the active profile.
+///
+/// `credentials_present` only means a credential is stored or set in the
+/// environment; it says nothing about whether the instance accepts it. With
+/// `verify`, one authenticated identity request is made and the outcome is
+/// reported as `verified`, together with the session user, its round-trip
+/// latency, and a best-effort build tag. A failed verification also returns
+/// the underlying error so the process exits non-zero with the structured
+/// error on stderr.
+async fn handle_status(
+    profile_name: &str,
+    format: &OutputFormat,
+    instance: Option<&str>,
+    timeout_secs: Option<u64>,
+    verify: bool,
+) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
     let profile = config
         .active_profile(Some(profile_name))
         .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
+    let mut result = serde_json::Map::new();
+    result.insert("profile".into(), profile_name.into());
+    result.insert(
+        "instance".into(),
+        instance.unwrap_or(&profile.instance).into(),
+    );
+    result.insert(
+        "auth_method".into(),
+        serde_json::to_value(&profile.auth_method)?,
+    );
+
     // Browser-session auth is special: credentials are never stored; the env var is checked instead.
-    if profile.auth_method == AuthMethod::BrowserSession {
+    let credentials_present = if profile.auth_method == AuthMethod::BrowserSession {
         let env_set = crate::auth::browser_session::BrowserSessionAuth::is_env_var_set();
-        let result = serde_json::json!({
-            "profile": profile_name,
-            "instance": profile.instance,
-            "auth_method": profile.auth_method,
-            "credential_types": serde_json::Value::Array(vec![]),
-            "authenticated": env_set,
-            "session_cookie_env_var": "SNOW_SESSION_COOKIE",
-            "session_cookie_set": env_set,
-            "username": profile.username,
-            "note": "Browser session tokens are not stored. Set SNOW_SESSION_COOKIE for authenticated requests.",
-        });
-        println!("{}", serde_json::to_string_pretty(&result)?);
-        return Ok(());
+        result.insert("credential_types".into(), serde_json::json!([]));
+        result.insert(
+            "session_cookie_env_var".into(),
+            "SNOW_SESSION_COOKIE".into(),
+        );
+        result.insert("session_cookie_set".into(), env_set.into());
+        result.insert(
+            "note".into(),
+            "Browser session tokens are not stored. Set SNOW_SESSION_COOKIE for authenticated requests.".into(),
+        );
+        env_set
+    } else {
+        let cred_types = credential_types_for_auth(profile);
+        let present = cred_types
+            .iter()
+            .all(|ct| credentials::has_credential(profile_name, ct));
+        result.insert(
+            "credential_types".into(),
+            serde_json::to_value(&cred_types)?,
+        );
+        present
+    };
+    // Deliberately not called `authenticated`: a stored credential says nothing
+    // about whether the instance accepts it. `--verify` reports `verified`.
+    result.insert("credentials_present".into(), credentials_present.into());
+    result.insert("username".into(), serde_json::to_value(&profile.username)?);
+
+    if !verify {
+        return output::print_output(&result, format);
     }
 
-    let cred_types = credential_types_for_auth(profile);
-    let authenticated = cred_types
-        .iter()
-        .all(|ct| credentials::has_credential(profile_name, ct));
+    let started = std::time::Instant::now();
+    let verification = async {
+        let mut client =
+            crate::client::build_client_with_timeout(profile_name, instance, timeout_secs)?;
+        let user = client.current_user().await?;
+        anyhow::Ok((client, user))
+    }
+    .await;
 
-    let result = serde_json::json!({
-        "profile": profile_name,
-        "instance": profile.instance,
-        "auth_method": profile.auth_method,
-        "credential_types": cred_types,
-        "authenticated": authenticated,
-        "username": profile.username,
-    });
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    match verification {
+        Ok((mut client, user)) => {
+            let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let build = client.build_tag().await.unwrap_or_else(|error| {
+                tracing::debug!(error = %error, "Instance build tag is not readable");
+                None
+            });
+            result.insert("verified".into(), true.into());
+            result.insert(
+                "verified_user".into(),
+                user.as_ref().map(|user| user.user_name.clone()).into(),
+            );
+            result.insert(
+                "verified_user_sys_id".into(),
+                user.map(|user| user.sys_id).into(),
+            );
+            result.insert("latency_ms".into(), latency_ms.into());
+            result.insert("build".into(), build.into());
+            output::print_output(&result, format)
+        }
+        Err(error) => {
+            result.insert("verified".into(), false.into());
+            result.insert(
+                "verification_error".into(),
+                verification_error_code(&error).into(),
+            );
+            output::print_output(&result, format)?;
+            Err(error)
+        }
+    }
+}
 
-    Ok(())
+/// Stable code for a failed `auth status --verify` request.
+fn verification_error_code(error: &anyhow::Error) -> String {
+    error
+        .downcast_ref::<crate::client::error::ApiError>()
+        .map_or_else(|| "REQUEST_FAILED".to_string(), |api| api.code.clone())
 }
 
 /// `auth token` — Print the stored credential to stdout for piping.

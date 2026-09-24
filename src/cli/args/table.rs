@@ -1,9 +1,10 @@
 use clap::{Args, Subcommand};
 
 use crate::models::identifiers::{SysId, TableName};
+use crate::models::order_by::OrderBy;
 
 const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended\n  snow-cli table stats incident --group-by state";
-const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --all --fields '*' --full   # everything, uncapped\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - Without --full, field values longer than 2000 chars are cut with an inline '[truncated N of M chars]' size hint, and the metadata carries fields_truncated=true.\n  - Responses include returned/truncated metadata plus the server-reported total, so truncation is always detectable.\n  - For complete data set extraction prefer `data export`.";
+const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --fields number,sys_created_on --order-by -sys_created_on --limit 5   # newest first\n  snow-cli table list incident --all --fields '*' --full   # everything, uncapped\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - Without --full, field values longer than 2000 chars are cut with an inline '[truncated N of M chars]' size hint, and the metadata carries fields_truncated=true.\n  - Responses include returned/truncated metadata plus the server-reported total, so truncation is always detectable.\n  - For complete data set extraction prefer `data export`.";
 
 const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incident --data '{\"short_description\":\"VPN down\"}'\n  echo '{\"short_description\":\"From stdin\"}' | snow-cli table create incident";
 
@@ -42,9 +43,10 @@ pub enum TableCommands {
         #[arg(long)]
         all: bool,
 
-        /// Field to order results by
-        #[arg(long)]
-        order_by: Option<String>,
+        /// Sort order: field (ascending), -field or field:desc (descending);
+        /// comma-separate several keys. Sent as ORDERBY clauses in the query.
+        #[arg(long, allow_hyphen_values = true)]
+        order_by: Option<OrderBy>,
 
         /// Return complete field content instead of capping long values
         #[arg(long)]
@@ -114,8 +116,12 @@ pub enum TableCommands {
         #[arg(long)]
         extended: bool,
 
-        /// Include fields inherited from parent tables (e.g., incident inherits from task)
+        /// Only show columns defined on this table, not those inherited from parent tables
         #[arg(long)]
+        own_only: bool,
+
+        /// Deprecated: inherited columns are now included by default
+        #[arg(long, hide = true, conflicts_with = "own_only")]
         include_inherited: bool,
     },
 

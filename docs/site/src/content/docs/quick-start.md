@@ -32,7 +32,7 @@ snow-cli auth login --password '<password>'
 ## 3. Check authentication
 
 ```bash
-snow-cli auth status
+snow-cli auth status --verify
 ```
 
 ## 4. List records

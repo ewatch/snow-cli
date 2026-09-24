@@ -232,9 +232,9 @@ async fn test_table_list_with_query_params() {
 
     Mock::given(method("GET"))
         .and(path("/api/now/table/incident"))
-        .and(query_param("sysparm_query", "active=true"))
+        .and(query_param("sysparm_query", "active=true^ORDERBYnumber"))
         .and(query_param("sysparm_fields", "sys_id,number"))
-        .and(query_param("sysparm_orderby", "number"))
+        .and(query_param_is_missing("sysparm_orderby"))
         .and(query_param("sysparm_offset", "0"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
@@ -268,6 +268,113 @@ async fn test_table_list_with_query_params() {
         .assert()
         .success()
         .stdout(predicate::str::contains("INC001"));
+}
+
+// Regression (servicenow-cli-120.1): the Table API ignores `sysparm_orderby`,
+// so sorting must travel inside `sysparm_query`, and `-field` must parse as a
+// value rather than as an unknown short flag.
+#[tokio::test]
+async fn test_table_list_order_by_descending_without_query() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param(
+            "sysparm_query",
+            "ORDERBYDESCsys_created_on^ORDERBYnumber",
+        ))
+        .and(query_param_is_missing("sysparm_orderby"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC009"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+            "--order-by",
+            "-sys_created_on,number",
+            "--limit",
+            "1",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("INC009"));
+}
+
+#[tokio::test]
+async fn test_table_list_invalid_order_by_is_rejected() {
+    let (_dir, config_path) = api_key_config();
+
+    // No mock needed: the sort spec is rejected before any HTTP request.
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            "http://localhost:1",
+            "table",
+            "list",
+            "incident",
+            "--order-by",
+            "sys_created_on:newest",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid sort direction"));
+}
+
+// Regression (servicenow-cli-120.2): the structured error carries the
+// ServiceNow message and a specific code, and the raw body is not logged.
+#[tokio::test]
+async fn test_table_list_invalid_table_reports_servicenow_message_only() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/u_does_not_exist"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {"message": "Invalid table u_does_not_exist", "detail": null},
+            "status": "failure"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+
+    let assert = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "u_does_not_exist",
+            "--limit",
+            "1",
+        ])
+        .assert()
+        .code(5)
+        .stdout("");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    let lines: Vec<&str> = stderr.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "unexpected stderr: {stderr}");
+    let error: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(error["error"]["code"], "INVALID_TABLE");
+    assert_eq!(error["error"]["message"], "Invalid table u_does_not_exist");
+    assert_eq!(error["error"]["status"], 400);
+    assert!(error["error"].get("detail").is_none());
 }
 
 #[tokio::test]
@@ -771,7 +878,7 @@ async fn test_table_schema_compact() {
         .and(path("/api/now/table/sys_dictionary"))
         .and(query_param(
             "sysparm_query",
-            "name=incident^elementISNOTEMPTY^element!=sys_tags",
+            "name=incident^elementISNOTEMPTY^element!=sys_tags^ORDERBYelement",
         ))
         .and(query_param(
             "sysparm_fields",
@@ -793,9 +900,18 @@ async fn test_table_schema_compact() {
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
-        .args(["--instance", &server.uri(), "table", "schema", "incident"])
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "schema",
+            "incident",
+            "--own-only",
+        ])
         .assert()
         .success()
+        // --own-only skips the hierarchy walk and the per-column table tag.
+        .stdout(predicate::str::contains("\"table\"").not())
         .stdout(predicate::str::contains("number"))
         .stdout(predicate::str::contains("string"))
         .stdout(predicate::str::contains("Number"))
@@ -854,45 +970,106 @@ async fn test_table_schema_extended() {
         .stdout(predicate::str::contains("true")); // required=true
 }
 
-#[tokio::test]
-async fn test_table_schema_include_inherited() {
-    let server = MockServer::start().await;
-
+/// Mount `sys_db_object` rows for the `incident -> task` hierarchy.
+async fn mount_incident_hierarchy(server: &MockServer) {
     Mock::given(method("GET"))
-        .and(path("/api/now/table/sys_dictionary"))
-        .and(query_param(
-            "sysparm_query",
-            "nameINSTANCEOFincident^elementISNOTEMPTY^element!=sys_tags",
-        ))
+        .and(path("/api/now/table/sys_db_object"))
+        .and(query_param("sysparm_query", "name=incident"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": [
-                {"element": "number", "internal_type": "string", "column_label": "Number", "name": "task"},
-                {"element": "category", "internal_type": "string", "column_label": "Category", "name": "incident"}
-            ]
+            "result": [{
+                "name": "incident",
+                "super_class": {"link": "https://x/api/now/table/sys_db_object/t", "value": "task-sys-id"}
+            }]
         })))
-        .expect(1)
-        .mount(&server)
+        .mount(server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_db_object"))
+        .and(query_param("sysparm_query", "sys_id=task-sys-id"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"name": "task", "super_class": ""}]
+        })))
+        .mount(server)
+        .await;
+}
 
-    let (_dir, config_path) = api_key_config();
+// Regression (servicenow-cli-88): `nameINSTANCEOF` on sys_dictionary.name is
+// an exact match, so inherited columns were never returned. The effective
+// schema now walks sys_db_object.super_class and queries `nameIN<chain>`.
+#[tokio::test]
+async fn test_table_schema_includes_inherited_columns_by_default() {
+    for extra_args in [&[][..], &["--include-inherited"][..]] {
+        let server = MockServer::start().await;
+        mount_incident_hierarchy(&server).await;
 
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/sys_dictionary"))
+            .and(query_param(
+                "sysparm_query",
+                "nameINincident,task^elementISNOTEMPTY^element!=sys_tags^ORDERBYelement",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [
+                    {"element": "category", "internal_type": "string", "column_label": "Category", "name": "incident"},
+                    {"element": "short_description", "internal_type": "string", "column_label": "Short description", "name": "task"},
+                    {"element": "state", "internal_type": "integer", "column_label": "Task state", "name": "task"},
+                    {"element": "state", "internal_type": "integer", "column_label": "Incident state", "name": "incident"}
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_dir, config_path) = api_key_config();
+
+        let uri = server.uri();
+        let mut args = vec!["--instance", uri.as_str(), "table", "schema", "incident"];
+        args.extend_from_slice(extra_args);
+
+        let assert = cargo_bin_cmd!("snow-cli")
+            .env("SNOW_CLI_CONFIG", &config_path)
+            .env("SNOW_CLI_API_TOKEN", "test-api-token")
+            .args(&args)
+            .assert()
+            .success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+        let columns: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+        let summary: Vec<(&str, &str, &str)> = columns
+            .iter()
+            .map(|c| {
+                (
+                    c["column"].as_str().unwrap(),
+                    c["table"].as_str().unwrap(),
+                    c["label"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("category", "incident", "Category"),
+                ("short_description", "task", "Short description"),
+                // The incident override wins over the task definition.
+                ("state", "incident", "Incident state"),
+            ],
+            "args: {extra_args:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_table_schema_own_only_conflicts_with_include_inherited() {
     cargo_bin_cmd!("snow-cli")
-        .env("SNOW_CLI_CONFIG", &config_path)
-        .env("SNOW_CLI_API_TOKEN", "test-api-token")
         .args([
-            "--instance",
-            &server.uri(),
             "table",
             "schema",
             "incident",
+            "--own-only",
             "--include-inherited",
         ])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("number"))
-        .stdout(predicate::str::contains("task"))
-        .stdout(predicate::str::contains("category"))
-        .stdout(predicate::str::contains("incident"));
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 #[tokio::test]
@@ -903,7 +1080,7 @@ async fn test_table_schema_handles_link_object_internal_type() {
         .and(path("/api/now/table/sys_dictionary"))
         .and(query_param(
             "sysparm_query",
-            "name=incident^elementISNOTEMPTY^element!=sys_tags",
+            "name=incident^elementISNOTEMPTY^element!=sys_tags^ORDERBYelement",
         ))
         .and(query_param(
             "sysparm_fields",

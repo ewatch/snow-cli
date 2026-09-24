@@ -79,6 +79,7 @@ Show the current authentication state for the active profile.
 
 ```bash
 snow-cli auth status
+snow-cli auth status --verify
 ```
 
 Sample output when credentials are stored:
@@ -89,15 +90,49 @@ Sample output when credentials are stored:
   "instance": "https://dev.service-now.com",
   "auth_method": "basic",
   "credential_types": ["password"],
-  "authenticated": true,
+  "credentials_present": true,
   "username": "admin"
 }
 ```
 
-The `authenticated` field confirms that credentials are present in the
-keychain or environment. It does **not** verify that they are still valid
-against the instance — a 401 on the first API call means the stored
-password has changed or expired.
+`credentials_present` only confirms that credentials are available in the
+keychain or environment. It does **not** prove the instance accepts them.
+Earlier releases called this field `authenticated`; it was renamed because the
+old name suggested a server check that never happened.
+
+Add `--verify` to make one authenticated request. This is the command to use
+to check credentials, identity, and connectivity in a single call:
+
+```json
+{
+  "...": "...",
+  "credentials_present": true,
+  "verified": true,
+  "verified_user": "admin",
+  "verified_user_sys_id": "6816f79cc0a8016401c5a33be04be441",
+  "latency_ms": 182,
+  "build": "glide-zurich-07-01-2026__patch1"
+}
+```
+
+- `verified_user` and `verified_user_sys_id` come from `sys_user` filtered by
+  `javascript:gs.getUserID()`, so they name the session user even for OAuth
+  and browser-session profiles. They are `null` if the user row is not
+  readable.
+- `latency_ms` is the round trip of that identity request, including any OAuth
+  token acquisition.
+- `build` is read on a best-effort basis from `sys_properties`
+  (`glide.buildtag`, then `glide.buildtag.last`, `glide.war`,
+  `glide.war.assigned`). It is `null` when those properties are not readable,
+  which is common for non-admin users.
+
+When verification fails, the output reports `"verified": false` with a
+`verification_error` code (for example `UNAUTHORIZED`, or `REQUEST_FAILED` for
+network errors), the structured error is written to stderr, and the command
+exits non-zero (`5` for API errors). `auth status --verify` only reads data,
+so it also works in `snow-cli-ro`.
+
+The output honours `--output` like other commands.
 
 Use `snow-cli auth login` to update stale credentials.
 

@@ -10,8 +10,9 @@ use crate::cli::args::{
     TableCommands,
 };
 use crate::models::identifiers::{EncodedQueryValue, SysId, TableName};
+use crate::models::order_by::OrderBy;
 
-const READ_ONLY_AFTER_HELP: &str = "First-time setup (standalone):\n  1) Create a profile\n     snow-cli-ro profile add default --instance https://dev123.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli-ro auth login --password '<password>'\n\n  3) Verify\n     snow-cli-ro auth status\n\nRead-only workflows:\n  1) List recent incidents\n     snow-cli-ro table list incident --query 'active=true' --limit 20\n\n  2) Fetch a record\n     snow-cli-ro table get incident <sys_id>\n\n  3) Inspect schema or app metadata\n     snow-cli-ro table schema incident --extended\n     snow-cli-ro scope inspect x_my_app\n\n  4) Call a read-oriented custom API\n     snow-cli-ro api get /api/x_myapp/status\n\nNotes:\n  - snow-cli-ro runs with a locked read-only policy for remote access.\n  - Local profile and credential management is allowed so it can be used standalone.\n  - Remote write commands and `auth token` (credential export) are blocked.\n  - Raw API access is limited to GET.\n  - GET is allowed by HTTP convention; use read-only ServiceNow credentials for stronger guarantees.";
+const READ_ONLY_AFTER_HELP: &str = "First-time setup (standalone):\n  1) Create a profile\n     snow-cli-ro profile add default --instance https://dev123.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli-ro auth login --password '<password>'\n\n  3) Verify credentials and connectivity\n     snow-cli-ro auth status --verify\n\nRead-only workflows:\n  1) List recent incidents\n     snow-cli-ro table list incident --query 'active=true' --limit 20\n\n  2) Fetch a record\n     snow-cli-ro table get incident <sys_id>\n\n  3) Inspect schema or app metadata\n     snow-cli-ro table schema incident --extended\n     snow-cli-ro scope inspect x_my_app\n\n  4) Call a read-oriented custom API\n     snow-cli-ro api get /api/x_myapp/status\n\nNotes:\n  - snow-cli-ro runs with a locked read-only policy for remote access.\n  - Local profile and credential management is allowed so it can be used standalone.\n  - Remote write commands and `auth token` (credential export) are blocked.\n  - Raw API access is limited to GET.\n  - GET is allowed by HTTP convention; use read-only ServiceNow credentials for stronger guarantees.";
 
 /// ❄️ snow-cli-ro — read-only ServiceNow CLI for agents
 #[derive(Parser, Debug)]
@@ -150,7 +151,11 @@ pub enum ReadOnlyAuthCommands {
     Logout,
 
     /// Show current authentication status
-    Status,
+    Status {
+        /// Make one authenticated request: confirms the credentials and reports the session user, latency, and build
+        #[arg(long)]
+        verify: bool,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -183,9 +188,10 @@ pub enum ReadOnlyTableCommands {
         #[arg(long)]
         all: bool,
 
-        /// Field to order results by
-        #[arg(long)]
-        order_by: Option<String>,
+        /// Sort order: field (ascending), -field or field:desc (descending);
+        /// comma-separate several keys. Sent as ORDERBY clauses in the query.
+        #[arg(long, allow_hyphen_values = true)]
+        order_by: Option<OrderBy>,
 
         /// Return complete field content instead of capping long values
         #[arg(long)]
@@ -218,8 +224,12 @@ pub enum ReadOnlyTableCommands {
         #[arg(long)]
         extended: bool,
 
-        /// Include fields inherited from parent tables
+        /// Only show columns defined on this table, not those inherited from parent tables
         #[arg(long)]
+        own_only: bool,
+
+        /// Deprecated: inherited columns are now included by default
+        #[arg(long, hide = true, conflicts_with = "own_only")]
         include_inherited: bool,
     },
 
@@ -283,9 +293,10 @@ pub enum ReadOnlyDataCommands {
         #[arg(long)]
         limit: Option<usize>,
 
-        /// Field to order results by
-        #[arg(long)]
-        order_by: Option<String>,
+        /// Sort order: field (ascending), -field or field:desc (descending);
+        /// comma-separate several keys. Sent as ORDERBY clauses in the query.
+        #[arg(long, allow_hyphen_values = true)]
+        order_by: Option<OrderBy>,
 
         /// Write the exported artifact to a file instead of stdout
         #[arg(long = "out", short = 'o')]
@@ -716,7 +727,7 @@ impl ReadOnlyAuthCommands {
                 set_now_sdk_default,
             },
             Self::Logout => AuthCommands::Logout,
-            Self::Status => AuthCommands::Status,
+            Self::Status { verify } => AuthCommands::Status { verify },
         }
     }
 }
@@ -755,10 +766,12 @@ impl ReadOnlyTableCommands {
             Self::Schema {
                 table,
                 extended,
+                own_only,
                 include_inherited,
             } => TableCommands::Schema {
                 table,
                 extended,
+                own_only,
                 include_inherited,
             },
             Self::Stats {
