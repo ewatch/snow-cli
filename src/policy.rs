@@ -696,6 +696,7 @@ mod tests {
                 also_now_sdk: false,
                 now_sdk_alias: None,
                 set_now_sdk_default: false,
+                no_verify: false,
             },
         }));
         assert_allowed(Commands::Auth(AuthArgs {

@@ -145,6 +145,10 @@ pub enum ReadOnlyAuthCommands {
         /// Mark the now-sdk alias as default
         #[arg(long, requires = "also_now_sdk")]
         set_now_sdk_default: bool,
+
+        /// Store the credentials without making a verification request (offline setup)
+        #[arg(long)]
+        no_verify: bool,
     },
 
     /// Clear stored credentials for the active profile
@@ -712,6 +716,7 @@ impl ReadOnlyAuthCommands {
                 also_now_sdk,
                 now_sdk_alias,
                 set_now_sdk_default,
+                no_verify,
             } => AuthCommands::Login {
                 password,
                 password_stdin,
@@ -725,6 +730,7 @@ impl ReadOnlyAuthCommands {
                 also_now_sdk,
                 now_sdk_alias,
                 set_now_sdk_default,
+                no_verify,
             },
             Self::Logout => AuthCommands::Logout,
             Self::Status { verify } => AuthCommands::Status { verify },

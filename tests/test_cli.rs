@@ -1304,9 +1304,11 @@ username = "admin"
             "--now-sdk-alias",
             "sdk-dev",
             "--set-now-sdk-default",
+            "--no-verify",
         ])
         .assert()
         .success()
+        .stdout(predicate::str::contains("\"status\":\"stored\""))
         .stdout(predicate::str::contains("\"profile\":\"dev\""))
         .stdout(predicate::str::contains("\"alias\":\"sdk-dev\""));
 
@@ -1338,10 +1340,11 @@ auth_method = "api_key"
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
-        .args(["auth", "login", "--token-stdin"])
+        .args(["auth", "login", "--token-stdin", "--no-verify"])
         .write_stdin("stdin-token\n")
         .assert()
         .success()
+        .stdout(predicate::str::contains("\"status\":\"stored\""))
         .stdout(predicate::str::contains("api_token"));
 
     assert_eq!(
