@@ -17,6 +17,17 @@ pub const DEFAULT_OAUTH_REDIRECT_PORT: u16 = 8080;
 pub const DEFAULT_OAUTH_REDIRECT_PATH: &str = "/oauth/callback";
 pub const DEFAULT_OAUTH_SCOPE: &str = "useraccount";
 
+/// Redirect URI registered on the built-in "ServiceNow SDK" OAuth application.
+///
+/// The instance serves this page after consent and displays the authorization
+/// code for the user to paste into the CLI. `@servicenow/sdk-cli` sends it as a
+/// relative URI, verbatim, in both the authorization and token requests; the
+/// token request must repeat it exactly.
+pub const SDK_OAUTH_REDIRECT_URI: &str = "/sdk-oauth.do";
+
+/// Scope requested by `@servicenow/sdk-cli` for the manual-code flow (none).
+pub const SDK_OAUTH_SCOPE: &str = "";
+
 /// Refresh a little early so small local clock differences and request latency
 /// do not make a token expire between the local check and ServiceNow receiving
 /// the next request.
@@ -409,22 +420,21 @@ pub fn token_url_for_instance(instance: &str) -> String {
     format!("{}/oauth_token.do", instance.trim_end_matches('/'))
 }
 
+/// Build the `/oauth_auth.do` URL for an authorization-code + PKCE login.
+///
+/// `scope` is sent verbatim when `Some`, even if empty; `None` omits it.
 pub fn authorization_url(
     profile: &Profile,
     redirect_uri: &str,
     state: &str,
     code_challenge: &str,
+    scope: Option<&str>,
 ) -> anyhow::Result<String> {
     let client_id = profile.client_id.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
             "OAuth2 authorization-code login requires `client_id` in the profile configuration."
         )
     })?;
-    let scope = profile
-        .oauth_scope
-        .as_deref()
-        .unwrap_or(DEFAULT_OAUTH_SCOPE)
-        .trim();
 
     let mut url = format!(
         "{}/oauth_auth.do?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256",
@@ -435,12 +445,32 @@ pub fn authorization_url(
         urlencoded(code_challenge),
     );
 
-    if !scope.is_empty() {
+    if let Some(scope) = scope {
         url.push_str("&scope=");
         url.push_str(&urlencoded(scope));
     }
 
     Ok(url)
+}
+
+/// Scope for the loopback-callback login: the profile scope, else
+/// [`DEFAULT_OAUTH_SCOPE`]; `None` when that is blank.
+pub fn oauth_scope(profile: &Profile) -> Option<&str> {
+    let scope = profile
+        .oauth_scope
+        .as_deref()
+        .unwrap_or(DEFAULT_OAUTH_SCOPE)
+        .trim();
+    (!scope.is_empty()).then_some(scope)
+}
+
+/// Scope for the ServiceNow SDK manual-code login: the profile scope, else the
+/// SDK's empty scope ([`SDK_OAUTH_SCOPE`]).
+pub fn sdk_oauth_scope(profile: &Profile) -> &str {
+    profile
+        .oauth_scope
+        .as_deref()
+        .map_or(SDK_OAUTH_SCOPE, str::trim)
 }
 
 pub fn oauth_redirect_host(profile: &Profile) -> &str {
@@ -793,6 +823,7 @@ mod tests {
             "http://127.0.0.1:8080/oauth/callback",
             "state-123",
             "pkce-challenge-123",
+            oauth_scope(&profile),
         )
         .unwrap();
 
@@ -804,6 +835,80 @@ mod tests {
         assert!(url.contains("code_challenge=pkce-challenge-123"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("scope=useraccount%20email"));
+    }
+
+    fn authorization_code_profile(oauth_scope: Option<&str>) -> Profile {
+        Profile {
+            instance: "https://test.service-now.com".to_string(),
+            auth_method: AuthMethod::Oauth2,
+            username: None,
+            client_id: Some("client123".to_string()),
+            oauth_grant_type: Some(OAuthGrantType::AuthorizationCode),
+            oauth_scope: oauth_scope.map(str::to_string),
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
+            cert_path: None,
+            key_path: None,
+            sso_login_url: None,
+        }
+    }
+
+    #[test]
+    fn test_oauth_scope_defaults_to_useraccount_and_omits_blank() {
+        assert_eq!(
+            oauth_scope(&authorization_code_profile(None)),
+            Some("useraccount")
+        );
+        assert_eq!(
+            oauth_scope(&authorization_code_profile(Some(" email "))),
+            Some("email")
+        );
+        assert_eq!(oauth_scope(&authorization_code_profile(Some(" "))), None);
+    }
+
+    #[test]
+    fn test_sdk_oauth_scope_defaults_to_empty() {
+        assert_eq!(sdk_oauth_scope(&authorization_code_profile(None)), "");
+        assert_eq!(
+            sdk_oauth_scope(&authorization_code_profile(Some("useraccount"))),
+            "useraccount"
+        );
+    }
+
+    #[test]
+    fn test_authorization_url_for_sdk_redirect_sends_relative_uri_and_empty_scope() {
+        let profile = authorization_code_profile(None);
+
+        let url = authorization_url(
+            &profile,
+            SDK_OAUTH_REDIRECT_URI,
+            "state-123",
+            "pkce-challenge-123",
+            Some(sdk_oauth_scope(&profile)),
+        )
+        .unwrap();
+
+        assert!(url.contains("&redirect_uri=%2Fsdk-oauth.do&"));
+        assert!(url.contains("code_challenge=pkce-challenge-123"));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.ends_with("&scope="));
+    }
+
+    #[test]
+    fn test_authorization_url_omits_scope_when_none() {
+        let profile = authorization_code_profile(Some(""));
+
+        let url = authorization_url(
+            &profile,
+            "http://127.0.0.1:8080/oauth/callback",
+            "state-123",
+            "pkce-challenge-123",
+            oauth_scope(&profile),
+        )
+        .unwrap();
+
+        assert!(!url.contains("scope="));
     }
 
     #[test]

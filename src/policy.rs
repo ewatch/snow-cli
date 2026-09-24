@@ -693,6 +693,8 @@ mod tests {
                 session_cookie: None,
                 session_cookie_stdin: false,
                 no_browser: false,
+                sdk_oauth: false,
+                code_stdin: false,
                 also_now_sdk: false,
                 now_sdk_alias: None,
                 set_now_sdk_default: false,

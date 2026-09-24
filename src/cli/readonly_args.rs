@@ -134,6 +134,20 @@ pub enum ReadOnlyAuthCommands {
         #[arg(long)]
         no_browser: bool,
 
+        /// Use the ServiceNow SDK OAuth app's manual-code callback (redirect URI
+        /// /sdk-oauth.do) instead of a localhost listener; paste the code the page displays.
+        /// Requires an OAuth2 authorization-code profile
+        #[arg(long)]
+        sdk_oauth: bool,
+
+        /// Read the authorization code for --sdk-oauth from stdin instead of prompting
+        #[arg(
+            long,
+            requires = "sdk_oauth",
+            conflicts_with_all = ["password_stdin", "token_stdin", "client_secret_stdin", "session_cookie_stdin"]
+        )]
+        code_stdin: bool,
+
         /// Also write the successful basic login into now-sdk
         #[arg(long)]
         also_now_sdk: bool,
@@ -713,6 +727,8 @@ impl ReadOnlyAuthCommands {
                 session_cookie,
                 session_cookie_stdin,
                 no_browser,
+                sdk_oauth,
+                code_stdin,
                 also_now_sdk,
                 now_sdk_alias,
                 set_now_sdk_default,
@@ -727,6 +743,8 @@ impl ReadOnlyAuthCommands {
                 session_cookie,
                 session_cookie_stdin,
                 no_browser,
+                sdk_oauth,
+                code_stdin,
                 also_now_sdk,
                 now_sdk_alias,
                 set_now_sdk_default,

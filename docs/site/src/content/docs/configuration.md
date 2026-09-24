@@ -107,7 +107,7 @@ snow-cli auth login --profile dev
 - `password`
 - `authorization-code`
 
-Use `authorization-code` when you need the CLI to act in user scope. That flow uses a browser login, a localhost callback, and PKCE.
+Use `authorization-code` when you need the CLI to act in user scope. That flow uses a browser login, a localhost callback, and PKCE. With `auth login --sdk-oauth`, it can instead reuse the ServiceNow SDK OAuth app and its paste-the-code callback.
 
 See the dedicated guide:
 
