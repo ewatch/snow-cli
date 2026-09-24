@@ -8,9 +8,9 @@ use tokio::time::{Duration, timeout};
 
 use crate::auth::Authenticator;
 use crate::auth::oauth2::{
-    OAuth2Auth, authorization_url, exchange_authorization_code, oauth_redirect_host,
-    oauth_redirect_path, oauth_redirect_port, pkce_code_challenge_s256,
-    validate_oauth_redirect_host,
+    OAuth2Auth, SDK_OAUTH_REDIRECT_URI, StoredOAuthToken, authorization_url,
+    exchange_authorization_code, oauth_redirect_host, oauth_redirect_path, oauth_redirect_port,
+    oauth_scope, pkce_code_challenge_s256, sdk_oauth_scope, validate_oauth_redirect_host,
 };
 use crate::cli::args::{AuthArgs, AuthCommands, OutputFormat};
 use crate::cli::output;
@@ -38,11 +38,18 @@ pub async fn handle(
             session_cookie,
             session_cookie_stdin,
             no_browser,
+            sdk_oauth,
+            code_stdin,
             also_now_sdk,
             now_sdk_alias,
             set_now_sdk_default,
             no_verify,
         } => {
+            let callback = if sdk_oauth {
+                AuthorizationCodeCallback::SdkManualCode { code_stdin }
+            } else {
+                AuthorizationCodeCallback::Loopback
+            };
             let output = LoginOutput {
                 format,
                 instance,
@@ -60,6 +67,7 @@ pub async fn handle(
                 session_cookie,
                 session_cookie_stdin,
                 no_browser,
+                callback,
                 also_now_sdk,
                 now_sdk_alias,
                 set_now_sdk_default,
@@ -84,6 +92,9 @@ pub async fn handle(
 /// For OAuth2 password grant, both `--client-secret` and `--password` are required
 /// (two separate keychain entries).
 ///
+/// Authorization-code profiles receive the code through `callback`; other auth
+/// methods reject [`AuthorizationCodeCallback::SdkManualCode`].
+///
 /// Stored secrets (basic, API key, OAuth client credentials / password grant)
 /// are verified with one identity request unless `--no-verify` is given; see
 /// [`report_stored_login`].
@@ -99,6 +110,7 @@ async fn handle_login(
     session_cookie: Option<String>,
     session_cookie_stdin: bool,
     no_browser: bool,
+    callback: AuthorizationCodeCallback,
     also_now_sdk: bool,
     now_sdk_alias: Option<String>,
     set_now_sdk_default: bool,
@@ -116,6 +128,16 @@ async fn handle_login(
     if also_now_sdk && profile.auth_method != crate::config::profile::AuthMethod::Basic {
         anyhow::bail!(
             "`--also-now-sdk` is only supported for basic auth profiles in this release."
+        );
+    }
+
+    if matches!(callback, AuthorizationCodeCallback::SdkManualCode { .. })
+        && !uses_authorization_code_grant(profile)
+    {
+        anyhow::bail!(
+            "`--sdk-oauth` requires an OAuth2 profile with the authorization-code grant. \
+             Use: snow-cli profile edit {} --auth-method oauth2 --oauth-grant-type authorization-code",
+            profile_name
         );
     }
 
@@ -171,6 +193,14 @@ async fn handle_login(
                 .unwrap_or(OAuthGrantType::ClientCredentials);
 
             if grant_type == OAuthGrantType::AuthorizationCode {
+                // Resolve the code source first so a missing input fails before any
+                // keychain change.
+                let manual_code = match callback {
+                    AuthorizationCodeCallback::Loopback => None,
+                    AuthorizationCodeCallback::SdkManualCode { code_stdin } => {
+                        Some(manual_code_source(code_stdin, is_tty)?)
+                    }
+                };
                 let secret = resolve_optional_secret(client_secret, client_secret_stdin)?;
                 if let Some(secret) = secret.as_deref() {
                     credentials::store_credential(profile_name, "client_secret", secret)?;
@@ -180,13 +210,27 @@ async fn handle_login(
                     credentials::delete_credential(profile_name, "client_secret")?;
                 }
 
-                let (oauth_token, redirect_uri) = run_oauth_authorization_code_login(
-                    profile_name,
-                    profile,
-                    secret.as_deref(),
-                    no_browser,
-                )
-                .await?;
+                let (oauth_token, redirect_uri) = match manual_code {
+                    None => {
+                        run_oauth_authorization_code_login(
+                            profile_name,
+                            profile,
+                            secret.as_deref(),
+                            no_browser,
+                        )
+                        .await?
+                    }
+                    Some(source) => {
+                        let token = run_oauth_sdk_manual_code_login(
+                            profile,
+                            secret.as_deref(),
+                            no_browser,
+                            || read_manual_authorization_code(source),
+                        )
+                        .await?;
+                        (token, SDK_OAUTH_REDIRECT_URI.to_string())
+                    }
+                };
                 credentials::store_credential(
                     profile_name,
                     "oauth_token",
@@ -321,12 +365,114 @@ fn validate_session_cookie(value: String) -> anyhow::Result<String> {
     Ok(trimmed.to_string())
 }
 
+/// Where an authorization-code login receives the code from ServiceNow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthorizationCodeCallback {
+    /// A temporary loopback listener on the profile's redirect URI (default).
+    Loopback,
+    /// The ServiceNow SDK app's `/sdk-oauth.do` page, which displays the code
+    /// for the user to paste (`--sdk-oauth`).
+    SdkManualCode { code_stdin: bool },
+}
+
+/// How the pasted authorization code is read in the SDK manual-code flow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ManualCodeSource {
+    Stdin,
+    Prompt,
+}
+
+fn uses_authorization_code_grant(profile: &Profile) -> bool {
+    profile.auth_method == AuthMethod::Oauth2
+        && profile.oauth_grant_type.as_ref() == Some(&OAuthGrantType::AuthorizationCode)
+}
+
+fn manual_code_source(code_stdin: bool, is_tty: bool) -> anyhow::Result<ManualCodeSource> {
+    if code_stdin {
+        Ok(ManualCodeSource::Stdin)
+    } else if is_tty {
+        Ok(ManualCodeSource::Prompt)
+    } else {
+        anyhow::bail!(
+            "`--sdk-oauth` needs the authorization code shown by ServiceNow, but stdin is not a terminal. \
+             Pipe the code with `--code-stdin`."
+        )
+    }
+}
+
+/// Read the pasted authorization code without echoing it.
+fn read_manual_authorization_code(source: ManualCodeSource) -> anyhow::Result<String> {
+    let raw = match source {
+        ManualCodeSource::Stdin => read_secret_from_stdin("authorization code")?,
+        ManualCodeSource::Prompt => rpassword::prompt_password("Authorization code: ")
+            .map_err(|error| anyhow::anyhow!("Could not read the authorization code: {error}"))?,
+    };
+    validate_authorization_code(&raw)
+}
+
+fn validate_authorization_code(raw: &str) -> anyhow::Result<String> {
+    let code = raw.trim();
+    if code.is_empty() {
+        anyhow::bail!("Empty authorization code provided. Aborting.");
+    }
+    Ok(code.to_string())
+}
+
+/// Authorization code + PKCE through the ServiceNow SDK OAuth app.
+///
+/// Unlike [`run_oauth_authorization_code_login`], no listener is bound: after
+/// consent the instance shows the code on [`SDK_OAUTH_REDIRECT_URI`] and
+/// `read_code` obtains it from the user. The SDK page shows only the code, so
+/// the `state` round trip cannot be checked; the PKCE verifier binds the code
+/// to this attempt instead.
+async fn run_oauth_sdk_manual_code_login(
+    profile: &Profile,
+    client_secret: Option<&str>,
+    no_browser: bool,
+    read_code: impl FnOnce() -> anyhow::Result<String>,
+) -> anyhow::Result<StoredOAuthToken> {
+    let state = generate_oauth_state();
+    let code_verifier = generate_pkce_code_verifier();
+    let code_challenge = pkce_code_challenge_s256(&code_verifier);
+    let auth_url = authorization_url(
+        profile,
+        SDK_OAUTH_REDIRECT_URI,
+        &state,
+        &code_challenge,
+        Some(sdk_oauth_scope(profile)),
+    )?;
+
+    eprintln!("OAuth authorization URL:\n{auth_url}\n");
+    eprintln!(
+        "After you approve access, ServiceNow displays an authorization code. Paste it to continue."
+    );
+    open_authorization_url(&auth_url, no_browser);
+
+    let code = read_code()?;
+    exchange_authorization_code(
+        profile,
+        &code,
+        SDK_OAUTH_REDIRECT_URI,
+        client_secret,
+        &code_verifier,
+    )
+    .await
+}
+
+fn open_authorization_url(auth_url: &str, no_browser: bool) {
+    if !no_browser && let Err(error) = open::that(auth_url) {
+        eprintln!(
+            "Could not open the authorization URL automatically: {error}. Open the URL above in a browser."
+        );
+    }
+}
+
 async fn run_oauth_authorization_code_login(
     profile_name: &str,
     profile: &Profile,
     client_secret: Option<&str>,
     no_browser: bool,
-) -> anyhow::Result<(crate::auth::oauth2::StoredOAuthToken, String)> {
+) -> anyhow::Result<(StoredOAuthToken, String)> {
     let bind_host = oauth_redirect_host(profile);
     validate_oauth_redirect_host(bind_host)?;
     let port = oauth_redirect_port(profile);
@@ -345,16 +491,17 @@ async fn run_oauth_authorization_code_login(
     let state = generate_oauth_state();
     let code_verifier = generate_pkce_code_verifier();
     let code_challenge = pkce_code_challenge_s256(&code_verifier);
-    let auth_url = authorization_url(profile, &redirect_uri, &state, &code_challenge)?;
+    let auth_url = authorization_url(
+        profile,
+        &redirect_uri,
+        &state,
+        &code_challenge,
+        oauth_scope(profile),
+    )?;
 
     eprintln!("OAuth authorization URL:\n{auth_url}\n");
     eprintln!("Waiting for ServiceNow OAuth redirect on {redirect_uri} ...");
-
-    if !no_browser && let Err(error) = open::that(&auth_url) {
-        eprintln!(
-            "Could not open the authorization URL automatically: {error}. Open the URL above in a browser."
-        );
-    }
+    open_authorization_url(&auth_url, no_browser);
 
     let code = wait_for_oauth_redirect(listener, &redirect_path, &state).await?;
     let token =
@@ -722,9 +869,7 @@ async fn handle_logout(profile_name: &str, format: &OutputFormat) -> anyhow::Res
     for cred_type in &cred_types {
         credentials::delete_credential(profile_name, cred_type)?;
     }
-    if profile.auth_method == AuthMethod::Oauth2
-        && profile.oauth_grant_type.as_ref() == Some(&OAuthGrantType::AuthorizationCode)
-    {
+    if uses_authorization_code_grant(profile) {
         credentials::delete_credential(profile_name, "client_secret")?;
     }
 
@@ -1054,6 +1199,70 @@ mod tests {
         let verifier = generate_pkce_code_verifier();
         assert_eq!(verifier.len(), 64);
         assert!(verifier.chars().all(|ch| ch.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_validate_authorization_code_trims_and_rejects_empty() {
+        assert_eq!(validate_authorization_code("  abc123\n").unwrap(), "abc123");
+        let err = validate_authorization_code(" \r\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Empty authorization code"));
+    }
+
+    #[test]
+    fn test_manual_code_source_requires_stdin_flag_or_terminal() {
+        assert_eq!(
+            manual_code_source(true, false).unwrap(),
+            ManualCodeSource::Stdin
+        );
+        assert_eq!(
+            manual_code_source(true, true).unwrap(),
+            ManualCodeSource::Stdin
+        );
+        assert_eq!(
+            manual_code_source(false, true).unwrap(),
+            ManualCodeSource::Prompt
+        );
+        let err = manual_code_source(false, false).unwrap_err().to_string();
+        assert!(err.contains("--code-stdin"));
+    }
+
+    #[test]
+    fn test_uses_authorization_code_grant() {
+        assert!(uses_authorization_code_grant(&make_profile(
+            AuthMethod::Oauth2,
+            Some(OAuthGrantType::AuthorizationCode)
+        )));
+        assert!(!uses_authorization_code_grant(&make_profile(
+            AuthMethod::Oauth2,
+            None
+        )));
+        assert!(!uses_authorization_code_grant(&make_profile(
+            AuthMethod::Basic,
+            None
+        )));
+    }
+
+    #[tokio::test]
+    async fn test_sdk_manual_code_login_stops_when_code_input_fails() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let mut profile = make_profile(AuthMethod::Oauth2, Some(OAuthGrantType::AuthorizationCode));
+        profile.instance = server.uri();
+
+        let err = run_oauth_sdk_manual_code_login(&profile, None, true, || {
+            anyhow::bail!("Empty authorization code provided. Aborting.")
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("Empty authorization code"));
     }
 
     #[test]

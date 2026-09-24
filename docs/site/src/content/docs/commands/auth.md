@@ -25,7 +25,7 @@ snow-cli auth login [options]
 | `basic` | `username` | password |
 | `oauth2` + `client-credentials` | `client_id` | client secret |
 | `oauth2` + `password` | `client_id`, `username` | client secret and password |
-| `oauth2` + `authorization-code` | `client_id`, optional redirect/scope settings | browser login, optional client secret |
+| `oauth2` + `authorization-code` | `client_id`, optional redirect/scope settings | browser login, optional client secret; with `--sdk-oauth`, the pasted authorization code |
 | `api-key` | no extra profile secret fields | API token |
 | `browser-session` | no extra profile fields | session cookie via env var or flag; `auth login` can validate/print guidance but does not store it |
 
@@ -40,6 +40,8 @@ Important options:
 - `--client-secret` / `--client-secret-stdin`: OAuth client secret
 - `--session-cookie` / `--session-cookie-stdin`: full authenticated `Cookie` header value for browser-session profiles
 - `--no-browser`: print the OAuth authorization URL instead of trying to open it automatically
+- `--sdk-oauth`: for authorization-code profiles, use the ServiceNow SDK OAuth app's `/sdk-oauth.do` callback and paste the displayed code instead of running a localhost listener
+- `--code-stdin`: with `--sdk-oauth`, read the authorization code from stdin instead of a hidden prompt
 - `--also-now-sdk`: for basic auth, also write the successful login into `now-sdk`
 - `--now-sdk-alias <name>`: destination alias name when using `--also-now-sdk`
 - `--set-now-sdk-default`: mark that `now-sdk` alias as default
@@ -99,6 +101,16 @@ For authorization-code profiles, `snow-cli`:
 6. stores the resulting OAuth token set securely.
 
 Public PKCE clients can omit the client secret. Confidential clients can provide one.
+
+With `--sdk-oauth`, `snow-cli` uses the redirect URI `/sdk-oauth.do` of the
+built-in ServiceNow SDK OAuth app instead. No listener is started: after you
+approve access, ServiceNow displays an authorization code, which you paste at
+the hidden `Authorization code:` prompt (or pipe with `--code-stdin`). The
+option is rejected for other auth methods and grants.
+
+```bash
+snow-cli auth login --profile sdk --sdk-oauth
+```
 
 See [OAuth authorization code with PKCE](/oauth-authorization-code-pkce/).
 

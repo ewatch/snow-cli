@@ -81,6 +81,18 @@ pub trait Authenticator: Send + Sync {
   ```
   grant_type=refresh_token&client_id=<client_id>&refresh_token=<refresh_token>
   ```
+- ServiceNow SDK manual-code callback (`auth login --sdk-oauth`):
+  - Targets the built-in "ServiceNow SDK" public OAuth app, whose redirect URI
+    is the instance page `/sdk-oauth.do`. `snow-cli` sends that relative URI
+    verbatim in both requests (as `@servicenow/sdk-cli` does) and binds no
+    listener; the page displays the code and the user pastes it into a
+    non-echoing prompt or pipes it with `--code-stdin`. The code is never a
+    command-line argument.
+  - Requests an empty `scope=` unless the profile sets `oauth_scope`.
+  - The page shows only the code, so `state` cannot be checked; the per-attempt
+    PKCE verifier binds the code to the login attempt.
+  - This is still authorization code + PKCE, not RFC 8628 device authorization.
+    Token storage and refresh are identical to the loopback flow.
 
 #### Token Response (all grants)
 ```json

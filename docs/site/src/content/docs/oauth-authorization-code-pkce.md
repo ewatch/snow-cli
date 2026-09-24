@@ -5,7 +5,7 @@ Use OAuth 2.0 authorization-code login when `snow-cli` must act in **user scope*
 `snow-cli` implements this flow with:
 
 - the ServiceNow authorization endpoint,
-- a temporary localhost redirect listener,
+- a temporary localhost redirect listener, or, with `--sdk-oauth`, the ServiceNow SDK app's copy-and-paste code page,
 - PKCE (`code_challenge_method=S256`),
 - secure token storage in the OS keychain,
 - automatic token refresh when a refresh token is available.
@@ -160,6 +160,53 @@ Use the profile in normal commands:
 snow-cli --profile user-scope table list incident --limit 10
 ```
 
+## Use the ServiceNow SDK OAuth app (`--sdk-oauth`)
+
+Instances that have the ServiceNow SDK installed already have a public OAuth application called **ServiceNow SDK**. Its redirect URL is the instance page `/sdk-oauth.do`, not a localhost address. After you approve access, that page displays an authorization code for you to paste into the CLI. `snow-cli auth login --sdk-oauth` supports this flow, so you can log in without creating an OAuth application or handling a client secret.
+
+This is still authorization code with PKCE. It is **not** the OAuth device authorization flow (RFC 8628): the browser completes a normal authorization request, and the CLI exchanges the pasted code together with its PKCE verifier.
+
+### Set up the profile
+
+1. In ServiceNow, open **System OAuth > Application Registry** and find the active **ServiceNow SDK** record. Leave it unchanged.
+2. Copy its **Client ID**. At the time of writing, `@servicenow/sdk-cli` uses `543e5655f77746a28228c6009a599dfb` by default.
+3. Create an authorization-code profile with that client ID. No client secret is needed:
+
+```bash
+snow-cli profile add sdk \
+  --instance https://dev123456.service-now.com \
+  --auth-method oauth2 \
+  --client-id YOUR_SDK_CLIENT_ID \
+  --oauth-grant-type authorization-code
+```
+
+Redirect host, port, and path settings are ignored in this mode.
+
+### Log in
+
+```bash
+snow-cli auth login --profile sdk --sdk-oauth
+```
+
+1. `snow-cli` generates a fresh `state` and PKCE `code_verifier` / `code_challenge`.
+2. It prints the authorization URL with `redirect_uri=/sdk-oauth.do` and opens it unless you pass `--no-browser`.
+3. You sign in and approve the request. ServiceNow shows an authorization code.
+4. You paste the code at the hidden `Authorization code:` prompt. The code is not echoed, logged, or accepted as a command-line argument.
+5. `snow-cli` exchanges the code at `/oauth_token.do` with the same `/sdk-oauth.do` redirect URI and the matching `code_verifier`. It sends no client secret, then stores the token set in the OS keychain.
+
+Token refresh, `auth status --verify`, and `auth token` behave exactly as they do for the localhost flow.
+
+Like `@servicenow/sdk-cli`, the login requests an empty scope. If you set `--oauth-scope` on the profile, that value is requested instead.
+
+To supply the code from a script or another program, use `--code-stdin`. `snow-cli` reads stdin until end of file after it prints the URL:
+
+```bash
+{ read -rs CODE; printf '%s' "$CODE"; } | \
+  snow-cli auth login --profile sdk --sdk-oauth --no-browser --code-stdin
+```
+
+Without `--code-stdin`, stdin must be a terminal. Empty input aborts the login before any token request.
+
 ## Headless or remote-browser workflows
 
 If you do not want the CLI to open the browser automatically, use `--no-browser`:
@@ -196,6 +243,10 @@ If ServiceNow says the redirect URI is invalid, make sure these values match exa
 - the redirect URI configured in ServiceNow
 - the `snow-cli` profile redirect host, port, and path
 - the actual URI printed by `snow-cli auth login`
+
+### `--sdk-oauth` is rejected
+
+`--sdk-oauth` works only with `auth_method = "oauth2"` and `oauth_grant_type = "authorization_code"`. For other profiles, drop the flag or change the profile with `snow-cli profile edit <name> --auth-method oauth2 --oauth-grant-type authorization-code`.
 
 ### Port already in use
 
