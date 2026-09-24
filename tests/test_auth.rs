@@ -543,14 +543,15 @@ async fn test_auth_login_sdk_oauth_exchanges_pasted_code_without_listener() {
         authorize["code_challenge"]
     );
 
-    for secret in [
-        "pasted-code-123",
-        verifier.as_str(),
-        "sdk-access-token",
-        "sdk-refresh-token",
+    // Failure messages name the value, never print it.
+    for (label, secret) in [
+        ("authorization code", "pasted-code-123"),
+        ("code verifier", verifier.as_str()),
+        ("access token", "sdk-access-token"),
+        ("refresh token", "sdk-refresh-token"),
     ] {
-        assert!(!stdout.contains(secret), "stdout leaked {secret}");
-        assert!(!stderr.contains(secret), "stderr leaked {secret}");
+        assert!(!stdout.contains(secret), "stdout leaked the {label}");
+        assert!(!stderr.contains(secret), "stderr leaked the {label}");
     }
 
     let stored = common::read_test_keychain_entry(&keychain_store, "snow-cli", "sdk:oauth_token")
