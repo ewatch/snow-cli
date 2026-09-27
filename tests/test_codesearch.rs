@@ -10,7 +10,7 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Create a temp config file for api_key auth.
@@ -34,6 +34,7 @@ async fn test_codesearch_basic() {
         .and(path("/api/sn_codesearch/code_search/search"))
         .and(query_param("term", "GlideRecord"))
         .and(query_param("search_all_scopes", "true"))
+        .and(query_param("limit", "10"))
         .and(query_param(
             "search_group",
             "sn_devstudio.Studio Search Group",
@@ -266,7 +267,9 @@ async fn test_codesearch_with_scope_filter() {
     Mock::given(method("GET"))
         .and(path("/api/sn_codesearch/code_search/search"))
         .and(query_param("term", "GlideRecord"))
-        .and(query_param("scope", "x_my_app"))
+        .and(query_param("current_app", "x_my_app"))
+        .and(query_param("search_all_scopes", "false"))
+        .and(query_param_is_missing("scope"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
                 {
@@ -307,7 +310,8 @@ async fn test_codesearch_with_global_scope_filter() {
     Mock::given(method("GET"))
         .and(path("/api/sn_codesearch/code_search/search"))
         .and(query_param("term", "gs.info"))
-        .and(query_param("scope", "global"))
+        .and(query_param("current_app", "global"))
+        .and(query_param("search_all_scopes", "false"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
                 {
@@ -338,4 +342,122 @@ async fn test_codesearch_with_global_scope_filter() {
         .assert()
         .success()
         .stdout(predicate::str::contains("GlobalScript"));
+}
+
+#[tokio::test]
+async fn test_codesearch_current_scope_uses_session_scope() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/sn_codesearch/code_search/search"))
+        .and(query_param("search_all_scopes", "false"))
+        .and(query_param_is_missing("current_app"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    cargo_bin_cmd!("snow-cli-ro")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "codesearch",
+            "search",
+            "GlideRecord",
+            "--current-scope",
+        ])
+        .assert()
+        .success();
+}
+
+#[tokio::test]
+async fn test_codesearch_grouped_response_omits_empty_tables_and_keeps_count() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/sn_codesearch/code_search/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"recordType": "sys_script", "hits": []},
+                {"recordType": "sys_script_include", "hits": [{"name": "FoundScript"}]},
+                {"recordType": "sys_ui_action", "hits": []}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "codesearch",
+            "search",
+            "FoundScript",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["searched_tables"], 3);
+    assert_eq!(json["result"].as_array().unwrap().len(), 1);
+    assert_eq!(json["result"][0]["recordType"], "sys_script_include");
+    assert_eq!(json["result"][0]["hits"][0]["name"], "FoundScript");
+}
+
+#[tokio::test]
+async fn test_codesearch_grouped_csv_flattens_hits() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/sn_codesearch/code_search/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"recordType": "sys_script", "hits": []},
+                {"recordType": "sys_script_include", "hits": [{"name": "FoundScript"}]}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    cargo_bin_cmd!("snow-cli-ro")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "csv",
+            "--instance",
+            &server.uri(),
+            "codesearch",
+            "search",
+            "FoundScript",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("recordType"))
+        .stdout(predicate::str::contains("sys_script_include"))
+        .stdout(predicate::str::contains("FoundScript"));
+}
+
+#[test]
+fn test_codesearch_scope_conflicts_with_current_scope() {
+    cargo_bin_cmd!("snow-cli")
+        .args([
+            "codesearch",
+            "search",
+            "test",
+            "--scope",
+            "x_my_app",
+            "--current-scope",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
 }

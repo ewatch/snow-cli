@@ -20,11 +20,11 @@ pub enum CodesearchCommands {
         source_table: Option<String>,
 
         /// Restrict search to a specific application scope (e.g., x_my_app, global)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "current_scope")]
         scope: Option<String>,
 
-        /// Maximum number of results to return (default: 100)
-        #[arg(long, default_value = "100")]
+        /// Maximum hits per source table (default: 10)
+        #[arg(long, default_value = "10")]
         limit: usize,
 
         /// Restrict search to the current scope only
