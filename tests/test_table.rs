@@ -62,6 +62,39 @@ async fn test_table_list_json_output() {
 }
 
 #[tokio::test]
+async fn test_table_list_piped_stderr_has_plain_tracing_output() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .env_remove("NO_COLOR")
+        .args([
+            "-v",
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8(output).unwrap();
+    assert!(stderr.contains("Listing records from table"), "{stderr}");
+    assert!(!stderr.contains("\x1b["), "{stderr}");
+}
+
+#[tokio::test]
 async fn test_table_list_truncates_long_fields_unless_full() {
     let server = MockServer::start().await;
     let long_description = "x".repeat(2_001);
