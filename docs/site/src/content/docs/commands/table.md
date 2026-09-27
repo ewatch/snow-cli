@@ -21,6 +21,7 @@ Important options:
 - `--query <encoded-query>`: ServiceNow encoded query string
 - `--fields <a,b,c>`: comma-separated field list (default: a compact table-aware projection; pass `'*'` for all fields)
 - `--limit <n>`: maximum number of records to return (default: 20)
+- `--offset <n>`: skip the first `n` matching records (default: 0); works with `--limit` or `--all`
 - `--all`: fetch every matching record instead of the bounded default
 - `--order-by <spec>`: sort results. `field` sorts ascending, `-field` or `field:desc` descending; comma-separate several keys (`-priority,number`). Sent as `ORDERBY`/`ORDERBYDESC` clauses appended to `--query`, because the Table API has no separate sort parameter
 - `--full`: return complete field content instead of capping long values
@@ -31,6 +32,7 @@ Examples:
 snow-cli table list incident --query 'active=true' --limit 20
 snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name
 snow-cli table list incident --fields number,sys_created_on --order-by -sys_created_on --limit 5  # newest first
+snow-cli table list incident --order-by -sys_created_on --limit 3 --offset 3  # second page
 snow-cli table list incident --all --fields '*' --full   # everything, uncapped
 ```
 
@@ -38,7 +40,7 @@ Notes:
 
 - `table list` auto-paginates until it reaches the requested limit or exhausts the result set.
 - Output is bounded by default: at most 20 records without `--limit`/`--all`, a compact field projection without `--fields`, and field values capped at 2,000 characters without `--full`. Capped values end in an inline `… [truncated N of M chars; use --full]` size hint.
-- Except in CSV output, responses carry `total` (when the server reports `X-Total-Count`), `returned`, `truncated`, and — when the content cap fired — `fields_truncated` metadata, so truncation is always detectable.
+- Except in CSV output, responses carry `total` (when the server reports `X-Total-Count`), `returned`, `offset`, `next_offset` (null when no more rows exist), `truncated`, and — when the content cap fired — `fields_truncated` metadata. Use `next_offset` as the next call's `--offset` value. For repeatable pages, specify `--order-by`.
 - For complete data set extraction prefer `data export`, which keeps full-export semantics.
 - Use `--output csv` when you want tabular export.
 

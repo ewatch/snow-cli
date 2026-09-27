@@ -133,6 +133,8 @@ struct TableListMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     total: Option<usize>,
     returned: usize,
+    offset: usize,
+    next_offset: Option<usize>,
     truncated: bool,
     /// Present only when field values were shortened by the per-field content
     /// cap; omitted when `false` so the common case stays compact.
@@ -145,6 +147,8 @@ impl TableListMeta {
         Self {
             total: result.total,
             returned: result.returned(),
+            offset: result.offset,
+            next_offset: result.next_offset(),
             truncated: result.truncated,
             fields_truncated: result.fields_truncated,
         }
@@ -646,6 +650,7 @@ mod tests {
                 },
             ],
             total,
+            offset: 0,
             truncated,
             fields_truncated: false,
         }
@@ -709,7 +714,7 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(lines[0]).unwrap(),
-            serde_json::json!({"meta": {"total": 10, "returned": 2, "truncated": true}})
+            serde_json::json!({"meta": {"total": 10, "returned": 2, "offset": 0, "next_offset": 2, "truncated": true}})
         );
         let first: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(first["number"], "INC001");
@@ -762,6 +767,7 @@ mod tests {
         let result = TableListResult {
             records: Vec::new(),
             total: Some(0),
+            offset: 0,
             truncated: false,
             fields_truncated: false,
         };

@@ -21,6 +21,7 @@ pub async fn handle(
             query,
             fields,
             limit,
+            offset,
             all,
             order_by,
             full,
@@ -36,7 +37,9 @@ pub async fn handle(
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
-            let pagination = PaginationConfig::default().with_limit(effective_limit);
+            let pagination = PaginationConfig::default()
+                .with_limit(effective_limit)
+                .with_offset(offset);
 
             let mut result = client
                 .get_table_records_with_meta(

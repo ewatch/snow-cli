@@ -202,6 +202,10 @@ pub enum ReadOnlyTableCommands {
         #[arg(long, conflicts_with = "all")]
         limit: Option<usize>,
 
+        /// Skip this many matching records (default: 0)
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+
         /// Fetch every matching record instead of the bounded default
         #[arg(long)]
         all: bool,
@@ -764,6 +768,7 @@ impl ReadOnlyTableCommands {
                 query,
                 fields,
                 limit,
+                offset,
                 all,
                 order_by,
                 full,
@@ -772,6 +777,7 @@ impl ReadOnlyTableCommands {
                 query,
                 fields,
                 limit,
+                offset,
                 all,
                 order_by,
                 full,

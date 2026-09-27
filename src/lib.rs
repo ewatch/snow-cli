@@ -285,6 +285,7 @@ mod tests {
                 query: None,
                 fields: None,
                 limit: None,
+                offset: 0,
                 all: false,
                 order_by: None,
                 full: false,

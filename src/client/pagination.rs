@@ -15,6 +15,9 @@
 pub struct TableListResult {
     pub records: Vec<crate::models::record::Record>,
 
+    /// Requested index of the first record in this result.
+    pub offset: usize,
+
     /// Total matching records reported by `X-Total-Count`, when the server
     /// sent the header. Never invented client-side.
     pub total: Option<usize>,
@@ -35,6 +38,14 @@ impl TableListResult {
     pub fn returned(&self) -> usize {
         self.records.len()
     }
+
+    /// Offset to request for the next page, when more rows may exist.
+    pub fn next_offset(&self) -> Option<usize> {
+        self.truncated
+            .then(|| self.offset.checked_add(self.returned()))
+            .flatten()
+            .filter(|next| *next > self.offset)
+    }
 }
 
 /// Configuration for pagination behavior.
@@ -42,6 +53,9 @@ impl TableListResult {
 pub struct PaginationConfig {
     /// Maximum total records to return. None means fetch all.
     pub limit: Option<usize>,
+
+    /// Index of the first record to request.
+    pub offset: usize,
 
     /// Number of records per page (ServiceNow default: 100).
     pub page_size: usize,
@@ -51,6 +65,7 @@ impl Default for PaginationConfig {
     fn default() -> Self {
         Self {
             limit: None,
+            offset: 0,
             page_size: 100,
         }
     }
@@ -59,6 +74,11 @@ impl Default for PaginationConfig {
 impl PaginationConfig {
     pub fn with_limit(mut self, limit: Option<usize>) -> Self {
         self.limit = limit;
+        self
+    }
+
+    pub fn with_offset(mut self, offset: usize) -> Self {
+        self.offset = offset;
         self
     }
 

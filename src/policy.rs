@@ -443,6 +443,7 @@ mod tests {
                 query: None,
                 fields: None,
                 limit: Some(1),
+                offset: 0,
                 all: false,
                 order_by: None,
                 full: false,

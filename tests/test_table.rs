@@ -270,6 +270,141 @@ async fn test_table_list_with_query_params() {
         .stdout(predicate::str::contains("INC001"));
 }
 
+#[tokio::test]
+async fn test_table_list_offset_returns_next_page_and_cursor() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_offset", "3"))
+        .and(query_param("sysparm_limit", "3"))
+        .and(query_param("sysparm_query", "ORDERBYDESCsys_created_on"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "7")
+                .set_body_json(serde_json::json!({"result": [
+                    {"number": "INC004"}, {"number": "INC005"}, {"number": "INC006"}
+                ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+            "--order-by",
+            "-sys_created_on",
+            "--limit",
+            "3",
+            "--offset",
+            "3",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["total"], 7);
+    assert_eq!(value["returned"], 3);
+    assert_eq!(value["offset"], 3);
+    assert_eq!(value["next_offset"], 6);
+    assert_eq!(value["truncated"], true);
+    assert_eq!(value["records"][0]["number"], "INC004");
+}
+
+#[tokio::test]
+async fn test_table_list_offset_at_end_has_no_next_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_offset", "6"))
+        .and(query_param("sysparm_limit", "3"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "7")
+                .set_body_json(serde_json::json!({"result": [{"number": "INC007"}]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli-ro")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+            "--limit",
+            "3",
+            "--offset",
+            "6",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["offset"], 6);
+    assert_eq!(value["next_offset"], serde_json::Value::Null);
+    assert_eq!(value["truncated"], false);
+    assert_eq!(value["returned"], 1);
+}
+
+#[tokio::test]
+async fn test_table_list_all_can_start_at_offset() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_offset", "5"))
+        .and(query_param("sysparm_limit", "100"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "6")
+                .set_body_json(serde_json::json!({"result": [{"number": "INC006"}]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+            "--all",
+            "--offset",
+            "5",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["offset"], 5);
+    assert_eq!(value["next_offset"], serde_json::Value::Null);
+    assert_eq!(value["truncated"], false);
+    assert_eq!(value["returned"], 1);
+}
+
 // Regression (servicenow-cli-120.1): the Table API ignores `sysparm_orderby`,
 // so sorting must travel inside `sysparm_query`, and `-field` must parse as a
 // value rather than as an unknown short flag.
