@@ -360,6 +360,79 @@ fn extract_json_from_script_marker(cleaned: &str) -> Option<String> {
         .map(|_| json_snippet.to_string())
 }
 
+/// Recognize evaluator diagnostics, not arbitrary occurrences of "error" in
+/// user output. Script print lines and JSON values remain ordinary result data.
+fn background_script_failure(cleaned: &str) -> Option<crate::error::ScriptExecutionError> {
+    use crate::error::ScriptExecutionError;
+
+    for line in cleaned.lines() {
+        let mut line = line.trim();
+        // Some instance releases wrap diagnostics in presentation markup.
+        // Strip only leading known HTML tags for classification; leave the
+        // returned script output untouched.
+        while let Some(rest) = line.strip_prefix('<') {
+            let Some((tag, remainder)) = rest.split_once('>') else {
+                break;
+            };
+            let name = tag
+                .trim_start_matches('/')
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if !matches!(
+                name.as_str(),
+                "html" | "body" | "div" | "span" | "font" | "p" | "b" | "strong" | "pre"
+            ) {
+                break;
+            }
+            line = remainder.trim_start();
+        }
+        if line.starts_with("*** Script:") {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("kittyscript validation failed") {
+            return Some(ScriptExecutionError::SandboxValidation);
+        }
+        if lower.starts_with("script compilation error") {
+            return Some(ScriptExecutionError::Compilation);
+        }
+        if lower.starts_with("evaluator.evaluatestring() problem") {
+            return Some(ScriptExecutionError::Evaluation);
+        }
+        if lower.starts_with("background message,")
+            && lower.split(',').skip(1).any(|field| {
+                field
+                    .chars()
+                    .filter(|ch| !ch.is_whitespace())
+                    .collect::<String>()
+                    == "type:error"
+            })
+        {
+            return Some(ScriptExecutionError::BackgroundMessage);
+        }
+        let exception = line.strip_prefix("Caused by: ").unwrap_or(line);
+        let class = exception.split([':', ' ']).next().unwrap_or_default();
+        // Java/Rhino exception headers are strong signals; do not classify
+        // standalone "error" or user-printed stack traces as failures.
+        if [
+            "java.",
+            "javax.",
+            "com.glide.",
+            "com.snc.",
+            "org.mozilla.javascript.",
+        ]
+        .iter()
+        .any(|prefix| class.starts_with(prefix))
+            && (class.ends_with("Exception") || class.ends_with("Error"))
+        {
+            return Some(ScriptExecutionError::JavaException);
+        }
+    }
+    None
+}
+
 fn validate_background_script_response(
     raw: &str,
     status_code: u16,
@@ -405,6 +478,12 @@ fn validate_background_script_response(
             status_code,
             final_url
         );
+    }
+
+    // Check the complete response before JSON extraction can hide an evaluator
+    // failure preceding a valid-looking printed payload.
+    if let Some(error) = background_script_failure(&cleaned) {
+        return Err(error.into());
     }
 
     if serde_json::from_str::<serde_json::Value>(&cleaned).is_ok() {

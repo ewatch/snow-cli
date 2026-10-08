@@ -34,6 +34,24 @@ pub enum CliError {
     Other(#[from] anyhow::Error),
 }
 
+/// Failure markers emitted by ServiceNow's Script Background evaluator.
+/// Retain only the classification, never server text, scripts, or stack traces.
+#[derive(Debug, Error)]
+pub enum ScriptExecutionError {
+    #[error(
+        "ServiceNow sandbox validation failed; --sandbox accepts a single KittyScript expression, not a multi-statement script"
+    )]
+    SandboxValidation,
+    #[error("ServiceNow script compilation failed")]
+    Compilation,
+    #[error("ServiceNow script evaluation failed")]
+    Evaluation,
+    #[error("ServiceNow reported a background script error")]
+    BackgroundMessage,
+    #[error("ServiceNow script execution raised a Java exception")]
+    JavaException,
+}
+
 /// JSON-serializable error format written to stderr.
 #[derive(Debug, Serialize)]
 pub struct ErrorOutput {
@@ -71,6 +89,21 @@ pub fn write_anyhow_error_and_exit_code(error: anyhow::Error) -> i32 {
 }
 
 fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutput, i32)> {
+    if let Some(script_error) = error.downcast_ref::<ScriptExecutionError>() {
+        return Some((
+            ErrorOutput {
+                error: ErrorBody {
+                    code: "SCRIPT_EXECUTION_FAILED".to_string(),
+                    message: script_error.to_string(),
+                    status: None,
+                    detail: None,
+                    instance: None,
+                },
+            },
+            1,
+        ));
+    }
+
     if let Some(policy_error) = error.downcast_ref::<crate::policy::PolicyError>() {
         return Some((
             ErrorOutput {

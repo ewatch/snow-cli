@@ -47,7 +47,8 @@ printf '%s' 'gs.info("from stdin")' | snow-cli script run
   form, named scopes are resolved to their sys_id before execution.
 - `--endpoint <path>`: execution endpoint, default `/sys.scripts.do`
 - `--rollback`: record rollback context for database changes
-- `--sandbox`: prevent database writes
+- `--sandbox`: use the restricted KittyScript evaluator (single expression only;
+  not a general read-only mode for arbitrary scripts)
 - `--scriptlet`: run as a scriptlet with access to global server-side objects
 - `--quota-managed-transaction`: use managed transaction limits for long-running scripts
 
@@ -71,22 +72,38 @@ default. Pass the corresponding flag only when you need that behavior.
 > through ServiceNow's restricted KittyScript evaluator, which rejects
 > anything beyond one expression — even a simple sequence like
 > `gs.print('a'); gs.print('b');` fails validation. Multi-statement or
-> multiline scripts must run **without** `--sandbox`. Also note that script
-> errors currently do not affect the CLI's exit code (it exits 0 even when the
-> server-side script fails to parse or execute), so always check the printed
-> output rather than relying on the exit code alone.
+> multiline scripts cannot use this evaluator. Removing `--sandbox` changes
+> the safety model: ordinary background scripts can write to the database.
+> Do not automatically retry a failed script without reviewing its effects.
+
+### Execution failures
+
+For `/sys.scripts.do`, recognized sandbox-validation, compilation, evaluation,
+background-error, and Java/Rhino exception diagnostics cause exit code **1**.
+The CLI emits a single JSON error line on stderr with code
+`SCRIPT_EXECUTION_FAILED` and a safe classification message. It emits no result
+on stdout and does not expose the script, server error text, or stack trace—even
+with sensitive HTTP debugging enabled. Any earlier script side effects may
+already have occurred; failure does not imply rollback.
+
+Detection uses known ServiceNow diagnostic markers, not arbitrary occurrences
+of the word `error`. Normal `*** Script:` print lines and JSON result values
+are treated as data. Response layouts vary by release, so exit 0 means no known
+failure diagnostic was detected, not proof that the script achieved its intended
+business outcome. Custom `--endpoint` responses retain their existing passthrough
+behavior; this evaluator-specific detection does not apply to them.
 
 Examples:
 
 ```bash
 snow-cli script run --code 'gs.info("hello")' --scope x_my_app
-snow-cli script run --file ./job.js --sandbox
+snow-cli script run --sandbox --code 'gs.print(1)'
 snow-cli script run --code 'gs.sleep(1000); gs.info("done")' --quota-managed-transaction
 ```
 
 ### Hints from live E2E testing
 
-- For safe live verification on a real instance, start with `--sandbox` so you can confirm auth, form bootstrap, and script execution without writing records.
+- For a minimal live check, use `--sandbox --code 'gs.print(1)'` to verify auth, form bootstrap, and expression execution. Do not treat `--sandbox` as a general read-only guarantee for arbitrary scripts.
 - All three input modes were validated end to end: `--code`, `--file`, and stdin.
 - Multiline scripts also worked from both `--file` and stdin.
 - Some ServiceNow instances use older background script JavaScript parsing. If the instance reports an older script engine level (for example `Script ES Level: 0`), wrapper syntax such as IIFEs may fail with errors like `Invalid function definition` even though simpler multiline scripts work.
