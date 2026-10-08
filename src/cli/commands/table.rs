@@ -67,14 +67,18 @@ pub async fn handle(
                 )
                 .await?;
 
-            if !full {
-                result.fields_truncated = truncation::truncate_record_fields(
+            let preview = if !full && supports_preview_metadata(format) {
+                truncation::preview_record_fields(
                     &mut result.records,
                     truncation::DEFAULT_FIELD_CHAR_LIMIT,
-                );
-            }
+                    truncation::RecordPreviewRoot::Records,
+                    "rerun this command with --full",
+                )
+            } else {
+                truncation::PreviewReport::default()
+            };
 
-            output::print_table_list(&result, format)?;
+            output::print_table_list_preview(&result, format, &preview)?;
             Ok(())
         }
 
@@ -105,14 +109,18 @@ pub async fn handle(
                 client.get_json_with_params(&path, &params).await?
             };
 
-            if !full {
-                truncation::truncate_record_fields(
+            let preview = if !full && supports_preview_metadata(format) {
+                truncation::preview_record_fields(
                     std::slice::from_mut(&mut response.result),
                     truncation::DEFAULT_FIELD_CHAR_LIMIT,
-                );
-            }
+                    truncation::RecordPreviewRoot::Record,
+                    "rerun this command with --full",
+                )
+            } else {
+                truncation::PreviewReport::default()
+            };
 
-            output::print_record(&response.result, format)?;
+            output::print_record_preview(&response.result, format, &preview)?;
             Ok(())
         }
 
@@ -490,6 +498,10 @@ struct SchemaEntry {
 }
 
 /// Print schema entries in the requested format.
+fn supports_preview_metadata(format: &OutputFormat) -> bool {
+    !matches!(format, OutputFormat::Csv)
+}
+
 fn print_schema(entries: &[SchemaEntry], format: &OutputFormat) -> anyhow::Result<()> {
     match format {
         OutputFormat::Json => {

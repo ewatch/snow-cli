@@ -34,5 +34,9 @@ pub enum CodesearchCommands {
         /// Search group to use (advanced)
         #[arg(long, default_value = "sn_devstudio.Studio Search Group")]
         search_group: String,
+
+        /// Return complete matched text instead of capping long preview fields
+        #[arg(long)]
+        full: bool,
     },
 }

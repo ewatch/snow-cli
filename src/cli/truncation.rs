@@ -1,7 +1,8 @@
 use crate::models::record::Record;
+use serde::Serialize;
 
-/// Default per-field character cap applied to `table list` and `table get`
-/// output when `--full` is omitted.
+/// Default per-field character cap applied to previewable agent output when
+/// `--full` is omitted.
 ///
 /// ServiceNow text fields (descriptions, work notes, scripts, widget bodies)
 /// can be tens of kilobytes; a bounded default keeps record output safe to
@@ -10,45 +11,177 @@ use crate::models::record::Record;
 /// fields are never touched.
 pub(crate) const DEFAULT_FIELD_CHAR_LIMIT: usize = 2000;
 
-/// Marker appended to a truncated field value. Carries a size hint (shown vs
-/// total characters) and the escape hatch, so a consumer can always tell the
-/// value is incomplete and knows how to get the rest.
-fn truncation_marker(shown: usize, total: usize) -> String {
-    format!("… [truncated {shown} of {total} chars; use --full]")
+/// Machine-readable metadata for one shortened field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct PreviewField {
+    /// JSON Pointer to the shortened field in the emitted data shape.
+    pub path: String,
+    pub original_chars: usize,
+    pub shown_chars: usize,
+    pub escape_hatch: String,
 }
 
-/// Truncate a single string to `limit` characters, appending a size-hint
-/// marker. Returns `None` when the value already fits.
-///
-/// The cut respects UTF-8 character boundaries: `limit` counts characters,
-/// not bytes, so multi-byte content is never split mid-character.
-fn truncate_str(value: &str, limit: usize) -> Option<String> {
-    let cut = value.char_indices().nth(limit)?.0;
+/// Metadata for all fields shortened by a preview policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct PreviewReport {
+    pub truncated_fields: Vec<PreviewField>,
+}
+
+impl PreviewReport {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.truncated_fields.is_empty()
+    }
+
+    fn push(
+        &mut self,
+        path: String,
+        original_chars: usize,
+        shown_chars: usize,
+        escape_hatch: &str,
+    ) {
+        self.truncated_fields.push(PreviewField {
+            path,
+            original_chars,
+            shown_chars,
+            escape_hatch: escape_hatch.to_string(),
+        });
+    }
+
+    pub(crate) fn append(&mut self, mut other: Self) {
+        self.truncated_fields.append(&mut other.truncated_fields);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RecordPreviewRoot {
+    Records,
+    Record,
+}
+
+fn escape_json_pointer_segment(segment: &str) -> String {
+    segment.replace('~', "~0").replace('/', "~1")
+}
+
+fn record_path(root: RecordPreviewRoot, record_index: usize, field: &str) -> String {
+    let field = escape_json_pointer_segment(field);
+    match root {
+        RecordPreviewRoot::Records => format!("/records/{record_index}/{field}"),
+        RecordPreviewRoot::Record => format!("/record/{field}"),
+    }
+}
+
+fn preview_string(value: &str, limit: usize) -> Option<(String, usize)> {
     let total = value.chars().count();
-    let mut shortened = value[..cut].to_string();
-    shortened.push_str(&truncation_marker(limit, total));
-    Some(shortened)
+    if total <= limit {
+        return None;
+    }
+    let shortened = value.chars().take(limit).collect::<String>();
+    Some((shortened, total))
 }
 
-/// Apply the per-field character cap to every string field of every record.
-///
-/// Returns `true` when at least one field value was shortened, so callers can
-/// surface a `fields_truncated` signal in result metadata. Non-string values
-/// (numbers, booleans, nested objects such as reference link pairs) are left
-/// untouched: the oversized payloads in practice are always plain strings.
-pub(crate) fn truncate_record_fields(records: &mut [Record], limit: usize) -> bool {
-    let mut any_truncated = false;
-    for record in records {
-        for value in record.fields.values_mut() {
-            if let serde_json::Value::String(text) = value
-                && let Some(shortened) = truncate_str(text, limit)
-            {
+fn preview_object_strings(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    path_prefix: &str,
+    limit: usize,
+    escape_hatch: &str,
+) -> PreviewReport {
+    let mut report = PreviewReport::default();
+    let mut keys = object.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+
+    for key in keys {
+        let Some(serde_json::Value::String(text)) = object.get_mut(&key) else {
+            continue;
+        };
+        if let Some((shortened, total)) = preview_string(text, limit) {
+            *text = shortened;
+            report.push(
+                format!("{path_prefix}/{}", escape_json_pointer_segment(&key)),
+                total,
+                limit,
+                escape_hatch,
+            );
+        }
+    }
+
+    report
+}
+
+/// Apply the per-field character cap to top-level string fields of table
+/// records. Non-string values and nested values stay lossless.
+pub(crate) fn preview_record_fields(
+    records: &mut [Record],
+    limit: usize,
+    root: RecordPreviewRoot,
+    escape_hatch: &str,
+) -> PreviewReport {
+    let mut report = PreviewReport::default();
+
+    for (record_index, record) in records.iter_mut().enumerate() {
+        let mut keys = record.fields.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+
+        for key in keys {
+            let Some(serde_json::Value::String(text)) = record.fields.get_mut(&key) else {
+                continue;
+            };
+            if let Some((shortened, total)) = preview_string(text, limit) {
                 *text = shortened;
-                any_truncated = true;
+                report.push(
+                    record_path(root, record_index, &key),
+                    total,
+                    limit,
+                    escape_hatch,
+                );
             }
         }
     }
-    any_truncated
+
+    report
+}
+
+/// Apply the preview cap to the known Code Search result shapes only:
+/// `/result/<n>/<field>` and `/result/<group>/hits/<n>/<field>`.
+/// Nested objects and arrays are left lossless.
+pub(crate) fn preview_codesearch_fields(
+    value: &mut serde_json::Value,
+    limit: usize,
+    escape_hatch: &str,
+) -> PreviewReport {
+    let mut report = PreviewReport::default();
+    let Some(results) = value
+        .get_mut("result")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return report;
+    };
+
+    for (result_index, result) in results.iter_mut().enumerate() {
+        if let Some(hits) = result
+            .get_mut("hits")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for (hit_index, hit) in hits.iter_mut().enumerate() {
+                if let Some(hit_object) = hit.as_object_mut() {
+                    report.append(preview_object_strings(
+                        hit_object,
+                        &format!("/result/{result_index}/hits/{hit_index}"),
+                        limit,
+                        escape_hatch,
+                    ));
+                }
+            }
+        } else if let Some(result_object) = result.as_object_mut() {
+            report.append(preview_object_strings(
+                result_object,
+                &format!("/result/{result_index}"),
+                limit,
+                escape_hatch,
+            ));
+        }
+    }
+
+    report
 }
 
 #[cfg(test)]
@@ -57,36 +190,40 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn short_values_are_untouched() {
-        assert_eq!(truncate_str("hello", 5), None);
-        assert_eq!(truncate_str("", 5), None);
+    fn short_and_exact_limit_values_are_untouched() {
+        assert_eq!(preview_string("hello", 5), None);
+        assert_eq!(preview_string("", 5), None);
     }
 
     #[test]
-    fn long_values_are_cut_with_size_hint() {
-        let value = "a".repeat(12);
-        let shortened = truncate_str(&value, 10).unwrap();
-        assert!(shortened.starts_with(&"a".repeat(10)));
-        assert!(shortened.contains("truncated 10 of 12 chars"));
-        assert!(shortened.contains("--full"));
+    fn long_values_are_cut_without_inline_markers() {
+        let (shortened, total) = preview_string(&"a".repeat(12), 10).unwrap();
+        assert_eq!(shortened, "a".repeat(10));
+        assert_eq!(total, 12);
+        assert!(!shortened.contains("truncated"));
     }
 
     #[test]
     fn cut_respects_multibyte_char_boundaries() {
-        let value = "é".repeat(8);
-        let shortened = truncate_str(&value, 5).unwrap();
-        assert!(shortened.starts_with(&"é".repeat(5)));
-        assert!(!shortened.starts_with(&"é".repeat(6)));
-        assert!(shortened.contains("truncated 5 of 8 chars"));
+        let (shortened, total) = preview_string(&"é".repeat(8), 5).unwrap();
+        assert_eq!(shortened, "é".repeat(5));
+        assert_eq!(total, 8);
     }
 
     #[test]
-    fn records_report_whether_anything_was_truncated() {
+    fn records_return_field_metadata_and_preserve_other_values() {
         let mut records = vec![
             Record {
                 fields: HashMap::from([
                     ("number".to_string(), serde_json::json!("INC001")),
                     ("description".to_string(), serde_json::json!("x".repeat(30))),
+                    ("tags".to_string(), serde_json::json!(["keep", "array"])),
+                    (
+                        "meta".to_string(),
+                        serde_json::json!({"nested": "y".repeat(30)}),
+                    ),
+                    ("closed".to_string(), serde_json::json!(false)),
+                    ("empty".to_string(), serde_json::Value::Null),
                 ]),
             },
             Record {
@@ -94,36 +231,76 @@ mod tests {
             },
         ];
 
-        assert!(truncate_record_fields(&mut records, 10));
+        let report = preview_record_fields(&mut records, 10, RecordPreviewRoot::Records, "--full");
 
-        let description = records[0].fields["description"].as_str().unwrap();
-        assert!(description.contains("truncated 10 of 30 chars"));
+        assert_eq!(
+            records[0].fields["description"],
+            serde_json::json!("x".repeat(10))
+        );
         assert_eq!(records[0].fields["number"], serde_json::json!("INC001"));
-        assert_eq!(records[1].fields["number"], serde_json::json!("INC002"));
+        assert_eq!(
+            records[0].fields["tags"],
+            serde_json::json!(["keep", "array"])
+        );
+        assert_eq!(
+            records[0].fields["meta"],
+            serde_json::json!({"nested": "y".repeat(30)})
+        );
+        assert_eq!(records[0].fields["closed"], serde_json::json!(false));
+        assert_eq!(records[0].fields["empty"], serde_json::Value::Null);
+        assert_eq!(
+            report.truncated_fields,
+            vec![PreviewField {
+                path: "/records/0/description".to_string(),
+                original_chars: 30,
+                shown_chars: 10,
+                escape_hatch: "--full".to_string(),
+            }]
+        );
     }
 
     #[test]
-    fn records_within_limit_are_not_flagged() {
+    fn single_record_paths_use_record_root() {
         let mut records = vec![Record {
-            fields: HashMap::from([
-                ("number".to_string(), serde_json::json!("INC001")),
-                ("count".to_string(), serde_json::json!(42)),
-            ]),
+            fields: HashMap::from([("work/notes".to_string(), serde_json::json!("x".repeat(12)))]),
         }];
 
-        assert!(!truncate_record_fields(&mut records, 10));
-        assert_eq!(records[0].fields["number"], serde_json::json!("INC001"));
+        let report = preview_record_fields(&mut records, 3, RecordPreviewRoot::Record, "--full");
+
+        assert_eq!(report.truncated_fields[0].path, "/record/work~1notes");
     }
 
     #[test]
-    fn non_string_values_are_ignored() {
-        let mut records = vec![Record {
-            fields: HashMap::from([(
-                "assigned_to".to_string(),
-                serde_json::json!({"link": "https://example.service-now.com/very/long/link/that/would/exceed/any/limit/if/it/were/a/string", "value": "abc"}),
-            )]),
-        }];
+    fn codesearch_preview_handles_flat_and_grouped_shapes_only() {
+        let mut value = serde_json::json!({
+            "result": [
+                {"name": "Short", "match_text": "é".repeat(8), "nested": {"script": "x".repeat(20)}},
+                {"recordType": "sys_script", "hits": [
+                    {"name": "Hit", "script": "y".repeat(9), "lines": ["z".repeat(20)]}
+                ]}
+            ]
+        });
 
-        assert!(!truncate_record_fields(&mut records, 10));
+        let report = preview_codesearch_fields(&mut value, 5, "--full");
+
+        assert_eq!(
+            value["result"][0]["match_text"],
+            serde_json::json!("é".repeat(5))
+        );
+        assert_eq!(
+            value["result"][0]["nested"]["script"],
+            serde_json::json!("x".repeat(20))
+        );
+        assert_eq!(
+            value["result"][1]["hits"][0]["script"],
+            serde_json::json!("y".repeat(5))
+        );
+        assert_eq!(
+            value["result"][1]["hits"][0]["lines"][0],
+            serde_json::json!("z".repeat(20))
+        );
+        assert_eq!(report.truncated_fields.len(), 2);
+        assert_eq!(report.truncated_fields[0].path, "/result/0/match_text");
+        assert_eq!(report.truncated_fields[1].path, "/result/1/hits/0/script");
     }
 }

@@ -1,5 +1,6 @@
 use crate::cli::args::{CodesearchArgs, CodesearchCommands, OutputFormat};
 use crate::cli::output;
+use crate::cli::truncation::{self, PreviewReport};
 
 pub async fn handle(
     args: CodesearchArgs,
@@ -16,6 +17,7 @@ pub async fn handle(
             limit,
             current_scope,
             search_group,
+            full,
         } => {
             tracing::info!(query = %query, "Searching code");
 
@@ -49,14 +51,14 @@ pub async fn handle(
 
             tracing::debug!(body_len = response_body.len(), "Code search response");
 
-            render_response(&response_body, format)?;
+            render_response(&response_body, format, full)?;
 
             Ok(())
         }
     }
 }
 
-fn render_response(body: &str, format: &OutputFormat) -> anyhow::Result<()> {
+fn render_response(body: &str, format: &OutputFormat, full: bool) -> anyhow::Result<()> {
     let Ok(mut json) = serde_json::from_str::<serde_json::Value>(body) else {
         return output::print_output(&body, format);
     };
@@ -82,19 +84,63 @@ fn render_response(body: &str, format: &OutputFormat) -> anyhow::Result<()> {
         if matches!(format, OutputFormat::Csv) {
             return output::print_records(&flatten_group_hits(groups), format);
         }
+        let preview = preview_codesearch_output(&mut json, format, full);
         if let Some(object) = json.as_object_mut() {
             object.insert("searched_tables".to_string(), searched_tables.into());
+            insert_preview(object, &preview)?;
         }
         return output::print_output(&json, format);
     }
 
+    let preview = preview_codesearch_output(&mut json, format, full);
+
     if let Ok(table_resp) =
         serde_json::from_value::<crate::models::record::TableResponse>(json.clone())
     {
-        output::print_records(&table_resp.result, format)
+        if preview.is_empty() {
+            output::print_records(&table_resp.result, format)
+        } else {
+            if let Some(object) = json.as_object_mut() {
+                insert_preview(object, &preview)?;
+            }
+            output::print_output(&json, format)
+        }
     } else {
+        if let Some(object) = json.as_object_mut() {
+            insert_preview(object, &preview)?;
+        }
         output::print_output(&json, format)
     }
+}
+
+fn preview_codesearch_output(
+    json: &mut serde_json::Value,
+    format: &OutputFormat,
+    full: bool,
+) -> PreviewReport {
+    if !full && supports_preview_metadata(format) {
+        truncation::preview_codesearch_fields(
+            json,
+            truncation::DEFAULT_FIELD_CHAR_LIMIT,
+            "rerun this command with --full",
+        )
+    } else {
+        PreviewReport::default()
+    }
+}
+
+fn supports_preview_metadata(format: &OutputFormat) -> bool {
+    !matches!(format, OutputFormat::Csv)
+}
+
+fn insert_preview(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    preview: &PreviewReport,
+) -> anyhow::Result<()> {
+    if !preview.is_empty() {
+        object.insert("preview".to_string(), serde_json::to_value(preview)?);
+    }
+    Ok(())
 }
 
 fn flatten_group_hits(groups: &[serde_json::Value]) -> Vec<crate::models::record::Record> {
@@ -136,6 +182,7 @@ mod tests {
                 limit: 500,
                 current_scope: false,
                 search_group: "sn_devstudio.Studio Search Group".to_string(),
+                full: false,
             },
         };
         match args.command {
@@ -146,6 +193,7 @@ mod tests {
                 limit,
                 current_scope,
                 search_group,
+                full,
             } => {
                 assert_eq!(query, "GlideRecord");
                 assert_eq!(source_table, Some("sys_script_include".to_string()));
@@ -153,6 +201,7 @@ mod tests {
                 assert_eq!(limit, 500);
                 assert!(!current_scope);
                 assert_eq!(search_group, "sn_devstudio.Studio Search Group");
+                assert!(!full);
             }
         }
     }

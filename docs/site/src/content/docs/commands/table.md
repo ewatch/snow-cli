@@ -39,10 +39,13 @@ snow-cli table list incident --all --fields '*' --full   # everything, uncapped
 Notes:
 
 - `table list` auto-paginates until it reaches the requested limit or exhausts the result set.
-- Output is bounded by default: at most 20 records without `--limit`/`--all`, a compact field projection without `--fields`, and field values capped at 2,000 characters without `--full`. Capped values end in an inline `… [truncated N of M chars; use --full]` size hint.
-- Except in CSV output, responses carry `total` (when the server reports `X-Total-Count`), `returned`, `offset`, `next_offset` (null when no more rows exist), `truncated`, and — when the content cap fired — `fields_truncated` metadata. Use `next_offset` as the next call's `--offset` value. For repeatable pages, specify `--order-by`.
+- Output is bounded by default: at most 20 records without `--limit` or `--all`, and a compact field projection without `--fields`.
+- In preview-capable formats, field values longer than 2,000 characters are shortened unless you pass `--full`. The shortened value has no inline marker.
+- Preview metadata appears outside the data value. It reports `path`, `original_chars`, `shown_chars`, and `escape_hatch` for each shortened field.
+- JSONL output keeps its meta line plus record lines when no field is shortened. When preview metadata is present, JSONL emits one envelope line so each `path` points into the same JSON value.
+- Except in CSV output, `table list` responses carry `total` when the server reports `X-Total-Count`, `returned`, `offset`, `next_offset`, `truncated`, and `fields_truncated` when preview shortened a field. Use `next_offset` as the next call's `--offset` value. For repeatable pages, specify `--order-by`.
 - For complete data set extraction prefer `data export`, which keeps full-export semantics.
-- Use `--output csv` when you want tabular export.
+- Use `--output csv` when you want tabular export. CSV output is lossless and does not carry preview metadata.
 
 ## `table get <table> <sys_id>`
 
@@ -56,6 +59,8 @@ Important options:
 
 - `--fields <a,b,c>`: restrict the returned fields
 - `--full`: return complete field content instead of capping long values at 2,000 characters
+
+In preview-capable formats, `table get` wraps a shortened record as `{ "preview": ..., "record": ... }`. Pass `--full` to return the record as the exact Table API value.
 
 Example:
 

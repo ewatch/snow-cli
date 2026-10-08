@@ -179,6 +179,61 @@ async fn test_codesearch_empty_result() {
 }
 
 #[tokio::test]
+async fn test_codesearch_previews_long_match_text_unless_full() {
+    let server = MockServer::start().await;
+    let long_match = "é".repeat(2_001);
+
+    Mock::given(method("GET"))
+        .and(path("/api/sn_codesearch/code_search/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "sys_id": "abc123",
+                    "name": "TestScript",
+                    "match_text": long_match
+                }
+            ]
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let run = |full: bool| {
+        let mut command = cargo_bin_cmd!("snow-cli");
+        command
+            .env("SNOW_CLI_CONFIG", &config_path)
+            .env("SNOW_CLI_API_TOKEN", "test-api-token")
+            .args([
+                "--instance",
+                &server.uri(),
+                "codesearch",
+                "search",
+                "GlideRecord",
+            ]);
+        if full {
+            command.arg("--full");
+        }
+        command.assert().success().get_output().stdout.clone()
+    };
+
+    let previewed: serde_json::Value = serde_json::from_slice(&run(false)).unwrap();
+    assert_eq!(previewed["result"][0]["match_text"], "é".repeat(2_000));
+    assert_eq!(
+        previewed["preview"]["truncated_fields"],
+        serde_json::json!([{
+            "path": "/result/0/match_text",
+            "original_chars": 2001,
+            "shown_chars": 2000,
+            "escape_hatch": "rerun this command with --full"
+        }])
+    );
+
+    let full: serde_json::Value = serde_json::from_slice(&run(true)).unwrap();
+    assert_eq!(full[0]["match_text"], "é".repeat(2_001));
+}
+
+#[tokio::test]
 async fn test_codesearch_csv_output() {
     let server = MockServer::start().await;
 
@@ -409,6 +464,49 @@ async fn test_codesearch_grouped_response_omits_empty_tables_and_keeps_count() {
     assert_eq!(json["result"].as_array().unwrap().len(), 1);
     assert_eq!(json["result"][0]["recordType"], "sys_script_include");
     assert_eq!(json["result"][0]["hits"][0]["name"], "FoundScript");
+}
+
+#[tokio::test]
+async fn test_codesearch_grouped_preview_paths_match_filtered_output() {
+    let server = MockServer::start().await;
+    let long_script = "y".repeat(2_001);
+
+    Mock::given(method("GET"))
+        .and(path("/api/sn_codesearch/code_search/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"recordType": "sys_script", "hits": []},
+                {"recordType": "sys_script_include", "hits": [{"name": "FoundScript", "script": long_script}]}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "codesearch",
+            "search",
+            "FoundScript",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["result"].as_array().unwrap().len(), 1);
+    assert_eq!(json["result"][0]["hits"][0]["script"], "y".repeat(2_000));
+    assert_eq!(
+        json["preview"]["truncated_fields"][0]["path"],
+        "/result/0/hits/0/script"
+    );
 }
 
 #[tokio::test]

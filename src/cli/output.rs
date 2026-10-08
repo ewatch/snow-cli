@@ -1,4 +1,5 @@
 use crate::cli::args::OutputFormat;
+use crate::cli::truncation::PreviewReport;
 use crate::client::pagination::TableListResult;
 use crate::models::record::Record;
 use serde::Serialize;
@@ -143,14 +144,14 @@ struct TableListMeta {
 }
 
 impl TableListMeta {
-    fn from_result(result: &TableListResult) -> Self {
+    fn from_result(result: &TableListResult, preview: &PreviewReport) -> Self {
         Self {
             total: result.total,
             returned: result.returned(),
             offset: result.offset,
             next_offset: result.next_offset(),
             truncated: result.truncated,
-            fields_truncated: result.fields_truncated,
+            fields_truncated: result.fields_truncated || !preview.is_empty(),
         }
     }
 }
@@ -160,25 +161,83 @@ impl TableListMeta {
 struct TableListEnvelope<'a> {
     #[serde(flatten)]
     meta: TableListMeta,
+    #[serde(skip_serializing_if = "PreviewReport::is_empty")]
+    preview: &'a PreviewReport,
     records: &'a [Record],
 }
 
-/// Write a table-list result with totals and truncation metadata to stdout.
+#[derive(Serialize)]
+struct RecordPreviewEnvelope<'a> {
+    preview: &'a PreviewReport,
+    record: &'a Record,
+}
+
+/// Write a table-list result with totals and preview metadata to stdout.
 ///
 /// CSV stays a plain record table (metadata would corrupt the tabular
 /// shape); every other format wraps the records in an envelope carrying
 /// `total` (when the server reported one), `returned`, and `truncated`.
 pub fn print_table_list(result: &TableListResult, format: &OutputFormat) -> anyhow::Result<()> {
-    write_table_list(result, format, &mut std::io::stdout())
+    write_table_list_with_preview(
+        result,
+        format,
+        &PreviewReport::default(),
+        &mut std::io::stdout(),
+    )
 }
 
-pub(crate) fn write_table_list<W: Write>(
+pub(crate) fn print_table_list_preview(
     result: &TableListResult,
     format: &OutputFormat,
+    preview: &PreviewReport,
+) -> anyhow::Result<()> {
+    write_table_list_with_preview(result, format, preview, &mut std::io::stdout())
+}
+
+pub(crate) fn print_record_preview(
+    record: &Record,
+    format: &OutputFormat,
+    preview: &PreviewReport,
+) -> anyhow::Result<()> {
+    if preview.is_empty() {
+        return print_record(record, format);
+    }
+
+    let envelope = RecordPreviewEnvelope { preview, record };
+    match format {
+        OutputFormat::Json => {
+            let json = serde_json::to_string(&envelope)?;
+            println!("{json}");
+        }
+        OutputFormat::Csv => {
+            write_records_csv(std::slice::from_ref(record), &mut std::io::stdout())?;
+        }
+        OutputFormat::Jsonl => {
+            println!("{}", serde_json::to_string(&envelope)?);
+        }
+        OutputFormat::Toon => {
+            write_toon(&envelope, &mut std::io::stdout())?;
+        }
+        OutputFormat::Text => {
+            let json = serde_json::to_string_pretty(&envelope)?;
+            println!("{json}");
+        }
+        OutputFormat::Auto => {
+            emit_auto(&serde_json::to_value(&envelope)?, &mut std::io::stdout())?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn write_table_list_with_preview<W: Write>(
+    result: &TableListResult,
+    format: &OutputFormat,
+    preview: &PreviewReport,
     writer: &mut W,
 ) -> anyhow::Result<()> {
     let envelope = TableListEnvelope {
-        meta: TableListMeta::from_result(result),
+        meta: TableListMeta::from_result(result, preview),
+        preview,
         records: &result.records,
     };
     match format {
@@ -189,11 +248,16 @@ pub(crate) fn write_table_list<W: Write>(
             write_records_csv(&result.records, writer)?;
         }
         OutputFormat::Jsonl => {
-            // Leading meta line so streaming consumers see totals before records.
-            let meta = serde_json::json!({ "meta": TableListMeta::from_result(result) });
-            writeln!(writer, "{}", serde_json::to_string(&meta)?)?;
-            for record in &result.records {
-                writeln!(writer, "{}", serde_json::to_string(record)?)?;
+            if preview.is_empty() {
+                // Leading meta line so streaming consumers see totals before records.
+                let meta =
+                    serde_json::json!({ "meta": TableListMeta::from_result(result, preview) });
+                writeln!(writer, "{}", serde_json::to_string(&meta)?)?;
+                for record in &result.records {
+                    writeln!(writer, "{}", serde_json::to_string(record)?)?;
+                }
+            } else {
+                writeln!(writer, "{}", serde_json::to_string(&envelope)?)?;
             }
         }
         OutputFormat::Toon => {
@@ -661,7 +725,13 @@ mod tests {
         let result = sample_list_result(Some(4381), true);
 
         let mut output = Vec::new();
-        write_table_list(&result, &OutputFormat::Json, &mut output).unwrap();
+        write_table_list_with_preview(
+            &result,
+            &OutputFormat::Json,
+            &PreviewReport::default(),
+            &mut output,
+        )
+        .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
 
         assert_eq!(value["total"], 4381);
@@ -676,7 +746,13 @@ mod tests {
         let result = sample_list_result(None, false);
 
         let mut output = Vec::new();
-        write_table_list(&result, &OutputFormat::Json, &mut output).unwrap();
+        write_table_list_with_preview(
+            &result,
+            &OutputFormat::Json,
+            &PreviewReport::default(),
+            &mut output,
+        )
+        .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
 
         assert!(value.get("total").is_none());
@@ -689,7 +765,13 @@ mod tests {
         // Omitted entirely when false…
         let result = sample_list_result(Some(10), false);
         let mut output = Vec::new();
-        write_table_list(&result, &OutputFormat::Json, &mut output).unwrap();
+        write_table_list_with_preview(
+            &result,
+            &OutputFormat::Json,
+            &PreviewReport::default(),
+            &mut output,
+        )
+        .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
         assert!(value.get("fields_truncated").is_none());
 
@@ -697,9 +779,93 @@ mod tests {
         let mut result = sample_list_result(Some(10), false);
         result.fields_truncated = true;
         let mut output = Vec::new();
-        write_table_list(&result, &OutputFormat::Json, &mut output).unwrap();
+        write_table_list_with_preview(
+            &result,
+            &OutputFormat::Json,
+            &PreviewReport::default(),
+            &mut output,
+        )
+        .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(value["fields_truncated"], true);
+    }
+
+    #[test]
+    fn test_write_table_list_preview_metadata_is_outside_records() {
+        let result = sample_list_result(Some(10), false);
+        let preview = PreviewReport {
+            truncated_fields: vec![crate::cli::truncation::PreviewField {
+                path: "/records/0/description".to_string(),
+                original_chars: 2001,
+                shown_chars: 2000,
+                escape_hatch: "rerun this command with --full".to_string(),
+            }],
+        };
+        let mut output = Vec::new();
+        write_table_list_with_preview(&result, &OutputFormat::Json, &preview, &mut output).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+        assert_eq!(value["fields_truncated"], true);
+        assert_eq!(
+            value["preview"]["truncated_fields"][0]["path"],
+            "/records/0/description"
+        );
+        assert!(value["records"][0].get("preview").is_none());
+    }
+
+    #[test]
+    fn test_write_table_list_jsonl_preview_uses_single_envelope_line() {
+        let result = sample_list_result(Some(10), true);
+        let preview = PreviewReport {
+            truncated_fields: vec![crate::cli::truncation::PreviewField {
+                path: "/records/1/script".to_string(),
+                original_chars: 3000,
+                shown_chars: 2000,
+                escape_hatch: "rerun this command with --full".to_string(),
+            }],
+        };
+        let mut output = Vec::new();
+        write_table_list_with_preview(&result, &OutputFormat::Jsonl, &preview, &mut output)
+            .unwrap();
+        let text = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = text.trim().split('\n').collect();
+        let envelope: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            envelope["preview"]["truncated_fields"][0]["shown_chars"],
+            2000
+        );
+        assert_eq!(envelope["records"][0]["number"], "INC001");
+    }
+
+    #[test]
+    fn test_write_record_preview_toon_includes_metadata_and_record() {
+        let record = Record {
+            fields: HashMap::from([(
+                "description".to_string(),
+                serde_json::json!("x".repeat(2000)),
+            )]),
+        };
+        let preview = PreviewReport {
+            truncated_fields: vec![crate::cli::truncation::PreviewField {
+                path: "/record/description".to_string(),
+                original_chars: 2001,
+                shown_chars: 2000,
+                escape_hatch: "rerun this command with --full".to_string(),
+            }],
+        };
+        let envelope = RecordPreviewEnvelope {
+            preview: &preview,
+            record: &record,
+        };
+        let mut output = Vec::new();
+        write_toon(&envelope, &mut output).unwrap();
+        let toon = String::from_utf8(output).unwrap();
+
+        assert!(toon.contains("preview"));
+        assert!(toon.contains("record"));
+        assert!(toon.contains("/record/description"));
     }
 
     #[test]
@@ -707,7 +873,13 @@ mod tests {
         let result = sample_list_result(Some(10), true);
 
         let mut output = Vec::new();
-        write_table_list(&result, &OutputFormat::Jsonl, &mut output).unwrap();
+        write_table_list_with_preview(
+            &result,
+            &OutputFormat::Jsonl,
+            &PreviewReport::default(),
+            &mut output,
+        )
+        .unwrap();
         let text = String::from_utf8(output).unwrap();
         let lines: Vec<&str> = text.trim().split('\n').collect();
 
@@ -725,7 +897,13 @@ mod tests {
         let result = sample_list_result(Some(10), true);
 
         let mut output = Vec::new();
-        write_table_list(&result, &OutputFormat::Csv, &mut output).unwrap();
+        write_table_list_with_preview(
+            &result,
+            &OutputFormat::Csv,
+            &PreviewReport::default(),
+            &mut output,
+        )
+        .unwrap();
         let csv_str = String::from_utf8(output).unwrap();
 
         assert!(csv_str.starts_with("number,sys_id\n"));
@@ -738,7 +916,13 @@ mod tests {
         let result = sample_list_result(Some(10), true);
 
         let mut output = Vec::new();
-        write_table_list(&result, &OutputFormat::Toon, &mut output).unwrap();
+        write_table_list_with_preview(
+            &result,
+            &OutputFormat::Toon,
+            &PreviewReport::default(),
+            &mut output,
+        )
+        .unwrap();
         let toon = String::from_utf8(output).unwrap();
 
         assert!(toon.contains("total"));
@@ -752,7 +936,13 @@ mod tests {
         let result = sample_list_result(Some(10), true);
 
         let mut output = Vec::new();
-        write_table_list(&result, &OutputFormat::Auto, &mut output).unwrap();
+        write_table_list_with_preview(
+            &result,
+            &OutputFormat::Auto,
+            &PreviewReport::default(),
+            &mut output,
+        )
+        .unwrap();
         let text = String::from_utf8(output).unwrap();
 
         // Whichever encoding wins, the metadata must survive.
@@ -773,7 +963,13 @@ mod tests {
         };
 
         let mut output = Vec::new();
-        write_table_list(&result, &OutputFormat::Json, &mut output).unwrap();
+        write_table_list_with_preview(
+            &result,
+            &OutputFormat::Json,
+            &PreviewReport::default(),
+            &mut output,
+        )
+        .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
 
         assert_eq!(value["total"], 0);

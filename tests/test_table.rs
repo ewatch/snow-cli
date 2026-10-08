@@ -95,7 +95,7 @@ async fn test_table_list_piped_stderr_has_plain_tracing_output() {
 }
 
 #[tokio::test]
-async fn test_table_list_truncates_long_fields_unless_full() {
+async fn test_table_list_previews_long_fields_unless_full() {
     let server = MockServer::start().await;
     let long_description = "x".repeat(2_001);
 
@@ -121,15 +121,61 @@ async fn test_table_list_truncates_long_fields_unless_full() {
         command.assert().success().get_output().stdout.clone()
     };
 
-    let truncated: serde_json::Value = serde_json::from_slice(&run(false)).unwrap();
-    assert_eq!(truncated["fields_truncated"], true);
-    let description = truncated["records"][0]["description"].as_str().unwrap();
-    assert!(description.starts_with(&"x".repeat(2_000)));
-    assert!(description.ends_with("[truncated 2000 of 2001 chars; use --full]"));
+    let previewed: serde_json::Value = serde_json::from_slice(&run(false)).unwrap();
+    assert_eq!(previewed["fields_truncated"], true);
+    assert_eq!(previewed["records"][0]["description"], "x".repeat(2_000));
+    assert_eq!(
+        previewed["preview"]["truncated_fields"],
+        serde_json::json!([{
+            "path": "/records/0/description",
+            "original_chars": 2001,
+            "shown_chars": 2000,
+            "escape_hatch": "rerun this command with --full"
+        }])
+    );
 
     let full: serde_json::Value = serde_json::from_slice(&run(true)).unwrap();
     assert!(full.get("fields_truncated").is_none());
+    assert!(full.get("preview").is_none());
     assert_eq!(full["records"][0]["description"], "x".repeat(2_001));
+}
+
+#[tokio::test]
+async fn test_table_list_csv_output_is_lossless_for_long_fields() {
+    let server = MockServer::start().await;
+    let long_description = "x".repeat(2_001);
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "6816f79cc0a8016401c5a33be04be441", "description": long_description}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "csv",
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let csv = String::from_utf8(output).unwrap();
+    assert!(csv.contains(&"x".repeat(2_001)));
+    assert!(!csv.contains("preview"));
+    assert!(!csv.contains("truncated"));
 }
 
 #[tokio::test]
@@ -798,7 +844,7 @@ async fn test_table_get_with_fields() {
 }
 
 #[tokio::test]
-async fn test_table_get_truncates_long_fields_unless_full() {
+async fn test_table_get_previews_long_fields_unless_full() {
     let server = MockServer::start().await;
     let long_description = "x".repeat(2_001);
 
@@ -831,10 +877,17 @@ async fn test_table_get_truncates_long_fields_unless_full() {
         command.assert().success().get_output().stdout.clone()
     };
 
-    let truncated: serde_json::Value = serde_json::from_slice(&run(false)).unwrap();
-    let description = truncated["description"].as_str().unwrap();
-    assert!(description.starts_with(&"x".repeat(2_000)));
-    assert!(description.ends_with("[truncated 2000 of 2001 chars; use --full]"));
+    let previewed: serde_json::Value = serde_json::from_slice(&run(false)).unwrap();
+    assert_eq!(previewed["record"]["description"], "x".repeat(2_000));
+    assert_eq!(
+        previewed["preview"]["truncated_fields"],
+        serde_json::json!([{
+            "path": "/record/description",
+            "original_chars": 2001,
+            "shown_chars": 2000,
+            "escape_hatch": "rerun this command with --full"
+        }])
+    );
 
     let full: serde_json::Value = serde_json::from_slice(&run(true)).unwrap();
     assert_eq!(full["description"], "x".repeat(2_001));

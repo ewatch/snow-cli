@@ -497,6 +497,10 @@ pub enum ReadOnlyCodesearchCommands {
         /// Search group to use (advanced)
         #[arg(long, default_value = "sn_devstudio.Studio Search Group")]
         search_group: String,
+
+        /// Return complete matched text instead of capping long preview fields
+        #[arg(long)]
+        full: bool,
     },
 }
 
@@ -951,6 +955,7 @@ impl ReadOnlyCodesearchCommands {
                 limit,
                 current_scope,
                 search_group,
+                full,
             } => CodesearchCommands::Search {
                 query,
                 source_table,
@@ -958,6 +963,7 @@ impl ReadOnlyCodesearchCommands {
                 limit,
                 current_scope,
                 search_group,
+                full,
             },
         }
     }

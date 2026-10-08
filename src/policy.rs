@@ -508,6 +508,7 @@ mod tests {
                 limit: 10,
                 current_scope: false,
                 search_group: "sn_devstudio.Studio Search Group".to_string(),
+                full: false,
             },
         }));
         assert_allowed(Commands::Completions { shell: Shell::Bash });
