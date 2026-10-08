@@ -19,12 +19,14 @@ pub async fn handle(
         TableCommands::List {
             table,
             query,
+            domain,
             fields,
             limit,
             offset,
             all,
             order_by,
             full,
+            query_no_domain,
         } => {
             tracing::info!("Listing records from table: {}", table);
 
@@ -33,21 +35,35 @@ pub async fn handle(
             } else {
                 Some(limit.unwrap_or(DEFAULT_LIST_LIMIT))
             };
-            let effective_fields = resolve_list_fields(table.as_str(), fields.as_deref());
+            let mut effective_fields = resolve_list_fields(table.as_str(), fields.as_deref());
+            if fields.is_none()
+                && (domain.is_some() || query_no_domain)
+                && let Some(projection) = &mut effective_fields
+            {
+                projection.push_str(",sys_domain");
+            }
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+            let query = crate::cli::commands::domain::constrain_query(
+                &mut client,
+                &table,
+                domain.as_ref(),
+                query,
+            )
+            .await?;
             let pagination = PaginationConfig::default()
                 .with_limit(effective_limit)
                 .with_offset(offset);
 
             let mut result = client
-                .get_table_records_with_meta(
+                .get_table_records_with_domain(
                     &table,
                     query.as_deref(),
                     effective_fields.as_deref(),
                     &pagination,
                     order_by.as_ref(),
+                    query_no_domain,
                 )
                 .await?;
 
@@ -67,6 +83,7 @@ pub async fn handle(
             sys_id,
             fields,
             full,
+            query_no_domain,
         } => {
             tracing::info!("Getting record {} from table: {}", sys_id, table);
 
@@ -75,6 +92,9 @@ pub async fn handle(
 
             let path = format!("/api/now/table/{table}/{sys_id}");
             let mut params = Vec::new();
+            if query_no_domain {
+                params.push(("sysparm_query_no_domain", "true"));
+            }
             if let Some(ref f) = fields {
                 params.push(("sysparm_fields", f.as_str()));
             }
@@ -188,6 +208,7 @@ pub async fn handle(
         TableCommands::Stats {
             table,
             query,
+            domain,
             group_by,
             avg,
             min,
@@ -200,6 +221,13 @@ pub async fn handle(
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
+            let query = crate::cli::commands::domain::constrain_query(
+                &mut client,
+                &table,
+                domain.as_ref(),
+                query,
+            )
+            .await?;
             let path = format!("/api/now/stats/{table}");
             let mut params: Vec<(&str, &str)> = vec![("sysparm_count", "true")];
             for (key, value) in [

@@ -10,7 +10,9 @@ pub mod pagination;
 mod core;
 mod debug;
 mod identity;
+mod native_session;
 mod session;
+mod session_bootstrap;
 mod table;
 #[cfg(test)]
 mod test_support;
@@ -58,7 +60,14 @@ pub fn build_client_with_timeout(
         .map(|s| s.to_string())
         .unwrap_or_else(|| profile.instance.clone());
 
-    let authenticator = crate::auth::create_authenticator(profile_name, profile)?;
+    let authenticator = if profile.auth_method == crate::config::AuthMethod::NativeSession {
+        Box::new(crate::auth::native_session::NativeSessionAuth::stored(
+            profile_name,
+            &instance_url,
+        )?) as Box<dyn crate::auth::Authenticator>
+    } else {
+        crate::auth::create_authenticator(profile_name, profile)?
+    };
     SnowClient::with_config(
         instance_url,
         authenticator,

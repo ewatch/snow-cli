@@ -6,12 +6,14 @@ mod attachment;
 mod auth;
 mod codesearch;
 mod data;
+mod domain;
 mod graphql;
 mod import_set;
 mod profile;
 mod scope;
 mod script;
 mod seed;
+mod session;
 mod skill;
 mod snu;
 mod table;
@@ -21,12 +23,14 @@ pub use attachment::*;
 pub use auth::*;
 pub use codesearch::*;
 pub use data::*;
+pub use domain::*;
 pub use graphql::*;
 pub use import_set::*;
 pub use profile::*;
 pub use scope::*;
 pub use script::*;
 pub use seed::*;
+pub use session::*;
 pub use skill::*;
 pub use snu::*;
 pub use table::*;
@@ -123,6 +127,12 @@ pub enum Commands {
 
     /// Table API operations (CRUD on any ServiceNow table)
     Table(TableArgs),
+
+    /// Discover domain separation settings, hierarchy, and table support
+    Domain(DomainArgs),
+
+    /// Manage native ServiceNow sessions without SN-Utils
+    Session(SessionArgs),
 
     /// Portable data export, validation, and import workflows
     Data(DataArgs),

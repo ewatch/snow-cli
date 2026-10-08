@@ -44,6 +44,8 @@ export const sidebar: NavGroup[] = [
           { label: 'profile', href: '/commands/profile/' },
           { label: 'auth', href: '/commands/auth/' },
           { label: 'table', href: '/commands/table/' },
+          { label: 'domain', href: '/commands/domain/' },
+          { label: 'session', href: '/commands/session/' },
           { label: 'data', href: '/commands/data/' },
           { label: 'scope', href: '/commands/scope/' },
           { label: 'attachment', href: '/commands/attachment/' },

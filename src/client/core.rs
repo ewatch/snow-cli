@@ -98,6 +98,7 @@ pub struct SnowClient {
     pub(super) base_url: String,
     pub(super) authenticator: Box<dyn crate::auth::Authenticator>,
     pub(super) session: SessionState,
+    pub(super) timeout_secs: u64,
     /// Execution policy enforced on every outbound request.
     ///
     /// The policy travels with the client: it is fixed at construction time and
@@ -250,7 +251,16 @@ impl SnowClient {
             );
         }
 
-        let http = Client::builder()
+        if let Some(session) = authenticator.native_session_credentials() {
+            session.ensure_instance(&base_url)?;
+        }
+        let builder = Client::builder();
+        let builder = if authenticator.auth_type() == crate::config::AuthMethod::NativeSession {
+            builder.redirect(reqwest::redirect::Policy::none())
+        } else {
+            builder
+        };
+        let http = builder
             .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()?;
@@ -260,6 +270,7 @@ impl SnowClient {
             base_url,
             authenticator,
             session: SessionState::default(),
+            timeout_secs: config.timeout_secs,
             policy: config.policy,
         })
     }

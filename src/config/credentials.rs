@@ -29,6 +29,7 @@ pub const ALL_CREDENTIAL_TYPES: &[&str] = &[
     "cert_passphrase",
     "saml_token",
     "session_cookie",
+    "native_session",
 ];
 
 /// Map credential type to its environment variable name.
@@ -134,6 +135,7 @@ pub fn has_credential(profile: &str, credential_type: &str) -> bool {
 pub fn credential_type_for_auth(auth_method: &crate::config::profile::AuthMethod) -> &'static str {
     match auth_method {
         crate::config::profile::AuthMethod::Basic => "password",
+        crate::config::profile::AuthMethod::NativeSession => "native_session",
         crate::config::profile::AuthMethod::Oauth2 => "client_secret",
         crate::config::profile::AuthMethod::ApiKey => "api_token",
         crate::config::profile::AuthMethod::Mtls => "cert_passphrase",

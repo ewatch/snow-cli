@@ -35,6 +35,21 @@ impl SnowClient {
         pagination: &pagination::PaginationConfig,
         order_by: Option<&crate::models::order_by::OrderBy>,
     ) -> anyhow::Result<pagination::TableListResult> {
+        self.get_table_records_with_domain(table, query, fields, pagination, order_by, false)
+            .await
+    }
+
+    /// Table API read with an explicit domain-visibility bypass request.
+    /// ServiceNow authorizes `query_no_domain`; this never changes session state.
+    pub async fn get_table_records_with_domain(
+        &mut self,
+        table: &crate::models::identifiers::TableName,
+        query: Option<&str>,
+        fields: Option<&str>,
+        pagination: &pagination::PaginationConfig,
+        order_by: Option<&crate::models::order_by::OrderBy>,
+        query_no_domain: bool,
+    ) -> anyhow::Result<pagination::TableListResult> {
         let path = format!("/api/now/table/{table}");
         let ordered_query = order_by.map(|order| order.apply_to_query(query));
         let query = ordered_query.as_deref().or(query);
@@ -57,6 +72,10 @@ impl SnowClient {
                 ("sysparm_limit", request_size.to_string()),
                 ("sysparm_offset", offset.to_string()),
             ];
+
+            if query_no_domain {
+                params.push(("sysparm_query_no_domain", "true".to_string()));
+            }
 
             if let Some(q) = query {
                 params.push(("sysparm_query", q.to_string()));

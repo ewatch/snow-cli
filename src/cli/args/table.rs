@@ -26,6 +26,10 @@ pub enum TableCommands {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
         table: TableName,
 
+        /// Exact record domain: global or a domain sys_id (does not grant visibility)
+        #[arg(long)]
+        domain: Option<crate::models::domain::DomainId>,
+
         /// Encoded query string
         #[arg(long)]
         query: Option<String>,
@@ -52,6 +56,10 @@ pub enum TableCommands {
         #[arg(long, allow_hyphen_values = true)]
         order_by: Option<OrderBy>,
 
+        /// Request cross-domain Table API reads (admin or query_no_domain_table_api required)
+        #[arg(long)]
+        query_no_domain: bool,
+
         /// Return complete field content instead of capping long values
         #[arg(long)]
         full: bool,
@@ -68,6 +76,10 @@ pub enum TableCommands {
         /// Comma-separated list of fields to return
         #[arg(long)]
         fields: Option<String>,
+
+        /// Request cross-domain Table API reads (admin or query_no_domain_table_api required)
+        #[arg(long)]
+        query_no_domain: bool,
 
         /// Return complete field content instead of capping long values
         #[arg(long)]
@@ -134,6 +146,10 @@ pub enum TableCommands {
     Stats {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
         table: TableName,
+
+        /// Exact record domain: global or a domain sys_id (does not grant visibility)
+        #[arg(long)]
+        domain: Option<crate::models::domain::DomainId>,
 
         /// Encoded query string
         #[arg(long)]
@@ -255,6 +271,7 @@ mod tests {
                     max,
                     sum,
                     having,
+                    ..
                 } => {
                     assert_eq!(table.as_str(), "incident");
                     assert_eq!(query, Some("active=true".to_string()));

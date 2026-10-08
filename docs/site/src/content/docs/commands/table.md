@@ -258,3 +258,12 @@ the double-quoted form only when the value must interpolate a shell variable.
 - [`data` command reference](/commands/data/)
 - [`attachment` command reference](/commands/attachment/)
 - [`api` command reference](/commands/api/)
+
+## Domain separation
+
+Use `--domain global|<domain_sys_id>` on `table list` and `table stats` to filter
+exact record ownership within server visibility. On `table list` and `table get`,
+`--query-no-domain` explicitly requests the privileged Table API option. It is
+never enabled automatically. See the [domain guide](/commands/domain/) for
+inherited-field validation, query branching, role requirements, and how to
+interpret empty results.

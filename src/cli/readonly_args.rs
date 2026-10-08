@@ -61,6 +61,12 @@ pub enum ReadOnlyCommands {
     /// Read Table API records, schema, and aggregate stats
     Table(ReadOnlyTableArgs),
 
+    /// Discover domain separation settings, hierarchy, and table support
+    Domain(crate::cli::args::DomainArgs),
+
+    /// Inspect or attach a native ServiceNow session (no switching)
+    Session(ReadOnlySessionArgs),
+
     /// Portable data export and validation workflows
     Data(ReadOnlyDataArgs),
 
@@ -189,6 +195,10 @@ pub enum ReadOnlyTableCommands {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
         table: TableName,
 
+        /// Exact record domain: global or a domain sys_id (does not grant visibility)
+        #[arg(long)]
+        domain: Option<crate::models::domain::DomainId>,
+
         /// Encoded query string
         #[arg(long)]
         query: Option<String>,
@@ -215,6 +225,10 @@ pub enum ReadOnlyTableCommands {
         #[arg(long, allow_hyphen_values = true)]
         order_by: Option<OrderBy>,
 
+        /// Request cross-domain Table API reads (admin or query_no_domain_table_api required)
+        #[arg(long)]
+        query_no_domain: bool,
+
         /// Return complete field content instead of capping long values
         #[arg(long)]
         full: bool,
@@ -231,6 +245,10 @@ pub enum ReadOnlyTableCommands {
         /// Comma-separated list of fields to return
         #[arg(long)]
         fields: Option<String>,
+
+        /// Request cross-domain Table API reads (admin or query_no_domain_table_api required)
+        #[arg(long)]
+        query_no_domain: bool,
 
         /// Return complete field content instead of capping long values
         #[arg(long)]
@@ -259,6 +277,10 @@ pub enum ReadOnlyTableCommands {
     Stats {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
         table: TableName,
+
+        /// Exact record domain: global or a domain sys_id (does not grant visibility)
+        #[arg(long)]
+        domain: Option<crate::models::domain::DomainId>,
 
         /// Encoded query string
         #[arg(long)]
@@ -692,6 +714,19 @@ impl ReadOnlyCommands {
             Self::Auth(args) => Commands::Auth(AuthArgs {
                 command: args.command.into_full_command(),
             }),
+            Self::Domain(args) => Commands::Domain(args),
+            Self::Session(args) => Commands::Session(crate::cli::args::SessionArgs {
+                command: match args.command {
+                    ReadOnlySessionCommands::Show => crate::cli::args::SessionCommands::Show,
+                    ReadOnlySessionCommands::Options { kind } => {
+                        crate::cli::args::SessionCommands::Options { kind }
+                    }
+                    ReadOnlySessionCommands::Attach { name, cookie_stdin } => {
+                        crate::cli::args::SessionCommands::Attach { name, cookie_stdin }
+                    }
+                    ReadOnlySessionCommands::Forget => crate::cli::args::SessionCommands::Forget,
+                },
+            }),
             Self::Table(args) => Commands::Table(TableArgs {
                 command: args.command.into_full_command(),
             }),
@@ -766,32 +801,38 @@ impl ReadOnlyTableCommands {
             Self::List {
                 table,
                 query,
+                domain,
                 fields,
                 limit,
                 offset,
                 all,
                 order_by,
                 full,
+                query_no_domain,
             } => TableCommands::List {
                 table,
                 query,
+                domain,
                 fields,
                 limit,
                 offset,
                 all,
                 order_by,
                 full,
+                query_no_domain,
             },
             Self::Get {
                 table,
                 sys_id,
                 fields,
                 full,
+                query_no_domain,
             } => TableCommands::Get {
                 table,
                 sys_id,
                 fields,
                 full,
+                query_no_domain,
             },
             Self::Schema {
                 table,
@@ -807,6 +848,7 @@ impl ReadOnlyTableCommands {
             Self::Stats {
                 table,
                 query,
+                domain,
                 group_by,
                 avg,
                 min,
@@ -816,6 +858,7 @@ impl ReadOnlyTableCommands {
             } => TableCommands::Stats {
                 table,
                 query,
+                domain,
                 group_by,
                 avg,
                 min,
@@ -1045,6 +1088,7 @@ mod tests {
     #[test]
     fn table_stats_maps_to_full_command() {
         let mapped = ReadOnlyTableCommands::Stats {
+            domain: None,
             table: "incident".parse().unwrap(),
             query: Some("active=true".to_string()),
             group_by: Some("state".to_string()),
@@ -1151,4 +1195,24 @@ mod tests {
             _ => panic!("expected table command"),
         }
     }
+}
+
+#[derive(Args, Debug)]
+pub struct ReadOnlySessionArgs {
+    #[command(subcommand)]
+    pub command: ReadOnlySessionCommands,
+}
+#[derive(Subcommand, Debug)]
+pub enum ReadOnlySessionCommands {
+    Show,
+    Options {
+        #[arg(value_enum)]
+        kind: crate::models::session::SessionSwitchType,
+    },
+    Attach {
+        name: String,
+        #[arg(long, required = true)]
+        cookie_stdin: bool,
+    },
+    Forget,
 }

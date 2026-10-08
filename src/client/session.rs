@@ -226,14 +226,16 @@ impl SnowClient {
         let status = response.status();
         log_raw_http_response(&url, status, response.headers());
         let response_headers = response.headers().clone();
+        self.authenticator
+            .observe_response_headers(&response_headers)
+            .await?;
         let body = response.text().await.unwrap_or_default();
 
         if !status.is_success() {
             anyhow::bail!(
-                "Failed to bootstrap form session (status {}) via {}: {}",
+                "Failed to bootstrap form session (status {}) via {}",
                 status.as_u16(),
-                url,
-                body
+                url
             );
         }
 
@@ -265,14 +267,21 @@ impl SnowClient {
             )
         })?;
 
-        let jsessionid = self.session.jsessionid.clone().ok_or_else(|| {
+        let native = self.authenticator.native_session_credentials();
+        let jsessionid = native.as_ref()
+            .and_then(|session| read_cookie_value(session.cookie_header.expose_secret(), "JSESSIONID"))
+            .or_else(|| self.session.jsessionid.clone()).ok_or_else(|| {
             anyhow::anyhow!(
                 "Could not determine JSESSIONID for form session. Ensure the profile is authenticated before running form-based commands."
             )
         })?;
 
-        let cookie_header = super::extract_cookie_header_from_headers(&response_headers)
+        let cookie_header = native
+            .map(|session| session.cookie_header.expose_secret().to_string())
+            .or_else(|| super::extract_cookie_header_from_headers(&response_headers))
             .unwrap_or_else(|| format!("JSESSIONID={jsessionid}"));
+        self.session.jsessionid = Some(jsessionid.clone());
+        self.authenticator.update_native_csrf(&g_ck).await?;
 
         let session = FormSession {
             jsessionid,
@@ -284,7 +293,7 @@ impl SnowClient {
         Ok(session)
     }
 
-    async fn form_login_cookie_header(
+    pub(super) async fn form_login_cookie_header(
         &self,
         username: &str,
         password: &str,
@@ -295,7 +304,7 @@ impl SnowClient {
 
         let no_redirect_client = reqwest::Client::builder()
             .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(self.timeout_secs))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
 
@@ -352,17 +361,17 @@ impl SnowClient {
                     .get(reqwest::header::LOCATION)
                     .and_then(|value| value.to_str().ok())
                     .ok_or_else(|| anyhow::anyhow!("login.do redirect missing Location header"))?;
-                current_url = current_url.join(location)?;
+                let next = current_url.join(location)?;
+                self.authenticated_url(next.as_str())?;
+                current_url = next;
                 continue;
             }
 
             if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
                 anyhow::bail!(
-                    "login.do form login failed with status {} at {}: {}",
+                    "login.do form login failed with status {} at {}",
                     status.as_u16(),
-                    request_url,
-                    body
+                    request_url
                 );
             }
 
@@ -615,6 +624,43 @@ mod tests {
                 g_ck: "form-gck-456".to_string(),
                 cookie_header: "JSESSIONID=form-session-123".to_string(),
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn native_form_bootstrap_reuses_stored_cookies_without_new_set_cookie() {
+        use crate::auth::native_session::NativeSessionAuth;
+        use crate::config::native_session::NativeSession;
+        use crate::models::secret::Secret;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/sys.scripts.modern.do"))
+            .and(header("Cookie", "JSESSIONID=existing; route=node1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("g_ck='new-csrf';"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let auth = NativeSessionAuth::transient(NativeSession {
+            instance: server.uri(),
+            cookie_header: Secret::new("JSESSIONID=existing; route=node1".to_string()),
+            csrf_token: Secret::new("old-csrf".to_string()),
+            authenticated_user: None,
+        });
+        let mut client = SnowClient::new(server.uri(), Box::new(auth)).unwrap();
+        let form = client
+            .ensure_form_session("/sys.scripts.modern.do")
+            .await
+            .unwrap();
+        assert_eq!(form.jsessionid, "existing");
+        assert_eq!(form.cookie_header, "JSESSIONID=existing; route=node1");
+        assert_eq!(
+            client
+                .native_credentials()
+                .await
+                .unwrap()
+                .csrf_token
+                .expose_secret(),
+            "new-csrf"
         );
     }
 

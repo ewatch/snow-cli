@@ -311,6 +311,11 @@ async fn handle_login(
             });
             output::print_output(&result, output.format)?;
         }
+        AuthMethod::NativeSession => {
+            anyhow::bail!(
+                "Use session login with a Basic source profile or session attach --cookie-stdin to renew native session credentials."
+            );
+        }
         other => {
             anyhow::bail!("Auth method {:?} does not support `auth login`.", other);
         }
@@ -1002,6 +1007,10 @@ async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
         .active_profile(Some(profile_name))
         .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
+    anyhow::ensure!(
+        profile.auth_method != AuthMethod::NativeSession,
+        "Native session credentials are not exported; use the session profile directly"
+    );
     match &profile.auth_method {
         crate::config::profile::AuthMethod::Basic => {
             let credential =
@@ -1067,6 +1076,7 @@ fn credential_types_for_auth(profile: &crate::config::profile::Profile) -> Vec<&
             }
         }
         AuthMethod::Mtls => vec!["cert_passphrase"],
+        AuthMethod::NativeSession => vec!["native_session"],
         AuthMethod::BrowserSession => {
             // Browser session tokens are not stored anywhere — they are provided
             // at runtime via SNOW_SESSION_COOKIE.

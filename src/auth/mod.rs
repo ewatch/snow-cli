@@ -1,6 +1,7 @@
 pub mod api_key;
 pub mod basic;
 pub mod browser_session;
+pub mod native_session;
 pub mod oauth2;
 
 use async_trait::async_trait;
@@ -17,6 +18,18 @@ pub trait Authenticator: Send + Sync {
     /// Refresh credentials if supported (e.g., OAuth token refresh).
     /// Returns Ok(true) if refresh succeeded, Ok(false) if not applicable.
     async fn refresh(&mut self) -> anyhow::Result<bool>;
+
+    /// Observe session-cookie rotation after a same-instance response.
+    async fn observe_response_headers(&mut self, _headers: &HeaderMap) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn native_session_credentials(&self) -> Option<crate::config::native_session::NativeSession> {
+        None
+    }
+    async fn update_native_csrf(&mut self, _token: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     /// Returns the authentication method type.
     fn auth_type(&self) -> AuthMethod;
@@ -92,6 +105,7 @@ pub fn validate_profile_config(
                 );
             }
         }
+        AuthMethod::NativeSession => {}
         AuthMethod::BrowserSession => {
             // No required profile config fields. The session cookie is provided at
             // runtime via the SNOW_SESSION_COOKIE environment variable.
@@ -116,6 +130,10 @@ pub fn create_authenticator(
     validate_profile_config(profile_name, profile)?;
 
     match profile.auth_method {
+        AuthMethod::NativeSession => Ok(Box::new(native_session::NativeSessionAuth::stored(
+            profile_name,
+            &profile.instance,
+        )?)),
         AuthMethod::Basic => Ok(Box::new(basic::BasicAuth::new(profile_name, profile)?)),
         AuthMethod::Oauth2 => Ok(Box::new(oauth2::OAuth2Auth::new(profile_name, profile)?)),
         AuthMethod::ApiKey => Ok(Box::new(api_key::ApiKeyAuth::new(profile_name, profile)?)),

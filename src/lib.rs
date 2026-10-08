@@ -127,6 +127,26 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             )
             .await
         }
+        cli::args::Commands::Session(args) => {
+            cli::commands::session::handle(
+                args,
+                &active_profile,
+                &effective_output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
+        }
+        cli::args::Commands::Domain(args) => {
+            cli::commands::domain::handle(
+                args,
+                &active_profile,
+                &effective_output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
+        }
         cli::args::Commands::Table(args) => {
             cli::commands::table::handle(
                 args,
@@ -242,6 +262,8 @@ pub fn command_uses_connection(command: &cli::args::Commands) -> bool {
         command,
         cli::args::Commands::Auth(_)
             | cli::args::Commands::Table(_)
+            | cli::args::Commands::Domain(_)
+            | cli::args::Commands::Session(_)
             | cli::args::Commands::Data(_)
             | cli::args::Commands::Seed(_)
             | cli::args::Commands::Scope(_)
@@ -282,6 +304,8 @@ mod tests {
         })));
         assert!(command_uses_connection(&Commands::Table(TableArgs {
             command: TableCommands::List {
+                domain: None,
+                query_no_domain: false,
                 table: "incident".parse().unwrap(),
                 query: None,
                 fields: None,

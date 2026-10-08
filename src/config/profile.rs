@@ -92,6 +92,8 @@ pub struct Profile {
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
     Basic,
+    /// Native UI cookie session created by session login/attach, stored in the OS keychain.
+    NativeSession,
     Oauth2,
     ApiKey,
     Mtls,

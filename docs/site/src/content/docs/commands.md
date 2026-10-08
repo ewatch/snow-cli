@@ -62,6 +62,8 @@ changing or resetting that default.
 |---|---|
 | [`profile`](/commands/profile/) | Create, edit, inspect, and switch connection profiles |
 | [`auth`](/commands/auth/) | Log in, log out, inspect auth status, and print tokens |
+| [`session`](/commands/session/) | Native cookie sessions, context inspection, and verified picker switching |
+| [`domain`](/commands/domain/) | Discover domain settings, hierarchy, and inherited field support |
 | [`table`](/commands/table/) | CRUD operations, schema inspection, and aggregate stats for ServiceNow tables |
 | [`data`](/commands/data/) | Export, validate, and import data artifacts |
 | [`scope`](/commands/scope/) | List scopes, inspect scopes, export inventory, and move files between scopes |

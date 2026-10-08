@@ -113,6 +113,9 @@ impl SnowClient {
         log_raw_http_request(&request);
         let response = self.http.execute(request).await?;
         log_raw_http_response(&url, response.status(), response.headers());
+        self.authenticator
+            .observe_response_headers(response.headers())
+            .await?;
         Ok(ClientResponse { inner: response })
     }
 
@@ -129,6 +132,9 @@ impl SnowClient {
         log_raw_http_request(&request);
         let response = self.http.execute(request).await?;
         log_raw_http_response(&url, response.status(), response.headers());
+        self.authenticator
+            .observe_response_headers(response.headers())
+            .await?;
         Ok(ClientResponse { inner: response })
     }
 
@@ -189,6 +195,9 @@ impl SnowClient {
             response.status(),
             response.headers(),
         );
+        self.authenticator
+            .observe_response_headers(response.headers())
+            .await?;
         Ok(ClientResponse { inner: response })
     }
 
@@ -308,6 +317,9 @@ impl SnowClient {
             let response = self.http.execute(request).await?;
             drop(spinner);
 
+            self.authenticator
+                .observe_response_headers(response.headers())
+                .await?;
             if let Some(jsessionid) = extract_jsessionid_from_headers(response.headers()) {
                 self.session.jsessionid = Some(jsessionid.clone());
                 if let Some(form_session) = self.session.form_session.as_mut() {
