@@ -34,7 +34,14 @@ pub async fn run_background_script(
         quota_managed_transaction: false,
     };
 
-    execute_background_script(profile, instance, timeout_secs, script, &options).await
+    let response =
+        execute_background_script(profile, instance, timeout_secs, script, &options).await?;
+    // Internal callers consume script-printed JSON, not the CLI result envelope.
+    if endpoint_requires_form_session(&options.endpoint) {
+        Ok(extract_background_script_payload(response))
+    } else {
+        Ok(response)
+    }
 }
 
 pub async fn handle(
@@ -217,6 +224,20 @@ async fn handle_run(
     let script = resolve_script(file, code)?;
     let response_body =
         execute_background_script(profile, instance, timeout_secs, &script, options).await?;
+
+    if endpoint_requires_form_session(&options.endpoint) {
+        return match format {
+            // CSV historically means a raw execution log here, not tabular data.
+            OutputFormat::Text | OutputFormat::Csv => {
+                println!("{response_body}");
+                Ok(())
+            }
+            _ => output::print_output(
+                &parse_script_execution_log(&response_body, &options.scope),
+                format,
+            ),
+        };
+    }
 
     match format {
         OutputFormat::Json => match serde_json::from_str::<serde_json::Value>(&response_body) {
@@ -486,15 +507,94 @@ fn validate_background_script_response(
         return Err(error.into());
     }
 
-    if serde_json::from_str::<serde_json::Value>(&cleaned).is_ok() {
-        return Ok(cleaned);
-    }
-
-    if let Some(json_payload) = extract_json_from_script_marker(&cleaned) {
-        return Ok(json_payload);
-    }
-
     Ok(cleaned)
+}
+
+fn extract_background_script_payload(cleaned: String) -> String {
+    if serde_json::from_str::<serde_json::Value>(&cleaned).is_ok() {
+        return cleaned;
+    }
+    extract_json_from_script_marker(&cleaned).unwrap_or(cleaned)
+}
+
+#[derive(serde::Serialize)]
+struct ScriptExecutionResult {
+    output: Vec<String>,
+    duration_ms: Option<u64>,
+    scope: String,
+    history_sys_id: Option<String>,
+    // Known failures return a typed stderr error before reaching this parser.
+    errors: Vec<String>,
+}
+
+/// Parse metadata only from server log lines, not script-printed content.
+/// Unknown lines remain output so release-specific layouts do not lose data.
+fn parse_script_execution_log(cleaned: &str, requested_scope: &str) -> ScriptExecutionResult {
+    let mut result = ScriptExecutionResult {
+        output: Vec::new(),
+        duration_ms: None,
+        scope: requested_scope.to_string(),
+        history_sys_id: None,
+        errors: Vec::new(),
+    };
+    for line in cleaned.lines() {
+        let trimmed = line.trim();
+        if let Some(printed) = line.trim_start().strip_prefix("*** Script:") {
+            result
+                .output
+                .push(printed.strip_prefix(' ').unwrap_or(printed).to_string());
+            continue;
+        }
+        if let Some((elapsed, banner)) = trimmed
+            .strip_prefix('[')
+            .and_then(|line| line.split_once(']'))
+            && let Some(scope) = banner.trim().strip_prefix("Script completed in scope ")
+            && let Some((scope, _)) = scope.split_once(':')
+            && !scope.trim().is_empty()
+        {
+            result.scope = scope.trim().to_string();
+            result.duration_ms = parse_script_duration(elapsed);
+            continue;
+        }
+        if trimmed.starts_with("Script execution history ")
+            && let Some(id) = trimmed
+                .split_once("sys_script_execution_history.do?sys_id=")
+                .map(|(_, tail)| tail)
+        {
+            let id: String = id.chars().take_while(|ch| ch.is_ascii_hexdigit()).collect();
+            if is_sys_id(&id) {
+                result.history_sys_id = Some(id);
+                continue;
+            }
+        }
+        if !trimmed.is_empty() {
+            result.output.push(line.to_string());
+        }
+    }
+    result
+}
+
+/// ServiceNow timing banners use [hours:minutes:seconds.milliseconds].
+/// Reject malformed/overflowing values rather than fabricating metadata.
+fn parse_script_duration(elapsed: &str) -> Option<u64> {
+    let mut parts = elapsed.split(':');
+    let hours: u64 = parts.next()?.parse().ok()?;
+    let minutes: u64 = parts.next()?.parse().ok()?;
+    let (seconds, millis) = parts.next()?.split_once('.')?;
+    if parts.next().is_some() || millis.len() != 3 || !millis.bytes().all(|ch| ch.is_ascii_digit())
+    {
+        return None;
+    }
+    let seconds: u64 = seconds.parse().ok()?;
+    let millis: u64 = millis.parse().ok()?;
+    if minutes >= 60 || seconds >= 60 {
+        return None;
+    }
+    hours
+        .checked_mul(3_600_000)?
+        .checked_add(minutes * 60_000)?
+        .checked_add(seconds * 1_000)?
+        .checked_add(millis)
 }
 
 /// Resolve script content from `--file`, `--code`, or stdin.
@@ -558,6 +658,55 @@ mod tests {
         let raw = "<HTML><BODY>Script output</BODY></HTML>";
         let clean = sanitize_background_script_response(raw);
         assert_eq!(clean, "Script output");
+    }
+
+    #[test]
+    fn script_log_metadata_is_optional_and_printed_content_is_preserved() {
+        let parsed = parse_script_execution_log(
+            "*** Script: [0:00:01.000] Script completed in scope fake: script\n*** Script:   padded  \n*** Script:\nunknown release-specific line",
+            "x_requested",
+        );
+        assert_eq!(parsed.duration_ms, None);
+        assert_eq!(parsed.history_sys_id, None);
+        assert_eq!(parsed.scope, "x_requested");
+        assert_eq!(
+            parsed.output,
+            [
+                "[0:00:01.000] Script completed in scope fake: script",
+                "  padded  ",
+                "",
+                "unknown release-specific line"
+            ]
+        );
+        assert!(parsed.errors.is_empty());
+    }
+
+    #[test]
+    fn script_duration_is_checked_and_uses_milliseconds() {
+        assert_eq!(parse_script_duration("0:00:00.006"), Some(6));
+        assert_eq!(parse_script_duration("1:02:03.456"), Some(3_723_456));
+        for invalid in [
+            "",
+            "0:60:00.000",
+            "0:00:60.000",
+            "0:00:00.6",
+            "0:00:00.000:1",
+            "18446744073709551615:00:00.000",
+            "0:00:00.xxx",
+        ] {
+            assert_eq!(parse_script_duration(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn invalid_history_is_retained_and_unknown_duration_is_null() {
+        let log = "Script execution history <A HREF='sys_script_execution_history.do?sys_id=bad'>here</A>\n[broken] Script completed in scope global: script";
+        let parsed = parse_script_execution_log(log, "x_requested");
+        assert_eq!(parsed.history_sys_id, None);
+        assert_eq!(parsed.duration_ms, None);
+        assert_eq!(parsed.scope, "global");
+        assert_eq!(parsed.output.len(), 1);
+        assert!(parsed.output[0].contains("sys_id=bad"));
     }
 
     #[test]
@@ -626,7 +775,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            clean,
+            extract_background_script_payload(clean),
             r#"{"ok":true,"dry_run":true,"warnings":[],"requires_confirmation":false}"#
         );
     }
@@ -644,7 +793,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            clean,
+            extract_background_script_payload(clean),
             r#"{"ok":true,"dry_run":true,"warnings":[],"requires_confirmation":false}"#
         );
     }

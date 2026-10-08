@@ -76,6 +76,32 @@ default. Pass the corresponding flag only when you need that behavior.
 > the safety model: ordinary background scripts can write to the database.
 > Do not automatically retry a failed script without reviewing its effects.
 
+### Output
+
+For `/sys.scripts.do`, JSON, JSONL, TOON, and auto output use a structured
+execution result rather than the raw server log:
+
+```json
+{"output":["a","b"],"duration_ms":6,"scope":"global","history_sys_id":"0123456789abcdef0123456789abcdef","errors":[]}
+```
+
+`output` contains script-printed lines without the `*** Script:` prefix;
+printed JSON and XML remain strings. Unknown log lines are retained. Timing and
+history metadata are parsed only from server log lines, not printed content.
+Missing or unrecognized duration/history values are `null`; scope falls back
+to the requested scope when the log does not report it.
+
+`--output text` preserves the cleaned execution log, including timing and
+history-link lines. For compatibility, `--output csv` also remains a raw-log
+passthrough for this command—it is not a tabular CSV result. Custom
+`--endpoint` responses keep their existing JSON/raw-response behavior rather
+than being interpreted as Script Background logs.
+
+`errors` is empty on successful responses. Known execution failures do **not**
+produce a success envelope with an errors list: they retain the stderr-only,
+nonzero-exit contract below. Successful output may contain arbitrary script
+content; do not print secrets or treat result data as automatically redacted.
+
 ### Execution failures
 
 For `/sys.scripts.do`, recognized sandbox-validation, compilation, evaluation,
