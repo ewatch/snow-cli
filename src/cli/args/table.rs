@@ -4,7 +4,7 @@ use crate::models::identifiers::{SysId, TableName};
 use crate::models::order_by::OrderBy;
 
 const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended\n  snow-cli table stats incident --group-by state";
-const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --order-by -sys_created_on --limit 3 --offset 3   # second page\n  snow-cli table list incident --all --fields '*' --full   # everything, uncapped\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - Without --full, long field values are shortened in preview-capable formats; preview metadata reports the field path, original size, shown size, and --full escape hatch.\n  - Responses include offset/next_offset and returned/truncated metadata plus the server-reported total.\n  - For complete data set extraction prefer `data export`.";
+const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --order-by -sys_created_on --limit 3 --offset 3   # second page\n  snow-cli table list incident --all --fields '*' --full   # everything, uncapped\n  snow-cli table list incident --preview   # opt in to shortening oversized fields\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - Output is lossless by default. Pass --preview to shorten long field values in JSON, JSONL, TOON, text, or auto output; preview metadata reports the field path, original size, shown size, and --full escape hatch.\n  - --preview is not supported with CSV output because CSV has no metadata channel; CSV remains lossless.\n  - Responses include offset/next_offset and returned/truncated metadata plus the server-reported total.\n  - For complete data set extraction prefer `data export`.";
 
 const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incident --data '{\"short_description\":\"VPN down\"}'\n  echo '{\"short_description\":\"From stdin\"}' | snow-cli table create incident";
 
@@ -61,8 +61,13 @@ pub enum TableCommands {
         query_no_domain: bool,
 
         /// Return complete field content instead of capping long values
-        #[arg(long)]
+        #[arg(long, conflicts_with = "preview")]
         full: bool,
+
+        /// Shorten oversized string fields and emit separate preview metadata
+        /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
+        #[arg(long, conflicts_with = "full")]
+        preview: bool,
     },
 
     /// Get a single record by sys_id
@@ -82,8 +87,13 @@ pub enum TableCommands {
         query_no_domain: bool,
 
         /// Return complete field content instead of capping long values
-        #[arg(long)]
+        #[arg(long, conflicts_with = "preview")]
         full: bool,
+
+        /// Shorten oversized string fields and emit separate preview metadata
+        /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
+        #[arg(long, conflicts_with = "full")]
+        preview: bool,
     },
 
     /// Create a new record
@@ -218,11 +228,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_table_list_and_get_full_flag() {
+    fn test_parse_table_list_and_get_full_and_preview_flags() {
         let cli = Cli::parse_from(["snow-cli", "table", "list", "incident", "--full"]);
         match cli.command {
             Commands::Table(args) => match args.command {
-                TableCommands::List { full, .. } => assert!(full),
+                TableCommands::List { full, preview, .. } => {
+                    assert!(full);
+                    assert!(!preview);
+                }
                 _ => panic!("Expected Table List command"),
             },
             _ => panic!("Expected Table command"),
@@ -234,14 +247,32 @@ mod tests {
             "get",
             "incident",
             "6816f79cc0a8016401c5a33be04be441",
+            "--preview",
         ]);
         match cli.command {
             Commands::Table(args) => match args.command {
-                TableCommands::Get { full, .. } => assert!(!full),
+                TableCommands::Get { full, preview, .. } => {
+                    assert!(!full);
+                    assert!(preview);
+                }
                 _ => panic!("Expected Table Get command"),
             },
             _ => panic!("Expected Table command"),
         }
+    }
+
+    #[test]
+    fn test_table_full_conflicts_with_preview() {
+        let error = Cli::try_parse_from([
+            "snow-cli",
+            "table",
+            "list",
+            "incident",
+            "--full",
+            "--preview",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

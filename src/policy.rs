@@ -462,6 +462,7 @@ mod tests {
                 all: false,
                 order_by: None,
                 full: false,
+                preview: false,
             },
         }));
         assert_allowed(Commands::Table(TableArgs {
@@ -471,6 +472,7 @@ mod tests {
                 sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 fields: None,
                 full: false,
+                preview: false,
             },
         }));
         assert_allowed(Commands::Table(TableArgs {
@@ -509,6 +511,7 @@ mod tests {
                 current_scope: false,
                 search_group: "sn_devstudio.Studio Search Group".to_string(),
                 full: false,
+                preview: false,
             },
         }));
         assert_allowed(Commands::Completions { shell: Shell::Bash });

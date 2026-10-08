@@ -179,7 +179,7 @@ async fn test_codesearch_empty_result() {
 }
 
 #[tokio::test]
-async fn test_codesearch_previews_long_match_text_unless_full() {
+async fn test_codesearch_previews_long_match_text_with_preview_flag() {
     let server = MockServer::start().await;
     let long_match = "é".repeat(2_001);
 
@@ -213,6 +213,8 @@ async fn test_codesearch_previews_long_match_text_unless_full() {
             ]);
         if full {
             command.arg("--full");
+        } else {
+            command.arg("--preview");
         }
         command.assert().success().get_output().stdout.clone()
     };
@@ -231,6 +233,74 @@ async fn test_codesearch_previews_long_match_text_unless_full() {
 
     let full: serde_json::Value = serde_json::from_slice(&run(true)).unwrap();
     assert_eq!(full[0]["match_text"], "é".repeat(2_001));
+}
+
+#[tokio::test]
+async fn test_codesearch_explicit_json_is_lossless_without_full_or_preview() {
+    let server = MockServer::start().await;
+    let long_match = format!("{}END", "界".repeat(2_000));
+
+    Mock::given(method("GET"))
+        .and(path("/api/sn_codesearch/code_search/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "sys_id": "abc123",
+                    "name": "TestScript",
+                    "match_text": long_match
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "json",
+            "--instance",
+            &server.uri(),
+            "codesearch",
+            "search",
+            "GlideRecord",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    assert!(json.get("preview").is_none());
+    assert_eq!(json[0]["match_text"], long_match);
+}
+
+#[tokio::test]
+async fn test_codesearch_preview_rejects_csv_output() {
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "csv",
+            "--instance",
+            "http://127.0.0.1:9",
+            "codesearch",
+            "search",
+            "GlideRecord",
+            "--preview",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--preview is not supported with --output csv",
+        ));
 }
 
 #[tokio::test]
@@ -493,6 +563,7 @@ async fn test_codesearch_grouped_preview_paths_match_filtered_output() {
             "codesearch",
             "search",
             "FoundScript",
+            "--preview",
         ])
         .assert()
         .success()

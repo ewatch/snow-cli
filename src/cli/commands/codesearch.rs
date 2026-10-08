@@ -17,9 +17,11 @@ pub async fn handle(
             limit,
             current_scope,
             search_group,
-            full,
+            full: _,
+            preview,
         } => {
             tracing::info!(query = %query, "Searching code");
+            ensure_preview_supported(preview, format)?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -51,14 +53,14 @@ pub async fn handle(
 
             tracing::debug!(body_len = response_body.len(), "Code search response");
 
-            render_response(&response_body, format, full)?;
+            render_response(&response_body, format, preview)?;
 
             Ok(())
         }
     }
 }
 
-fn render_response(body: &str, format: &OutputFormat, full: bool) -> anyhow::Result<()> {
+fn render_response(body: &str, format: &OutputFormat, preview_enabled: bool) -> anyhow::Result<()> {
     let Ok(mut json) = serde_json::from_str::<serde_json::Value>(body) else {
         return output::print_output(&body, format);
     };
@@ -84,7 +86,7 @@ fn render_response(body: &str, format: &OutputFormat, full: bool) -> anyhow::Res
         if matches!(format, OutputFormat::Csv) {
             return output::print_records(&flatten_group_hits(groups), format);
         }
-        let preview = preview_codesearch_output(&mut json, format, full);
+        let preview = preview_codesearch_output(&mut json, preview_enabled);
         if let Some(object) = json.as_object_mut() {
             object.insert("searched_tables".to_string(), searched_tables.into());
             insert_preview(object, &preview)?;
@@ -92,7 +94,7 @@ fn render_response(body: &str, format: &OutputFormat, full: bool) -> anyhow::Res
         return output::print_output(&json, format);
     }
 
-    let preview = preview_codesearch_output(&mut json, format, full);
+    let preview = preview_codesearch_output(&mut json, preview_enabled);
 
     if let Ok(table_resp) =
         serde_json::from_value::<crate::models::record::TableResponse>(json.clone())
@@ -113,12 +115,8 @@ fn render_response(body: &str, format: &OutputFormat, full: bool) -> anyhow::Res
     }
 }
 
-fn preview_codesearch_output(
-    json: &mut serde_json::Value,
-    format: &OutputFormat,
-    full: bool,
-) -> PreviewReport {
-    if !full && supports_preview_metadata(format) {
+fn preview_codesearch_output(json: &mut serde_json::Value, preview_enabled: bool) -> PreviewReport {
+    if preview_enabled {
         truncation::preview_codesearch_fields(
             json,
             truncation::DEFAULT_FIELD_CHAR_LIMIT,
@@ -127,6 +125,16 @@ fn preview_codesearch_output(
     } else {
         PreviewReport::default()
     }
+}
+
+fn ensure_preview_supported(preview: bool, format: &OutputFormat) -> anyhow::Result<()> {
+    if preview && !supports_preview_metadata(format) {
+        anyhow::bail!(
+            "--preview is not supported with --output {}; use json, jsonl, toon, text, or auto, or omit --preview for lossless CSV",
+            format.as_str()
+        );
+    }
+    Ok(())
 }
 
 fn supports_preview_metadata(format: &OutputFormat) -> bool {
@@ -171,6 +179,7 @@ fn flatten_group_hits(groups: &[serde_json::Value]) -> Vec<crate::models::record
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     #[test]
     fn test_codesearch_args_construction() {
@@ -183,6 +192,7 @@ mod tests {
                 current_scope: false,
                 search_group: "sn_devstudio.Studio Search Group".to_string(),
                 full: false,
+                preview: false,
             },
         };
         match args.command {
@@ -194,6 +204,7 @@ mod tests {
                 current_scope,
                 search_group,
                 full,
+                preview,
             } => {
                 assert_eq!(query, "GlideRecord");
                 assert_eq!(source_table, Some("sys_script_include".to_string()));
@@ -202,7 +213,22 @@ mod tests {
                 assert!(!current_scope);
                 assert_eq!(search_group, "sn_devstudio.Studio Search Group");
                 assert!(!full);
+                assert!(!preview);
             }
         }
+    }
+
+    #[test]
+    fn test_codesearch_full_conflicts_with_preview() {
+        let error = crate::cli::args::Cli::try_parse_from([
+            "snow-cli",
+            "codesearch",
+            "search",
+            "GlideRecord",
+            "--full",
+            "--preview",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 }

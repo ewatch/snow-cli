@@ -314,6 +314,7 @@ mod tests {
                 all: false,
                 order_by: None,
                 full: false,
+                preview: false,
             },
         })));
         assert!(command_uses_connection(&Commands::Graphql(GraphqlArgs {

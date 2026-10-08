@@ -36,7 +36,12 @@ pub enum CodesearchCommands {
         search_group: String,
 
         /// Return complete matched text instead of capping long preview fields
-        #[arg(long)]
+        #[arg(long, conflicts_with = "preview")]
         full: bool,
+
+        /// Shorten oversized string fields and emit separate preview metadata
+        /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
+        #[arg(long, conflicts_with = "full")]
+        preview: bool,
     },
 }

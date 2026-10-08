@@ -230,8 +230,13 @@ pub enum ReadOnlyTableCommands {
         query_no_domain: bool,
 
         /// Return complete field content instead of capping long values
-        #[arg(long)]
+        #[arg(long, conflicts_with = "preview")]
         full: bool,
+
+        /// Shorten oversized string fields and emit separate preview metadata
+        /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
+        #[arg(long, conflicts_with = "full")]
+        preview: bool,
     },
 
     /// Get a single record by sys_id
@@ -251,8 +256,13 @@ pub enum ReadOnlyTableCommands {
         query_no_domain: bool,
 
         /// Return complete field content instead of capping long values
-        #[arg(long)]
+        #[arg(long, conflicts_with = "preview")]
         full: bool,
+
+        /// Shorten oversized string fields and emit separate preview metadata
+        /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
+        #[arg(long, conflicts_with = "full")]
+        preview: bool,
     },
 
     /// Show table schema (columns, types, labels) from sys_dictionary
@@ -499,8 +509,13 @@ pub enum ReadOnlyCodesearchCommands {
         search_group: String,
 
         /// Return complete matched text instead of capping long preview fields
-        #[arg(long)]
+        #[arg(long, conflicts_with = "preview")]
         full: bool,
+
+        /// Shorten oversized string fields and emit separate preview metadata
+        /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
+        #[arg(long, conflicts_with = "full")]
+        preview: bool,
     },
 }
 
@@ -812,6 +827,7 @@ impl ReadOnlyTableCommands {
                 all,
                 order_by,
                 full,
+                preview,
                 query_no_domain,
             } => TableCommands::List {
                 table,
@@ -823,6 +839,7 @@ impl ReadOnlyTableCommands {
                 all,
                 order_by,
                 full,
+                preview,
                 query_no_domain,
             },
             Self::Get {
@@ -830,12 +847,14 @@ impl ReadOnlyTableCommands {
                 sys_id,
                 fields,
                 full,
+                preview,
                 query_no_domain,
             } => TableCommands::Get {
                 table,
                 sys_id,
                 fields,
                 full,
+                preview,
                 query_no_domain,
             },
             Self::Schema {
@@ -956,6 +975,7 @@ impl ReadOnlyCodesearchCommands {
                 current_scope,
                 search_group,
                 full,
+                preview,
             } => CodesearchCommands::Search {
                 query,
                 source_table,
@@ -964,6 +984,7 @@ impl ReadOnlyCodesearchCommands {
                 current_scope,
                 search_group,
                 full,
+                preview,
             },
         }
     }
@@ -1175,11 +1196,14 @@ mod tests {
     }
 
     #[test]
-    fn table_full_flag_maps_to_full_commands() {
+    fn table_full_and_preview_flags_map_to_full_commands() {
         let list = ReadOnlyCli::parse_from(["snow-cli-ro", "table", "list", "incident", "--full"]);
         match list.command {
             ReadOnlyCommands::Table(args) => match args.command.into_full_command() {
-                TableCommands::List { full, .. } => assert!(full),
+                TableCommands::List { full, preview, .. } => {
+                    assert!(full);
+                    assert!(!preview);
+                }
                 _ => panic!("expected table list command"),
             },
             _ => panic!("expected table command"),
@@ -1191,15 +1215,53 @@ mod tests {
             "get",
             "incident",
             "6816f79cc0a8016401c5a33be04be441",
-            "--full",
+            "--preview",
         ]);
         match get.command {
             ReadOnlyCommands::Table(args) => match args.command.into_full_command() {
-                TableCommands::Get { full, .. } => assert!(full),
+                TableCommands::Get { full, preview, .. } => {
+                    assert!(!full);
+                    assert!(preview);
+                }
                 _ => panic!("expected table get command"),
             },
             _ => panic!("expected table command"),
         }
+    }
+
+    #[test]
+    fn codesearch_preview_flag_maps_to_full_command() {
+        let cli = ReadOnlyCli::parse_from([
+            "snow-cli-ro",
+            "codesearch",
+            "search",
+            "GlideRecord",
+            "--preview",
+        ]);
+        match cli.command {
+            ReadOnlyCommands::Codesearch(args) => match args.command.into_full_command() {
+                CodesearchCommands::Search { full, preview, .. } => {
+                    assert!(!full);
+                    assert!(preview);
+                }
+            },
+            _ => panic!("expected codesearch command"),
+        }
+    }
+
+    #[test]
+    fn read_only_full_conflicts_with_preview() {
+        let error = ReadOnlyCli::try_parse_from([
+            "snow-cli-ro",
+            "table",
+            "get",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--full",
+            "--preview",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 }
 

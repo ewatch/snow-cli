@@ -25,10 +25,12 @@ pub async fn handle(
             offset,
             all,
             order_by,
-            full,
+            full: _,
+            preview,
             query_no_domain,
         } => {
             tracing::info!("Listing records from table: {}", table);
+            ensure_preview_supported(preview, format)?;
 
             let effective_limit = if all {
                 None
@@ -67,7 +69,7 @@ pub async fn handle(
                 )
                 .await?;
 
-            let preview = if !full && supports_preview_metadata(format) {
+            let preview_report = if preview {
                 truncation::preview_record_fields(
                     &mut result.records,
                     truncation::DEFAULT_FIELD_CHAR_LIMIT,
@@ -78,7 +80,7 @@ pub async fn handle(
                 truncation::PreviewReport::default()
             };
 
-            output::print_table_list_preview(&result, format, &preview)?;
+            output::print_table_list_preview(&result, format, &preview_report)?;
             Ok(())
         }
 
@@ -86,10 +88,12 @@ pub async fn handle(
             table,
             sys_id,
             fields,
-            full,
+            full: _,
+            preview,
             query_no_domain,
         } => {
             tracing::info!("Getting record {} from table: {}", sys_id, table);
+            ensure_preview_supported(preview, format)?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -109,7 +113,7 @@ pub async fn handle(
                 client.get_json_with_params(&path, &params).await?
             };
 
-            let preview = if !full && supports_preview_metadata(format) {
+            let preview_report = if preview {
                 truncation::preview_record_fields(
                     std::slice::from_mut(&mut response.result),
                     truncation::DEFAULT_FIELD_CHAR_LIMIT,
@@ -120,7 +124,7 @@ pub async fn handle(
                 truncation::PreviewReport::default()
             };
 
-            output::print_record_preview(&response.result, format, &preview)?;
+            output::print_record_preview(&response.result, format, &preview_report)?;
             Ok(())
         }
 
@@ -498,6 +502,16 @@ struct SchemaEntry {
 }
 
 /// Print schema entries in the requested format.
+fn ensure_preview_supported(preview: bool, format: &OutputFormat) -> anyhow::Result<()> {
+    if preview && !supports_preview_metadata(format) {
+        anyhow::bail!(
+            "--preview is not supported with --output {}; use json, jsonl, toon, text, or auto, or omit --preview for lossless CSV",
+            format.as_str()
+        );
+    }
+    Ok(())
+}
+
 fn supports_preview_metadata(format: &OutputFormat) -> bool {
     !matches!(format, OutputFormat::Csv)
 }
