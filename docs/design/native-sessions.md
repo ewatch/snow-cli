@@ -15,6 +15,10 @@ not establish the original login identity, particularly during impersonation.
 Authentication validates the session origin against the actual requested
 instance, including CLI overrides. Native transports disable redirects, preserve
 route cookies, observe Set-Cookie changes, and never auto-login on expiry.
+Cookie updates also apply to error responses: access denial can rotate a valid
+session, and expiry responses can delete cookies. HTTP failure still returns an
+error and never triggers login fallback. Nonempty cookies with a past `Expires`
+are removed; a valid `Max-Age` takes precedence over `Expires`.
 Form login follows only same-origin redirects. CLI commands have no HTTP seam;
 all requests and immutable policy checks remain in `src/client`.
 

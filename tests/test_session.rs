@@ -263,6 +263,83 @@ async fn rotated_cookies_are_persisted_and_reused_by_table_commands() {
 }
 
 #[tokio::test]
+async fn expiry_response_persists_cookie_deletion_without_login_fallback() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/navpage.do"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-is-logged-in", "false")
+                .insert_header(
+                    "Set-Cookie",
+                    "JSESSIONID=initial-secret; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/",
+                )
+                .set_body_string("login form"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let (_dir, config, store) = config(&server.uri());
+    command("ro", &config, &store)
+        .args(["session", "show"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("expired"));
+    let saved: Value = serde_json::from_str(
+        &common::read_test_keychain_entry(&store, "snow-cli", "native:native_session").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved["cookie_header"], "route=node1");
+}
+
+#[tokio::test]
+async fn access_denial_preserves_cookie_rotation_for_subsequent_requests() {
+    let server = MockServer::start().await;
+    base(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(header("Cookie", "JSESSIONID=initial-secret; route=node1"))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .insert_header("Set-Cookie", "JSESSIONID=rotated-secret; Path=/; HttpOnly")
+                .set_body_json(json!({"error":{"message":"Access denied"}})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/ui/concoursepicker/current"))
+        .and(header("Cookie", "route=node1; JSESSIONID=rotated-secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pickers("global")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config, store) = config(&server.uri());
+    command("ro", &config, &store)
+        .args(["table", "list", "incident"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Access denied"));
+    let saved: Value = serde_json::from_str(
+        &common::read_test_keychain_entry(&store, "snow-cli", "native:native_session").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        saved["cookie_header"],
+        "route=node1; JSESSIONID=rotated-secret"
+    );
+    command("ro", &config, &store)
+        .args(["session", "show"])
+        .assert()
+        .success();
+}
+
+#[tokio::test]
 async fn cross_instance_override_is_rejected_before_sending_cookies() {
     let first = MockServer::start().await;
     let second = MockServer::start().await;

@@ -1679,6 +1679,7 @@ dependencies = [
  "csv",
  "futures-util",
  "http",
+ "httpdate",
  "indicatif",
  "keyring",
  "libc",
