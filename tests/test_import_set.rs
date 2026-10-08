@@ -134,7 +134,8 @@ async fn test_import_set_load_summarizes_mixed_statuses() {
             r#"{"name":"mixed"}"#,
         ])
         .assert()
-        .success()
+        .code(1)
+        .stderr(predicate::str::contains("IMPORT_SET_ROW_ERRORS"))
         .stdout(predicate::str::contains(
             "\"summary\":{\"total\":5,\"inserted\":1,\"updated\":1,\"ignored\":1,\"error\":1,\"other\":1}",
         ))
@@ -142,7 +143,7 @@ async fn test_import_set_load_summarizes_mixed_statuses() {
 }
 
 #[tokio::test]
-async fn test_import_set_load_with_errors_succeeds_by_default() {
+async fn test_import_set_load_with_errors_fails_by_default() {
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
@@ -169,7 +170,8 @@ async fn test_import_set_load_with_errors_succeeds_by_default() {
             r#"{"name":"mixed"}"#,
         ])
         .assert()
-        .success()
+        .code(1)
+        .stderr(predicate::str::contains("IMPORT_SET_ROW_ERRORS"))
         .stdout(predicate::str::contains("\"error\":1"))
         .stdout(predicate::str::contains("bad row"));
 }
@@ -206,6 +208,78 @@ async fn test_import_set_load_fail_on_error_returns_failure() {
         .failure()
         .stdout(predicate::str::contains("\"error\":1"))
         .stderr(predicate::str::contains("1 row-level error"));
+}
+
+#[tokio::test]
+async fn row_error_opt_out_warns_and_error_messages_without_status_fail() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/now/import/u_import_table"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"status":"inserted", "sys_id":"created"},
+                {"error_message":"private failed-row detail"},
+                {"status":" ERROR ", "error_message":""}
+            ]
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config();
+    for allow in [false, true] {
+        let mut cmd = cargo_bin_cmd!("snow-cli");
+        cmd.env("SNOW_CLI_CONFIG", &config)
+            .env("SNOW_CLI_API_TOKEN", "test-api-token")
+            .args([
+                "--instance",
+                &server.uri(),
+                "import-set",
+                "load",
+                "u_import_table",
+                "--data",
+                "{}",
+            ]);
+        if allow {
+            cmd.arg("--allow-row-errors");
+        }
+        let assertion = cmd.assert().code(if allow { 0 } else { 1 });
+        let output = assertion.get_output();
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["summary"]["inserted"], 1);
+        assert_eq!(result["summary"]["error"], 2);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("private failed-row detail"));
+        if allow {
+            assert!(stderr.contains("--allow-row-errors"), "{stderr}");
+            assert!(stderr.contains("row-level errors"), "{stderr}");
+        } else {
+            let error: serde_json::Value = serde_json::from_str(stderr.trim()).unwrap();
+            assert_eq!(error["error"]["code"], "IMPORT_SET_ROW_ERRORS");
+        }
+    }
+}
+
+#[test]
+fn row_error_flags_conflict_and_help_describes_default() {
+    cargo_bin_cmd!("snow-cli")
+        .args([
+            "import-set",
+            "load",
+            "u_import_table",
+            "--fail-on-error",
+            "--allow-row-errors",
+            "--data",
+            "{}",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
+    cargo_bin_cmd!("snow-cli")
+        .args(["import-set", "load", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("exit non-zero by default"))
+        .stdout(predicate::str::contains("--allow-row-errors"));
 }
 
 #[test]

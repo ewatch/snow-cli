@@ -52,6 +52,16 @@ pub enum ScriptExecutionError {
     JavaException,
 }
 
+/// Row failures in an otherwise HTTP-successful Import Set response.
+/// Only a count is retained; result rows remain on stdout for inspection.
+#[derive(Debug, Error)]
+#[error(
+    "Import set load completed with {count} row-level error(s); inspect stdout results before retrying because some records may already have changed"
+)]
+pub struct ImportSetRowError {
+    pub count: usize,
+}
+
 /// JSON-serializable error format written to stderr.
 #[derive(Debug, Serialize)]
 pub struct ErrorOutput {
@@ -89,6 +99,21 @@ pub fn write_anyhow_error_and_exit_code(error: anyhow::Error) -> i32 {
 }
 
 fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutput, i32)> {
+    if let Some(import_error) = error.downcast_ref::<ImportSetRowError>() {
+        return Some((
+            ErrorOutput {
+                error: ErrorBody {
+                    code: "IMPORT_SET_ROW_ERRORS".to_string(),
+                    message: import_error.to_string(),
+                    status: None,
+                    detail: None,
+                    instance: None,
+                },
+            },
+            1,
+        ));
+    }
+
     if let Some(script_error) = error.downcast_ref::<ScriptExecutionError>() {
         return Some((
             ErrorOutput {

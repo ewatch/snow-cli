@@ -57,7 +57,8 @@ pub async fn handle(
         crate::cli::args::ImportSetCommands::Load {
             table,
             data,
-            fail_on_error,
+            fail_on_error: _, // Retained parser compatibility; failure is now the default.
+            allow_row_errors,
         } => {
             tracing::info!("Loading data into staging table: {}", table);
 
@@ -80,10 +81,16 @@ pub async fn handle(
 
             crate::cli::output::print_output(&output, format)?;
 
-            if fail_on_error && output.summary.error > 0 {
-                anyhow::bail!(
-                    "Import set load completed with {} row-level error(s). Re-run without --fail-on-error to inspect the structured response without failing the command.",
-                    output.summary.error
+            if output.summary.error > 0 {
+                if !allow_row_errors {
+                    return Err(crate::error::ImportSetRowError {
+                        count: output.summary.error,
+                    }
+                    .into());
+                }
+                tracing::warn!(
+                    row_errors = output.summary.error,
+                    "Import set load has row-level errors; --allow-row-errors explicitly accepts partial failure. Inspect the printed results before retrying"
                 );
             }
 
@@ -106,10 +113,20 @@ fn summarize_results(entries: &[ImportSetResultEntry]) -> ImportSetLoadSummary {
     };
 
     for entry in entries {
+        // Some transform responses provide error_message without a status.
+        // Count the row once, even if both fields indicate a failure.
+        if entry
+            .error_message
+            .as_deref()
+            .is_some_and(|message| !message.trim().is_empty())
+        {
+            summary.error += 1;
+            continue;
+        }
         match entry
             .status
             .as_deref()
-            .map(str::to_ascii_lowercase)
+            .map(|status| status.trim().to_ascii_lowercase())
             .as_deref()
         {
             Some("inserted") => summary.inserted += 1,

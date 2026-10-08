@@ -19,7 +19,9 @@ snow-cli import-set load <table> [options]
 Important options:
 
 - `--data <json>`: JSON object to load
-- `--fail-on-error`: exit non-zero when the response contains row-level errors
+- `--fail-on-error`: compatibility flag; row-level errors now fail by default
+- `--allow-row-errors`: explicitly accept partial failures, exiting 0 with a stderr
+  warning; conflicts with `--fail-on-error`
 
 Examples:
 
@@ -36,12 +38,12 @@ snow-cli import-set load imp_user --fail-on-error --data '{"user_id":"ci-user","
 > source fields are `user_id`, `email`, `first_name`, `last_name`,
 > `department`, `phone`, and `location`, and the map **coalesces on `email`**.
 > A payload built around `user_name` instead of `user_id`/`email` will still
-> load into the staging table and still return exit code 0, but the transform
-> either creates a garbage `sys_user` record or fails outright with an error
-> like `Error during insert of sys_user (); Target record not found` — and the
-> CLI does not surface that as a command failure by default. Always check the
-> printed summary (or pass `--fail-on-error`) rather than trusting a zero exit
-> code alone.
+> load into the staging table, but the transform may create an incorrect
+> `sys_user` record or fail with an error such as
+> `Error during insert of sys_user (); Target record not found`. Reported
+> row errors now fail the command by default, but a successful transform does
+> not prove that the payload matched your business intent. Inspect the summary
+> and target records as appropriate.
 
 Notes:
 
@@ -49,7 +51,18 @@ Notes:
 - The request is sent to `/api/now/import/{table}`.
 - **The transform runs automatically on load.** `/api/now/import/{table}` both stages the row and runs the staging table's transform map in one call, so a successful load already inserts/updates the target record — there is no separate transform step to invoke.
 - The command prints a structured summary with counts for inserted, updated, ignored, error, and other result rows.
-- `--fail-on-error` is useful for CI or agent workflows where row-level failures must fail the command — without it, `import-set load` can exit 0 even though `summary.error` is non-zero.
+- Row-level errors exit **1** by default with a JSON stderr error code
+  `IMPORT_SET_ROW_ERRORS`. The detailed result and summary are still printed on
+  stdout, including for partial failures. Error classification uses normalized
+  `status: error` or a nonempty `error_message`; rows are counted once.
+- `--allow-row-errors` restores intentional partial-success behavior: exit 0
+  with a warning on stderr. `--fail-on-error` remains accepted for compatibility
+  and cannot be combined with this opt-out.
+- This is a change from the former default, which exited 0 on row failures.
+  Existing automation that intentionally accepts partial failures must opt in.
+  Do not blindly rerun a failed load: other rows may already have changed, and
+  a nonzero exit does not roll back the transform. Inspect the existing stdout
+  report first; no repeat HTTP request is needed to see the failure details.
 
 ## Related pages
 
