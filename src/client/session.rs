@@ -232,11 +232,12 @@ impl SnowClient {
         let body = response.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            anyhow::bail!(
-                "Failed to bootstrap form session (status {}) via {}",
+            return Err(super::error::ApiError::from_status(
                 status.as_u16(),
-                url
-            );
+                self.base_url(),
+                Some(body),
+            )
+            .into());
         }
 
         if matches!(logged_in_header_value(&response_headers), Some(false)) {
@@ -368,11 +369,13 @@ impl SnowClient {
             }
 
             if !status.is_success() {
-                anyhow::bail!(
-                    "login.do form login failed with status {} at {}",
+                let body = response.text().await.unwrap_or_default();
+                return Err(super::error::ApiError::from_status(
                     status.as_u16(),
-                    request_url
-                );
+                    self.base_url(),
+                    Some(body),
+                )
+                .into());
             }
 
             break;
@@ -408,12 +411,12 @@ impl SnowClient {
         let body = response.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            anyhow::bail!(
-                "Failed to bootstrap form session with login cookies (status {}) via {}: {}",
+            return Err(super::error::ApiError::from_status(
                 status.as_u16(),
-                url,
-                body
-            );
+                self.base_url(),
+                Some(body),
+            )
+            .into());
         }
 
         if matches!(logged_in_header_value(&response_headers), Some(false)) {
@@ -461,6 +464,47 @@ mod tests {
     use http::HeaderMap;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn form_session_http_failures_are_typed_and_redacted() {
+        let server = MockServer::start().await;
+        for (verb, endpoint) in [("GET", "/sys.scripts.modern.do"), ("POST", "/login.do")] {
+            Mock::given(method(verb))
+                .and(path(endpoint))
+                .respond_with(
+                    ResponseTemplate::new(403)
+                        .set_body_string("<html>private login page; g_ck='session-secret'</html>"),
+                )
+                .mount(&server)
+                .await;
+        }
+        let mut client = test_client(&server.uri(), MockAuth::new("test-token"));
+        let errors = [
+            client
+                .ensure_form_session("/sys.scripts.modern.do")
+                .await
+                .unwrap_err(),
+            client
+                .ensure_form_session_with_cookie("/sys.scripts.modern.do", "JSESSIONID=test")
+                .await
+                .unwrap_err(),
+            client
+                .form_login_cookie_header("user", "password")
+                .await
+                .unwrap_err(),
+        ];
+        for error in errors {
+            let api = error
+                .downcast_ref::<super::super::error::ApiError>()
+                .unwrap();
+            assert_eq!(api.code, "FORBIDDEN");
+            assert_eq!(api.status, 403);
+            let rendered = serde_json::to_string(api).unwrap();
+            assert!(!rendered.contains("session-secret"));
+            assert!(!rendered.contains("private login page"));
+            assert!(rendered.contains("response body redacted"));
+        }
+    }
 
     #[test]
     fn form_session_debug_redacts_secret_values() {

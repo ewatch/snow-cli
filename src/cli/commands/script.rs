@@ -139,7 +139,12 @@ async fn execute_background_script(
 
     if !(200..300).contains(&status) {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Script execution failed with status {}: {}", status, body);
+        return Err(crate::client::error::ApiError::from_status(
+            status,
+            client.base_url(),
+            Some(body),
+        )
+        .into());
     }
 
     let server_timing = response_headers

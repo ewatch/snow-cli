@@ -103,6 +103,147 @@ fn boundary_violations(root: &Path) -> std::io::Result<Vec<String>> {
     Ok(violations)
 }
 
+// No raw-response logging/error exceptions are currently needed. Add a narrow
+// path + rationale here only for an explicitly gated sensitive diagnostic.
+const RAW_RESPONSE_ALLOW_LIST: &[&str] = &[];
+
+fn raw_response_violations(text: &str) -> Vec<&str> {
+    let mut violations = Vec::new();
+    for macro_name in ["bail!", "anyhow!", "error!", "warn!"] {
+        // Inspect multiline invocations as well as single-line ones. The scan
+        // is deliberately conservative; fixtures test its coverage.
+        for (start, _) in text.match_indices(macro_name) {
+            let tail = &text[start..];
+            let mut depth = 0;
+            let mut quoted = false;
+            let mut escaped = false;
+            let mut end = tail.len();
+            for (index, ch) in tail.char_indices() {
+                if quoted {
+                    if escaped {
+                        escaped = false;
+                    } else if ch == '\\' {
+                        escaped = true;
+                    } else if ch == '"' {
+                        quoted = false;
+                    }
+                } else if ch == '"' {
+                    quoted = true;
+                } else if ch == '(' {
+                    depth += 1;
+                } else if ch == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = index + 1;
+                        break;
+                    }
+                }
+            }
+            let invocation = &tail[..end];
+            // Ignore prose inside literals, but retain Rust format captures
+            // such as `{response_body}` as well as identifiers outside literals.
+            let mut identifiers = String::new();
+            let mut quoted = false;
+            let mut escaped = false;
+            let mut capture = false;
+            for ch in invocation.chars() {
+                if quoted {
+                    if escaped {
+                        escaped = false;
+                    } else if ch == '\\' {
+                        escaped = true;
+                    } else if ch == '"' {
+                        quoted = false;
+                        identifiers.push(' ');
+                    } else if ch == '{' {
+                        capture = true;
+                        identifiers.push(' ');
+                    } else if ch == '}' {
+                        capture = false;
+                        identifiers.push(' ');
+                    } else if capture {
+                        identifiers.push(ch);
+                    }
+                } else if ch == '"' {
+                    quoted = true;
+                } else {
+                    identifiers.push(ch);
+                }
+            }
+            for metric in [
+                "body.len()",
+                "text.len()",
+                "response_body.len()",
+                "error_body.len()",
+                "resp_body.len()",
+            ] {
+                identifiers = identifiers.replace(metric, "payload_length");
+            }
+            if identifiers
+                .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                .any(|word| {
+                    matches!(
+                        word,
+                        "body" | "text" | "response_body" | "error_body" | "resp_body"
+                    )
+                })
+            {
+                violations.push(invocation);
+            }
+        }
+    }
+    violations
+}
+
+#[test]
+fn default_errors_and_warnings_never_interpolate_raw_responses() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut violations = Vec::new();
+    for source in rust_sources(&root).unwrap() {
+        let relative = source
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if RAW_RESPONSE_ALLOW_LIST.contains(&relative.as_str()) {
+            continue;
+        }
+        let text = fs::read_to_string(&source).unwrap();
+        for invocation in raw_response_violations(&text) {
+            violations.push(format!("{relative}: {invocation}"));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "raw response in diagnostic; use ApiError or safe_error_detail:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn raw_response_guard_covers_multiline_and_format_capture() {
+    for source in [
+        "anyhow::bail!(\"failed: {}\", body);",
+        "anyhow::anyhow!(\"Raw output: {response_body}\");",
+        "tracing::error!(\n status = status,\n body = %error_body,\n \"failed\"\n);",
+        "tracing::warn!(%error, %text, \"invalid JSON\");",
+    ] {
+        assert_eq!(raw_response_violations(source).len(), 1, "{source}");
+    }
+    for source in [
+        "tracing::warn!(body_len = size, \"invalid JSON\");",
+        "tracing::warn!(body_len = text.len(), \"invalid JSON\");",
+        "tracing::error!(body_len = response.body.len(), \"failed\");",
+        "anyhow::bail!(\"pipe a request body or use text output\");",
+    ] {
+        assert!(raw_response_violations(source).is_empty(), "{source}");
+    }
+    assert_eq!(
+        raw_response_violations("tracing::warn!(body_len = text.len(), %text, \"failed\");").len(),
+        1
+    );
+}
+
 #[test]
 fn source_tree_respects_module_boundaries() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

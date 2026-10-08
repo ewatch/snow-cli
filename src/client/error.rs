@@ -32,6 +32,19 @@ impl ApiError {
             _ => ("UNKNOWN_ERROR", "Unexpected error"),
         };
 
+        // OAuth descriptions may echo credentials or arbitrary request data.
+        // Retain only recognized protocol error names, never descriptions or
+        // extra fields (even when sensitive HTTP diagnostics are enabled).
+        if let Some(oauth_error) = body.as_deref().and_then(oauth_error_name) {
+            return Self {
+                code: code.to_string(),
+                message: format!("OAuth2 token request failed: {oauth_error}"),
+                status,
+                detail: None,
+                instance: instance.to_string(),
+            };
+        }
+
         if let Some(envelope) = body.as_deref().and_then(ServiceNowErrorEnvelope::parse) {
             let message = bound_chars(&scrub_secrets(&envelope.message), Self::MAX_ENVELOPE_CHARS);
             let detail = envelope
@@ -54,6 +67,26 @@ impl ApiError {
             detail: body.map(|body| safe_error_detail(&body)),
             instance: instance.to_string(),
         }
+    }
+}
+
+/// OAuth 2.0 error names from RFC 6749 sections 4.1.2.1 and 5.2.
+/// An allow-list prevents a server-controlled `error` string echoing secrets.
+fn oauth_error_name(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let name = value.get("error")?.as_str()?;
+    match name {
+        "invalid_request"
+        | "invalid_client"
+        | "invalid_grant"
+        | "unauthorized_client"
+        | "unsupported_grant_type"
+        | "invalid_scope"
+        | "access_denied"
+        | "unsupported_response_type"
+        | "server_error"
+        | "temporarily_unavailable" => Some(name.to_string()),
+        _ => None,
     }
 }
 
@@ -286,19 +319,25 @@ fn truncate_graphql_message(message: &str) -> String {
     truncated
 }
 
-fn safe_error_detail(body: &str) -> String {
-    const MAX_DETAIL_LEN: usize = 1024;
-
-    if body.trim().is_empty() {
-        return String::new();
-    }
-
+/// Redact arbitrary response text by default; bounded raw text requires the
+/// explicit sensitive-HTTP diagnostic opt-in. Never use this for default logs.
+pub(crate) fn safe_error_detail(body: &str) -> String {
     let include_sensitive = std::env::var("SNOW_CLI_DEBUG_HTTP_INCLUDE_SENSITIVE")
         .map(|value| {
             let normalized = value.trim().to_ascii_lowercase();
             !(normalized.is_empty() || matches!(normalized.as_str(), "0" | "false" | "off" | "no"))
         })
         .unwrap_or(false);
+
+    response_detail(body, include_sensitive)
+}
+
+fn response_detail(body: &str, include_sensitive: bool) -> String {
+    const MAX_DETAIL_LEN: usize = 1024;
+
+    if body.trim().is_empty() {
+        return String::new();
+    }
 
     if !include_sensitive {
         return format!("<response body redacted, {} bytes>", body.len());
@@ -314,6 +353,36 @@ fn safe_error_detail(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arbitrary_response_detail_requires_explicit_sensitive_opt_in() {
+        let body = "private credential ".repeat(100);
+        assert_eq!(
+            response_detail(&body, false),
+            format!("<response body redacted, {} bytes>", body.len())
+        );
+        let detail = response_detail(&body, true);
+        assert!(detail.starts_with("private credential"));
+        assert_eq!(detail.chars().count(), 1024 + "... <truncated>".len());
+        assert_eq!(response_detail("  ", false), "");
+    }
+
+    #[test]
+    fn oauth_error_names_are_allow_listed_and_ignore_descriptions() {
+        assert_eq!(
+            oauth_error_name(r#"{"error":"invalid_client","error_description":"secret"}"#)
+                .as_deref(),
+            Some("invalid_client")
+        );
+        for body in [
+            r#"{"error":"unlabelled-secret"}"#,
+            r#"{"error":42}"#,
+            "<html>secret</html>",
+            "invalid JSON",
+        ] {
+            assert_eq!(oauth_error_name(body), None);
+        }
+    }
 
     #[test]
     fn test_from_status_maps_common_codes() {

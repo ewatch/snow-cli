@@ -103,7 +103,24 @@ bounding to 500 characters each. An unambiguous message refines the code:
 | 404 with `No Record found`                  | `RECORD_NOT_FOUND` |
 | 403 mentioning `ACL` in message or detail   | `ACL_DENIED`       |
 
-Any other body (HTML, unknown JSON) is never echoed: `detail` reports only its
-size unless `SNOW_CLI_DEBUG_HTTP_INCLUDE_SENSITIVE` is set. Failed requests are
-logged at `debug` level without the body; `SNOW_CLI_DEBUG_HTTP` is the opt-in
-way to inspect raw responses.
+OAuth failure envelopes retain only recognized RFC 6749 error names (such as
+`invalid_client`); `error_description` and extra fields are discarded because
+they can echo credentials or request data.
+
+Any other body (HTML, unknown JSON) is never echoed by default: `detail` reports
+only its size. This applies to script and attachment HTTP failures, UI form-session
+failures, and non-JSON `scope move-file` output as well as ordinary API calls.
+`SNOW_CLI_DEBUG_HTTP_INCLUDE_SENSITIVE` explicitly permits up to 1,024 characters
+of arbitrary response detail. Treat that mode's output as sensitive; do not use
+it in shared CI logs or agent transcripts. It does not enable OAuth descriptions.
+
+Default error/warning logs contain no raw response payloads. Malformed SN-Utils
+messages log only byte counts, not message contents or parser error strings.
+Typed SN-Utils action failures similarly report `<helper response redacted, N bytes>`
+in both Display and Debug, including errors forwarded through broker IPC to CLI
+stderr. This redaction is unconditional, even with sensitive HTTP diagnostics
+enabled. Original helper text remains internal for transient-error retry, ACL
+probes, and token-refresh classification; those behaviors are unchanged.
+
+`SNOW_CLI_DEBUG_HTTP` enables HTTP diagnostics at `debug` level; request/header
+redaction remains enabled unless sensitive diagnostics are explicitly requested.

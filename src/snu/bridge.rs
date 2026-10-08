@@ -70,7 +70,7 @@ const DEFAULT_REBIND_DELAY: Duration = Duration::from_secs(3);
 /// `Disconnected`, `PortConflict`) are produced by the connection manager
 /// itself; `ActionFailed` carries whatever error text the helper tab reported
 /// over a perfectly healthy socket.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum BridgeError {
     #[error(
         "timed out waiting {0}s for the SN-Utils ScriptSync helper tab to connect on ws://{1}. Is SN-Utils installed and the ScriptSync helper tab open? It auto-connects within ~1s when running."
@@ -80,7 +80,9 @@ pub enum BridgeError {
     Disconnected,
     #[error("timed out waiting {secs}s for {what}")]
     Timeout { secs: u64, what: String },
-    #[error("SN-Utils action failed: {0}")]
+    // Keep helper text for broker retry classification, but never format it:
+    // it can contain credentials, arbitrary private data, or terminal escapes.
+    #[error("SN-Utils action failed: <helper response redacted, {} bytes>", .0.len())]
     ActionFailed(String),
     #[error("SN-Utils agent access is paused in the helper tab; resume agents there and retry")]
     Paused,
@@ -98,6 +100,17 @@ pub enum BridgeError {
     PortConflict(SocketAddr),
     #[error("failed to encode SN-Utils payload: {0}")]
     Encode(#[from] serde_json::Error),
+}
+
+impl std::fmt::Debug for BridgeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Debug must use the same safe boundary as Display rather than exposing
+        // ActionFailed's raw tuple field through derived formatting.
+        f.debug_struct("BridgeError")
+            .field("code", &self.code())
+            .field("message", &format_args!("{self}"))
+            .finish()
+    }
 }
 
 impl BridgeError {
@@ -881,16 +894,25 @@ async fn reader_loop(
         match message {
             Message::Text(text) => match serde_json::from_str::<Value>(&text) {
                 Ok(value) if value.is_array() => {
-                    tracing::debug!(%text, "ignoring SN-Utils informational array message");
+                    tracing::debug!(
+                        body_len = text.len(),
+                        "ignoring SN-Utils informational array message"
+                    );
                 }
                 Ok(value) => match SnuMessage::from_value(value) {
                     Ok(msg) => deliver_message(&inner, msg, generation).await,
-                    Err(error) => {
-                        tracing::warn!(%error, %text, "unparseable SN-Utils message; ignoring");
+                    Err(_) => {
+                        tracing::warn!(
+                            body_len = text.len(),
+                            "unparseable SN-Utils message; ignoring"
+                        );
                     }
                 },
-                Err(error) => {
-                    tracing::warn!(%error, %text, "invalid JSON from SN-Utils helper tab; ignoring");
+                Err(_) => {
+                    tracing::warn!(
+                        body_len = text.len(),
+                        "invalid JSON from SN-Utils helper tab; ignoring"
+                    );
                 }
             },
             Message::Binary(bytes) => match serde_json::from_slice::<Value>(&bytes)
@@ -898,8 +920,11 @@ async fn reader_loop(
                 .and_then(SnuMessage::from_value)
             {
                 Ok(msg) => deliver_message(&inner, msg, generation).await,
-                Err(error) => {
-                    tracing::warn!(%error, "invalid binary JSON from SN-Utils helper tab; ignoring");
+                Err(_) => {
+                    tracing::warn!(
+                        body_len = bytes.len(),
+                        "invalid binary JSON from SN-Utils helper tab; ignoring"
+                    );
                 }
             },
             Message::Ping(bytes) => {
@@ -1037,6 +1062,35 @@ async fn heartbeat_loop(inner: Arc<Inner>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn action_failure_formatting_redacts_payload_but_preserves_internal_text() {
+        let payload = "HTTP 401 g_ck=csrf-secret Cookie: JSESSIONID=cookie-secret private customer data\u{1b}[31m";
+        let error = super::BridgeError::ActionFailed(payload.to_string());
+        for diagnostic in [
+            error.to_string(),
+            format!("{error:?}"),
+            format!("{error:#?}"),
+        ] {
+            assert!(diagnostic.contains("redacted"), "{diagnostic}");
+            assert!(
+                diagnostic.contains(&payload.len().to_string()),
+                "{diagnostic}"
+            );
+            for secret in [
+                "csrf-secret",
+                "cookie-secret",
+                "private customer data",
+                "\u{1b}",
+            ] {
+                assert!(!diagnostic.contains(secret), "{diagnostic}");
+            }
+        }
+        let super::BridgeError::ActionFailed(original) = error else {
+            panic!("wrong error variant")
+        };
+        assert_eq!(original, payload);
+    }
+
     use super::*;
     use serde_json::json;
     use tokio_tungstenite::MaybeTlsStream;
