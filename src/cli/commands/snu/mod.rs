@@ -14,6 +14,9 @@ use crate::cli::output::print_output;
 use crate::snu::broker::{BrokerBridge, BrokerStatus};
 use crate::snu::protocol::{SnuInstance, SnuMessage, redact_session_for_output, resolve_origin};
 
+const NO_TOKEN_BANNER: &str =
+    "snow-cli SN-Utils bridge connected. This command does not require /token.";
+
 pub async fn handle(
     args: SnuArgs,
     instance: Option<&str>,
@@ -52,20 +55,20 @@ pub async fn handle(
         } => {
             let (bridge, instance) =
                 connect_and_wait_for_session(timeout_secs, target_origin).await?;
-            let correlation_id = correlation_id("query");
             let query_string =
                 build_table_query_string(&fields, limit, query.as_deref(), order_by.as_deref());
-            let payload = json!({
-                "action": "agentQueryRecords",
-                "agentRequestId": correlation_id,
-                "tableName": table,
-                "queryString": query_string,
-                "instance": instance,
-                "appName": "snow-cli",
-            });
-            let response = bridge
-                .send_action_and_wait(&payload, &correlation_id, timeout_secs)
-                .await?;
+            let mut fields = Map::new();
+            fields.insert("tableName".to_string(), Value::String(table.clone()));
+            fields.insert("queryString".to_string(), Value::String(query_string));
+            fields.insert("instance".to_string(), serde_json::to_value(instance)?);
+            let response = send_agent_action_with_prefix(
+                &bridge,
+                "query",
+                "agentQueryRecords",
+                fields,
+                timeout_secs,
+            )
+            .await?;
             let value = json!({
                 "table": response.extra.get("tableName").and_then(Value::as_str).unwrap_or(&table),
                 "count": response.extra.get("count").and_then(Value::as_u64).unwrap_or_else(|| response.extra.get("records").and_then(Value::as_array).map(|a| a.len() as u64).unwrap_or(0)),
@@ -79,17 +82,17 @@ pub async fn handle(
         } => {
             let (bridge, instance) =
                 connect_and_wait_for_session(timeout_secs, target_origin).await?;
-            let correlation_id = correlation_id("schema");
-            let payload = json!({
-                "action": "requestTableStructure",
-                "agentRequestId": correlation_id,
-                "tableName": table,
-                "instance": instance,
-                "appName": "snow-cli",
-            });
-            let response = bridge
-                .send_action_and_wait(&payload, &correlation_id, timeout_secs)
-                .await?;
+            let mut fields = Map::new();
+            fields.insert("tableName".to_string(), Value::String(table));
+            fields.insert("instance".to_string(), serde_json::to_value(instance)?);
+            let response = send_agent_action_with_prefix(
+                &bridge,
+                "schema",
+                "requestTableStructure",
+                fields,
+                timeout_secs,
+            )
+            .await?;
             print_response_value(response, output_format)
         }
         SnuCommands::ExecuteBgScript {
@@ -196,24 +199,20 @@ pub async fn handle(
             no_auto_run,
             timeout_secs,
         } => {
-            let bridge = connect_bridge(
+            let bridge = connect_bridge(timeout_secs, Some(NO_TOKEN_BANNER)).await?;
+            let mut fields = Map::new();
+            fields.insert("command".to_string(), Value::String(command));
+            fields.insert("url".to_string(), Value::String(url));
+            fields.insert("tabId".to_string(), serde_json::to_value(tab_id)?);
+            fields.insert("autoRun".to_string(), Value::Bool(!no_auto_run));
+            let response = send_agent_action_with_prefix(
+                &bridge,
+                "slash",
+                "runSlashCommand",
+                fields,
                 timeout_secs,
-                Some("snow-cli SN-Utils bridge connected. This command does not require /token."),
             )
             .await?;
-            let correlation_id = correlation_id("slash");
-            let payload = json!({
-                "action": "runSlashCommand",
-                "agentRequestId": correlation_id,
-                "command": command,
-                "url": url,
-                "tabId": tab_id,
-                "autoRun": !no_auto_run,
-                "appName": "snow-cli",
-            });
-            let response = bridge
-                .send_action_and_wait(&payload, &correlation_id, timeout_secs)
-                .await?;
             print_response_value(response, output_format)
         }
         SnuCommands::Rest(rest_args) => {
@@ -223,51 +222,45 @@ pub async fn handle(
         SnuCommands::Records(records_args) => {
             handle_records_agent(records_args.command, target_origin, output_format).await
         }
-        SnuCommands::Tab(tab_args) => {
-            match tab_args.command {
-                SnuTabCommands::Activate {
-                    url,
-                    reload,
-                    wait_for_load,
-                    open_if_not_found,
+        SnuCommands::Tab(tab_args) => match tab_args.command {
+            SnuTabCommands::Activate {
+                url,
+                reload,
+                wait_for_load,
+                open_if_not_found,
+                timeout_secs,
+            } => {
+                let bridge = connect_bridge(timeout_secs, Some(NO_TOKEN_BANNER)).await?;
+                let mut fields = Map::new();
+                fields.insert("url".to_string(), Value::String(url));
+                fields.insert("reload".to_string(), Value::Bool(reload));
+                fields.insert("waitForLoad".to_string(), Value::Bool(wait_for_load));
+                fields.insert("openIfNotFound".to_string(), Value::Bool(open_if_not_found));
+                let response = send_agent_action_with_prefix(
+                    &bridge,
+                    "tab",
+                    "activateTab",
+                    fields,
                     timeout_secs,
-                } => {
-                    let bridge = connect_bridge(
-                    timeout_secs,
-                    Some("snow-cli SN-Utils bridge connected. This command does not require /token."),
                 )
                 .await?;
-                    let correlation_id = correlation_id("tab");
-                    let payload = json!({
-                        "action": "activateTab",
-                        "agentRequestId": correlation_id,
-                        "url": url,
-                        "reload": reload,
-                        "waitForLoad": wait_for_load,
-                        "openIfNotFound": open_if_not_found,
-                        "appName": "snow-cli",
-                    });
-                    let response = bridge
-                        .send_action_and_wait(&payload, &correlation_id, timeout_secs)
-                        .await?;
-                    print_response_value(response, output_format)
-                }
+                print_response_value(response, output_format)
             }
-        }
+        },
         SnuCommands::Context(context_args) => match context_args.command {
             SnuContextCommands::Get { timeout_secs } => {
                 let (bridge, instance) =
                     connect_and_wait_for_session(timeout_secs, target_origin).await?;
-                let correlation_id = correlation_id("context_get");
-                let payload = json!({
-                    "action": "agentGetContext",
-                    "agentRequestId": correlation_id,
-                    "instance": instance,
-                    "appName": "snow-cli",
-                });
-                let response = bridge
-                    .send_action_and_wait(&payload, &correlation_id, timeout_secs)
-                    .await?;
+                let mut fields = Map::new();
+                fields.insert("instance".to_string(), serde_json::to_value(instance)?);
+                let response = send_agent_action_with_prefix(
+                    &bridge,
+                    "context_get",
+                    "agentGetContext",
+                    fields,
+                    timeout_secs,
+                )
+                .await?;
                 print_response_value(response, output_format)
             }
             SnuContextCommands::Switch {
@@ -279,20 +272,23 @@ pub async fn handle(
             } => {
                 let (bridge, instance) =
                     connect_and_wait_for_session(timeout_secs, target_origin).await?;
-                let correlation_id = correlation_id("context");
-                let payload = json!({
-                    "action": "switchContext",
-                    "agentRequestId": correlation_id,
-                    "switchType": switch_type.as_action_value(),
-                    "value": value,
-                    "reloadTab": !no_reload_tab,
-                    "tabUrl": tab_url,
-                    "instance": instance,
-                    "appName": "snow-cli",
-                });
-                let response = bridge
-                    .send_action_and_wait(&payload, &correlation_id, timeout_secs)
-                    .await?;
+                let mut fields = Map::new();
+                fields.insert(
+                    "switchType".to_string(),
+                    Value::String(switch_type.as_action_value().to_string()),
+                );
+                fields.insert("value".to_string(), Value::String(value));
+                fields.insert("reloadTab".to_string(), Value::Bool(!no_reload_tab));
+                fields.insert("tabUrl".to_string(), Value::String(tab_url));
+                fields.insert("instance".to_string(), serde_json::to_value(instance)?);
+                let response = send_agent_action_with_prefix(
+                    &bridge,
+                    "context",
+                    "switchContext",
+                    fields,
+                    timeout_secs,
+                )
+                .await?;
                 print_response_value(response, output_format)
             }
         },
@@ -307,18 +303,18 @@ pub async fn handle(
             }
             let (bridge, instance) =
                 connect_and_wait_for_session(timeout_secs, target_origin).await?;
-            let correlation_id = correlation_id("screenshot");
-            let payload = json!({
-                "action": "takeScreenshot",
-                "agentRequestId": correlation_id,
-                "url": url,
-                "tabId": tab_id,
-                "instance": instance,
-                "appName": "snow-cli",
-            });
-            let response = bridge
-                .send_action_and_wait(&payload, &correlation_id, timeout_secs)
-                .await?;
+            let mut fields = Map::new();
+            fields.insert("url".to_string(), serde_json::to_value(url)?);
+            fields.insert("tabId".to_string(), serde_json::to_value(tab_id)?);
+            fields.insert("instance".to_string(), serde_json::to_value(instance)?);
+            let response = send_agent_action_with_prefix(
+                &bridge,
+                "screenshot",
+                "takeScreenshot",
+                fields,
+                timeout_secs,
+            )
+            .await?;
             let value = save_screenshot_response(response, out_path.as_deref())?;
             print_output(&value, output_format)
         }
@@ -341,21 +337,21 @@ pub async fn handle(
             let content_type =
                 content_type.unwrap_or_else(|| guess_content_type(&file_path).to_string());
             let image_data = base64::engine::general_purpose::STANDARD.encode(bytes);
-            let correlation_id = correlation_id("attachment");
-            let payload = json!({
-                "action": "uploadAttachment",
-                "agentRequestId": correlation_id,
-                "tableName": table,
-                "recordSysId": sys_id,
-                "fileName": file_name,
-                "imageData": image_data,
-                "contentType": content_type,
-                "instance": instance,
-                "appName": "snow-cli",
-            });
-            let response = bridge
-                .send_action_and_wait(&payload, &correlation_id, timeout_secs)
-                .await?;
+            let mut fields = Map::new();
+            fields.insert("tableName".to_string(), Value::String(table));
+            fields.insert("recordSysId".to_string(), Value::String(sys_id));
+            fields.insert("fileName".to_string(), Value::String(file_name.to_string()));
+            fields.insert("imageData".to_string(), Value::String(image_data));
+            fields.insert("contentType".to_string(), Value::String(content_type));
+            fields.insert("instance".to_string(), serde_json::to_value(instance)?);
+            let response = send_agent_action_with_prefix(
+                &bridge,
+                "attachment",
+                "uploadAttachment",
+                fields,
+                timeout_secs,
+            )
+            .await?;
             print_response_value(response, output_format)
         }
         SnuCommands::Broker(args) => {
