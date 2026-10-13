@@ -20,6 +20,106 @@ auth_method = "api_key"
 }
 
 #[tokio::test]
+async fn test_import_set_csv_is_rejected_before_post() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/now/import/u_import_table"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"status": "inserted", "sys_id": "created123"},
+                {"status": "error", "error_message": "bad row"}
+            ]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    for source in ["flag", "env", "config"] {
+        let (_dir, config_path) = common::create_temp_config(&format!(
+            "default_profile = 'default'\n{}[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
+            if source == "config" {
+                "default_output = 'csv'\n"
+            } else {
+                ""
+            }
+        ));
+        for row_flag in [None, Some("--allow-row-errors"), Some("--fail-on-error")] {
+            let mut cmd = cargo_bin_cmd!("snow-cli");
+            cmd.env("SNOW_CLI_CONFIG", &config_path)
+                .env("SNOW_CLI_API_TOKEN", "test-api-token")
+                .env_remove("SNOW_CLI_OUTPUT")
+                .args(["--instance", &server.uri()]);
+            match source {
+                "flag" => {
+                    cmd.args(["--output", "csv"]);
+                }
+                "env" => {
+                    cmd.env("SNOW_CLI_OUTPUT", "csv");
+                }
+                _ => {}
+            }
+            cmd.args(["import-set", "load", "u_import_table", "--data", "{}"]);
+            if let Some(flag) = row_flag {
+                cmd.arg(flag);
+            }
+            let assertion = cmd.assert().code(1).stdout("");
+            let error: serde_json::Value =
+                serde_json::from_slice(&assertion.get_output().stderr).unwrap();
+            assert!(
+                error["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("CSV output is not supported for import-set load")
+            );
+            assert!(
+                error["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("--output json")
+            );
+        }
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_import_set_explicit_json_overrides_csv_defaults() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/now/import/u_import_table"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"status": "inserted", "sys_id": "created123"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config_path) = common::create_temp_config(
+        "default_profile = 'default'\ndefault_output = 'csv'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
+    );
+    let assertion = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .env("SNOW_CLI_OUTPUT", "csv")
+        .args([
+            "--instance",
+            &server.uri(),
+            "--output",
+            "json",
+            "import-set",
+            "load",
+            "u_import_table",
+            "--data",
+            "{}",
+        ])
+        .assert()
+        .success()
+        .stderr("");
+    let value: serde_json::Value = serde_json::from_slice(&assertion.get_output().stdout).unwrap();
+    assert_eq!(value["summary"]["inserted"], 1);
+    assert_eq!(value["result"][0]["sys_id"], "created123");
+}
+
+#[tokio::test]
 async fn test_import_set_load_with_data_flag() {
     let server = MockServer::start().await;
 

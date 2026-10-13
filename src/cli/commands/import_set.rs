@@ -60,6 +60,14 @@ pub async fn handle(
             fail_on_error: _, // Retained parser compatibility; failure is now the default.
             allow_row_errors,
         } => {
+            // Validate the resolved format before consuming stdin or mutating the
+            // instance: CSV cannot represent this nested summary/result envelope.
+            if matches!(format, OutputFormat::Csv) {
+                anyhow::bail!(
+                    "CSV output is not supported for import-set load; use --output json, jsonl, toon, text, or auto. No import request was sent."
+                );
+            }
+
             tracing::info!("Loading data into staging table: {}", table);
 
             let body = read_data(data)?;

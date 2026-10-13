@@ -428,6 +428,41 @@ async fn discovery_parse_errors_and_read_only_denial_do_not_touch_network() {
 }
 
 #[tokio::test]
+async fn unsupported_import_csv_never_mutates_or_emits_partial_results() {
+    let (_dir, config) = config();
+    let server = MockServer::start().await;
+    for allow in [false, true] {
+        for payload in [None, Some("{}"), Some("not JSON")] {
+            let mut cmd = command("snow-cli", &config, &server.uri(), "csv");
+            cmd.args(["import-set", "load", "u_contract"]);
+            if let Some(data) = payload {
+                cmd.args(["--data", data]);
+            }
+            if allow {
+                cmd.arg("--allow-row-errors");
+            }
+            let output = cmd.assert().code(1).get_output().clone();
+            assert!(output.stdout.is_empty());
+            let value = error(&output.stderr);
+            assert!(
+                value["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("CSV output is not supported")
+            );
+            assert!(
+                value["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("No import request was sent")
+            );
+            no_credentials(&output);
+        }
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn import_partial_failure_keeps_results_and_requires_explicit_acceptance() {
     let (_dir, config) = config();
     let server = MockServer::start().await;

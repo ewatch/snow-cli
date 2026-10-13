@@ -125,6 +125,7 @@ ordinary `cargo test` and `cargo clippy --all-targets -- -D warnings`.
 | Artifact and summary | `data export --out` | all six | both |
 | Mutation | `table create` | all six | writable |
 | Partial mutation failure / explicit acceptance | `import-set load` | all except CSV | writable |
+| Unsupported format rejected before mutation/input | `import-set load` | CSV | writable |
 | Raw non-JSON passthrough | `api get` | all six | both |
 | API errors and rate limits | `table list` | all six | both |
 | Timeout | `table list --timeout-secs 1` | JSON | both |
@@ -149,9 +150,10 @@ Intentional differences and limits:
 - Raw non-JSON API bodies remain raw in every format, including JSON.
 - Export artifacts follow the requested format; auto intentionally exports
   JSON so it remains importable. Explicit TOON/CSV artifacts are not JSON.
-- Nested import-set responses do not currently support CSV serialization;
-  that unsafe post-mutation failure is tracked in `servicenow-cli-126`.
-  The partial-failure matrix covers the five structured formats.
+- Nested import-set responses do not support CSV. `import-set load` rejects
+  resolved CSV output before consuming input or sending a request, including
+  CSV selected via environment or config. Use `--output json` to override it.
+  The partial-failure matrix covers the five supported structured formats.
 
 Add a representative case here when introducing a response class or changing
 format, stream, metadata, or exit semantics. Keep specialized per-command
