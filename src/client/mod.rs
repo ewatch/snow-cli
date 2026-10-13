@@ -23,6 +23,7 @@ pub use core::{
     SnowClient,
 };
 pub use identity::CurrentUser;
+pub use native_session::NativeSessionSwitchError;
 pub use transport::{fetch_skill_resource, post_oauth_token_form};
 
 pub(crate) use core::resolve_authenticated_url;

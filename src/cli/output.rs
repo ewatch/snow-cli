@@ -172,6 +172,17 @@ struct RecordPreviewEnvelope<'a> {
     record: &'a Record,
 }
 
+/// Reject formats that cannot represent preview metadata without data loss.
+pub(crate) fn ensure_preview_supported(preview: bool, format: &OutputFormat) -> anyhow::Result<()> {
+    if preview && matches!(format, OutputFormat::Csv) {
+        return Err(crate::models::validation::ValidationError::new(format!(
+            "--preview is not supported with --output {}; use json, jsonl, toon, text, or auto, or omit --preview for lossless CSV",
+            format.as_str()
+        )).into());
+    }
+    Ok(())
+}
+
 /// Write a table-list result with totals and preview metadata to stdout.
 ///
 /// CSV stays a plain record table (metadata would corrupt the tabular
@@ -204,29 +215,10 @@ pub(crate) fn print_record_preview(
     }
 
     let envelope = RecordPreviewEnvelope { preview, record };
-    match format {
-        OutputFormat::Json => {
-            let json = serde_json::to_string(&envelope)?;
-            println!("{json}");
-        }
-        OutputFormat::Csv => {
-            write_records_csv(std::slice::from_ref(record), &mut std::io::stdout())?;
-        }
-        OutputFormat::Jsonl => {
-            println!("{}", serde_json::to_string(&envelope)?);
-        }
-        OutputFormat::Toon => {
-            write_toon(&envelope, &mut std::io::stdout())?;
-        }
-        OutputFormat::Text => {
-            let json = serde_json::to_string_pretty(&envelope)?;
-            println!("{json}");
-        }
-        OutputFormat::Auto => {
-            emit_auto(&serde_json::to_value(&envelope)?, &mut std::io::stdout())?;
-        }
+    if matches!(format, OutputFormat::Csv) {
+        return write_records_csv(std::slice::from_ref(record), &mut std::io::stdout());
     }
-    Ok(())
+    print_output(&envelope, format)
 }
 
 pub(crate) fn write_table_list_with_preview<W: Write>(

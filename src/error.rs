@@ -262,6 +262,15 @@ fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutpu
         ));
         return Some((output, 7));
     }
+    if let Some(error) = error.downcast_ref::<crate::client::NativeSessionSwitchError>() {
+        let output = ErrorOutput::new(
+            "SESSION_SWITCH_UNCERTAIN",
+            &error.to_string(),
+            ErrorClass::Command,
+            RetryAdvice::ManualReview,
+        );
+        return Some((output, 1));
+    }
     if let Some(error) = error.downcast_ref::<ApiError>() {
         return Some((
             ErrorOutput::api(

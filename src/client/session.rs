@@ -204,7 +204,19 @@ impl SnowClient {
         bootstrap_path: &str,
     ) -> anyhow::Result<FormSession> {
         let url = self.authorize_instance_request(&Method::GET, bootstrap_path)?;
-        if let Some(session) = self.session.form_session.clone() {
+        if let Some(mut session) = self.session.form_session.clone() {
+            // The form token is cached, but native cookies live only in the authenticator.
+            // Refresh the request snapshot every time so response rotations are authoritative.
+            if let Some(native) = self.authenticator.native_session_credentials() {
+                session.cookie_header = native.cookie_header.expose_secret().to_string();
+                session.jsessionid = read_cookie_value(&session.cookie_header, "JSESSIONID")
+                    .or_else(|| self.session.jsessionid.clone())
+                    .ok_or_else(|| anyhow::anyhow!("Native session has no JSESSIONID cookie"))?;
+                if !native.csrf_token.expose_secret().is_empty() {
+                    session.g_ck = native.csrf_token.expose_secret().to_string();
+                }
+                self.session.jsessionid = Some(session.jsessionid.clone());
+            }
             return Ok(session);
         }
 

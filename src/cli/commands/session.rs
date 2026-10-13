@@ -107,6 +107,11 @@ pub async fn handle(
                     output::print_list(&client.native_session_options(kind).await?, format)
                 }
                 SessionCommands::Switch { kind, value } => {
+                    if matches!(format, OutputFormat::Csv) {
+                        return Err(crate::models::validation::ValidationError::new(
+                            "session switch does not support --output csv; use json, jsonl, toon, text, or auto",
+                        ).into());
+                    }
                     let (before, after) = client.switch_native_session(kind, &value).await?;
                     let changed = before.selection(kind).map(|context| &context.id)
                         != after.selection(kind).map(|context| &context.id);

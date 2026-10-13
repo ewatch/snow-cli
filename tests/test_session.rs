@@ -190,7 +190,31 @@ async fn successful_http_status_does_not_mean_verified_switch() {
         .args(["session", "switch", "domain", APP])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("read-back did not match"));
+        .stderr(predicate::str::contains("SESSION_SWITCH_UNCERTAIN"))
+        .stderr(predicate::str::contains("manual_review"))
+        .stderr(predicate::str::contains("session show"));
+}
+
+#[tokio::test]
+async fn switch_csv_is_rejected_before_any_network_mutation() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let (_dir, config, store) = config(&server.uri());
+    command("full", &config, &store)
+        .args(["--output", "csv", "session", "switch", "domain", APP])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("VALIDATION_ERROR"));
 }
 
 #[tokio::test]

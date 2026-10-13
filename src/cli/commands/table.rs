@@ -31,7 +31,7 @@ pub async fn handle(
             query_no_domain,
         } => {
             tracing::info!("Listing records from table: {}", table);
-            ensure_preview_supported(preview, format)?;
+            output::ensure_preview_supported(preview, format)?;
 
             let effective_limit = if all {
                 None
@@ -94,7 +94,7 @@ pub async fn handle(
             query_no_domain,
         } => {
             tracing::info!("Getting record {} from table: {}", sys_id, table);
-            ensure_preview_supported(preview, format)?;
+            output::ensure_preview_supported(preview, format)?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -506,17 +506,6 @@ struct SchemaEntry {
 }
 
 /// Print schema entries in the requested format.
-fn ensure_preview_supported(preview: bool, format: &OutputFormat) -> anyhow::Result<()> {
-    if preview && !supports_preview_metadata(format) {
-        return Err(ValidationError::new("--preview is not supported with --output csv; use json, jsonl, toon, text, or auto, or omit --preview for lossless CSV").into());
-    }
-    Ok(())
-}
-
-fn supports_preview_metadata(format: &OutputFormat) -> bool {
-    !matches!(format, OutputFormat::Csv)
-}
-
 fn print_schema(entries: &[SchemaEntry], format: &OutputFormat) -> anyhow::Result<()> {
     match format {
         OutputFormat::Json => {

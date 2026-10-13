@@ -21,7 +21,7 @@ pub async fn handle(
             preview,
         } => {
             tracing::info!(query = %query, "Searching code");
-            ensure_preview_supported(preview, format)?;
+            output::ensure_preview_supported(preview, format)?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -125,20 +125,6 @@ fn preview_codesearch_output(json: &mut serde_json::Value, preview_enabled: bool
     } else {
         PreviewReport::default()
     }
-}
-
-fn ensure_preview_supported(preview: bool, format: &OutputFormat) -> anyhow::Result<()> {
-    if preview && !supports_preview_metadata(format) {
-        anyhow::bail!(
-            "--preview is not supported with --output {}; use json, jsonl, toon, text, or auto, or omit --preview for lossless CSV",
-            format.as_str()
-        );
-    }
-    Ok(())
-}
-
-fn supports_preview_metadata(format: &OutputFormat) -> bool {
-    !matches!(format, OutputFormat::Csv)
 }
 
 fn insert_preview(

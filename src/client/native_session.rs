@@ -8,6 +8,23 @@ use crate::models::{
 };
 use http::Method;
 use serde_json::{Value, json};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum NativeSessionSwitchError {
+    #[error(
+        "Context switch request failed; session state is uncertain. Run session show before taking further action. No automatic retry or rollback was attempted."
+    )]
+    RequestFailed(#[source] anyhow::Error),
+    #[error(
+        "Context switch was sent, but verification read-back failed; session state is uncertain. Run session show before taking further action. No automatic retry or rollback was attempted."
+    )]
+    VerificationFailed(#[source] anyhow::Error),
+    #[error(
+        "Context switch was sent, but verification did not match the requested value; session state is uncertain. Run session show before taking further action. No automatic retry or rollback was attempted."
+    )]
+    Mismatch,
+}
 
 const BOOTSTRAP: &str = "/navpage.do";
 const PICKERS: &str = "/api/now/ui/concoursepicker/current";
@@ -324,15 +341,17 @@ impl SnowClient {
             SessionSwitchType::Updateset => json!({"sysId":selected.id,"name":selected.name}),
         };
         let path = format!("/api/now/ui/concoursepicker/{}", kind.endpoint());
-        self.put(&path, &body.to_string()).await.map_err(|error| {
-            error.context("Native context switch failed. Session may have changed; run session show. No automatic retry or rollback was attempted.")
-        })?;
-        let after = self.inspect_native_session().await.map_err(|_| anyhow::anyhow!("Context switch was sent, but read-back failed. Session may have changed; run session show. No automatic retry or rollback was attempted."))?;
+        self.put(&path, &body.to_string())
+            .await
+            .map_err(NativeSessionSwitchError::RequestFailed)?;
+        let after = self
+            .inspect_native_session()
+            .await
+            .map_err(NativeSessionSwitchError::VerificationFailed)?;
         let actual = after.selection(kind);
-        anyhow::ensure!(
-            actual.is_some_and(|actual| actual.id == selected.id),
-            "Context switch was sent but read-back did not match the requested value. Session may have changed; run session show. No automatic retry or rollback was attempted."
-        );
+        if actual.is_none_or(|actual| actual.id != selected.id) {
+            return Err(NativeSessionSwitchError::Mismatch.into());
+        }
         Ok((before, after))
     }
 }
