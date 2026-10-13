@@ -101,6 +101,10 @@ than being interpreted as Script Background logs.
 produce a success envelope with an errors list: they retain the stderr-only,
 nonzero-exit contract below. Successful output may contain arbitrary script
 content; do not print secrets or treat result data as automatically redacted.
+Before output, the client removes literal and URL-encoded echoes of transported
+authentication credentials (including form CSRF, cookies, and rotated cookies).
+This limited guard preserves other script output; it does not detect arbitrary
+secrets printed by a script or every possible encoding.
 
 ### Execution failures
 

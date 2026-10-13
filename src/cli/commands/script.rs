@@ -138,7 +138,7 @@ async fn execute_background_script(
 
     let status = response.status();
     let final_url = response.final_url().to_string();
-    let response_headers = response.headers().clone();
+    let server_timing = response.server_timing().map(str::to_string);
 
     tracing::debug!(
         status = status,
@@ -155,11 +155,6 @@ async fn execute_background_script(
         )
         .into());
     }
-
-    let server_timing = response_headers
-        .get("server-timing")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
 
     let mut response_body = response.text().await?;
     if requires_form_session {

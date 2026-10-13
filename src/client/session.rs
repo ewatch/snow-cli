@@ -444,6 +444,9 @@ mod tests {
                 .await;
         }
         let mut client = test_client(&server.uri(), MockAuth::new("test-token"));
+        // Ephemeral input is used only against the mock; no credential is embedded
+        // in the test binary or used with a real instance.
+        let password = uuid::Uuid::new_v4().to_string();
         let errors = [
             client
                 .ensure_form_session("/sys.scripts.modern.do")
@@ -454,7 +457,7 @@ mod tests {
                 .await
                 .unwrap_err(),
             client
-                .form_login_cookie_header("user", "password")
+                .form_login_cookie_header("user", &password)
                 .await
                 .unwrap_err(),
         ];

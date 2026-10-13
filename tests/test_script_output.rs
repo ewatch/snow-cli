@@ -8,6 +8,75 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
+async fn script_output_does_not_echo_transport_credentials() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sys.scripts.modern.do"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Set-Cookie", "JSESSIONID=session-private; Path=/")
+                .set_body_string("g_ck='csrf-private';"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST")).and(path("/sys.scripts.do"))
+        .respond_with(ResponseTemplate::new(200)
+            .insert_header("Set-Cookie", "JSESSIONID=rotated-private; Path=/")
+            .set_body_string("<HTML><BODY>Script completed<HR/><PRE>*** Script: session-private csrf-private rotated-private<BR/>*** Script: keep this output</PRE></BODY></HTML>"))
+        .mount(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/api/x_test/run"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"output":"api-private keep this output"})),
+        )
+        .mount(&server)
+        .await;
+    let (_dir, config) = common::create_temp_config(
+        "default_profile='default'\n[profiles.default]\ninstance='https://placeholder.service-now.com'\nauth_method='api_key'\n",
+    );
+    for endpoint in ["/sys.scripts.do", "/api/x_test/run"] {
+        for format in ["json", "jsonl", "toon", "auto", "text", "csv"] {
+            let assertion = cargo_bin_cmd!("snow-cli")
+                .env("SNOW_CLI_CONFIG", &config)
+                .env("SNOW_CLI_API_TOKEN", "api-private")
+                .args([
+                    "--instance",
+                    &server.uri(),
+                    "--output",
+                    format,
+                    "script",
+                    "run",
+                    "--endpoint",
+                    endpoint,
+                    "--code",
+                    "gs.print('keep this output')",
+                ])
+                .assert()
+                .success();
+            let stdout = String::from_utf8_lossy(&assertion.get_output().stdout);
+            let stderr = String::from_utf8_lossy(&assertion.get_output().stderr);
+            assert!(stdout.contains("keep this output"));
+            for secret in [
+                "session-private",
+                "csrf-private",
+                "rotated-private",
+                "api-private",
+            ] {
+                assert!(
+                    !stdout.contains(secret),
+                    "{endpoint} {format}: credential leaked to stdout"
+                );
+                assert!(
+                    !stderr.contains(secret),
+                    "{endpoint} {format}: credential leaked to stderr"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn script_execution_log_is_structured_and_text_is_preserved() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

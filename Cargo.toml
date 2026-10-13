@@ -47,7 +47,7 @@ thiserror = "2"
 anyhow = "1"
 
 # Async trait support
-async-trait = "0.1"
+async-trait = "0.1.92"
 
 # HTTP header types and cookie expiry dates
 http = "1"

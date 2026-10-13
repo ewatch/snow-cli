@@ -11,6 +11,7 @@ mod core;
 mod debug;
 mod identity;
 mod native_session;
+mod script_response;
 mod session;
 mod session_bootstrap;
 mod table;
@@ -24,6 +25,7 @@ pub use core::{
 };
 pub use identity::CurrentUser;
 pub use native_session::NativeSessionSwitchError;
+pub use script_response::BackgroundScriptResponse;
 pub use transport::{fetch_skill_resource, post_oauth_token_form};
 
 pub(crate) use core::resolve_authenticated_url;

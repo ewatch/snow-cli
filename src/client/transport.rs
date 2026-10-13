@@ -152,7 +152,7 @@ impl SnowClient {
         script: &str,
         scope: &str,
         options: BackgroundScriptOptions,
-    ) -> anyhow::Result<ClientResponse> {
+    ) -> anyhow::Result<BackgroundScriptResponse> {
         let url = self.authorize_instance_request(&Method::POST, endpoint)?;
 
         let request = if endpoint_requires_form_session(endpoint) {
@@ -200,6 +200,8 @@ impl SnowClient {
                 .build()?
         };
 
+        let mut redactions = super::script_response::ScriptRedactions::default();
+        redactions.observe_request(request.headers());
         log_raw_http_request(&request);
         let response = self.http.execute(request).await?;
         log_raw_http_response(
@@ -207,9 +209,23 @@ impl SnowClient {
             response.status(),
             response.headers(),
         );
+        redactions.observe_response(response.headers());
         self.observe_session_response_headers(response.headers())
             .await?;
-        Ok(ClientResponse { inner: response })
+        let status = response.status().as_u16();
+        let final_url = response.url().to_string();
+        let server_timing = response
+            .headers()
+            .get("server-timing")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = redactions.redact(response.text().await?);
+        Ok(BackgroundScriptResponse {
+            status,
+            final_url,
+            server_timing,
+            body,
+        })
     }
 
     /// Send an authenticated GET request.
