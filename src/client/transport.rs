@@ -156,8 +156,14 @@ impl SnowClient {
         let url = self.authorize_instance_request(&Method::POST, endpoint)?;
 
         let request = if endpoint_requires_form_session(endpoint) {
-            let session = self.ensure_form_session(FORM_SCRIPT_BOOTSTRAP_PATH).await?;
-            let cookie_header = self.current_form_cookie_header()?;
+            self.bootstrap_form_session(FORM_SCRIPT_BOOTSTRAP_PATH)
+                .await?;
+            let Some(session) = self.current_form_session() else {
+                anyhow::bail!("No form-session CSRF token is available");
+            };
+            let Some(cookie_header) = self.current_form_cookie_header() else {
+                anyhow::bail!("No form-session cookies are available");
+            };
             let mut form_fields = vec![
                 ("script", script.to_string()),
                 ("runscript", "Run script".to_string()),

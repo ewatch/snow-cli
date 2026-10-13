@@ -736,11 +736,14 @@ async fn test_auth_login_authorization_code_default_uses_loopback_callback() {
     let callback_path = callback_path.to_string();
     let child = tokio::task::spawn_blocking(move || {
         let mut stream = std::net::TcpStream::connect(&address).unwrap();
-        write!(
-            stream,
-            "GET /{callback_path}?code=loopback-code&state={state} HTTP/1.1\r\nHost: {address}\r\n\r\n"
-        )
-        .unwrap();
+        // TCP does not preserve write boundaries: force a fragmented request so
+        // the listener cannot assume its first read contains the callback line.
+        stream.write_all(b"GET /").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let remaining = format!(
+            "{callback_path}?code=loopback-code&state={state} HTTP/1.1\r\nHost: {address}\r\n\r\n"
+        );
+        stream.write_all(remaining.as_bytes()).unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");

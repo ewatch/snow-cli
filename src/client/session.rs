@@ -158,30 +158,44 @@ impl SnowClient {
         Ok(())
     }
 
-    pub(super) fn current_form_cookie_header(&self) -> anyhow::Result<String> {
+    pub(super) fn current_form_cookie_header(&self) -> Option<String> {
         if let Some(native) = self.authenticator.native_session_credentials() {
-            return Ok(native.cookie_header.expose_secret().to_string());
+            return Some(native.cookie_header.expose_secret().to_string());
         }
-        self.session
-            .form_cookie_header
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("No form-session cookies are available"))
+        self.session.form_cookie_header.clone()
+    }
+
+    pub(super) fn current_form_session(&self) -> Option<FormSession> {
+        if self.session.native_form_bootstrapped
+            && let Some(native) = self.authenticator.native_session_credentials()
+        {
+            return Some(FormSession {
+                g_ck: native.csrf_token.expose_secret().to_string(),
+            });
+        }
+        self.session.form_session.clone()
     }
 
     pub async fn ensure_form_session(
         &mut self,
         bootstrap_path: &str,
     ) -> anyhow::Result<FormSession> {
-        let url = self.authorize_instance_request(&Method::GET, bootstrap_path)?;
-        if self.session.native_form_bootstrapped
-            && let Some(native) = self.authenticator.native_session_credentials()
-        {
-            return Ok(FormSession {
-                g_ck: native.csrf_token.expose_secret().to_string(),
-            });
+        self.bootstrap_form_session(bootstrap_path).await?;
+        match self.current_form_session() {
+            Some(session) => Ok(session),
+            None => anyhow::bail!("No form-session CSRF token is available"),
         }
-        if let Some(session) = self.session.form_session.clone() {
-            return Ok(session);
+    }
+
+    /// Establish readiness without returning credentials with an error-bearing
+    /// transport result. Request snapshots are read separately at dispatch time.
+    pub(super) async fn bootstrap_form_session(
+        &mut self,
+        bootstrap_path: &str,
+    ) -> anyhow::Result<()> {
+        let url = self.authorize_instance_request(&Method::GET, bootstrap_path)?;
+        if self.current_form_session().is_some() {
+            return Ok(());
         }
 
         let auth_headers = self.authenticator.authenticate().await?;
@@ -219,7 +233,11 @@ impl SnowClient {
             if let Some((username, password)) = parse_basic_credentials(&auth_headers) {
                 tracing::info!(url = %url, "Form bootstrap returned x-is-logged-in=false; attempting explicit login.do form login");
 
-                let cookie_header = self.form_login_cookie_header(&username, &password).await?;
+                let cookie_header = match self.form_login_cookie_header(&username, &password).await
+                {
+                    Ok(cookies) => cookies,
+                    Err(error) => return Err(error),
+                };
                 return self
                     .ensure_form_session_with_cookie(bootstrap_path, &cookie_header)
                     .await;
@@ -243,11 +261,12 @@ impl SnowClient {
         let jsessionid = match native.as_ref() {
             Some(session) => read_cookie_value(session.cookie_header.expose_secret(), "JSESSIONID"),
             None => self.session.jsessionid.clone(),
-        }.ok_or_else(|| {
-            anyhow::anyhow!(
+        };
+        let Some(jsessionid) = jsessionid else {
+            anyhow::bail!(
                 "Could not determine JSESSIONID for form session. Ensure the profile is authenticated before running form-based commands."
-            )
-        })?;
+            );
+        };
 
         let cookie_header = native
             .as_ref()
@@ -271,10 +290,10 @@ impl SnowClient {
         if native.is_some() {
             self.session.native_form_bootstrapped = true;
         } else {
-            self.session.form_session = Some(session.clone());
+            self.session.form_session = Some(session);
         }
 
-        Ok(session)
+        Ok(())
     }
 
     pub(super) async fn form_login_cookie_header(
@@ -367,7 +386,7 @@ impl SnowClient {
         &mut self,
         bootstrap_path: &str,
         login_cookie_header: &str,
-    ) -> anyhow::Result<FormSession> {
+    ) -> anyhow::Result<()> {
         let url = self.url(bootstrap_path)?;
         let request = self
             .http
@@ -411,15 +430,15 @@ impl SnowClient {
             &response_headers,
         );
 
-        let jsessionid = read_cookie_value(&cookie_header, "JSESSIONID").ok_or_else(|| {
-            anyhow::anyhow!("Could not determine JSESSIONID from login/bootstrap cookies.")
-        })?;
+        let Some(jsessionid) = read_cookie_value(&cookie_header, "JSESSIONID") else {
+            anyhow::bail!("Could not determine JSESSIONID from login/bootstrap cookies.");
+        };
 
         self.session.jsessionid = Some(jsessionid.clone());
         self.session.form_cookie_header = Some(cookie_header);
         let session = FormSession { g_ck };
-        self.session.form_session = Some(session.clone());
-        Ok(session)
+        self.session.form_session = Some(session);
+        Ok(())
     }
 }
 #[cfg(test)]

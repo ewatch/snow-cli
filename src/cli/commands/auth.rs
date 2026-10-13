@@ -529,9 +529,34 @@ async fn wait_for_oauth_redirect(
             )
         })??;
 
-    let mut buffer = vec![0_u8; 8192];
-    let bytes_read = stream.read(&mut buffer).await?;
-    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
+    // Bound the local HTTP header block; TCP reads may split even the request line.
+    const MAX_CALLBACK_HEADER_BYTES: usize = 8192;
+    let request = timeout(OAUTH_LOGIN_TIMEOUT, async {
+        let mut buffer = vec![0_u8; MAX_CALLBACK_HEADER_BYTES];
+        let mut used = 0;
+        loop {
+            let read = stream.read(&mut buffer[used..]).await?;
+            anyhow::ensure!(
+                read > 0,
+                "OAuth callback ended before its HTTP headers were complete"
+            );
+            used += read;
+            if buffer[..used]
+                .windows(4)
+                .any(|window| window == b"\r\n\r\n")
+            {
+                return Ok::<_, anyhow::Error>(
+                    String::from_utf8_lossy(&buffer[..used]).into_owned(),
+                );
+            }
+            anyhow::ensure!(
+                used < MAX_CALLBACK_HEADER_BYTES,
+                "OAuth callback HTTP headers exceed the size limit"
+            );
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("Timed out reading OAuth callback HTTP headers"))??;
     let first_line = request.lines().next().unwrap_or_default();
 
     let result = parse_oauth_callback_request(first_line, expected_path, expected_state);
