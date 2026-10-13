@@ -7,7 +7,6 @@ use crate::cli::spinner::SnowflakeSpinner;
 use crate::client::error::{ApiError, GraphqlError};
 
 use super::core::{endpoint_requires_form_session, validate_external_url};
-use super::session::upsert_cookie_in_header;
 use super::*;
 
 const MAX_AUTH_RETRIES: u32 = 1;
@@ -158,6 +157,7 @@ impl SnowClient {
 
         let request = if endpoint_requires_form_session(endpoint) {
             let session = self.ensure_form_session(FORM_SCRIPT_BOOTSTRAP_PATH).await?;
+            let cookie_header = self.current_form_cookie_header()?;
             let mut form_fields = vec![
                 ("script", script.to_string()),
                 ("runscript", "Run script".to_string()),
@@ -180,7 +180,7 @@ impl SnowClient {
             self.http
                 .post(&url)
                 .header("Accept", "text/html,application/xhtml+xml")
-                .header("Cookie", session.cookie_header)
+                .header("Cookie", cookie_header)
                 .header("X-UserToken", session.g_ck)
                 .form(&form_fields)
                 .build()?
@@ -207,8 +207,7 @@ impl SnowClient {
             response.status(),
             response.headers(),
         );
-        self.authenticator
-            .observe_response_headers(response.headers())
+        self.observe_session_response_headers(response.headers())
             .await?;
         Ok(ClientResponse { inner: response })
     }
@@ -333,19 +332,9 @@ impl SnowClient {
             let response = self.http.execute(request).await?;
             drop(spinner);
 
-            self.authenticator
-                .observe_response_headers(response.headers())
+            self.observe_session_response_headers(response.headers())
                 .await?;
-            if let Some(jsessionid) = extract_jsessionid_from_headers(response.headers()) {
-                self.session.jsessionid = Some(jsessionid.clone());
-                if let Some(form_session) = self.session.form_session.as_mut() {
-                    form_session.jsessionid = jsessionid.clone();
-                    form_session.cookie_header = upsert_cookie_in_header(
-                        &form_session.cookie_header,
-                        "JSESSIONID",
-                        &jsessionid,
-                    );
-                }
+            if extract_jsessionid_from_headers(response.headers()).is_some() {
                 tracing::debug!(
                     url = %url,
                     has_jsessionid = true,

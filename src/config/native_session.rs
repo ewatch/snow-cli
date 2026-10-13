@@ -43,64 +43,62 @@ impl NativeSession {
 
     /// Apply rotations/deletions without retaining Set-Cookie attributes.
     pub fn merge_response_cookies(&mut self, headers: &HeaderMap) -> bool {
-        let mut cookies = self
-            .cookie_header
-            .expose_secret()
-            .split(';')
-            .filter_map(|cookie| cookie.trim().split_once('='))
-            .map(|(name, value)| (name.to_string(), value.to_string()))
-            .collect::<Vec<_>>();
-        let before = cookies.clone();
-        let now = std::time::SystemTime::now();
-        for header in headers.get_all(http::header::SET_COOKIE) {
-            let Ok(value) = header.to_str() else {
+        let before = self.cookie_header.expose_secret().to_string();
+        let merged = merge_cookie_header(&before, headers);
+        if merged == before {
+            return false;
+        }
+        self.cookie_header = Secret::new(merged);
+        true
+    }
+}
+
+/// Merge Set-Cookie updates into a request Cookie header, honoring expiry rules.
+pub fn merge_cookie_header(cookie_header: &str, headers: &HeaderMap) -> String {
+    let mut cookies = cookie_header
+        .split(';')
+        .filter_map(|cookie| cookie.trim().split_once('='))
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect::<Vec<_>>();
+    let now = std::time::SystemTime::now();
+    for header in headers.get_all(http::header::SET_COOKIE) {
+        let Ok(value) = header.to_str() else { continue };
+        let mut parts = value.split(';');
+        let Some((name, value)) = parts.next().and_then(|part| part.trim().split_once('=')) else {
+            continue;
+        };
+        let mut max_age_expired = None;
+        let mut expires = None;
+        for attribute in parts {
+            let Some((key, value)) = attribute.trim().split_once('=') else {
                 continue;
             };
-            let mut parts = value.split(';');
-            let Some((name, value)) = parts.next().and_then(|part| part.trim().split_once('='))
-            else {
-                continue;
-            };
-            let mut max_age_expired = None;
-            let mut expires = None;
-            for attribute in parts {
-                let Some((key, value)) = attribute.trim().split_once('=') else {
-                    continue;
-                };
-                if key.eq_ignore_ascii_case("max-age") {
-                    let value = value.trim();
-                    let digits = value.strip_prefix('-').unwrap_or(value);
-                    if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
-                        max_age_expired =
-                            Some(value.starts_with('-') || digits.bytes().all(|byte| byte == b'0'));
-                    }
-                } else if key.eq_ignore_ascii_case("expires")
-                    && let Ok(date) = httpdate::parse_http_date(value.trim())
-                {
-                    expires = Some(date);
+            if key.eq_ignore_ascii_case("max-age") {
+                let value = value.trim();
+                let digits = value.strip_prefix('-').unwrap_or(value);
+                if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                    max_age_expired =
+                        Some(value.starts_with('-') || digits.bytes().all(|byte| byte == b'0'));
                 }
-            }
-            // RFC 6265 gives a valid Max-Age precedence over Expires.
-            let delete = value.is_empty()
-                || max_age_expired.unwrap_or_else(|| expires.is_some_and(|date| date <= now));
-            cookies.retain(|(key, _)| !key.eq_ignore_ascii_case(name));
-            if !delete {
-                cookies.push((name.to_string(), value.to_string()));
+            } else if key.eq_ignore_ascii_case("expires")
+                && let Ok(date) = httpdate::parse_http_date(value.trim())
+            {
+                expires = Some(date);
             }
         }
-        if cookies != before {
-            self.cookie_header = Secret::new(
-                cookies
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            );
-            true
-        } else {
-            false
+        // RFC 6265 gives a valid Max-Age precedence over Expires.
+        let delete = value.is_empty()
+            || max_age_expired.unwrap_or_else(|| expires.is_some_and(|date| date <= now));
+        cookies.retain(|(key, _)| !key.eq_ignore_ascii_case(name));
+        if !delete {
+            cookies.push((name.to_string(), value.to_string()));
         }
     }
+    cookies
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 pub fn load(profile: &str) -> anyhow::Result<NativeSession> {

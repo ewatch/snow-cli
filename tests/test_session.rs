@@ -77,6 +77,189 @@ async fn base(server: &MockServer) {
 }
 
 #[tokio::test]
+async fn form_requests_use_rotated_native_cookies_and_refreshed_csrf() {
+    use snow_cli::{
+        auth::native_session::NativeSessionAuth,
+        client::{BackgroundScriptOptions, SnowClient},
+        config::native_session::NativeSession,
+        models::secret::Secret,
+    };
+    let server = MockServer::start().await;
+    base(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/ui/concoursepicker/current"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pickers("global")))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sys.scripts.modern.do"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("g_ck='form-csrf';"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sys.scripts.do"))
+        .and(header("Cookie", "JSESSIONID=initial-secret; route=node1"))
+        .and(header("X-UserToken", "form-csrf"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Set-Cookie", "JSESSIONID=rotated-secret; Path=/"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sys.scripts.do"))
+        .and(header("Cookie", "route=node1; JSESSIONID=rotated-secret"))
+        .and(header("X-UserToken", "form-csrf"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sys.scripts.do"))
+        .and(header("Cookie", "route=node1; JSESSIONID=rotated-secret"))
+        .and(header("X-UserToken", "csrf-secret"))
+        .and(wiremock::matchers::body_string_contains(
+            "sysparm_ck=csrf-secret",
+        ))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let auth = NativeSessionAuth::transient(NativeSession {
+        instance: server.uri(),
+        cookie_header: Secret::new("JSESSIONID=initial-secret; route=node1".into()),
+        csrf_token: Secret::new("initial-csrf".into()),
+        authenticated_user: None,
+    });
+    let mut client = SnowClient::new(server.uri(), Box::new(auth)).unwrap();
+    assert_eq!(
+        client
+            .execute_background_script(
+                "/sys.scripts.do",
+                "gs.info('first')",
+                "global",
+                BackgroundScriptOptions::default()
+            )
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        client
+            .native_credentials()
+            .await
+            .unwrap()
+            .cookie_header
+            .expose_secret(),
+        "route=node1; JSESSIONID=rotated-secret"
+    );
+    assert_eq!(
+        client
+            .execute_background_script(
+                "/sys.scripts.do",
+                "gs.info('second')",
+                "global",
+                BackgroundScriptOptions::default()
+            )
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    // Native state has no second credential owner in the form-session cache.
+    assert!(client.form_session().is_none());
+    client.inspect_native_session().await.unwrap();
+    assert_eq!(
+        client
+            .execute_background_script(
+                "/sys.scripts.do",
+                "gs.info('third')",
+                "global",
+                BackgroundScriptOptions::default()
+            )
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+}
+
+#[tokio::test]
+async fn switch_failures_retain_uncertainty_and_safe_cause() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    for verification_failure in [false, true] {
+        let server = MockServer::start().await;
+        base(&server).await;
+        let switched = Arc::new(AtomicBool::new(false));
+        let read = switched.clone();
+        Mock::given(method("GET"))
+            .and(path("/api/now/ui/concoursepicker/current"))
+            .respond_with(move |_: &wiremock::Request| {
+                if read.load(Ordering::SeqCst) {
+                    ResponseTemplate::new(503)
+                } else {
+                    ResponseTemplate::new(200).set_body_json(pickers("global"))
+                }
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/now/ui/concoursepicker/domain"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"result":{"list":[{"value":APP,"label":"TOP"}]}})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/api/now/ui/concoursepicker/domain"))
+            .respond_with(move |_: &wiremock::Request| {
+                switched.store(true, Ordering::SeqCst);
+                ResponseTemplate::new(if verification_failure { 200 } else { 503 })
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (_dir, config, store) = config(&server.uri());
+        let output = command("full", &config, &store)
+            .args(["session", "switch", "domain", APP])
+            .assert()
+            .code(1)
+            .get_output()
+            .clone();
+        assert!(output.stdout.is_empty());
+        let data: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(data["error"]["code"], "SESSION_SWITCH_UNCERTAIN");
+        assert_eq!(data["error"]["retry"], "manual_review");
+        assert_eq!(data["error"]["status"], 503);
+        assert!(
+            data["error"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("SERVER_ERROR")
+        );
+        let message = data["error"]["message"].as_str().unwrap();
+        assert!(message.contains("session show"));
+        assert!(message.contains(if verification_failure {
+            "verification read-back failed"
+        } else {
+            "request failed"
+        }));
+        assert!(
+            !String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("csrf-secret")
+        );
+    }
+}
+
+#[tokio::test]
 async fn native_inspection_is_redacted_and_distinguishes_available_elevation() {
     let server = MockServer::start().await;
     base(&server).await;

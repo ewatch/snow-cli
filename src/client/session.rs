@@ -28,64 +28,6 @@ pub(crate) fn extract_jsessionid_from_headers(headers: &http::HeaderMap) -> Opti
     None
 }
 
-pub(crate) fn extract_cookie_header_from_headers(headers: &http::HeaderMap) -> Option<String> {
-    let cookies = headers
-        .get_all(reqwest::header::SET_COOKIE)
-        .iter()
-        .filter_map(|header| {
-            let set_cookie = header.to_str().ok()?;
-            let cookie_pair = set_cookie.split(';').next()?.trim();
-            if cookie_pair.is_empty() || cookie_pair.split_once('=').is_none() {
-                None
-            } else {
-                Some(cookie_pair.to_string())
-            }
-        })
-        .collect::<Vec<_>>();
-
-    if cookies.is_empty() {
-        None
-    } else {
-        Some(cookies.join("; "))
-    }
-}
-
-pub(super) fn upsert_cookie_in_header(
-    cookie_header: &str,
-    cookie_name: &str,
-    cookie_value: &str,
-) -> String {
-    let mut found = false;
-
-    let mut cookies = cookie_header
-        .split(';')
-        .filter_map(|cookie| {
-            let cookie = cookie.trim();
-            if cookie.is_empty() {
-                None
-            } else {
-                Some(cookie.to_string())
-            }
-        })
-        .map(|cookie| {
-            if let Some((name, _)) = cookie.split_once('=')
-                && name.trim().eq_ignore_ascii_case(cookie_name)
-            {
-                found = true;
-                return format!("{cookie_name}={cookie_value}");
-            }
-
-            cookie
-        })
-        .collect::<Vec<_>>();
-
-    if !found {
-        cookies.push(format!("{cookie_name}={cookie_value}"));
-    }
-
-    cookies.join("; ")
-}
-
 pub(super) fn read_cookie_value(cookie_header: &str, cookie_name: &str) -> Option<String> {
     cookie_header.split(';').find_map(|cookie| {
         let (name, value) = cookie.trim().split_once('=')?;
@@ -199,24 +141,46 @@ pub(crate) fn extract_g_ck_from_body(body: &str) -> Option<String> {
 }
 
 impl SnowClient {
+    pub(super) async fn observe_session_response_headers(
+        &mut self,
+        headers: &http::HeaderMap,
+    ) -> anyhow::Result<()> {
+        self.authenticator.observe_response_headers(headers).await?;
+        if self.authenticator.native_session_credentials().is_none() {
+            if let Some(cookie_header) = self.session.form_cookie_header.as_mut() {
+                *cookie_header =
+                    crate::config::native_session::merge_cookie_header(cookie_header, headers);
+            }
+            if let Some(jsessionid) = extract_jsessionid_from_headers(headers) {
+                self.session.jsessionid = Some(jsessionid);
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn current_form_cookie_header(&self) -> anyhow::Result<String> {
+        if let Some(native) = self.authenticator.native_session_credentials() {
+            return Ok(native.cookie_header.expose_secret().to_string());
+        }
+        self.session
+            .form_cookie_header
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No form-session cookies are available"))
+    }
+
     pub async fn ensure_form_session(
         &mut self,
         bootstrap_path: &str,
     ) -> anyhow::Result<FormSession> {
         let url = self.authorize_instance_request(&Method::GET, bootstrap_path)?;
-        if let Some(mut session) = self.session.form_session.clone() {
-            // The form token is cached, but native cookies live only in the authenticator.
-            // Refresh the request snapshot every time so response rotations are authoritative.
-            if let Some(native) = self.authenticator.native_session_credentials() {
-                session.cookie_header = native.cookie_header.expose_secret().to_string();
-                session.jsessionid = read_cookie_value(&session.cookie_header, "JSESSIONID")
-                    .or_else(|| self.session.jsessionid.clone())
-                    .ok_or_else(|| anyhow::anyhow!("Native session has no JSESSIONID cookie"))?;
-                if !native.csrf_token.expose_secret().is_empty() {
-                    session.g_ck = native.csrf_token.expose_secret().to_string();
-                }
-                self.session.jsessionid = Some(session.jsessionid.clone());
-            }
+        if self.session.native_form_bootstrapped
+            && let Some(native) = self.authenticator.native_session_credentials()
+        {
+            return Ok(FormSession {
+                g_ck: native.csrf_token.expose_secret().to_string(),
+            });
+        }
+        if let Some(session) = self.session.form_session.clone() {
             return Ok(session);
         }
 
@@ -238,8 +202,7 @@ impl SnowClient {
         let status = response.status();
         log_raw_http_response(&url, status, response.headers());
         let response_headers = response.headers().clone();
-        self.authenticator
-            .observe_response_headers(&response_headers)
+        self.observe_session_response_headers(&response_headers)
             .await?;
         let body = response.text().await.unwrap_or_default();
 
@@ -269,10 +232,6 @@ impl SnowClient {
             );
         }
 
-        if let Some(jsessionid) = extract_jsessionid_from_headers(&response_headers) {
-            self.session.jsessionid = Some(jsessionid);
-        }
-
         let g_ck = super::extract_g_ck_from_body(&body).ok_or_else(|| {
             anyhow::anyhow!(
                 "Could not extract g_ck token from {} response. Verify the profile user can access Script Background UI.",
@@ -281,27 +240,39 @@ impl SnowClient {
         })?;
 
         let native = self.authenticator.native_session_credentials();
-        let jsessionid = native.as_ref()
-            .and_then(|session| read_cookie_value(session.cookie_header.expose_secret(), "JSESSIONID"))
-            .or_else(|| self.session.jsessionid.clone()).ok_or_else(|| {
+        let jsessionid = match native.as_ref() {
+            Some(session) => read_cookie_value(session.cookie_header.expose_secret(), "JSESSIONID"),
+            None => self.session.jsessionid.clone(),
+        }.ok_or_else(|| {
             anyhow::anyhow!(
                 "Could not determine JSESSIONID for form session. Ensure the profile is authenticated before running form-based commands."
             )
         })?;
 
         let cookie_header = native
+            .as_ref()
             .map(|session| session.cookie_header.expose_secret().to_string())
-            .or_else(|| super::extract_cookie_header_from_headers(&response_headers))
-            .unwrap_or_else(|| format!("JSESSIONID={jsessionid}"));
-        self.session.jsessionid = Some(jsessionid.clone());
+            .unwrap_or_else(|| {
+                let cookies =
+                    crate::config::native_session::merge_cookie_header("", &response_headers);
+                if cookies.is_empty() {
+                    format!("JSESSIONID={jsessionid}")
+                } else {
+                    cookies
+                }
+            });
+        if native.is_none() {
+            self.session.form_cookie_header = Some(cookie_header);
+            self.session.jsessionid = Some(jsessionid);
+        }
         self.authenticator.update_native_csrf(&g_ck).await?;
 
-        let session = FormSession {
-            jsessionid,
-            g_ck,
-            cookie_header,
-        };
-        self.session.form_session = Some(session.clone());
+        let session = FormSession { g_ck };
+        if native.is_some() {
+            self.session.native_form_bootstrapped = true;
+        } else {
+            self.session.form_session = Some(session.clone());
+        }
 
         Ok(session)
     }
@@ -353,20 +324,10 @@ impl SnowClient {
             let status = response.status();
             log_raw_http_response(&request_url, status, response.headers());
 
-            if let Some(from_response) =
-                super::extract_cookie_header_from_headers(response.headers())
-            {
-                if cookie_header.is_empty() {
-                    cookie_header = from_response;
-                } else {
-                    for cookie in from_response.split(';') {
-                        if let Some((name, value)) = cookie.trim().split_once('=') {
-                            cookie_header =
-                                upsert_cookie_in_header(&cookie_header, name.trim(), value.trim());
-                        }
-                    }
-                }
-            }
+            cookie_header = crate::config::native_session::merge_cookie_header(
+                &cookie_header,
+                response.headers(),
+            );
 
             if status.is_redirection() {
                 let location = response
@@ -445,26 +406,18 @@ impl SnowClient {
             )
         })?;
 
-        let mut cookie_header = login_cookie_header.to_string();
-        if let Some(from_bootstrap) = super::extract_cookie_header_from_headers(&response_headers) {
-            for cookie in from_bootstrap.split(';') {
-                if let Some((name, value)) = cookie.trim().split_once('=') {
-                    cookie_header =
-                        upsert_cookie_in_header(&cookie_header, name.trim(), value.trim());
-                }
-            }
-        }
+        let cookie_header = crate::config::native_session::merge_cookie_header(
+            login_cookie_header,
+            &response_headers,
+        );
 
         let jsessionid = read_cookie_value(&cookie_header, "JSESSIONID").ok_or_else(|| {
             anyhow::anyhow!("Could not determine JSESSIONID from login/bootstrap cookies.")
         })?;
 
         self.session.jsessionid = Some(jsessionid.clone());
-        let session = FormSession {
-            jsessionid,
-            g_ck,
-            cookie_header,
-        };
+        self.session.form_cookie_header = Some(cookie_header);
+        let session = FormSession { g_ck };
         self.session.form_session = Some(session.clone());
         Ok(session)
     }
@@ -521,10 +474,7 @@ mod tests {
     #[test]
     fn form_session_debug_redacts_secret_values() {
         let session = FormSession {
-            jsessionid: "jsession-secret-value".to_string(),
             g_ck: "gck-secret-value".to_string(),
-            cookie_header: "JSESSIONID=jsession-secret-value; glide_user_route=route-secret"
-                .to_string(),
         };
 
         let debug = format!("{session:?}");
@@ -579,31 +529,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_cookie_header_from_multiple_set_cookie_headers() {
-        let mut headers = HeaderMap::new();
-        headers.append(
-            reqwest::header::SET_COOKIE,
-            http::HeaderValue::from_static("glide_user_route=route123; Path=/"),
-        );
-        headers.append(
-            reqwest::header::SET_COOKIE,
-            http::HeaderValue::from_static("JSESSIONID=session456; Path=/; HttpOnly"),
-        );
-
-        assert_eq!(
-            extract_cookie_header_from_headers(&headers),
-            Some("glide_user_route=route123; JSESSIONID=session456".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_cookie_header_returns_none_when_missing() {
-        let headers = HeaderMap::new();
-
-        assert_eq!(extract_cookie_header_from_headers(&headers), None);
-    }
-
-    #[test]
     fn test_extract_g_ck_from_javascript_assignment() {
         let body = r#"<script>window.g_ck = 'token-123';</script>"#;
         assert_eq!(extract_g_ck_from_body(body), Some("token-123".to_string()));
@@ -622,20 +547,6 @@ mod tests {
     fn test_extract_g_ck_returns_none_when_missing() {
         let body = "<html><body>No token here</body></html>";
         assert_eq!(extract_g_ck_from_body(body), None);
-    }
-
-    #[test]
-    fn test_upsert_cookie_in_header_replaces_existing_cookie() {
-        let header = "glide_user_route=route123; JSESSIONID=old-session";
-        let updated = upsert_cookie_in_header(header, "JSESSIONID", "new-session");
-        assert_eq!(updated, "glide_user_route=route123; JSESSIONID=new-session");
-    }
-
-    #[test]
-    fn test_upsert_cookie_in_header_appends_missing_cookie() {
-        let header = "glide_user_route=route123";
-        let updated = upsert_cookie_in_header(header, "JSESSIONID", "new-session");
-        assert_eq!(updated, "glide_user_route=route123; JSESSIONID=new-session");
     }
 
     #[tokio::test]
@@ -668,17 +579,17 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(first.jsessionid, "form-session-123");
         assert_eq!(first.g_ck, "form-gck-456");
-        assert_eq!(first.cookie_header, "JSESSIONID=form-session-123");
+        assert_eq!(
+            client.current_form_cookie_header().unwrap(),
+            "JSESSIONID=form-session-123"
+        );
         assert_eq!(first, second);
         assert_eq!(client.jsessionid(), Some("form-session-123"));
         assert_eq!(
             client.form_session(),
             Some(&FormSession {
-                jsessionid: "form-session-123".to_string(),
                 g_ck: "form-gck-456".to_string(),
-                cookie_header: "JSESSIONID=form-session-123".to_string(),
             })
         );
     }
@@ -707,8 +618,11 @@ mod tests {
             .ensure_form_session("/sys.scripts.modern.do")
             .await
             .unwrap();
-        assert_eq!(form.jsessionid, "existing");
-        assert_eq!(form.cookie_header, "JSESSIONID=existing; route=node1");
+        assert_eq!(form.g_ck, "new-csrf");
+        assert_eq!(
+            client.current_form_cookie_header().unwrap(),
+            "JSESSIONID=existing; route=node1"
+        );
         assert_eq!(
             client
                 .native_credentials()

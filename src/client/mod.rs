@@ -31,9 +31,7 @@ pub(crate) use debug::{
     is_http_debug_enabled, is_http_debug_sensitive_enabled, log_raw_http_request,
     log_raw_http_response,
 };
-pub(crate) use session::{
-    extract_cookie_header_from_headers, extract_g_ck_from_body, extract_jsessionid_from_headers,
-};
+pub(crate) use session::{extract_g_ck_from_body, extract_jsessionid_from_headers};
 
 /// Build an authenticated [`SnowClient`] from the user's configuration.
 ///

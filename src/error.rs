@@ -263,12 +263,27 @@ fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutpu
         return Some((output, 7));
     }
     if let Some(error) = error.downcast_ref::<crate::client::NativeSessionSwitchError>() {
-        let output = ErrorOutput::new(
+        let mut output = ErrorOutput::new(
             "SESSION_SWITCH_UNCERTAIN",
             &error.to_string(),
             ErrorClass::Command,
             RetryAdvice::ManualReview,
         );
+        let source = match error {
+            crate::client::NativeSessionSwitchError::RequestFailed(source)
+            | crate::client::NativeSessionSwitchError::VerificationFailed(source) => Some(source),
+            crate::client::NativeSessionSwitchError::Mismatch => None,
+        };
+        // Render only classified sources through the existing sanitization boundary.
+        // Unknown sources remain retained in the error chain, not exposed as raw text.
+        if let Some((cause, _)) = source.and_then(known_error_output_and_exit_code) {
+            output.error.status = cause.error.status;
+            output.error.instance = cause.error.instance;
+            output.error.detail = Some(safe_message(&format!(
+                "Cause: {}: {}",
+                cause.error.code, cause.error.message
+            )));
+        }
         return Some((output, 1));
     }
     if let Some(error) = error.downcast_ref::<ApiError>() {
@@ -517,6 +532,44 @@ mod tests {
             let (output, exit) = error_output_and_exit_code(&error);
             assert_eq!(exit, 1);
             assert_eq!(output.error.retry, RetryAdvice::ManualReview);
+        }
+    }
+
+    #[test]
+    fn switch_failures_preserve_sources_without_exposing_unclassified_text() {
+        use crate::client::NativeSessionSwitchError;
+        for wrap in [
+            NativeSessionSwitchError::RequestFailed,
+            NativeSessionSwitchError::VerificationFailed,
+        ] {
+            let error = anyhow::Error::new(wrap(anyhow::Error::new(ApiError::from_status(
+                503,
+                "https://dev.service-now.com",
+                None,
+            ))));
+            assert!(error.chain().any(|source| source.is::<ApiError>()));
+            let (output, exit) = error_output_and_exit_code(&error);
+            assert_eq!(exit, 1);
+            assert_eq!(output.error.status, Some(503));
+            assert_eq!(output.error.retry, RetryAdvice::ManualReview);
+            assert_eq!(
+                output.error.instance.as_deref(),
+                Some("https://dev.service-now.com")
+            );
+
+            let error = anyhow::Error::new(wrap(anyhow::anyhow!("unclassified private body")));
+            let (output, _) = error_output_and_exit_code(&error);
+            assert!(output.error.detail.is_none());
+            assert!(
+                !serde_json::to_string(&output)
+                    .unwrap()
+                    .contains("private body")
+            );
+            assert!(
+                error
+                    .chain()
+                    .any(|source| source.to_string() == "unclassified private body")
+            );
         }
     }
 

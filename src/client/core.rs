@@ -10,17 +10,13 @@ use super::{DEFAULT_TIMEOUT_SECS, FORM_SCRIPT_ENDPOINT};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct FormSession {
-    pub jsessionid: String,
     pub g_ck: String,
-    pub cookie_header: String,
 }
 
 impl fmt::Debug for FormSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FormSession")
-            .field("jsessionid", &"<redacted>")
             .field("g_ck", &"<redacted>")
-            .field("cookie_header", &"<redacted>")
             .finish()
     }
 }
@@ -28,6 +24,9 @@ impl fmt::Debug for FormSession {
 #[derive(Debug, Default, Clone)]
 pub(super) struct SessionState {
     pub(super) jsessionid: Option<String>,
+    pub(super) form_cookie_header: Option<String>,
+    // Native credentials live only in the authenticator; remember readiness, not secrets.
+    pub(super) native_form_bootstrapped: bool,
     pub(super) form_session: Option<FormSession>,
 }
 

@@ -21,7 +21,10 @@ HTTP success alone proves a switch or that picker state proves REST capture.
 
 Bind credentials to an origin, disable automatic redirects and authentication
 fallback for native requests, preserve cookie rotation, and expose no credential
-export. Report optional metadata as unknown. Read-only mode permits inspection
+export. The native authenticator is the sole owner of current cookies and CSRF;
+form requests take fresh request snapshots, never cache native credentials. One
+cookie merger handles bootstrap, login, REST, and script response updates,
+including deletion and expiry. Report optional metadata as unknown. Read-only mode permits inspection
 and attachment while denying native form login and context mutation.
 
 ## Alternatives Considered
@@ -37,4 +40,9 @@ Context persists across CLI invocations and normal table/API requests reuse it.
 Native endpoints depend on instance release and security settings; unsupported
 contracts fail explicitly. Browser cookies share context with their browser,
 and platform preferences can affect other sessions for the same user. Failed
-verification leaves the state uncertain and requires a fresh inspection.
+verification leaves the state uncertain and requires a fresh inspection. Typed
+switch failures distinguish request failure, verification failure, and mismatch;
+they preserve underlying causes and render `SESSION_SWITCH_UNCERTAIN` with
+`manual_review` guidance. Classified causes retain safe diagnostics and HTTP
+status; unclassified source text is not exposed. Unsupported output formats are
+rejected before context mutation.

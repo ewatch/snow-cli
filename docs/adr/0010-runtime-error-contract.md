@@ -68,7 +68,8 @@ use `models::validation::ValidationError`, not string matching in the renderer.
   408/429/500/502/503/504. It does **not** declare the failed operation idempotent,
   guarantee no server-side effects, or authorize replay of a mutation.
 - `manual_review`: inspect effects before attempting anything further. Used for
-  script execution, row-level import errors, and GraphQL errors (which may follow
+  script execution, row-level import errors, uncertain native context switches
+  (`SESSION_SWITCH_UNCERTAIN`), and GraphQL errors (which may follow
   mutations with partial effects). No rollback or convergence is implied.
 - `unknown`: there is insufficient evidence for a retry decision. Used for other
   transport/response/I/O/fallback/SN-Utils failures and unspecified HTTP statuses.
