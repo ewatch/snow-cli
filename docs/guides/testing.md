@@ -109,6 +109,54 @@ async fn test_table_list() {
 3. **No network calls** — all HTTP interactions are mocked with wiremock.
 4. **No filesystem side effects** — use `tempfile` for any config file tests.
 
+## CLI Response Contract Matrix
+
+`tests/test_response_contract.rs` is the cross-family black-box compatibility
+matrix, with independent decoders in `tests/common/response_contract.rs`.
+Run it with `cargo test --test test_response_contract`; it also runs under
+ordinary `cargo test` and `cargo clippy --all-targets -- -D warnings`.
+
+| Response class | Representative command | Formats | Binaries |
+|---|---|---|---|
+| List: empty, full, partial, oversized fields | `table list` | all six | both |
+| Explicit preview and verbose diagnostic separation | `table list --preview -v` | all except CSV | both |
+| Detail: lossless oversized fields | `table get` | all six | both |
+| Aggregate: zero count | `table stats` | all six | both |
+| Artifact and summary | `data export --out` | all six | both |
+| Mutation | `table create` | all six | writable |
+| Partial mutation failure / explicit acceptance | `import-set load` | all except CSV | writable |
+| Raw non-JSON passthrough | `api get` | all six | both |
+| API errors and rate limits | `table list` | all six | both |
+| Timeout | `table list --timeout-secs 1` | JSON | both |
+| Help, version, missing command, unknown flag, denial | discovery / create | JSON (output-independent) | both |
+| Non-interactive confirmation refusal | `table delete` without `--yes` | all six | writable |
+
+The six formats are JSON, JSONL, TOON, CSV, text, and auto. Tests decode
+responses and assert semantic fields, not exact whitespace or complete
+snapshots. Mock request counts guard against unexpected calls; each subprocess
+has a ten-second deadline. Successful responses keep stderr empty, errors keep
+stdout empty except for documented partial-mutation results, and credentials
+and private HTTP error bodies must not appear in either stream.
+
+Intentional differences and limits:
+
+- `snow-cli-ro` omits mutation subcommands: clap rejects them with exit 2 and
+  human-readable stderr. `snow-cli --read-only` returns structured policy
+  errors. Help/version use stdout; missing commands and unknown flags use
+  clap diagnostics on stderr with exit 2, not the runtime JSON error envelope.
+- Empty table-list JSONL still contains metadata. Empty CSV has no rows or
+  headers and carries no list metadata; nonempty CSV carries records only.
+- Raw non-JSON API bodies remain raw in every format, including JSON.
+- Export artifacts follow the requested format; auto intentionally exports
+  JSON so it remains importable. Explicit TOON/CSV artifacts are not JSON.
+- Nested import-set responses do not currently support CSV serialization;
+  that unsafe post-mutation failure is tracked in `servicenow-cli-126`.
+  The partial-failure matrix covers the five structured formats.
+
+Add a representative case here when introducing a response class or changing
+format, stream, metadata, or exit semantics. Keep specialized per-command
+regressions in their existing test modules as well.
+
 ## Optional Live Validation
 
 Use live-instance checks sparingly after wiremock coverage is in place.
@@ -124,5 +172,7 @@ Notes:
 - `imp_user` is a valid staging table on the validated `sprint` instance.
 - The payload needed `email` because the active transform map coalesces on that field.
 - The live response showed that `POST /api/now/import/imp_user` performed the load and transform in one step.
-- Use `--fail-on-error` when transform-map row failures should fail CI or agent automation even if the HTTP request itself succeeded.
+- Transform-map row failures fail by default even when HTTP succeeds. Use
+  `--allow-row-errors` only to explicitly accept partial failures; detailed
+  row results remain on stdout. `--fail-on-error` remains a compatibility flag.
 - Do not rely on arbitrary table names like `sys_user_import`; the import API requires a table that extends `sys_import_set_row`.
