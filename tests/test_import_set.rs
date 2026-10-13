@@ -62,7 +62,7 @@ async fn test_import_set_csv_is_rejected_before_post() {
             if let Some(flag) = row_flag {
                 cmd.arg(flag);
             }
-            let assertion = cmd.assert().code(1).stdout("");
+            let assertion = cmd.assert().code(2).stdout("");
             let error: serde_json::Value =
                 serde_json::from_slice(&assertion.get_output().stderr).unwrap();
             assert!(

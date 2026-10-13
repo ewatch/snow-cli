@@ -30,6 +30,7 @@ export const sidebar: NavGroup[] = [
         children: [
           { label: 'OAuth authorization code with PKCE', href: '/oauth-authorization-code-pkce/' },
           { label: 'Secure read-only usage', href: '/secure-readonly-usage/' },
+          { label: 'Errors and retry guidance', href: '/errors/' },
         ],
       },
     ],

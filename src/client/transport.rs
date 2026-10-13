@@ -90,7 +90,11 @@ impl SnowClient {
     ) -> anyhow::Result<ClientResponse> {
         const PATH: &str = "/api/now/attachment/upload";
         let url = self.authorize_instance_request(&Method::POST, PATH)?;
-        let auth_headers = self.authenticator.authenticate().await?;
+        let auth_headers = self
+            .authenticator
+            .authenticate()
+            .await
+            .map_err(crate::auth::classify_auth_failure)?;
         let file_part =
             reqwest::multipart::Part::bytes(file_bytes).file_name(file_name.to_string());
         let form = reqwest::multipart::Form::new()
@@ -122,7 +126,11 @@ impl SnowClient {
     /// Start a streaming attachment download through the authenticated client seam.
     pub async fn download_attachment(&mut self, path: &str) -> anyhow::Result<ClientResponse> {
         let url = self.authorize_instance_request(&Method::GET, path)?;
-        let auth_headers = self.authenticator.authenticate().await?;
+        let auth_headers = self
+            .authenticator
+            .authenticate()
+            .await
+            .map_err(crate::auth::classify_auth_failure)?;
         let request = self
             .http
             .get(&url)
@@ -177,7 +185,11 @@ impl SnowClient {
                 .form(&form_fields)
                 .build()?
         } else {
-            let auth_headers = self.authenticator.authenticate().await?;
+            let auth_headers = self
+                .authenticator
+                .authenticate()
+                .await
+                .map_err(crate::auth::classify_auth_failure)?;
             let body = serde_json::json!({ "script": script, "scope": scope });
             self.http
                 .post(&url)
@@ -275,7 +287,11 @@ impl SnowClient {
         let url = self.authorize_instance_request(&method, path)?;
 
         for attempt in 0..=MAX_AUTH_RETRIES {
-            let auth_headers = self.authenticator.authenticate().await?;
+            let auth_headers = self
+                .authenticator
+                .authenticate()
+                .await
+                .map_err(crate::auth::classify_auth_failure)?;
 
             let mut request = self
                 .http
@@ -348,7 +364,11 @@ impl SnowClient {
             // If unauthorized and we haven't retried yet, try refreshing credentials
             if status == reqwest::StatusCode::UNAUTHORIZED && attempt < MAX_AUTH_RETRIES {
                 tracing::info!("Received 401, attempting credential refresh");
-                let refreshed = self.authenticator.refresh().await?;
+                let refreshed = self
+                    .authenticator
+                    .refresh()
+                    .await
+                    .map_err(crate::auth::classify_auth_failure)?;
                 if refreshed {
                     tracing::debug!("Credentials refreshed, retrying request");
                     continue;
@@ -389,7 +409,8 @@ impl SnowClient {
         let response = self.get(path).await?;
         let body = response.text().await?;
         tracing::debug!(body_len = body.len(), "Parsing JSON response");
-        let value: T = serde_json::from_str(&body)?;
+        let value: T = serde_json::from_str(&body)
+            .map_err(|_| super::error::TransportError::InvalidResponse)?;
         Ok(value)
     }
 
@@ -402,7 +423,8 @@ impl SnowClient {
         let response = self.get_with_params(path, params).await?;
         let body = response.text().await?;
         tracing::debug!(body_len = body.len(), "Parsing JSON response");
-        let value: T = serde_json::from_str(&body)?;
+        let value: T = serde_json::from_str(&body)
+            .map_err(|_| super::error::TransportError::InvalidResponse)?;
         Ok(value)
     }
 
@@ -415,7 +437,8 @@ impl SnowClient {
         let response = self.post(path, body).await?;
         let resp_body = response.text().await?;
         tracing::debug!(body_len = resp_body.len(), "Parsing JSON response");
-        let value: T = serde_json::from_str(&resp_body)?;
+        let value: T = serde_json::from_str(&resp_body)
+            .map_err(|_| super::error::TransportError::InvalidResponse)?;
         Ok(value)
     }
 
@@ -440,7 +463,7 @@ impl SnowClient {
             "Parsing GraphQL response envelope"
         );
         let envelope: serde_json::Value = serde_json::from_str(&response_body)
-            .map_err(|error| anyhow::anyhow!("GraphQL endpoint returned invalid JSON: {error}"))?;
+            .map_err(|_| super::error::TransportError::InvalidResponse)?;
         graphql_data_from_envelope(envelope)
     }
 
@@ -453,7 +476,8 @@ impl SnowClient {
         let response = self.patch(path, body).await?;
         let resp_body = response.text().await?;
         tracing::debug!(body_len = resp_body.len(), "Parsing JSON response");
-        let value: T = serde_json::from_str(&resp_body)?;
+        let value: T = serde_json::from_str(&resp_body)
+            .map_err(|_| super::error::TransportError::InvalidResponse)?;
         Ok(value)
     }
 }
@@ -461,23 +485,29 @@ impl SnowClient {
 pub(super) fn graphql_data_from_envelope(
     envelope: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    let object = envelope.as_object().ok_or_else(|| {
-        anyhow::anyhow!("GraphQL endpoint returned a non-object response envelope")
-    })?;
+    let object = envelope
+        .as_object()
+        .ok_or(super::error::TransportError::InvalidEnvelope(
+            "GraphQL endpoint returned a non-object response envelope",
+        ))?;
 
     if let Some(errors) = object.get("errors") {
         let errors = errors
             .as_array()
-            .ok_or_else(|| anyhow::anyhow!("GraphQL endpoint returned an invalid errors field"))?;
+            .ok_or(super::error::TransportError::InvalidEnvelope(
+                "GraphQL endpoint returned an invalid errors field",
+            ))?;
         if !errors.is_empty() {
             return Err(GraphqlError::from_errors(errors).into());
         }
     }
 
-    object
-        .get("data")
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("GraphQL endpoint response did not contain data"))
+    object.get("data").cloned().ok_or_else(|| {
+        super::error::TransportError::InvalidEnvelope(
+            "GraphQL endpoint response did not contain data",
+        )
+        .into()
+    })
 }
 #[cfg(test)]
 mod tests {

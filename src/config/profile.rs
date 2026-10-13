@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::error::ConfigError;
+
 /// Return the name of the currently running binary (`snow-cli` or `snow-cli-ro`)
 /// for use in user-facing hints, so suggestions reference the command the user
 /// actually invoked. Falls back to `snow-cli` when the name cannot be determined.
@@ -148,7 +150,9 @@ impl AppConfig {
             return Ok(Self::default());
         }
         let content = std::fs::read_to_string(path)?;
-        let config: AppConfig = toml::from_str(&content)?;
+        let config: AppConfig = toml::from_str(&content).map_err(|_| {
+            ConfigError::new("CONFIG_INVALID", "Configuration file is invalid; check TOML syntax and required profile fields (instance and auth_method).")
+        })?;
         Ok(config)
     }
 
@@ -187,32 +191,40 @@ impl AppConfig {
             if self.profiles.contains_key(name) {
                 return Ok(name.to_string());
             }
-            anyhow::bail!("{}", self.profile_not_found_message(name));
+            return Err(ConfigError::new(
+                "PROFILE_NOT_FOUND",
+                self.profile_not_found_message(name),
+            )
+            .into());
         }
 
         if self.default_profile.is_empty() {
-            anyhow::bail!(
+            return Err(ConfigError::new("CONFIG_NOT_FOUND", format!(
                 "No default profile configured. Run `{} profile add default --instance <url> --auth-method <method>` first.",
                 program_name()
-            );
+            )).into());
         }
 
         if self.profiles.is_empty() {
-            anyhow::bail!(
+            return Err(ConfigError::new("CONFIG_NOT_FOUND", format!(
                 "No profiles are configured yet. Run `{} profile add default --instance <url> --auth-method <method>` first.",
                 program_name()
-            );
+            )).into());
         }
 
         if !self.profiles.contains_key(&self.default_profile) {
             let available_profiles = self.available_profiles_for_message();
-            anyhow::bail!(
-                "Default profile '{}' not found. Available profiles: {}. \
+            return Err(ConfigError::new(
+                "PROFILE_NOT_FOUND",
+                format!(
+                    "Default profile '{}' not found. Available profiles: {}. \
                  Run `{} profile default <name>` to choose one.",
-                self.default_profile,
-                available_profiles,
-                program_name()
-            );
+                    self.default_profile,
+                    available_profiles,
+                    program_name()
+                ),
+            )
+            .into());
         }
 
         Ok(self.default_profile.clone())
@@ -322,48 +334,38 @@ fn profile_similarity_score(requested: &str, candidate: &str) -> usize {
 }
 
 pub fn validate_instance_url(input: &str) -> anyhow::Result<String> {
+    let invalid = |message| ConfigError::new("INVALID_INSTANCE", message);
     let trimmed = input.trim().trim_end_matches('/');
     if trimmed.is_empty() {
-        anyhow::bail!("Instance URL must not be empty.");
+        return Err(invalid("Instance URL must not be empty.").into());
     }
-
-    let url = url::Url::parse(trimmed)
-        .map_err(|error| anyhow::anyhow!("Invalid instance URL '{}': {}", input, error))?;
-
+    // Never interpolate the URL: it may contain credentials, queries, or fragments.
+    let url = url::Url::parse(trimmed).map_err(|_| invalid("Invalid instance URL."))?;
     if url.host_str().is_none() {
-        anyhow::bail!("Invalid instance URL '{}': missing host.", input);
+        return Err(invalid("Invalid instance URL: missing host.").into());
     }
     if !url.username().is_empty() || url.password().is_some() {
-        anyhow::bail!(
-            "Invalid instance URL '{}': embedded credentials are not allowed.",
-            input
-        );
+        return Err(invalid("Invalid instance URL: embedded credentials are not allowed.").into());
     }
     if !url.path().is_empty() && url.path() != "/" {
-        anyhow::bail!(
-            "Invalid instance URL '{}': paths are not allowed; provide only the instance origin.",
-            input
-        );
+        return Err(invalid(
+            "Invalid instance URL: paths are not allowed; provide only the instance origin.",
+        )
+        .into());
     }
     if url.query().is_some() || url.fragment().is_some() {
-        anyhow::bail!(
-            "Invalid instance URL '{}': query strings and fragments are not allowed.",
-            input
+        return Err(
+            invalid("Invalid instance URL: query strings and fragments are not allowed.").into(),
         );
     }
-
     match url.scheme() {
         "https" => Ok(trimmed.to_string()),
         "http" if url.host_str().map(is_loopback_host).unwrap_or(false) => Ok(trimmed.to_string()),
-        "http" => anyhow::bail!(
-            "Invalid instance URL '{}': HTTP is only allowed for loopback test instances.",
-            input
-        ),
-        scheme => anyhow::bail!(
-            "Invalid instance URL '{}': unsupported scheme '{}'; use HTTPS.",
-            input,
-            scheme
-        ),
+        "http" => Err(invalid(
+            "Invalid instance URL: HTTP is only allowed for loopback test instances.",
+        )
+        .into()),
+        _ => Err(invalid("Invalid instance URL: unsupported scheme; use HTTPS.").into()),
     }
 }
 

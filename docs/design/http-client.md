@@ -89,7 +89,8 @@ pub struct ApiError {
 | 429         | `RATE_LIMITED`           | Too many requests                |
 | 500+        | `SERVER_ERROR`          | ServiceNow internal error        |
 | timeout     | `REQUEST_TIMEOUT`       | Request timed out                |
-| conn error  | `CONNECTION_ERROR`      | Could not connect to instance    |
+| conn error  | `CONNECTION_FAILED`     | Could not connect to instance    |
+| decode error | `INVALID_RESPONSE`     | Invalid server JSON/envelope     |
 
 When the response body is the standard ServiceNow envelope
 (`{"error":{"message":"...","detail":"..."},"status":"failure"}`), `message` and
@@ -110,9 +111,17 @@ they can echo credentials or request data.
 Any other body (HTML, unknown JSON) is never echoed by default: `detail` reports
 only its size. This applies to script and attachment HTTP failures, UI form-session
 failures, and non-JSON `scope move-file` output as well as ordinary API calls.
-`SNOW_CLI_DEBUG_HTTP_INCLUDE_SENSITIVE` explicitly permits up to 1,024 characters
-of arbitrary response detail. Treat that mode's output as sensitive; do not use
-it in shared CI logs or agent transcripts. It does not enable OAuth descriptions.
+Runtime error details remain redacted even with
+`SNOW_CLI_DEBUG_HTTP_INCLUDE_SENSITIVE`. Sensitive HTTP diagnostics are a separate
+opt-in channel, not permission to insert unknown response text into runtime
+errors. Treat that channel as sensitive; do not use it in shared CI logs or
+agent transcripts. It does not enable OAuth descriptions.
+
+[ADR-0010](../adr/0010-runtime-error-contract.md) defines additive runtime `class`
+and `retry` fields and exit statuses. Transport classification stays inside the
+client seam and discards HTTP library Display text (which can include URLs and
+queries). Transient failures carry `safe_reads_only` guidance, never unconditional
+permission to replay a mutation.
 
 Default error/warning logs contain no raw response payloads. Malformed SN-Utils
 messages log only byte counts, not message contents or parser error strings.

@@ -441,7 +441,7 @@ async fn unsupported_import_csv_never_mutates_or_emits_partial_results() {
             if allow {
                 cmd.arg("--allow-row-errors");
             }
-            let output = cmd.assert().code(1).get_output().clone();
+            let output = cmd.assert().code(2).get_output().clone();
             assert!(output.stdout.is_empty());
             let value = error(&output.stderr);
             assert!(

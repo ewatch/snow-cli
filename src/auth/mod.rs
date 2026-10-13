@@ -9,6 +9,31 @@ use http::HeaderMap;
 
 use crate::config::AuthMethod;
 
+/// Safe credential guidance without credential values or keychain internals.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct AuthenticationError {
+    message: String,
+}
+
+impl AuthenticationError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+pub(crate) fn classify_auth_failure(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<AuthenticationError>().is_some() {
+        error
+    } else {
+        error.context(AuthenticationError::new(
+            "Authentication failed; check stored credentials or run snow-cli auth login.",
+        ))
+    }
+}
+
 /// Trait that all authentication methods implement.
 #[async_trait]
 pub trait Authenticator: Send + Sync {
@@ -43,6 +68,15 @@ pub trait Authenticator: Send + Sync {
 ///
 /// Call this before creating an authenticator to give clear, early error messages.
 pub fn validate_profile_config(
+    profile_name: &str,
+    profile: &crate::config::Profile,
+) -> anyhow::Result<()> {
+    validate_profile_config_inner(profile_name, profile).map_err(|error| {
+        crate::config::error::ConfigError::new("CONFIG_INVALID", error.to_string()).into()
+    })
+}
+
+fn validate_profile_config_inner(
     profile_name: &str,
     profile: &crate::config::Profile,
 ) -> anyhow::Result<()> {

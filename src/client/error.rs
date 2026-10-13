@@ -1,5 +1,55 @@
 use serde::Serialize;
 
+/// Transport classification never retains URLs, payloads, or reqwest Display text.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+pub enum TransportError {
+    #[error("HTTP request timed out; the server may already have processed the request")]
+    Timeout,
+    #[error("Unable to connect to the server")]
+    Connection,
+    #[error(
+        "HTTP response contains invalid JSON or an unexpected envelope; response data is withheld"
+    )]
+    InvalidResponse,
+    #[error("{0}")]
+    InvalidEnvelope(&'static str),
+    #[error("HTTP transport failed; request details are withheld")]
+    Other,
+}
+
+impl TransportError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Timeout => "REQUEST_TIMEOUT",
+            Self::Connection => "CONNECTION_FAILED",
+            Self::InvalidResponse | Self::InvalidEnvelope(_) => "INVALID_RESPONSE",
+            Self::Other => "TRANSPORT_ERROR",
+        }
+    }
+
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::Timeout | Self::Connection)
+    }
+}
+
+/// Keep dependency on the HTTP library inside the client seam, including when
+/// classifying errors from response body reads and optional client operations.
+pub(crate) fn classify_transport_error(error: &anyhow::Error) -> Option<TransportError> {
+    if let Some(error) = error.downcast_ref::<TransportError>() {
+        return Some(*error);
+    }
+    let error = error.downcast_ref::<reqwest::Error>()?;
+    Some(if error.is_timeout() {
+        TransportError::Timeout
+    } else if error.is_connect() {
+        TransportError::Connection
+    } else if error.is_decode() {
+        TransportError::InvalidResponse
+    } else {
+        TransportError::Other
+    })
+}
+
 /// Structured API error mapped from ServiceNow HTTP responses.
 #[derive(Debug, Serialize)]
 pub struct ApiError {
@@ -319,35 +369,14 @@ fn truncate_graphql_message(message: &str) -> String {
     truncated
 }
 
-/// Redact arbitrary response text by default; bounded raw text requires the
-/// explicit sensitive-HTTP diagnostic opt-in. Never use this for default logs.
+/// Unknown response text is always withheld from runtime errors. Sensitive
+/// HTTP diagnostics are a separate channel and cannot weaken this boundary.
 pub(crate) fn safe_error_detail(body: &str) -> String {
-    let include_sensitive = std::env::var("SNOW_CLI_DEBUG_HTTP_INCLUDE_SENSITIVE")
-        .map(|value| {
-            let normalized = value.trim().to_ascii_lowercase();
-            !(normalized.is_empty() || matches!(normalized.as_str(), "0" | "false" | "off" | "no"))
-        })
-        .unwrap_or(false);
-
-    response_detail(body, include_sensitive)
-}
-
-fn response_detail(body: &str, include_sensitive: bool) -> String {
-    const MAX_DETAIL_LEN: usize = 1024;
-
     if body.trim().is_empty() {
-        return String::new();
+        String::new()
+    } else {
+        format!("<response body redacted, {} bytes>", body.len())
     }
-
-    if !include_sensitive {
-        return format!("<response body redacted, {} bytes>", body.len());
-    }
-
-    let mut detail = body.chars().take(MAX_DETAIL_LEN).collect::<String>();
-    if body.chars().count() > MAX_DETAIL_LEN {
-        detail.push_str("... <truncated>");
-    }
-    detail
 }
 
 #[cfg(test)]
@@ -355,16 +384,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn arbitrary_response_detail_requires_explicit_sensitive_opt_in() {
+    fn arbitrary_response_detail_is_always_redacted() {
         let body = "private credential ".repeat(100);
         assert_eq!(
-            response_detail(&body, false),
+            safe_error_detail(&body),
             format!("<response body redacted, {} bytes>", body.len())
         );
-        let detail = response_detail(&body, true);
-        assert!(detail.starts_with("private credential"));
-        assert_eq!(detail.chars().count(), 1024 + "... <truncated>".len());
-        assert_eq!(response_detail("  ", false), "");
+        assert_eq!(safe_error_detail("  "), "");
     }
 
     #[test]

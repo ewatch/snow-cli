@@ -7,6 +7,7 @@ use crate::cli::truncation;
 use crate::client::pagination::PaginationConfig;
 use crate::models::identifiers::TableName;
 use crate::models::record::SingleRecordResponse;
+use crate::models::validation::ValidationError;
 
 pub async fn handle(
     args: TableArgs,
@@ -132,9 +133,9 @@ pub async fn handle(
             tracing::info!("Creating record in table: {}", table);
 
             let body = read_data(data)?;
-            // Validate that the body is valid JSON
-            let _: serde_json::Value = serde_json::from_str(&body)
-                .map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
+            let _: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
+                ValidationError::new("Invalid JSON data; provide a valid JSON record.")
+            })?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -154,9 +155,9 @@ pub async fn handle(
             tracing::info!("Updating record {} in table: {}", sys_id, table);
 
             let body = read_data(data)?;
-            // Validate that the body is valid JSON
-            let _: serde_json::Value = serde_json::from_str(&body)
-                .map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
+            let _: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
+                ValidationError::new("Invalid JSON data; provide a valid JSON record.")
+            })?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -174,10 +175,10 @@ pub async fn handle(
             if !yes {
                 let stdin = std::io::stdin();
                 if !stdin.is_terminal() {
-                    anyhow::bail!(
-                        "Delete requires confirmation. Re-run with --yes for non-interactive use: \
-                         snow-cli table delete {table} {sys_id} --yes"
-                    );
+                    return Err(ValidationError::new(
+                        "Delete requires confirmation. Re-run with --yes for non-interactive use.",
+                    )
+                    .into());
                 }
 
                 eprint!("Delete record {sys_id} from table {table}? [y/N] ");
@@ -326,7 +327,10 @@ fn flatten_stats_response(response: &serde_json::Value) -> anyhow::Result<StatsO
         Some(serde_json::Value::Array(entries)) => Ok(StatsOutput::Grouped(
             entries.iter().map(flatten_stats_entry).collect(),
         )),
-        _ => anyhow::bail!("Unexpected Aggregate API response: missing 'result' object or array"),
+        _ => Err(crate::client::error::TransportError::InvalidEnvelope(
+            "Unexpected Aggregate API response: missing 'result' object or array",
+        )
+        .into()),
     }
 }
 
@@ -504,10 +508,7 @@ struct SchemaEntry {
 /// Print schema entries in the requested format.
 fn ensure_preview_supported(preview: bool, format: &OutputFormat) -> anyhow::Result<()> {
     if preview && !supports_preview_metadata(format) {
-        anyhow::bail!(
-            "--preview is not supported with --output {}; use json, jsonl, toon, text, or auto, or omit --preview for lossless CSV",
-            format.as_str()
-        );
+        return Err(ValidationError::new("--preview is not supported with --output csv; use json, jsonl, toon, text, or auto, or omit --preview for lossless CSV").into());
     }
     Ok(())
 }
@@ -574,20 +575,19 @@ fn read_data_from<R: std::io::Read>(
     }
 
     if is_tty {
-        anyhow::bail!(
-            "No data provided. Use --data or pipe JSON. Examples: \
-             snow-cli table create incident --data '{{\"short_description\":\"Disk alert\"}}' \
-             | echo '{{\"short_description\":\"Disk alert\"}}' | snow-cli table create incident"
-        );
+        return Err(ValidationError::new(
+            "No data provided. Use --data or pipe JSON to snow-cli table create <table>.",
+        )
+        .into());
     }
 
     let buf = read_to_string_limited(reader, DEFAULT_MAX_STDIN_BYTES, "JSON stdin input")?;
 
     if buf.trim().is_empty() {
-        anyhow::bail!(
-            "No data received from stdin. Pipe valid JSON, for example: \
-             echo '{{\"short_description\":\"Disk alert\"}}' | snow-cli table create incident"
-        );
+        return Err(ValidationError::new(
+            "No data received from stdin. Pipe valid JSON to snow-cli table create <table>.",
+        )
+        .into());
     }
 
     Ok(buf)

@@ -1027,8 +1027,12 @@ async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
             print!("{encoded}");
         }
         crate::config::profile::AuthMethod::Oauth2 => {
-            let auth = OAuth2Auth::new(profile_name, profile)?;
-            let headers = auth.authenticate().await?;
+            let auth = OAuth2Auth::new(profile_name, profile)
+                .map_err(crate::auth::classify_auth_failure)?;
+            let headers = auth
+                .authenticate()
+                .await
+                .map_err(crate::auth::classify_auth_failure)?;
             let authorization = headers
                 .get(http::header::AUTHORIZATION)
                 .ok_or_else(|| {

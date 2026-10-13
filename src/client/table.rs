@@ -98,7 +98,8 @@ impl SnowClient {
             }
             let body = response.text().await?;
             tracing::debug!(body_len = body.len(), "Parsing JSON response");
-            let page: crate::models::record::TableResponse = serde_json::from_str(&body)?;
+            let page: crate::models::record::TableResponse = serde_json::from_str(&body)
+                .map_err(|_| super::error::TransportError::InvalidResponse)?;
 
             let count = page.result.len();
             tracing::debug!(

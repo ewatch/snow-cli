@@ -159,6 +159,22 @@ Add a representative case here when introducing a response class or changing
 format, stream, metadata, or exit semantics. Keep specialized per-command
 regressions in their existing test modules as well.
 
+## Runtime Error Contract
+
+`cargo test --test test_error_contract` covers the taxonomy defined in
+[ADR-0010](../adr/0010-runtime-error-contract.md): error code, class, retry advice,
+exit status, stderr-only diagnostics, and safe handling of config excerpts,
+input payloads, request queries/URLs, response bodies, and private I/O paths.
+It also verifies the explicit partial-mutation stdout exception. Unit tests in
+`src/error.rs` check bounded Unicode diagnostics and classification through
+anyhow contexts. The response matrix retains help/version and plain-text clap
+usage diagnostics as a separate, no-network contract.
+
+For new failure paths, prefer a typed validation/config/auth/client error over
+an unclassified anyhow string. Keep its source for classification when adding
+context, but do not render raw parser or transport Display text. `retry` advice
+must never grant unconditional permission to replay a mutation.
+
 ## Optional Live Validation
 
 Use live-instance checks sparingly after wiremock coverage is in place.

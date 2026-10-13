@@ -14,8 +14,14 @@ pub struct NativeSessionAuth {
 }
 impl NativeSessionAuth {
     pub fn stored(profile: &str, instance: &str) -> anyhow::Result<Self> {
-        let session = native_session::load(profile)?;
-        session.ensure_instance(instance)?;
+        let session = native_session::load(profile).map_err(|error| {
+            error.context(crate::auth::AuthenticationError::new(
+                "No valid native session is available; use session login or session attach.",
+            ))
+        })?;
+        session.ensure_instance(instance).map_err(|error| error.context(
+            crate::auth::AuthenticationError::new("Native session belongs to a different instance; refusing to send session credentials")
+        ))?;
         Ok(Self {
             session,
             profile_name: Some(profile.to_string()),

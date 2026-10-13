@@ -1,3 +1,4 @@
+use crate::models::validation::ValidationError;
 use std::io::Read;
 
 pub const DEFAULT_MAX_STDIN_BYTES: u64 = 10 * 1024 * 1024;
@@ -11,11 +12,11 @@ pub fn read_to_string_limited<R: std::io::Read>(
     let mut buf = String::new();
     limited.read_to_string(&mut buf)?;
     if buf.len() as u64 > max_bytes {
-        anyhow::bail!(
+        return Err(ValidationError::new(format!(
             "{} exceeds the maximum supported size of {} bytes. Use a file-based workflow or reduce the input size.",
             label,
             max_bytes
-        );
+        )).into());
     }
     Ok(buf)
 }

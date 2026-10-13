@@ -51,6 +51,9 @@ Notes:
 - The request is sent to `/api/now/import/{table}`.
 - **The transform runs automatically on load.** `/api/now/import/{table}` both stages the row and runs the staging table's transform map in one call, so a successful load already inserts/updates the target record — there is no separate transform step to invoke.
 - The command prints a structured summary with counts for inserted, updated, ignored, error, and other result rows.
+- Supported output formats are JSON, JSONL, TOON, text, and auto. CSV is rejected
+  before reading input or sending a request, with `VALIDATION_ERROR` and exit **2**.
+  Use `--output json` to override a CSV environment/config default.
 - Row-level errors exit **1** by default with a JSON stderr error code
   `IMPORT_SET_ROW_ERRORS`. The detailed result and summary are still printed on
   stdout, including for partial failures. Error classification uses normalized

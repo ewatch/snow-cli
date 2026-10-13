@@ -1,3 +1,5 @@
+use crate::models::validation::ValidationError;
+use anyhow::Context;
 use std::io::IsTerminal;
 
 use crate::cli::args::{OutputFormat, ScriptArgs, ScriptCommands};
@@ -617,32 +619,32 @@ fn resolve_script_from<R: std::io::Read>(
     // --code takes precedence
     if let Some(c) = code {
         if c.trim().is_empty() {
-            anyhow::bail!("Empty script provided via --code.");
+            return Err(ValidationError::new("Empty script provided via --code.").into());
         }
         return Ok(c);
     }
 
     // --file reads from filesystem
     if let Some(path) = file {
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("Failed to read script file '{}': {}", path, e))?;
+        let content = std::fs::read_to_string(&path).context("Failed to read script file")?;
         if content.trim().is_empty() {
-            anyhow::bail!("Script file '{}' is empty.", path);
+            return Err(ValidationError::new("Script file is empty.").into());
         }
         return Ok(content);
     }
 
     // Fall back to stdin
     if is_tty {
-        anyhow::bail!(
-            "No script provided. Use --code '<script>', --file <path>, or pipe script to stdin."
-        );
+        return Err(ValidationError::new(
+            "No script provided. Use --code '<script>', --file <path>, or pipe script to stdin.",
+        )
+        .into());
     }
 
     let buf = read_to_string_limited(reader, DEFAULT_MAX_STDIN_BYTES, "script stdin input")?;
 
     if buf.trim().is_empty() {
-        anyhow::bail!("No script received from stdin.");
+        return Err(ValidationError::new("No script received from stdin.").into());
     }
 
     Ok(buf)

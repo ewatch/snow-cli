@@ -52,22 +52,24 @@ pub fn build_client_with_timeout(
     timeout_secs: Option<u64>,
 ) -> anyhow::Result<SnowClient> {
     let config = crate::config::AppConfig::load()?;
-    let profile = config
-        .active_profile(Some(profile_name))
-        .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
+    let profile = config.active_profile(Some(profile_name)).ok_or_else(|| {
+        crate::config::error::ConfigError::new(
+            "PROFILE_NOT_FOUND",
+            config.profile_not_found_message(profile_name),
+        )
+    })?;
 
-    let instance_url = instance_override
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| profile.instance.clone());
+    let instance_url = crate::config::profile::validate_instance_url(
+        instance_override.unwrap_or(&profile.instance),
+    )?;
 
     let authenticator = if profile.auth_method == crate::config::AuthMethod::NativeSession {
-        Box::new(crate::auth::native_session::NativeSessionAuth::stored(
-            profile_name,
-            &instance_url,
-        )?) as Box<dyn crate::auth::Authenticator>
+        crate::auth::native_session::NativeSessionAuth::stored(profile_name, &instance_url)
+            .map(|auth| Box::new(auth) as Box<dyn crate::auth::Authenticator>)
     } else {
-        crate::auth::create_authenticator(profile_name, profile)?
-    };
+        crate::auth::create_authenticator(profile_name, profile)
+    }
+    .map_err(crate::auth::classify_auth_failure)?;
     SnowClient::with_config(
         instance_url,
         authenticator,
