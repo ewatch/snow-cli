@@ -311,6 +311,11 @@ async fn handle_login(
             });
             output::print_output(&result, output.format)?;
         }
+        AuthMethod::NativeSession => {
+            anyhow::bail!(
+                "Use session login with a Basic source profile or session attach --cookie-stdin to renew native session credentials."
+            );
+        }
         other => {
             anyhow::bail!("Auth method {:?} does not support `auth login`.", other);
         }
@@ -524,9 +529,34 @@ async fn wait_for_oauth_redirect(
             )
         })??;
 
-    let mut buffer = vec![0_u8; 8192];
-    let bytes_read = stream.read(&mut buffer).await?;
-    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
+    // Bound the local HTTP header block; TCP reads may split even the request line.
+    const MAX_CALLBACK_HEADER_BYTES: usize = 8192;
+    let request = timeout(OAUTH_LOGIN_TIMEOUT, async {
+        let mut buffer = vec![0_u8; MAX_CALLBACK_HEADER_BYTES];
+        let mut used = 0;
+        loop {
+            let read = stream.read(&mut buffer[used..]).await?;
+            anyhow::ensure!(
+                read > 0,
+                "OAuth callback ended before its HTTP headers were complete"
+            );
+            used += read;
+            if buffer[..used]
+                .windows(4)
+                .any(|window| window == b"\r\n\r\n")
+            {
+                return Ok::<_, anyhow::Error>(
+                    String::from_utf8_lossy(&buffer[..used]).into_owned(),
+                );
+            }
+            anyhow::ensure!(
+                used < MAX_CALLBACK_HEADER_BYTES,
+                "OAuth callback HTTP headers exceed the size limit"
+            );
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("Timed out reading OAuth callback HTTP headers"))??;
     let first_line = request.lines().next().unwrap_or_default();
 
     let result = parse_oauth_callback_request(first_line, expected_path, expected_state);
@@ -1002,6 +1032,10 @@ async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
         .active_profile(Some(profile_name))
         .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
+    anyhow::ensure!(
+        profile.auth_method != AuthMethod::NativeSession,
+        "Native session credentials are not exported; use the session profile directly"
+    );
     match &profile.auth_method {
         crate::config::profile::AuthMethod::Basic => {
             let credential =
@@ -1018,8 +1052,12 @@ async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
             print!("{encoded}");
         }
         crate::config::profile::AuthMethod::Oauth2 => {
-            let auth = OAuth2Auth::new(profile_name, profile)?;
-            let headers = auth.authenticate().await?;
+            let auth = OAuth2Auth::new(profile_name, profile)
+                .map_err(crate::auth::classify_auth_failure)?;
+            let headers = auth
+                .authenticate()
+                .await
+                .map_err(crate::auth::classify_auth_failure)?;
             let authorization = headers
                 .get(http::header::AUTHORIZATION)
                 .ok_or_else(|| {
@@ -1067,6 +1105,7 @@ fn credential_types_for_auth(profile: &crate::config::profile::Profile) -> Vec<&
             }
         }
         AuthMethod::Mtls => vec!["cert_passphrase"],
+        AuthMethod::NativeSession => vec!["native_session"],
         AuthMethod::BrowserSession => {
             // Browser session tokens are not stored anywhere — they are provided
             // at runtime via SNOW_SESSION_COOKIE.

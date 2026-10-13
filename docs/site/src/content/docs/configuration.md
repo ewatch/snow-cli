@@ -165,6 +165,9 @@ When `--output` is omitted, output format resolution is: command-line flag, `SNO
 lossless format for each payload. See the [`profile` command reference](/commands/profile/)
 for the supported formats and reset behavior.
 
+For runtime classifications, exit statuses, and conservative retry rules, see
+[Errors and retry guidance](/errors/).
+
 ## Discover more
 
 - [`profile` command reference](/commands/profile/)

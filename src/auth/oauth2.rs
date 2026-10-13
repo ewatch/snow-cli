@@ -536,17 +536,17 @@ async fn send_oauth_token_request(url: &str, body: &str) -> anyhow::Result<Token
 
     let response = crate::client::post_oauth_token_form(url, body).await?;
     if !(200..300).contains(&response.status) {
-        let error_body = response.text();
         tracing::error!(
             status = response.status,
-            body = %error_body,
+            body_len = response.body.len(),
             "OAuth2 token request failed"
         );
-        anyhow::bail!(
-            "OAuth2 token request failed with status {}: {}",
+        return Err(crate::client::error::ApiError::from_status(
             response.status,
-            error_body
-        );
+            url,
+            Some(response.text()),
+        )
+        .into());
     }
 
     let token_response: TokenResponse = serde_json::from_slice(&response.body)?;
@@ -752,6 +752,33 @@ mod tests {
     use super::*;
     use wiremock::matchers::{body_string, body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn oauth_failure_is_typed_and_does_not_echo_payload() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth_token.do"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "error": "invalid_client",
+                "error_description": "private response with unlabelled secret",
+                "access_token": "access-secret"
+            })))
+            .mount(&server)
+            .await;
+        let error = send_oauth_token_request(&format!("{}/oauth_token.do", server.uri()), "")
+            .await
+            .err()
+            .unwrap();
+        let api = error
+            .downcast_ref::<crate::client::error::ApiError>()
+            .unwrap();
+        assert_eq!(api.code, "UNAUTHORIZED");
+        assert_eq!(api.status, 401);
+        assert!(api.message.contains("invalid_client"));
+        let rendered = serde_json::to_string(api).unwrap();
+        assert!(!rendered.contains("unlabelled secret"));
+        assert!(!rendered.contains("access-secret"));
+    }
 
     // --- Unit tests ---
 

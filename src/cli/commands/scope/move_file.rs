@@ -24,10 +24,9 @@ pub(super) async fn handle_move_file(
     )
     .await?;
 
-    let payload: MoveFileOutput = serde_json::from_str(&response_body).map_err(|error| {
-        anyhow::anyhow!(
-            "scope move-file returned non-JSON output: {error}. Raw output: {response_body}"
-        )
+    let payload: MoveFileOutput = serde_json::from_str(&response_body).map_err(|_| {
+        let detail = crate::client::error::safe_error_detail(&response_body);
+        anyhow::anyhow!("scope move-file returned non-JSON output: {detail}")
     })?;
 
     if !payload.ok {

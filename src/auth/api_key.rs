@@ -50,12 +50,12 @@ impl ApiKeyAuth {
             TokenSource::Direct { token } => Ok(token.clone()),
             TokenSource::Keychain { profile_name } => {
                 credentials::get_credential(profile_name, "api_token")?.ok_or_else(|| {
-                    anyhow::anyhow!(
+                    crate::auth::AuthenticationError::new(format!(
                         "No API token found for profile '{}'. \
                          Run `snow-cli auth login --profile {} --token <token>` first.",
-                        profile_name,
-                        profile_name
-                    )
+                        profile_name, profile_name
+                    ))
+                    .into()
                 })
             }
         }

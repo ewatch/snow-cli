@@ -4,8 +4,12 @@ use crate::cli::args::{
     SnuRestWriteArgs,
 };
 
-fn agent_action_payload(action: &str, mut fields: Map<String, Value>) -> (Value, String) {
-    let correlation_id = correlation_id(action);
+fn agent_action_payload(
+    correlation_prefix: &str,
+    action: &str,
+    mut fields: Map<String, Value>,
+) -> (Value, String) {
+    let correlation_id = correlation_id(correlation_prefix);
     fields.insert("action".to_string(), Value::String(action.to_string()));
     fields.insert(
         "agentRequestId".to_string(),
@@ -15,16 +19,26 @@ fn agent_action_payload(action: &str, mut fields: Map<String, Value>) -> (Value,
     (Value::Object(fields), correlation_id)
 }
 
+pub(super) async fn send_agent_action_with_prefix(
+    bridge: &BrokerBridge,
+    correlation_prefix: &str,
+    action: &str,
+    fields: Map<String, Value>,
+    timeout_secs: u64,
+) -> anyhow::Result<SnuMessage> {
+    let (payload, correlation_id) = agent_action_payload(correlation_prefix, action, fields);
+    bridge
+        .send_action_and_wait(&payload, &correlation_id, timeout_secs)
+        .await
+}
+
 pub(super) async fn send_agent_action(
     bridge: &BrokerBridge,
     action: &str,
     fields: Map<String, Value>,
     timeout_secs: u64,
 ) -> anyhow::Result<SnuMessage> {
-    let (payload, correlation_id) = agent_action_payload(action, fields);
-    bridge
-        .send_action_and_wait(&payload, &correlation_id, timeout_secs)
-        .await
+    send_agent_action_with_prefix(bridge, action, action, fields, timeout_secs).await
 }
 
 /// Use the correlated Agent API on current helpers while retaining the proven
@@ -39,8 +53,11 @@ pub(super) async fn send_background_script_action(
     let mut fields = Map::new();
     fields.insert("script".to_string(), Value::String(script.clone()));
     fields.insert("instance".to_string(), serde_json::to_value(instance)?);
-    let (current_payload, correlation_id) =
-        agent_action_payload("agentRunBackgroundScript", fields);
+    let (current_payload, correlation_id) = agent_action_payload(
+        "agentRunBackgroundScript",
+        "agentRunBackgroundScript",
+        fields,
+    );
     let legacy_payload = json!({
         "action": "executeBackgroundScript",
         "content": script,

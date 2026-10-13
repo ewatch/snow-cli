@@ -228,6 +228,19 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 "read-only policy does not allow exporting reusable credentials",
             ),
         },
+        Commands::Domain(_) => PolicyDecision::Allow,
+        Commands::Session(args) => match &args.command {
+            crate::cli::args::SessionCommands::Show
+            | crate::cli::args::SessionCommands::Options { .. }
+            | crate::cli::args::SessionCommands::Attach { .. }
+            | crate::cli::args::SessionCommands::Forget => PolicyDecision::Allow,
+            crate::cli::args::SessionCommands::Switch { .. }
+            | crate::cli::args::SessionCommands::Login { .. } => deny(
+                "session switch/login",
+                CommandCapability::RemoteWrite,
+                "Native session switching and login change remote session state",
+            ),
+        },
         Commands::Table(args) => match &args.command {
             TableCommands::List { .. }
             | TableCommands::Get { .. }
@@ -439,21 +452,27 @@ mod tests {
         }));
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::List {
+                domain: None,
+                query_no_domain: false,
                 table: "incident".parse().unwrap(),
                 query: None,
                 fields: None,
                 limit: Some(1),
+                offset: 0,
                 all: false,
                 order_by: None,
                 full: false,
+                preview: false,
             },
         }));
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::Get {
+                query_no_domain: false,
                 table: "incident".parse().unwrap(),
                 sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 fields: None,
                 full: false,
+                preview: false,
             },
         }));
         assert_allowed(Commands::Table(TableArgs {
@@ -466,6 +485,7 @@ mod tests {
         }));
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::Stats {
+                domain: None,
                 table: "incident".parse().unwrap(),
                 query: None,
                 group_by: Some("state".to_string()),
@@ -490,6 +510,8 @@ mod tests {
                 limit: 10,
                 current_scope: false,
                 search_group: "sn_devstudio.Studio Search Group".to_string(),
+                full: false,
+                preview: false,
             },
         }));
         assert_allowed(Commands::Completions { shell: Shell::Bash });

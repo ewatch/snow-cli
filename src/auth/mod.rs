@@ -1,12 +1,38 @@
 pub mod api_key;
 pub mod basic;
 pub mod browser_session;
+pub mod native_session;
 pub mod oauth2;
 
 use async_trait::async_trait;
 use http::HeaderMap;
 
 use crate::config::AuthMethod;
+
+/// Safe credential guidance without credential values or keychain internals.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct AuthenticationError {
+    message: String,
+}
+
+impl AuthenticationError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+pub(crate) fn classify_auth_failure(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<AuthenticationError>().is_some() {
+        error
+    } else {
+        error.context(AuthenticationError::new(
+            "Authentication failed; check stored credentials or run snow-cli auth login.",
+        ))
+    }
+}
 
 /// Trait that all authentication methods implement.
 #[async_trait]
@@ -17,6 +43,18 @@ pub trait Authenticator: Send + Sync {
     /// Refresh credentials if supported (e.g., OAuth token refresh).
     /// Returns Ok(true) if refresh succeeded, Ok(false) if not applicable.
     async fn refresh(&mut self) -> anyhow::Result<bool>;
+
+    /// Observe session-cookie rotation after a same-instance response.
+    async fn observe_response_headers(&mut self, _headers: &HeaderMap) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn native_session_credentials(&self) -> Option<crate::config::native_session::NativeSession> {
+        None
+    }
+    async fn update_native_csrf(&mut self, _token: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     /// Returns the authentication method type.
     fn auth_type(&self) -> AuthMethod;
@@ -30,6 +68,15 @@ pub trait Authenticator: Send + Sync {
 ///
 /// Call this before creating an authenticator to give clear, early error messages.
 pub fn validate_profile_config(
+    profile_name: &str,
+    profile: &crate::config::Profile,
+) -> anyhow::Result<()> {
+    validate_profile_config_inner(profile_name, profile).map_err(|error| {
+        crate::config::error::ConfigError::new("CONFIG_INVALID", error.to_string()).into()
+    })
+}
+
+fn validate_profile_config_inner(
     profile_name: &str,
     profile: &crate::config::Profile,
 ) -> anyhow::Result<()> {
@@ -92,6 +139,7 @@ pub fn validate_profile_config(
                 );
             }
         }
+        AuthMethod::NativeSession => {}
         AuthMethod::BrowserSession => {
             // No required profile config fields. The session cookie is provided at
             // runtime via the SNOW_SESSION_COOKIE environment variable.
@@ -116,6 +164,10 @@ pub fn create_authenticator(
     validate_profile_config(profile_name, profile)?;
 
     match profile.auth_method {
+        AuthMethod::NativeSession => Ok(Box::new(native_session::NativeSessionAuth::stored(
+            profile_name,
+            &profile.instance,
+        )?)),
         AuthMethod::Basic => Ok(Box::new(basic::BasicAuth::new(profile_name, profile)?)),
         AuthMethod::Oauth2 => Ok(Box::new(oauth2::OAuth2Auth::new(profile_name, profile)?)),
         AuthMethod::ApiKey => Ok(Box::new(api_key::ApiKeyAuth::new(profile_name, profile)?)),

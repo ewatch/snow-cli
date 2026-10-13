@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::validation::ValidationError;
 
 pub(super) async fn handle_export_package(
     profile: &str,
@@ -452,39 +453,35 @@ pub(super) async fn fetch_table_schema(
 pub(super) fn read_dataset_input(file: &str) -> anyhow::Result<DatasetInput> {
     let body = std::fs::read_to_string(file)?;
     let value: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|error| anyhow::anyhow!("Invalid dataset file '{}': {}", file, error))?;
+        .map_err(|_| ValidationError::new("Invalid dataset file; provide valid JSON."))?;
     let kind = value
         .get("kind")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!("Dataset file '{}' is missing a string 'kind' field", file)
-        })?;
+        .ok_or_else(|| ValidationError::new("Dataset file is missing a string 'kind' field"))?;
 
     match kind {
         "table-export" => Ok(DatasetInput::Flat(serde_json::from_value(value)?)),
         "dataset" => Ok(DatasetInput::Package(serde_json::from_value(value)?)),
-        _ => anyhow::bail!(
-            "Unsupported dataset kind '{}' in file '{}'; expected 'table-export' or 'dataset'",
-            kind,
-            file
-        ),
+        _ => Err(ValidationError::new(
+            "Unsupported dataset kind; expected 'table-export' or 'dataset'",
+        )
+        .into()),
     }
 }
 
 pub(super) fn read_dataset_export_spec(file: &str) -> anyhow::Result<DatasetExportSpec> {
     let body = std::fs::read_to_string(file)?;
-    let spec: DatasetExportSpec = serde_json::from_str(&body)
-        .map_err(|error| anyhow::anyhow!("Invalid dataset export spec '{}': {}", file, error))?;
+    let spec: DatasetExportSpec = serde_json::from_str(&body).map_err(|_| {
+        ValidationError::new("Invalid dataset export spec; check JSON syntax and required fields.")
+    })?;
     Ok(spec)
 }
 
 pub(super) fn read_dataset_table_artifact(path: &Path) -> anyhow::Result<DatasetTableArtifact> {
     let body = std::fs::read_to_string(path)?;
-    let artifact: DatasetTableArtifact = serde_json::from_str(&body).map_err(|error| {
-        anyhow::anyhow!(
-            "Invalid dataset table artifact '{}': {}",
-            path.display(),
-            error
+    let artifact: DatasetTableArtifact = serde_json::from_str(&body).map_err(|_| {
+        ValidationError::new(
+            "Invalid dataset table artifact; check JSON syntax and required fields.",
         )
     })?;
     Ok(artifact)
@@ -889,7 +886,11 @@ pub(super) fn remap_reference_fields(
 
 pub(super) fn ensure_json_output(format: &OutputFormat, command: &str) -> anyhow::Result<()> {
     if matches!(format, OutputFormat::Csv) {
-        anyhow::bail!("`{}` currently supports only JSON output", command);
+        return Err(ValidationError::new(format!(
+            "`{}` does not support CSV output; use json, jsonl, toon, text, or auto.",
+            command
+        ))
+        .into());
     }
     Ok(())
 }

@@ -61,6 +61,12 @@ pub enum ReadOnlyCommands {
     /// Read Table API records, schema, and aggregate stats
     Table(ReadOnlyTableArgs),
 
+    /// Discover domain separation settings, hierarchy, and table support
+    Domain(crate::cli::args::DomainArgs),
+
+    /// Inspect or attach a native ServiceNow session (no switching)
+    Session(ReadOnlySessionArgs),
+
     /// Portable data export and validation workflows
     Data(ReadOnlyDataArgs),
 
@@ -189,6 +195,10 @@ pub enum ReadOnlyTableCommands {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
         table: TableName,
 
+        /// Exact record domain: global or a domain sys_id (does not grant visibility)
+        #[arg(long)]
+        domain: Option<crate::models::domain::DomainId>,
+
         /// Encoded query string
         #[arg(long)]
         query: Option<String>,
@@ -202,6 +212,10 @@ pub enum ReadOnlyTableCommands {
         #[arg(long, conflicts_with = "all")]
         limit: Option<usize>,
 
+        /// Skip this many matching records (default: 0)
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+
         /// Fetch every matching record instead of the bounded default
         #[arg(long)]
         all: bool,
@@ -211,9 +225,18 @@ pub enum ReadOnlyTableCommands {
         #[arg(long, allow_hyphen_values = true)]
         order_by: Option<OrderBy>,
 
-        /// Return complete field content instead of capping long values
+        /// Request cross-domain Table API reads (admin or query_no_domain_table_api required)
         #[arg(long)]
+        query_no_domain: bool,
+
+        /// Return complete field content instead of capping long values
+        #[arg(long, conflicts_with = "preview")]
         full: bool,
+
+        /// Shorten oversized string fields and emit separate preview metadata
+        /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
+        #[arg(long, conflicts_with = "full")]
+        preview: bool,
     },
 
     /// Get a single record by sys_id
@@ -228,9 +251,18 @@ pub enum ReadOnlyTableCommands {
         #[arg(long)]
         fields: Option<String>,
 
-        /// Return complete field content instead of capping long values
+        /// Request cross-domain Table API reads (admin or query_no_domain_table_api required)
         #[arg(long)]
+        query_no_domain: bool,
+
+        /// Return complete field content instead of capping long values
+        #[arg(long, conflicts_with = "preview")]
         full: bool,
+
+        /// Shorten oversized string fields and emit separate preview metadata
+        /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
+        #[arg(long, conflicts_with = "full")]
+        preview: bool,
     },
 
     /// Show table schema (columns, types, labels) from sys_dictionary
@@ -255,6 +287,10 @@ pub enum ReadOnlyTableCommands {
     Stats {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
         table: TableName,
+
+        /// Exact record domain: global or a domain sys_id (does not grant visibility)
+        #[arg(long)]
+        domain: Option<crate::models::domain::DomainId>,
 
         /// Encoded query string
         #[arg(long)]
@@ -457,11 +493,11 @@ pub enum ReadOnlyCodesearchCommands {
         source_table: Option<String>,
 
         /// Restrict search to a specific application scope
-        #[arg(long)]
+        #[arg(long, conflicts_with = "current_scope")]
         scope: Option<String>,
 
-        /// Maximum number of results to return
-        #[arg(long, default_value = "100")]
+        /// Maximum hits per source table (default: 10)
+        #[arg(long, default_value = "10")]
         limit: usize,
 
         /// Restrict search to the current scope only
@@ -471,6 +507,15 @@ pub enum ReadOnlyCodesearchCommands {
         /// Search group to use (advanced)
         #[arg(long, default_value = "sn_devstudio.Studio Search Group")]
         search_group: String,
+
+        /// Return complete matched text instead of capping long preview fields
+        #[arg(long, conflicts_with = "preview")]
+        full: bool,
+
+        /// Shorten oversized string fields and emit separate preview metadata
+        /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
+        #[arg(long, conflicts_with = "full")]
+        preview: bool,
     },
 }
 
@@ -688,6 +733,19 @@ impl ReadOnlyCommands {
             Self::Auth(args) => Commands::Auth(AuthArgs {
                 command: args.command.into_full_command(),
             }),
+            Self::Domain(args) => Commands::Domain(args),
+            Self::Session(args) => Commands::Session(crate::cli::args::SessionArgs {
+                command: match args.command {
+                    ReadOnlySessionCommands::Show => crate::cli::args::SessionCommands::Show,
+                    ReadOnlySessionCommands::Options { kind } => {
+                        crate::cli::args::SessionCommands::Options { kind }
+                    }
+                    ReadOnlySessionCommands::Attach { name, cookie_stdin } => {
+                        crate::cli::args::SessionCommands::Attach { name, cookie_stdin }
+                    }
+                    ReadOnlySessionCommands::Forget => crate::cli::args::SessionCommands::Forget,
+                },
+            }),
             Self::Table(args) => Commands::Table(TableArgs {
                 command: args.command.into_full_command(),
             }),
@@ -762,30 +820,42 @@ impl ReadOnlyTableCommands {
             Self::List {
                 table,
                 query,
+                domain,
                 fields,
                 limit,
+                offset,
                 all,
                 order_by,
                 full,
+                preview,
+                query_no_domain,
             } => TableCommands::List {
                 table,
                 query,
+                domain,
                 fields,
                 limit,
+                offset,
                 all,
                 order_by,
                 full,
+                preview,
+                query_no_domain,
             },
             Self::Get {
                 table,
                 sys_id,
                 fields,
                 full,
+                preview,
+                query_no_domain,
             } => TableCommands::Get {
                 table,
                 sys_id,
                 fields,
                 full,
+                preview,
+                query_no_domain,
             },
             Self::Schema {
                 table,
@@ -801,6 +871,7 @@ impl ReadOnlyTableCommands {
             Self::Stats {
                 table,
                 query,
+                domain,
                 group_by,
                 avg,
                 min,
@@ -810,6 +881,7 @@ impl ReadOnlyTableCommands {
             } => TableCommands::Stats {
                 table,
                 query,
+                domain,
                 group_by,
                 avg,
                 min,
@@ -902,6 +974,8 @@ impl ReadOnlyCodesearchCommands {
                 limit,
                 current_scope,
                 search_group,
+                full,
+                preview,
             } => CodesearchCommands::Search {
                 query,
                 source_table,
@@ -909,6 +983,8 @@ impl ReadOnlyCodesearchCommands {
                 limit,
                 current_scope,
                 search_group,
+                full,
+                preview,
             },
         }
     }
@@ -1039,6 +1115,7 @@ mod tests {
     #[test]
     fn table_stats_maps_to_full_command() {
         let mapped = ReadOnlyTableCommands::Stats {
+            domain: None,
             table: "incident".parse().unwrap(),
             query: Some("active=true".to_string()),
             group_by: Some("state".to_string()),
@@ -1119,11 +1196,14 @@ mod tests {
     }
 
     #[test]
-    fn table_full_flag_maps_to_full_commands() {
+    fn table_full_and_preview_flags_map_to_full_commands() {
         let list = ReadOnlyCli::parse_from(["snow-cli-ro", "table", "list", "incident", "--full"]);
         match list.command {
             ReadOnlyCommands::Table(args) => match args.command.into_full_command() {
-                TableCommands::List { full, .. } => assert!(full),
+                TableCommands::List { full, preview, .. } => {
+                    assert!(full);
+                    assert!(!preview);
+                }
                 _ => panic!("expected table list command"),
             },
             _ => panic!("expected table command"),
@@ -1135,14 +1215,72 @@ mod tests {
             "get",
             "incident",
             "6816f79cc0a8016401c5a33be04be441",
-            "--full",
+            "--preview",
         ]);
         match get.command {
             ReadOnlyCommands::Table(args) => match args.command.into_full_command() {
-                TableCommands::Get { full, .. } => assert!(full),
+                TableCommands::Get { full, preview, .. } => {
+                    assert!(!full);
+                    assert!(preview);
+                }
                 _ => panic!("expected table get command"),
             },
             _ => panic!("expected table command"),
         }
     }
+
+    #[test]
+    fn codesearch_preview_flag_maps_to_full_command() {
+        let cli = ReadOnlyCli::parse_from([
+            "snow-cli-ro",
+            "codesearch",
+            "search",
+            "GlideRecord",
+            "--preview",
+        ]);
+        match cli.command {
+            ReadOnlyCommands::Codesearch(args) => match args.command.into_full_command() {
+                CodesearchCommands::Search { full, preview, .. } => {
+                    assert!(!full);
+                    assert!(preview);
+                }
+            },
+            _ => panic!("expected codesearch command"),
+        }
+    }
+
+    #[test]
+    fn read_only_full_conflicts_with_preview() {
+        let error = ReadOnlyCli::try_parse_from([
+            "snow-cli-ro",
+            "table",
+            "get",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--full",
+            "--preview",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct ReadOnlySessionArgs {
+    #[command(subcommand)]
+    pub command: ReadOnlySessionCommands,
+}
+#[derive(Subcommand, Debug)]
+pub enum ReadOnlySessionCommands {
+    Show,
+    Options {
+        #[arg(value_enum)]
+        kind: crate::models::session::SessionSwitchType,
+    },
+    Attach {
+        name: String,
+        #[arg(long, required = true)]
+        cookie_stdin: bool,
+    },
+    Forget,
 }

@@ -31,6 +31,11 @@ agents to pipe stdout for data processing while monitoring stderr for errors.
 
 The process exit code is non-zero on any error.
 
+[ADR-0010](0010-runtime-error-contract.md) extends this contract with stable
+runtime classes, conservative retry guidance, redaction boundaries, and the
+explicit clap parsing/help exception. Runtime errors remain JSON; clap usage
+errors remain human-readable stderr with exit 2.
+
 ## Alternatives Considered
 
 | Approach           | Pros                      | Cons                          |

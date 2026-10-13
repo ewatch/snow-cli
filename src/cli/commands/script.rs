@@ -1,3 +1,5 @@
+use crate::models::validation::ValidationError;
+use anyhow::Context;
 use std::io::IsTerminal;
 
 use crate::cli::args::{OutputFormat, ScriptArgs, ScriptCommands};
@@ -34,7 +36,14 @@ pub async fn run_background_script(
         quota_managed_transaction: false,
     };
 
-    execute_background_script(profile, instance, timeout_secs, script, &options).await
+    let response =
+        execute_background_script(profile, instance, timeout_secs, script, &options).await?;
+    // Internal callers consume script-printed JSON, not the CLI result envelope.
+    if endpoint_requires_form_session(&options.endpoint) {
+        Ok(extract_background_script_payload(response))
+    } else {
+        Ok(response)
+    }
 }
 
 pub async fn handle(
@@ -129,7 +138,7 @@ async fn execute_background_script(
 
     let status = response.status();
     let final_url = response.final_url().to_string();
-    let response_headers = response.headers().clone();
+    let server_timing = response.server_timing().map(str::to_string);
 
     tracing::debug!(
         status = status,
@@ -139,13 +148,13 @@ async fn execute_background_script(
 
     if !(200..300).contains(&status) {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Script execution failed with status {}: {}", status, body);
+        return Err(crate::client::error::ApiError::from_status(
+            status,
+            client.base_url(),
+            Some(body),
+        )
+        .into());
     }
-
-    let server_timing = response_headers
-        .get("server-timing")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
 
     let mut response_body = response.text().await?;
     if requires_form_session {
@@ -212,6 +221,20 @@ async fn handle_run(
     let script = resolve_script(file, code)?;
     let response_body =
         execute_background_script(profile, instance, timeout_secs, &script, options).await?;
+
+    if endpoint_requires_form_session(&options.endpoint) {
+        return match format {
+            // CSV historically means a raw execution log here, not tabular data.
+            OutputFormat::Text | OutputFormat::Csv => {
+                println!("{response_body}");
+                Ok(())
+            }
+            _ => output::print_output(
+                &parse_script_execution_log(&response_body, &options.scope),
+                format,
+            ),
+        };
+    }
 
     match format {
         OutputFormat::Json => match serde_json::from_str::<serde_json::Value>(&response_body) {
@@ -355,6 +378,79 @@ fn extract_json_from_script_marker(cleaned: &str) -> Option<String> {
         .map(|_| json_snippet.to_string())
 }
 
+/// Recognize evaluator diagnostics, not arbitrary occurrences of "error" in
+/// user output. Script print lines and JSON values remain ordinary result data.
+fn background_script_failure(cleaned: &str) -> Option<crate::error::ScriptExecutionError> {
+    use crate::error::ScriptExecutionError;
+
+    for line in cleaned.lines() {
+        let mut line = line.trim();
+        // Some instance releases wrap diagnostics in presentation markup.
+        // Strip only leading known HTML tags for classification; leave the
+        // returned script output untouched.
+        while let Some(rest) = line.strip_prefix('<') {
+            let Some((tag, remainder)) = rest.split_once('>') else {
+                break;
+            };
+            let name = tag
+                .trim_start_matches('/')
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if !matches!(
+                name.as_str(),
+                "html" | "body" | "div" | "span" | "font" | "p" | "b" | "strong" | "pre"
+            ) {
+                break;
+            }
+            line = remainder.trim_start();
+        }
+        if line.starts_with("*** Script:") {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("kittyscript validation failed") {
+            return Some(ScriptExecutionError::SandboxValidation);
+        }
+        if lower.starts_with("script compilation error") {
+            return Some(ScriptExecutionError::Compilation);
+        }
+        if lower.starts_with("evaluator.evaluatestring() problem") {
+            return Some(ScriptExecutionError::Evaluation);
+        }
+        if lower.starts_with("background message,")
+            && lower.split(',').skip(1).any(|field| {
+                field
+                    .chars()
+                    .filter(|ch| !ch.is_whitespace())
+                    .collect::<String>()
+                    == "type:error"
+            })
+        {
+            return Some(ScriptExecutionError::BackgroundMessage);
+        }
+        let exception = line.strip_prefix("Caused by: ").unwrap_or(line);
+        let class = exception.split([':', ' ']).next().unwrap_or_default();
+        // Java/Rhino exception headers are strong signals; do not classify
+        // standalone "error" or user-printed stack traces as failures.
+        if [
+            "java.",
+            "javax.",
+            "com.glide.",
+            "com.snc.",
+            "org.mozilla.javascript.",
+        ]
+        .iter()
+        .any(|prefix| class.starts_with(prefix))
+            && (class.ends_with("Exception") || class.ends_with("Error"))
+        {
+            return Some(ScriptExecutionError::JavaException);
+        }
+    }
+    None
+}
+
 fn validate_background_script_response(
     raw: &str,
     status_code: u16,
@@ -402,15 +498,100 @@ fn validate_background_script_response(
         );
     }
 
-    if serde_json::from_str::<serde_json::Value>(&cleaned).is_ok() {
-        return Ok(cleaned);
-    }
-
-    if let Some(json_payload) = extract_json_from_script_marker(&cleaned) {
-        return Ok(json_payload);
+    // Check the complete response before JSON extraction can hide an evaluator
+    // failure preceding a valid-looking printed payload.
+    if let Some(error) = background_script_failure(&cleaned) {
+        return Err(error.into());
     }
 
     Ok(cleaned)
+}
+
+fn extract_background_script_payload(cleaned: String) -> String {
+    if serde_json::from_str::<serde_json::Value>(&cleaned).is_ok() {
+        return cleaned;
+    }
+    extract_json_from_script_marker(&cleaned).unwrap_or(cleaned)
+}
+
+#[derive(serde::Serialize)]
+struct ScriptExecutionResult {
+    output: Vec<String>,
+    duration_ms: Option<u64>,
+    scope: String,
+    history_sys_id: Option<String>,
+    // Known failures return a typed stderr error before reaching this parser.
+    errors: Vec<String>,
+}
+
+/// Parse metadata only from server log lines, not script-printed content.
+/// Unknown lines remain output so release-specific layouts do not lose data.
+fn parse_script_execution_log(cleaned: &str, requested_scope: &str) -> ScriptExecutionResult {
+    let mut result = ScriptExecutionResult {
+        output: Vec::new(),
+        duration_ms: None,
+        scope: requested_scope.to_string(),
+        history_sys_id: None,
+        errors: Vec::new(),
+    };
+    for line in cleaned.lines() {
+        let trimmed = line.trim();
+        if let Some(printed) = line.trim_start().strip_prefix("*** Script:") {
+            result
+                .output
+                .push(printed.strip_prefix(' ').unwrap_or(printed).to_string());
+            continue;
+        }
+        if let Some((elapsed, banner)) = trimmed
+            .strip_prefix('[')
+            .and_then(|line| line.split_once(']'))
+            && let Some(scope) = banner.trim().strip_prefix("Script completed in scope ")
+            && let Some((scope, _)) = scope.split_once(':')
+            && !scope.trim().is_empty()
+        {
+            result.scope = scope.trim().to_string();
+            result.duration_ms = parse_script_duration(elapsed);
+            continue;
+        }
+        if trimmed.starts_with("Script execution history ")
+            && let Some(id) = trimmed
+                .split_once("sys_script_execution_history.do?sys_id=")
+                .map(|(_, tail)| tail)
+        {
+            let id: String = id.chars().take_while(|ch| ch.is_ascii_hexdigit()).collect();
+            if is_sys_id(&id) {
+                result.history_sys_id = Some(id);
+                continue;
+            }
+        }
+        if !trimmed.is_empty() {
+            result.output.push(line.to_string());
+        }
+    }
+    result
+}
+
+/// ServiceNow timing banners use [hours:minutes:seconds.milliseconds].
+/// Reject malformed/overflowing values rather than fabricating metadata.
+fn parse_script_duration(elapsed: &str) -> Option<u64> {
+    let mut parts = elapsed.split(':');
+    let hours: u64 = parts.next()?.parse().ok()?;
+    let minutes: u64 = parts.next()?.parse().ok()?;
+    let (seconds, millis) = parts.next()?.split_once('.')?;
+    if parts.next().is_some() || millis.len() != 3 || !millis.bytes().all(|ch| ch.is_ascii_digit())
+    {
+        return None;
+    }
+    let seconds: u64 = seconds.parse().ok()?;
+    let millis: u64 = millis.parse().ok()?;
+    if minutes >= 60 || seconds >= 60 {
+        return None;
+    }
+    hours
+        .checked_mul(3_600_000)?
+        .checked_add(minutes * 60_000)?
+        .checked_add(seconds * 1_000)?
+        .checked_add(millis)
 }
 
 /// Resolve script content from `--file`, `--code`, or stdin.
@@ -433,32 +614,32 @@ fn resolve_script_from<R: std::io::Read>(
     // --code takes precedence
     if let Some(c) = code {
         if c.trim().is_empty() {
-            anyhow::bail!("Empty script provided via --code.");
+            return Err(ValidationError::new("Empty script provided via --code.").into());
         }
         return Ok(c);
     }
 
     // --file reads from filesystem
     if let Some(path) = file {
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("Failed to read script file '{}': {}", path, e))?;
+        let content = std::fs::read_to_string(&path).context("Failed to read script file")?;
         if content.trim().is_empty() {
-            anyhow::bail!("Script file '{}' is empty.", path);
+            return Err(ValidationError::new("Script file is empty.").into());
         }
         return Ok(content);
     }
 
     // Fall back to stdin
     if is_tty {
-        anyhow::bail!(
-            "No script provided. Use --code '<script>', --file <path>, or pipe script to stdin."
-        );
+        return Err(ValidationError::new(
+            "No script provided. Use --code '<script>', --file <path>, or pipe script to stdin.",
+        )
+        .into());
     }
 
     let buf = read_to_string_limited(reader, DEFAULT_MAX_STDIN_BYTES, "script stdin input")?;
 
     if buf.trim().is_empty() {
-        anyhow::bail!("No script received from stdin.");
+        return Err(ValidationError::new("No script received from stdin.").into());
     }
 
     Ok(buf)
@@ -474,6 +655,55 @@ mod tests {
         let raw = "<HTML><BODY>Script output</BODY></HTML>";
         let clean = sanitize_background_script_response(raw);
         assert_eq!(clean, "Script output");
+    }
+
+    #[test]
+    fn script_log_metadata_is_optional_and_printed_content_is_preserved() {
+        let parsed = parse_script_execution_log(
+            "*** Script: [0:00:01.000] Script completed in scope fake: script\n*** Script:   padded  \n*** Script:\nunknown release-specific line",
+            "x_requested",
+        );
+        assert_eq!(parsed.duration_ms, None);
+        assert_eq!(parsed.history_sys_id, None);
+        assert_eq!(parsed.scope, "x_requested");
+        assert_eq!(
+            parsed.output,
+            [
+                "[0:00:01.000] Script completed in scope fake: script",
+                "  padded  ",
+                "",
+                "unknown release-specific line"
+            ]
+        );
+        assert!(parsed.errors.is_empty());
+    }
+
+    #[test]
+    fn script_duration_is_checked_and_uses_milliseconds() {
+        assert_eq!(parse_script_duration("0:00:00.006"), Some(6));
+        assert_eq!(parse_script_duration("1:02:03.456"), Some(3_723_456));
+        for invalid in [
+            "",
+            "0:60:00.000",
+            "0:00:60.000",
+            "0:00:00.6",
+            "0:00:00.000:1",
+            "18446744073709551615:00:00.000",
+            "0:00:00.xxx",
+        ] {
+            assert_eq!(parse_script_duration(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn invalid_history_is_retained_and_unknown_duration_is_null() {
+        let log = "Script execution history <A HREF='sys_script_execution_history.do?sys_id=bad'>here</A>\n[broken] Script completed in scope global: script";
+        let parsed = parse_script_execution_log(log, "x_requested");
+        assert_eq!(parsed.history_sys_id, None);
+        assert_eq!(parsed.duration_ms, None);
+        assert_eq!(parsed.scope, "global");
+        assert_eq!(parsed.output.len(), 1);
+        assert!(parsed.output[0].contains("sys_id=bad"));
     }
 
     #[test]
@@ -542,7 +772,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            clean,
+            extract_background_script_payload(clean),
             r#"{"ok":true,"dry_run":true,"warnings":[],"requires_confirmation":false}"#
         );
     }
@@ -560,7 +790,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            clean,
+            extract_background_script_payload(clean),
             r#"{"ok":true,"dry_run":true,"warnings":[],"requires_confirmation":false}"#
         );
     }

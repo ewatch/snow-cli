@@ -21,9 +21,11 @@ Important options:
 - `--query <encoded-query>`: ServiceNow encoded query string
 - `--fields <a,b,c>`: comma-separated field list (default: a compact table-aware projection; pass `'*'` for all fields)
 - `--limit <n>`: maximum number of records to return (default: 20)
+- `--offset <n>`: skip the first `n` matching records (default: 0); works with `--limit` or `--all`
 - `--all`: fetch every matching record instead of the bounded default
 - `--order-by <spec>`: sort results. `field` sorts ascending, `-field` or `field:desc` descending; comma-separate several keys (`-priority,number`). Sent as `ORDERBY`/`ORDERBYDESC` clauses appended to `--query`, because the Table API has no separate sort parameter
-- `--full`: return complete field content instead of capping long values
+- `--preview`: opt in to shortening oversized string fields and emitting separate preview metadata (JSON, JSONL, TOON, text, and auto output only)
+- `--full`: explicit lossless escape hatch for commands copied from preview workflows; conflicts with `--preview`
 
 Examples:
 
@@ -31,16 +33,23 @@ Examples:
 snow-cli table list incident --query 'active=true' --limit 20
 snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name
 snow-cli table list incident --fields number,sys_created_on --order-by -sys_created_on --limit 5  # newest first
+snow-cli table list incident --order-by -sys_created_on --limit 3 --offset 3  # second page
 snow-cli table list incident --all --fields '*' --full   # everything, uncapped
+snow-cli table list incident --preview   # shorten oversized fields with metadata
 ```
 
 Notes:
 
 - `table list` auto-paginates until it reaches the requested limit or exhausts the result set.
-- Output is bounded by default: at most 20 records without `--limit`/`--all`, a compact field projection without `--fields`, and field values capped at 2,000 characters without `--full`. Capped values end in an inline `… [truncated N of M chars; use --full]` size hint.
-- Except in CSV output, responses carry `total` (when the server reports `X-Total-Count`), `returned`, `truncated`, and — when the content cap fired — `fields_truncated` metadata, so truncation is always detectable.
+- Output is bounded by default: at most 20 records without `--limit` or `--all`, and a compact field projection without `--fields`.
+- Output is lossless by default, including explicit `--output json`, detail reads, `auto`, and export/artifact workflows.
+- Pass `--preview` to shorten field values longer than 2,000 characters. The shortened value has no inline marker.
+- Preview metadata appears outside the data value. It reports `path`, `original_chars`, `shown_chars`, and `escape_hatch` for each shortened field. Replace `--preview` with `--full`, or omit `--preview`, to retrieve complete field content.
+- `--preview` is supported for JSON, JSONL, TOON, text, and auto output. It is rejected with CSV output because CSV has no metadata channel.
+- JSONL output keeps its meta line plus record lines when no field is shortened. When preview metadata is present, JSONL emits one envelope line so each `path` points into the same JSON value.
+- Except in CSV output, `table list` responses carry `total` when the server reports `X-Total-Count`, `returned`, `offset`, `next_offset`, `truncated`, and `fields_truncated` when `--preview` shortened a field. Use `next_offset` as the next call's `--offset` value. For repeatable pages, specify `--order-by`.
 - For complete data set extraction prefer `data export`, which keeps full-export semantics.
-- Use `--output csv` when you want tabular export.
+- Use `--output csv` when you want tabular export. CSV output is lossless and does not carry preview metadata.
 
 ## `table get <table> <sys_id>`
 
@@ -53,7 +62,10 @@ snow-cli table get <table> <sys_id> [options]
 Important options:
 
 - `--fields <a,b,c>`: restrict the returned fields
-- `--full`: return complete field content instead of capping long values at 2,000 characters
+- `--preview`: opt in to shortening oversized string fields and wrapping the record as `{ "preview": ..., "record": ... }` (JSON, JSONL, TOON, text, and auto output only)
+- `--full`: explicit lossless escape hatch for commands copied from preview workflows; conflicts with `--preview`
+
+`table get` is lossless by default. With `--preview`, preview-capable formats wrap a shortened record as `{ "preview": ..., "record": ... }`. Replace `--preview` with `--full`, or omit `--preview`, to return the record as the exact Table API value. `--preview` is rejected with CSV output.
 
 Example:
 
@@ -256,3 +268,12 @@ the double-quoted form only when the value must interpolate a shell variable.
 - [`data` command reference](/commands/data/)
 - [`attachment` command reference](/commands/attachment/)
 - [`api` command reference](/commands/api/)
+
+## Domain separation
+
+Use `--domain global|<domain_sys_id>` on `table list` and `table stats` to filter
+exact record ownership within server visibility. On `table list` and `table get`,
+`--query-no-domain` explicitly requests the privileged Table API option. It is
+never enabled automatically. See the [domain guide](/commands/domain/) for
+inherited-field validation, query branching, role requirements, and how to
+interpret empty results.

@@ -1,5 +1,55 @@
 use serde::Serialize;
 
+/// Transport classification never retains URLs, payloads, or reqwest Display text.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+pub enum TransportError {
+    #[error("HTTP request timed out; the server may already have processed the request")]
+    Timeout,
+    #[error("Unable to connect to the server")]
+    Connection,
+    #[error(
+        "HTTP response contains invalid JSON or an unexpected envelope; response data is withheld"
+    )]
+    InvalidResponse,
+    #[error("{0}")]
+    InvalidEnvelope(&'static str),
+    #[error("HTTP transport failed; request details are withheld")]
+    Other,
+}
+
+impl TransportError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Timeout => "REQUEST_TIMEOUT",
+            Self::Connection => "CONNECTION_FAILED",
+            Self::InvalidResponse | Self::InvalidEnvelope(_) => "INVALID_RESPONSE",
+            Self::Other => "TRANSPORT_ERROR",
+        }
+    }
+
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::Timeout | Self::Connection)
+    }
+}
+
+/// Keep dependency on the HTTP library inside the client seam, including when
+/// classifying errors from response body reads and optional client operations.
+pub(crate) fn classify_transport_error(error: &anyhow::Error) -> Option<TransportError> {
+    if let Some(error) = error.downcast_ref::<TransportError>() {
+        return Some(*error);
+    }
+    let error = error.downcast_ref::<reqwest::Error>()?;
+    Some(if error.is_timeout() {
+        TransportError::Timeout
+    } else if error.is_connect() {
+        TransportError::Connection
+    } else if error.is_decode() {
+        TransportError::InvalidResponse
+    } else {
+        TransportError::Other
+    })
+}
+
 /// Structured API error mapped from ServiceNow HTTP responses.
 #[derive(Debug, Serialize)]
 pub struct ApiError {
@@ -32,6 +82,19 @@ impl ApiError {
             _ => ("UNKNOWN_ERROR", "Unexpected error"),
         };
 
+        // OAuth descriptions may echo credentials or arbitrary request data.
+        // Retain only recognized protocol error names, never descriptions or
+        // extra fields (even when sensitive HTTP diagnostics are enabled).
+        if let Some(oauth_error) = body.as_deref().and_then(oauth_error_name) {
+            return Self {
+                code: code.to_string(),
+                message: format!("OAuth2 token request failed: {oauth_error}"),
+                status,
+                detail: None,
+                instance: instance.to_string(),
+            };
+        }
+
         if let Some(envelope) = body.as_deref().and_then(ServiceNowErrorEnvelope::parse) {
             let message = bound_chars(&scrub_secrets(&envelope.message), Self::MAX_ENVELOPE_CHARS);
             let detail = envelope
@@ -54,6 +117,26 @@ impl ApiError {
             detail: body.map(|body| safe_error_detail(&body)),
             instance: instance.to_string(),
         }
+    }
+}
+
+/// OAuth 2.0 error names from RFC 6749 sections 4.1.2.1 and 5.2.
+/// An allow-list prevents a server-controlled `error` string echoing secrets.
+fn oauth_error_name(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let name = value.get("error")?.as_str()?;
+    match name {
+        "invalid_request"
+        | "invalid_client"
+        | "invalid_grant"
+        | "unauthorized_client"
+        | "unsupported_grant_type"
+        | "invalid_scope"
+        | "access_denied"
+        | "unsupported_response_type"
+        | "server_error"
+        | "temporarily_unavailable" => Some(name.to_string()),
+        _ => None,
     }
 }
 
@@ -286,34 +369,46 @@ fn truncate_graphql_message(message: &str) -> String {
     truncated
 }
 
-fn safe_error_detail(body: &str) -> String {
-    const MAX_DETAIL_LEN: usize = 1024;
-
+/// Unknown response text is always withheld from runtime errors. Sensitive
+/// HTTP diagnostics are a separate channel and cannot weaken this boundary.
+pub(crate) fn safe_error_detail(body: &str) -> String {
     if body.trim().is_empty() {
-        return String::new();
+        String::new()
+    } else {
+        format!("<response body redacted, {} bytes>", body.len())
     }
-
-    let include_sensitive = std::env::var("SNOW_CLI_DEBUG_HTTP_INCLUDE_SENSITIVE")
-        .map(|value| {
-            let normalized = value.trim().to_ascii_lowercase();
-            !(normalized.is_empty() || matches!(normalized.as_str(), "0" | "false" | "off" | "no"))
-        })
-        .unwrap_or(false);
-
-    if !include_sensitive {
-        return format!("<response body redacted, {} bytes>", body.len());
-    }
-
-    let mut detail = body.chars().take(MAX_DETAIL_LEN).collect::<String>();
-    if body.chars().count() > MAX_DETAIL_LEN {
-        detail.push_str("... <truncated>");
-    }
-    detail
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arbitrary_response_detail_is_always_redacted() {
+        let body = "private credential ".repeat(100);
+        assert_eq!(
+            safe_error_detail(&body),
+            format!("<response body redacted, {} bytes>", body.len())
+        );
+        assert_eq!(safe_error_detail("  "), "");
+    }
+
+    #[test]
+    fn oauth_error_names_are_allow_listed_and_ignore_descriptions() {
+        assert_eq!(
+            oauth_error_name(r#"{"error":"invalid_client","error_description":"secret"}"#)
+                .as_deref(),
+            Some("invalid_client")
+        );
+        for body in [
+            r#"{"error":"unlabelled-secret"}"#,
+            r#"{"error":42}"#,
+            "<html>secret</html>",
+            "invalid JSON",
+        ] {
+            assert_eq!(oauth_error_name(body), None);
+        }
+    }
 
     #[test]
     fn test_from_status_maps_common_codes() {

@@ -47,10 +47,11 @@ thiserror = "2"
 anyhow = "1"
 
 # Async trait support
-async-trait = "0.1"
+async-trait = "0.1.92"
 
-# HTTP header types
+# HTTP header types and cookie expiry dates
 http = "1"
+httpdate = "1"
 
 # Base64 encoding (for Basic auth and SN-Utils attachment payloads)
 base64 = "0.23"

@@ -62,7 +62,40 @@ async fn test_table_list_json_output() {
 }
 
 #[tokio::test]
-async fn test_table_list_truncates_long_fields_unless_full() {
+async fn test_table_list_piped_stderr_has_plain_tracing_output() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .env_remove("NO_COLOR")
+        .args([
+            "-v",
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let stderr = String::from_utf8(output).unwrap();
+    assert!(stderr.contains("Listing records from table"), "{stderr}");
+    assert!(!stderr.contains("\x1b["), "{stderr}");
+}
+
+#[tokio::test]
+async fn test_table_list_previews_long_fields_with_preview_flag() {
     let server = MockServer::start().await;
     let long_description = "x".repeat(2_001);
 
@@ -84,19 +117,106 @@ async fn test_table_list_truncates_long_fields_unless_full() {
             .args(["--instance", &server.uri(), "table", "list", "incident"]);
         if full {
             command.arg("--full");
+        } else {
+            command.arg("--preview");
         }
         command.assert().success().get_output().stdout.clone()
     };
 
-    let truncated: serde_json::Value = serde_json::from_slice(&run(false)).unwrap();
-    assert_eq!(truncated["fields_truncated"], true);
-    let description = truncated["records"][0]["description"].as_str().unwrap();
-    assert!(description.starts_with(&"x".repeat(2_000)));
-    assert!(description.ends_with("[truncated 2000 of 2001 chars; use --full]"));
+    let previewed: serde_json::Value = serde_json::from_slice(&run(false)).unwrap();
+    assert_eq!(previewed["fields_truncated"], true);
+    assert_eq!(previewed["records"][0]["description"], "x".repeat(2_000));
+    assert_eq!(
+        previewed["preview"]["truncated_fields"],
+        serde_json::json!([{
+            "path": "/records/0/description",
+            "original_chars": 2001,
+            "shown_chars": 2000,
+            "escape_hatch": "rerun this command with --full"
+        }])
+    );
 
     let full: serde_json::Value = serde_json::from_slice(&run(true)).unwrap();
     assert!(full.get("fields_truncated").is_none());
+    assert!(full.get("preview").is_none());
     assert_eq!(full["records"][0]["description"], "x".repeat(2_001));
+}
+
+#[tokio::test]
+async fn test_table_list_explicit_json_is_lossless_without_full_or_preview() {
+    let server = MockServer::start().await;
+    let long_description = format!("{}END", "é".repeat(2_000));
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "6816f79cc0a8016401c5a33be04be441", "description": long_description}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "json",
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    assert!(json.get("preview").is_none());
+    assert!(json.get("fields_truncated").is_none());
+    assert_eq!(json["records"][0]["description"], long_description);
+}
+
+#[tokio::test]
+async fn test_table_list_csv_output_is_lossless_for_long_fields() {
+    let server = MockServer::start().await;
+    let long_description = "x".repeat(2_001);
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "6816f79cc0a8016401c5a33be04be441", "description": long_description}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "csv",
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let csv = String::from_utf8(output).unwrap();
+    assert!(csv.contains(&"x".repeat(2_001)));
+    assert!(!csv.contains("preview"));
+    assert!(!csv.contains("truncated"));
 }
 
 #[tokio::test]
@@ -188,6 +308,75 @@ async fn test_table_list_jsonl_output() {
 }
 
 #[tokio::test]
+async fn test_table_list_jsonl_preview_uses_metadata_envelope() {
+    let server = MockServer::start().await;
+    let long_description = "x".repeat(2_001);
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "6816f79cc0a8016401c5a33be04be441", "description": long_description}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "jsonl",
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+            "--preview",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let lines: Vec<&str> = stdout.trim().split('\n').collect();
+    assert_eq!(lines.len(), 1);
+    let json: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+
+    assert_eq!(json["records"][0]["description"], "x".repeat(2_000));
+    assert_eq!(
+        json["preview"]["truncated_fields"][0]["path"],
+        "/records/0/description"
+    );
+}
+
+#[tokio::test]
+async fn test_table_list_preview_rejects_csv_output() {
+    let (_dir, config_path) = api_key_config();
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "csv",
+            "--instance",
+            "http://127.0.0.1:9",
+            "table",
+            "list",
+            "incident",
+            "--preview",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--preview is not supported with --output csv",
+        ));
+}
+
+#[tokio::test]
 async fn test_table_list_toon_output() {
     let server = MockServer::start().await;
 
@@ -268,6 +457,141 @@ async fn test_table_list_with_query_params() {
         .assert()
         .success()
         .stdout(predicate::str::contains("INC001"));
+}
+
+#[tokio::test]
+async fn test_table_list_offset_returns_next_page_and_cursor() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_offset", "3"))
+        .and(query_param("sysparm_limit", "3"))
+        .and(query_param("sysparm_query", "ORDERBYDESCsys_created_on"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "7")
+                .set_body_json(serde_json::json!({"result": [
+                    {"number": "INC004"}, {"number": "INC005"}, {"number": "INC006"}
+                ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+            "--order-by",
+            "-sys_created_on",
+            "--limit",
+            "3",
+            "--offset",
+            "3",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["total"], 7);
+    assert_eq!(value["returned"], 3);
+    assert_eq!(value["offset"], 3);
+    assert_eq!(value["next_offset"], 6);
+    assert_eq!(value["truncated"], true);
+    assert_eq!(value["records"][0]["number"], "INC004");
+}
+
+#[tokio::test]
+async fn test_table_list_offset_at_end_has_no_next_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_offset", "6"))
+        .and(query_param("sysparm_limit", "3"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "7")
+                .set_body_json(serde_json::json!({"result": [{"number": "INC007"}]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli-ro")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+            "--limit",
+            "3",
+            "--offset",
+            "6",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["offset"], 6);
+    assert_eq!(value["next_offset"], serde_json::Value::Null);
+    assert_eq!(value["truncated"], false);
+    assert_eq!(value["returned"], 1);
+}
+
+#[tokio::test]
+async fn test_table_list_all_can_start_at_offset() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_offset", "5"))
+        .and(query_param("sysparm_limit", "100"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "6")
+                .set_body_json(serde_json::json!({"result": [{"number": "INC006"}]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "list",
+            "incident",
+            "--all",
+            "--offset",
+            "5",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(value["offset"], 5);
+    assert_eq!(value["next_offset"], serde_json::Value::Null);
+    assert_eq!(value["truncated"], false);
+    assert_eq!(value["returned"], 1);
 }
 
 // Regression (servicenow-cli-120.1): the Table API ignores `sysparm_orderby`,
@@ -630,7 +954,7 @@ async fn test_table_get_with_fields() {
 }
 
 #[tokio::test]
-async fn test_table_get_truncates_long_fields_unless_full() {
+async fn test_table_get_previews_long_fields_with_preview_flag() {
     let server = MockServer::start().await;
     let long_description = "x".repeat(2_001);
 
@@ -659,17 +983,66 @@ async fn test_table_get_truncates_long_fields_unless_full() {
             ]);
         if full {
             command.arg("--full");
+        } else {
+            command.arg("--preview");
         }
         command.assert().success().get_output().stdout.clone()
     };
 
-    let truncated: serde_json::Value = serde_json::from_slice(&run(false)).unwrap();
-    let description = truncated["description"].as_str().unwrap();
-    assert!(description.starts_with(&"x".repeat(2_000)));
-    assert!(description.ends_with("[truncated 2000 of 2001 chars; use --full]"));
+    let previewed: serde_json::Value = serde_json::from_slice(&run(false)).unwrap();
+    assert_eq!(previewed["record"]["description"], "x".repeat(2_000));
+    assert_eq!(
+        previewed["preview"]["truncated_fields"],
+        serde_json::json!([{
+            "path": "/record/description",
+            "original_chars": 2001,
+            "shown_chars": 2000,
+            "escape_hatch": "rerun this command with --full"
+        }])
+    );
 
     let full: serde_json::Value = serde_json::from_slice(&run(true)).unwrap();
     assert_eq!(full["description"], "x".repeat(2_001));
+}
+
+#[tokio::test]
+async fn test_table_get_explicit_json_detail_is_lossless_without_full_or_preview() {
+    let server = MockServer::start().await;
+    let long_description = format!("{}END", "雪".repeat(2_000));
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident/6816f79cc0a8016401c5a33be04be441"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"sys_id": "6816f79cc0a8016401c5a33be04be441", "description": long_description}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config();
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "json",
+            "--instance",
+            &server.uri(),
+            "table",
+            "get",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    assert!(json.get("preview").is_none());
+    assert!(json.get("record").is_none());
+    assert_eq!(json["description"], long_description);
 }
 
 // --- table create ---

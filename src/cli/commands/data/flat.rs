@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::validation::ValidationError;
 
 pub(super) async fn handle_export(
     profile: &str,
@@ -112,9 +113,7 @@ pub(super) async fn handle_import(
         }
         DatasetInput::Package(manifest) => {
             if options.import_set_table.is_some() {
-                anyhow::bail!(
-                    "--import-set-table is currently only supported for flat table-export artifacts, not dataset package imports"
-                );
+                return Err(ValidationError::new("--import-set-table is currently only supported for flat table-export artifacts, not dataset package imports").into());
             }
 
             handle_import_package(
@@ -270,11 +269,11 @@ pub(super) async fn handle_import_flat(
     let report = build_flat_validation_report(profile, instance, timeout_secs, artifact).await?;
 
     if !report.ready {
-        anyhow::bail!(
-            "Dataset validation failed for table '{}' with {} error(s)",
+        return Err(ValidationError::new(format!(
+            "Dataset validation failed for table '{}' with {} error(s); run data validate --file <file> for itemized issues.",
             report.table,
             report.errors.len()
-        );
+        )).into());
     }
 
     if options.dry_run {

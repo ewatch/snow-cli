@@ -7,7 +7,6 @@ use crate::cli::spinner::SnowflakeSpinner;
 use crate::client::error::{ApiError, GraphqlError};
 
 use super::core::{endpoint_requires_form_session, validate_external_url};
-use super::session::upsert_cookie_in_header;
 use super::*;
 
 const MAX_AUTH_RETRIES: u32 = 1;
@@ -90,7 +89,11 @@ impl SnowClient {
     ) -> anyhow::Result<ClientResponse> {
         const PATH: &str = "/api/now/attachment/upload";
         let url = self.authorize_instance_request(&Method::POST, PATH)?;
-        let auth_headers = self.authenticator.authenticate().await?;
+        let auth_headers = self
+            .authenticator
+            .authenticate()
+            .await
+            .map_err(crate::auth::classify_auth_failure)?;
         let file_part =
             reqwest::multipart::Part::bytes(file_bytes).file_name(file_name.to_string());
         let form = reqwest::multipart::Form::new()
@@ -113,13 +116,20 @@ impl SnowClient {
         log_raw_http_request(&request);
         let response = self.http.execute(request).await?;
         log_raw_http_response(&url, response.status(), response.headers());
+        self.authenticator
+            .observe_response_headers(response.headers())
+            .await?;
         Ok(ClientResponse { inner: response })
     }
 
     /// Start a streaming attachment download through the authenticated client seam.
     pub async fn download_attachment(&mut self, path: &str) -> anyhow::Result<ClientResponse> {
         let url = self.authorize_instance_request(&Method::GET, path)?;
-        let auth_headers = self.authenticator.authenticate().await?;
+        let auth_headers = self
+            .authenticator
+            .authenticate()
+            .await
+            .map_err(crate::auth::classify_auth_failure)?;
         let request = self
             .http
             .get(&url)
@@ -129,6 +139,9 @@ impl SnowClient {
         log_raw_http_request(&request);
         let response = self.http.execute(request).await?;
         log_raw_http_response(&url, response.status(), response.headers());
+        self.authenticator
+            .observe_response_headers(response.headers())
+            .await?;
         Ok(ClientResponse { inner: response })
     }
 
@@ -139,11 +152,18 @@ impl SnowClient {
         script: &str,
         scope: &str,
         options: BackgroundScriptOptions,
-    ) -> anyhow::Result<ClientResponse> {
+    ) -> anyhow::Result<BackgroundScriptResponse> {
         let url = self.authorize_instance_request(&Method::POST, endpoint)?;
 
         let request = if endpoint_requires_form_session(endpoint) {
-            let session = self.ensure_form_session(FORM_SCRIPT_BOOTSTRAP_PATH).await?;
+            self.bootstrap_form_session(FORM_SCRIPT_BOOTSTRAP_PATH)
+                .await?;
+            let Some(session) = self.current_form_session() else {
+                anyhow::bail!("No form-session CSRF token is available");
+            };
+            let Some(cookie_header) = self.current_form_cookie_header() else {
+                anyhow::bail!("No form-session cookies are available");
+            };
             let mut form_fields = vec![
                 ("script", script.to_string()),
                 ("runscript", "Run script".to_string()),
@@ -166,12 +186,16 @@ impl SnowClient {
             self.http
                 .post(&url)
                 .header("Accept", "text/html,application/xhtml+xml")
-                .header("Cookie", session.cookie_header)
+                .header("Cookie", cookie_header)
                 .header("X-UserToken", session.g_ck)
                 .form(&form_fields)
                 .build()?
         } else {
-            let auth_headers = self.authenticator.authenticate().await?;
+            let auth_headers = self
+                .authenticator
+                .authenticate()
+                .await
+                .map_err(crate::auth::classify_auth_failure)?;
             let body = serde_json::json!({ "script": script, "scope": scope });
             self.http
                 .post(&url)
@@ -182,6 +206,8 @@ impl SnowClient {
                 .build()?
         };
 
+        let mut redactions = super::script_response::ScriptRedactions::default();
+        redactions.observe_request(request.headers());
         log_raw_http_request(&request);
         let response = self.http.execute(request).await?;
         log_raw_http_response(
@@ -189,7 +215,23 @@ impl SnowClient {
             response.status(),
             response.headers(),
         );
-        Ok(ClientResponse { inner: response })
+        redactions.observe_response(response.headers());
+        self.observe_session_response_headers(response.headers())
+            .await?;
+        let status = response.status().as_u16();
+        let final_url = response.url().to_string();
+        let server_timing = response
+            .headers()
+            .get("server-timing")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = redactions.redact(response.text().await?);
+        Ok(BackgroundScriptResponse {
+            status,
+            final_url,
+            server_timing,
+            body,
+        })
     }
 
     /// Send an authenticated GET request.
@@ -266,7 +308,11 @@ impl SnowClient {
         let url = self.authorize_instance_request(&method, path)?;
 
         for attempt in 0..=MAX_AUTH_RETRIES {
-            let auth_headers = self.authenticator.authenticate().await?;
+            let auth_headers = self
+                .authenticator
+                .authenticate()
+                .await
+                .map_err(crate::auth::classify_auth_failure)?;
 
             let mut request = self
                 .http
@@ -308,16 +354,9 @@ impl SnowClient {
             let response = self.http.execute(request).await?;
             drop(spinner);
 
-            if let Some(jsessionid) = extract_jsessionid_from_headers(response.headers()) {
-                self.session.jsessionid = Some(jsessionid.clone());
-                if let Some(form_session) = self.session.form_session.as_mut() {
-                    form_session.jsessionid = jsessionid.clone();
-                    form_session.cookie_header = upsert_cookie_in_header(
-                        &form_session.cookie_header,
-                        "JSESSIONID",
-                        &jsessionid,
-                    );
-                }
+            self.observe_session_response_headers(response.headers())
+                .await?;
+            if extract_jsessionid_from_headers(response.headers()).is_some() {
                 tracing::debug!(
                     url = %url,
                     has_jsessionid = true,
@@ -336,7 +375,11 @@ impl SnowClient {
             // If unauthorized and we haven't retried yet, try refreshing credentials
             if status == reqwest::StatusCode::UNAUTHORIZED && attempt < MAX_AUTH_RETRIES {
                 tracing::info!("Received 401, attempting credential refresh");
-                let refreshed = self.authenticator.refresh().await?;
+                let refreshed = self
+                    .authenticator
+                    .refresh()
+                    .await
+                    .map_err(crate::auth::classify_auth_failure)?;
                 if refreshed {
                     tracing::debug!("Credentials refreshed, retrying request");
                     continue;
@@ -377,7 +420,8 @@ impl SnowClient {
         let response = self.get(path).await?;
         let body = response.text().await?;
         tracing::debug!(body_len = body.len(), "Parsing JSON response");
-        let value: T = serde_json::from_str(&body)?;
+        let value: T = serde_json::from_str(&body)
+            .map_err(|_| super::error::TransportError::InvalidResponse)?;
         Ok(value)
     }
 
@@ -390,7 +434,8 @@ impl SnowClient {
         let response = self.get_with_params(path, params).await?;
         let body = response.text().await?;
         tracing::debug!(body_len = body.len(), "Parsing JSON response");
-        let value: T = serde_json::from_str(&body)?;
+        let value: T = serde_json::from_str(&body)
+            .map_err(|_| super::error::TransportError::InvalidResponse)?;
         Ok(value)
     }
 
@@ -403,7 +448,8 @@ impl SnowClient {
         let response = self.post(path, body).await?;
         let resp_body = response.text().await?;
         tracing::debug!(body_len = resp_body.len(), "Parsing JSON response");
-        let value: T = serde_json::from_str(&resp_body)?;
+        let value: T = serde_json::from_str(&resp_body)
+            .map_err(|_| super::error::TransportError::InvalidResponse)?;
         Ok(value)
     }
 
@@ -428,7 +474,7 @@ impl SnowClient {
             "Parsing GraphQL response envelope"
         );
         let envelope: serde_json::Value = serde_json::from_str(&response_body)
-            .map_err(|error| anyhow::anyhow!("GraphQL endpoint returned invalid JSON: {error}"))?;
+            .map_err(|_| super::error::TransportError::InvalidResponse)?;
         graphql_data_from_envelope(envelope)
     }
 
@@ -441,7 +487,8 @@ impl SnowClient {
         let response = self.patch(path, body).await?;
         let resp_body = response.text().await?;
         tracing::debug!(body_len = resp_body.len(), "Parsing JSON response");
-        let value: T = serde_json::from_str(&resp_body)?;
+        let value: T = serde_json::from_str(&resp_body)
+            .map_err(|_| super::error::TransportError::InvalidResponse)?;
         Ok(value)
     }
 }
@@ -449,23 +496,29 @@ impl SnowClient {
 pub(super) fn graphql_data_from_envelope(
     envelope: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    let object = envelope.as_object().ok_or_else(|| {
-        anyhow::anyhow!("GraphQL endpoint returned a non-object response envelope")
-    })?;
+    let object = envelope
+        .as_object()
+        .ok_or(super::error::TransportError::InvalidEnvelope(
+            "GraphQL endpoint returned a non-object response envelope",
+        ))?;
 
     if let Some(errors) = object.get("errors") {
         let errors = errors
             .as_array()
-            .ok_or_else(|| anyhow::anyhow!("GraphQL endpoint returned an invalid errors field"))?;
+            .ok_or(super::error::TransportError::InvalidEnvelope(
+                "GraphQL endpoint returned an invalid errors field",
+            ))?;
         if !errors.is_empty() {
             return Err(GraphqlError::from_errors(errors).into());
         }
     }
 
-    object
-        .get("data")
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("GraphQL endpoint response did not contain data"))
+    object.get("data").cloned().ok_or_else(|| {
+        super::error::TransportError::InvalidEnvelope(
+            "GraphQL endpoint response did not contain data",
+        )
+        .into()
+    })
 }
 #[cfg(test)]
 mod tests {

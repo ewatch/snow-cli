@@ -35,11 +35,26 @@ impl SnowClient {
         pagination: &pagination::PaginationConfig,
         order_by: Option<&crate::models::order_by::OrderBy>,
     ) -> anyhow::Result<pagination::TableListResult> {
+        self.get_table_records_with_domain(table, query, fields, pagination, order_by, false)
+            .await
+    }
+
+    /// Table API read with an explicit domain-visibility bypass request.
+    /// ServiceNow authorizes `query_no_domain`; this never changes session state.
+    pub async fn get_table_records_with_domain(
+        &mut self,
+        table: &crate::models::identifiers::TableName,
+        query: Option<&str>,
+        fields: Option<&str>,
+        pagination: &pagination::PaginationConfig,
+        order_by: Option<&crate::models::order_by::OrderBy>,
+        query_no_domain: bool,
+    ) -> anyhow::Result<pagination::TableListResult> {
         let path = format!("/api/now/table/{table}");
         let ordered_query = order_by.map(|order| order.apply_to_query(query));
         let query = ordered_query.as_deref().or(query);
         let mut all_records = Vec::new();
-        let mut offset: usize = 0;
+        let mut offset = pagination.offset;
         let page_size = pagination.page_size;
         let limit = pagination.limit;
         let mut total: Option<usize> = None;
@@ -57,6 +72,10 @@ impl SnowClient {
                 ("sysparm_limit", request_size.to_string()),
                 ("sysparm_offset", offset.to_string()),
             ];
+
+            if query_no_domain {
+                params.push(("sysparm_query_no_domain", "true".to_string()));
+            }
 
             if let Some(q) = query {
                 params.push(("sysparm_query", q.to_string()));
@@ -79,7 +98,8 @@ impl SnowClient {
             }
             let body = response.text().await?;
             tracing::debug!(body_len = body.len(), "Parsing JSON response");
-            let page: crate::models::record::TableResponse = serde_json::from_str(&body)?;
+            let page: crate::models::record::TableResponse = serde_json::from_str(&body)
+                .map_err(|_| super::error::TransportError::InvalidResponse)?;
 
             let count = page.result.len();
             tracing::debug!(
@@ -106,16 +126,21 @@ impl SnowClient {
                 break;
             }
 
-            offset += request_size;
+            offset = offset
+                .checked_add(request_size)
+                .ok_or_else(|| anyhow::anyhow!("Table pagination offset overflow"))?;
         }
 
         let truncated = match total {
-            Some(t) => all_records.len() < t,
+            Some(t) => {
+                !all_records.is_empty() && pagination.offset.saturating_add(all_records.len()) < t
+            }
             None => maybe_more,
         };
 
         Ok(pagination::TableListResult {
             records: all_records,
+            offset: pagination.offset,
             total,
             truncated,
             fields_truncated: false,
@@ -540,5 +565,54 @@ mod tests {
         assert_eq!(result.total, Some(5));
         assert!(result.truncated);
         assert_eq!(result.records[2].sys_id(), Some("3"));
+    }
+
+    #[tokio::test]
+    async fn test_get_table_records_with_meta_offset_across_pages() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .and(query_param("sysparm_limit", "2"))
+            .and(query_param("sysparm_offset", "3"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("X-Total-Count", "6")
+                    .set_body_json(serde_json::json!({"result": [
+                        {"sys_id": "4"}, {"sys_id": "5"}
+                    ]})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .and(query_param("sysparm_limit", "1"))
+            .and(query_param("sysparm_offset", "5"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("X-Total-Count", "6")
+                    .set_body_json(serde_json::json!({"result": [{"sys_id": "6"}]})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let pagination = pagination::PaginationConfig::default()
+            .with_offset(3)
+            .with_page_size(2)
+            .with_limit(Some(3));
+        let result = client
+            .get_table_records_with_meta(&incident_table(), None, None, &pagination, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.returned(), 3);
+        assert_eq!(result.offset, 3);
+        assert_eq!(result.next_offset(), None);
+        assert!(!result.truncated);
+        assert_eq!(result.records[2].sys_id(), Some("6"));
     }
 }

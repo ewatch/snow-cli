@@ -97,3 +97,31 @@ cargo clippy -- -D warnings
 ```
 
 See the [documentation site](https://ewatch.github.io/snow-cli/) and the Markdown files under [`docs/`](docs/) for more details.
+
+### Domain-separated instances
+
+Run `snow-cli domain status`, `snow-cli domain list`, and
+`snow-cli domain table incident` before interpreting domain-sensitive reads.
+`table list/stats --domain global|<domain_sys_id>` filters exact record ownership;
+`table list/get --query-no-domain` explicitly requests privileged cross-domain
+Table API reads. Normal reads retain server visibility and ACLs. These workflows
+are also available in `snow-cli-ro`. See
+[domain-aware reads](docs/design/domain-separation.md) for the access model and
+verification limits.
+
+## Native session context
+
+Native cookie profiles support session inspection and verified domain, application,
+and update-set switching without SN-Utils:
+
+```bash
+snow-cli --profile dev session login dev-session
+snow-cli --profile dev-session session show
+snow-cli --profile dev-session session options domain
+snow-cli --profile dev-session session switch domain <domain_sys_id>
+snow-cli --profile dev-session table list incident --limit 20
+```
+
+Cookies and CSRF tokens persist in the OS keychain. Native UI endpoints depend on
+the instance release; see the [session reference](docs/site/src/content/docs/commands/session.md)
+for attachment, expiry, read-only behavior, and context limits.

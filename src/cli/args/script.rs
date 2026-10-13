@@ -1,6 +1,6 @@
 use clap::{Args, Subcommand};
 
-const SCRIPT_RUN_AFTER_HELP: &str = "Examples:\n  snow-cli script run --code 'gs.info(\"hello from snow-cli\")'\n  snow-cli script run --file ./cleanup.js --sandbox\n  printf '%s' 'gs.info(\"from stdin\")' | snow-cli script run --scope x_my_app\n  snow-cli script run --code 'gs.print(\"done\")' --rollback --quota-managed-transaction\n\nNotes:\n  - `script run` executes a background script directly against the ServiceNow instance.\n  - If you are using SN-Utils, the `snu` command family is for browser/session helper actions, not background scripts.";
+const SCRIPT_RUN_AFTER_HELP: &str = "Examples:\n  snow-cli script run --code 'gs.info(\"hello from snow-cli\")'\n  snow-cli script run --sandbox --code 'gs.print(1)'\n  printf '%s' 'gs.info(\"from stdin\")' | snow-cli script run --scope x_my_app\n  snow-cli script run --code 'gs.print(\"done\")' --rollback --quota-managed-transaction\n\nNotes:\n  - `script run` executes a background script directly against the ServiceNow instance.\n  - If you are using SN-Utils, the `snu` command family is for browser/session helper actions, not background scripts.";
 // --- Script ---
 
 #[derive(Args, Debug)]
@@ -34,7 +34,7 @@ pub enum ScriptCommands {
         #[arg(long)]
         rollback: bool,
 
-        /// Run in sandbox mode to prevent database writes
+        /// Use the restricted KittyScript expression evaluator (single expression only, not a general read-only mode)
         #[arg(long)]
         sandbox: bool,
 
@@ -65,6 +65,8 @@ mod tests {
             .to_string();
         assert!(help.contains("snow-cli script run --code 'gs.info(\"hello from snow-cli\")'"));
         assert!(help.contains("background script directly against the ServiceNow instance"));
+        assert!(help.contains("single expression only"));
+        assert!(help.contains("not a general read-only mode"));
     }
 
     #[test]

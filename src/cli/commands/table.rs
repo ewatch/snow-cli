@@ -7,6 +7,7 @@ use crate::cli::truncation;
 use crate::client::pagination::PaginationConfig;
 use crate::models::identifiers::TableName;
 use crate::models::record::SingleRecordResponse;
+use crate::models::validation::ValidationError;
 
 pub async fn handle(
     args: TableArgs,
@@ -19,43 +20,68 @@ pub async fn handle(
         TableCommands::List {
             table,
             query,
+            domain,
             fields,
             limit,
+            offset,
             all,
             order_by,
-            full,
+            full: _,
+            preview,
+            query_no_domain,
         } => {
             tracing::info!("Listing records from table: {}", table);
+            output::ensure_preview_supported(preview, format)?;
 
             let effective_limit = if all {
                 None
             } else {
                 Some(limit.unwrap_or(DEFAULT_LIST_LIMIT))
             };
-            let effective_fields = resolve_list_fields(table.as_str(), fields.as_deref());
+            let mut effective_fields = resolve_list_fields(table.as_str(), fields.as_deref());
+            if fields.is_none()
+                && (domain.is_some() || query_no_domain)
+                && let Some(projection) = &mut effective_fields
+            {
+                projection.push_str(",sys_domain");
+            }
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
-            let pagination = PaginationConfig::default().with_limit(effective_limit);
+            let query = crate::cli::commands::domain::constrain_query(
+                &mut client,
+                &table,
+                domain.as_ref(),
+                query,
+            )
+            .await?;
+            let pagination = PaginationConfig::default()
+                .with_limit(effective_limit)
+                .with_offset(offset);
 
             let mut result = client
-                .get_table_records_with_meta(
+                .get_table_records_with_domain(
                     &table,
                     query.as_deref(),
                     effective_fields.as_deref(),
                     &pagination,
                     order_by.as_ref(),
+                    query_no_domain,
                 )
                 .await?;
 
-            if !full {
-                result.fields_truncated = truncation::truncate_record_fields(
+            let preview_report = if preview {
+                truncation::preview_record_fields(
                     &mut result.records,
                     truncation::DEFAULT_FIELD_CHAR_LIMIT,
-                );
-            }
+                    truncation::RecordPreviewRoot::Records,
+                    "rerun this command with --full",
+                )
+            } else {
+                truncation::PreviewReport::default()
+            };
 
-            output::print_table_list(&result, format)?;
+            output::print_table_list_preview(&result, format, &preview_report)?;
             Ok(())
         }
 
@@ -63,15 +89,21 @@ pub async fn handle(
             table,
             sys_id,
             fields,
-            full,
+            full: _,
+            preview,
+            query_no_domain,
         } => {
             tracing::info!("Getting record {} from table: {}", sys_id, table);
+            output::ensure_preview_supported(preview, format)?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
             let path = format!("/api/now/table/{table}/{sys_id}");
             let mut params = Vec::new();
+            if query_no_domain {
+                params.push(("sysparm_query_no_domain", "true"));
+            }
             if let Some(ref f) = fields {
                 params.push(("sysparm_fields", f.as_str()));
             }
@@ -82,14 +114,18 @@ pub async fn handle(
                 client.get_json_with_params(&path, &params).await?
             };
 
-            if !full {
-                truncation::truncate_record_fields(
+            let preview_report = if preview {
+                truncation::preview_record_fields(
                     std::slice::from_mut(&mut response.result),
                     truncation::DEFAULT_FIELD_CHAR_LIMIT,
-                );
-            }
+                    truncation::RecordPreviewRoot::Record,
+                    "rerun this command with --full",
+                )
+            } else {
+                truncation::PreviewReport::default()
+            };
 
-            output::print_record(&response.result, format)?;
+            output::print_record_preview(&response.result, format, &preview_report)?;
             Ok(())
         }
 
@@ -97,9 +133,9 @@ pub async fn handle(
             tracing::info!("Creating record in table: {}", table);
 
             let body = read_data(data)?;
-            // Validate that the body is valid JSON
-            let _: serde_json::Value = serde_json::from_str(&body)
-                .map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
+            let _: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
+                ValidationError::new("Invalid JSON data; provide a valid JSON record.")
+            })?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -119,9 +155,9 @@ pub async fn handle(
             tracing::info!("Updating record {} in table: {}", sys_id, table);
 
             let body = read_data(data)?;
-            // Validate that the body is valid JSON
-            let _: serde_json::Value = serde_json::from_str(&body)
-                .map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
+            let _: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
+                ValidationError::new("Invalid JSON data; provide a valid JSON record.")
+            })?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -139,10 +175,10 @@ pub async fn handle(
             if !yes {
                 let stdin = std::io::stdin();
                 if !stdin.is_terminal() {
-                    anyhow::bail!(
-                        "Delete requires confirmation. Re-run with --yes for non-interactive use: \
-                         snow-cli table delete {table} {sys_id} --yes"
-                    );
+                    return Err(ValidationError::new(
+                        "Delete requires confirmation. Re-run with --yes for non-interactive use.",
+                    )
+                    .into());
                 }
 
                 eprint!("Delete record {sys_id} from table {table}? [y/N] ");
@@ -185,6 +221,7 @@ pub async fn handle(
         TableCommands::Stats {
             table,
             query,
+            domain,
             group_by,
             avg,
             min,
@@ -197,6 +234,13 @@ pub async fn handle(
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
+            let query = crate::cli::commands::domain::constrain_query(
+                &mut client,
+                &table,
+                domain.as_ref(),
+                query,
+            )
+            .await?;
             let path = format!("/api/now/stats/{table}");
             let mut params: Vec<(&str, &str)> = vec![("sysparm_count", "true")];
             for (key, value) in [
@@ -283,7 +327,10 @@ fn flatten_stats_response(response: &serde_json::Value) -> anyhow::Result<StatsO
         Some(serde_json::Value::Array(entries)) => Ok(StatsOutput::Grouped(
             entries.iter().map(flatten_stats_entry).collect(),
         )),
-        _ => anyhow::bail!("Unexpected Aggregate API response: missing 'result' object or array"),
+        _ => Err(crate::client::error::TransportError::InvalidEnvelope(
+            "Unexpected Aggregate API response: missing 'result' object or array",
+        )
+        .into()),
     }
 }
 
@@ -517,20 +564,19 @@ fn read_data_from<R: std::io::Read>(
     }
 
     if is_tty {
-        anyhow::bail!(
-            "No data provided. Use --data or pipe JSON. Examples: \
-             snow-cli table create incident --data '{{\"short_description\":\"Disk alert\"}}' \
-             | echo '{{\"short_description\":\"Disk alert\"}}' | snow-cli table create incident"
-        );
+        return Err(ValidationError::new(
+            "No data provided. Use --data or pipe JSON to snow-cli table create <table>.",
+        )
+        .into());
     }
 
     let buf = read_to_string_limited(reader, DEFAULT_MAX_STDIN_BYTES, "JSON stdin input")?;
 
     if buf.trim().is_empty() {
-        anyhow::bail!(
-            "No data received from stdin. Pipe valid JSON, for example: \
-             echo '{{\"short_description\":\"Disk alert\"}}' | snow-cli table create incident"
-        );
+        return Err(ValidationError::new(
+            "No data received from stdin. Pipe valid JSON to snow-cli table create <table>.",
+        )
+        .into());
     }
 
     Ok(buf)

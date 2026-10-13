@@ -48,3 +48,5 @@ What becomes easier or harder as a result of this decision?
 | 0006 | Profile resolution and command UX simplification | Accepted |
 | 0007 | Release validation pipeline | Accepted |
 | 0008 | SN-Utils security-gate negotiation | Accepted |
+| 0009 | Native session context without SN-Utils | Accepted |
+| 0010 | Runtime error classification and conservative retry guidance | Accepted |

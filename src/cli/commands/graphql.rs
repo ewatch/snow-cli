@@ -1,5 +1,7 @@
 use std::io::IsTerminal;
 
+use crate::models::validation::ValidationError;
+use anyhow::Context;
 use serde_json::{Map, Value};
 
 use crate::cli::args::{GraphqlArgs, OutputFormat};
@@ -42,9 +44,7 @@ async fn resolve_document_from<R: std::io::Read>(
         + usize::from(args.query.is_some())
         + usize::from(args.query_file.is_some());
     if explicit_source_count > 1 {
-        anyhow::bail!(
-            "Provide exactly one GraphQL document source: positional DOCUMENT, --query, or --query-file"
-        );
+        return Err(ValidationError::new("Provide exactly one GraphQL document source: positional DOCUMENT, --query, or --query-file").into());
     }
 
     if let Some(document) = args.document {
@@ -54,20 +54,14 @@ async fn resolve_document_from<R: std::io::Read>(
         return validate_document(query, "--query");
     }
     if let Some(path) = args.query_file {
-        let document = tokio::fs::read_to_string(&path).await.map_err(|error| {
-            anyhow::anyhow!(
-                "Failed to read GraphQL query file '{}': {}",
-                path.display(),
-                error
-            )
-        })?;
+        let document = tokio::fs::read_to_string(&path)
+            .await
+            .context("Failed to read GraphQL query file")?;
         return validate_document(document, &format!("query file '{}'", path.display()));
     }
 
     if is_tty {
-        anyhow::bail!(
-            "No GraphQL document provided. Use positional DOCUMENT, --query, --query-file, or pipe a document to stdin"
-        );
+        return Err(ValidationError::new("No GraphQL document provided. Use positional DOCUMENT, --query, --query-file, or pipe a document to stdin").into());
     }
 
     let document = read_to_string_limited(
@@ -80,7 +74,9 @@ async fn resolve_document_from<R: std::io::Read>(
 
 fn validate_document(document: String, source: &str) -> anyhow::Result<String> {
     if document.trim().is_empty() {
-        anyhow::bail!("GraphQL document from {source} is empty");
+        return Err(
+            ValidationError::new(format!("GraphQL document from {source} is empty")).into(),
+        );
     }
     Ok(document)
 }
@@ -90,10 +86,12 @@ fn parse_variables(variables: Option<&str>) -> anyhow::Result<Map<String, Value>
         return Ok(Map::new());
     };
 
-    let value: Value = serde_json::from_str(variables)
-        .map_err(|error| anyhow::anyhow!("Invalid GraphQL variables JSON: {error}"))?;
+    let value: Value = serde_json::from_str(variables).map_err(|_| {
+        ValidationError::new("Invalid GraphQL variables JSON; provide a JSON object.")
+    })?;
     value.as_object().cloned().ok_or_else(|| {
-        anyhow::anyhow!("GraphQL variables must be a JSON object mapping names to values")
+        ValidationError::new("GraphQL variables must be a JSON object mapping names to values")
+            .into()
     })
 }
 

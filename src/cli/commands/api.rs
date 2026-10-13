@@ -3,6 +3,7 @@ use std::io::IsTerminal;
 use crate::cli::args::{ApiArgs, ApiCommands, OutputFormat};
 use crate::cli::io::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::cli::output;
+use crate::models::validation::ValidationError;
 use http::Method;
 
 pub async fn handle(
@@ -92,10 +93,7 @@ fn parse_headers(headers: &[String]) -> anyhow::Result<Vec<(String, String)>> {
         .iter()
         .map(|h| {
             let (key, value) = h.split_once(':').ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Invalid header format '{}'. Use 'Key: Value', for example: -H 'X-Trace-Id: abc123'.",
-                    h
-                )
+                ValidationError::new("Invalid header format. Use 'Key: Value', for example: -H 'X-Trace-Id: abc123'.")
             })?;
             Ok((key.trim().to_string(), value.trim().to_string()))
         })
@@ -118,20 +116,19 @@ fn read_data_from<R: std::io::Read>(
     }
 
     if is_tty {
-        anyhow::bail!(
-            "No data provided. Use --data or pipe a request body. Examples: \
-             snow-cli api post /api/x_myapp/action --data '{{\"dry_run\":true}}' \
-             | echo '{{\"dry_run\":true}}' | snow-cli api post /api/x_myapp/action"
-        );
+        return Err(ValidationError::new(
+            "No data provided. Use --data or pipe a request body to snow-cli api post <path>.",
+        )
+        .into());
     }
 
     let buf = read_to_string_limited(reader, DEFAULT_MAX_STDIN_BYTES, "API stdin body")?;
 
     if buf.trim().is_empty() {
-        anyhow::bail!(
-            "No data received from stdin. Pipe a non-empty body, for example: \
-             echo '{{\"dry_run\":true}}' | snow-cli api post /api/x_myapp/action"
-        );
+        return Err(ValidationError::new(
+            "No data received from stdin. Pipe a non-empty body to snow-cli api post <path>.",
+        )
+        .into());
     }
 
     Ok(buf)

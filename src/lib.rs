@@ -90,6 +90,7 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none())
         .init();
 
     tracing::debug!(
@@ -118,6 +119,26 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
         }
         cli::args::Commands::Auth(args) => {
             cli::commands::auth::handle(
+                args,
+                &active_profile,
+                &effective_output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
+        }
+        cli::args::Commands::Session(args) => {
+            cli::commands::session::handle(
+                args,
+                &active_profile,
+                &effective_output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
+        }
+        cli::args::Commands::Domain(args) => {
+            cli::commands::domain::handle(
                 args,
                 &active_profile,
                 &effective_output,
@@ -241,6 +262,8 @@ pub fn command_uses_connection(command: &cli::args::Commands) -> bool {
         command,
         cli::args::Commands::Auth(_)
             | cli::args::Commands::Table(_)
+            | cli::args::Commands::Domain(_)
+            | cli::args::Commands::Session(_)
             | cli::args::Commands::Data(_)
             | cli::args::Commands::Seed(_)
             | cli::args::Commands::Scope(_)
@@ -281,13 +304,17 @@ mod tests {
         })));
         assert!(command_uses_connection(&Commands::Table(TableArgs {
             command: TableCommands::List {
+                domain: None,
+                query_no_domain: false,
                 table: "incident".parse().unwrap(),
                 query: None,
                 fields: None,
                 limit: None,
+                offset: 0,
                 all: false,
                 order_by: None,
                 full: false,
+                preview: false,
             },
         })));
         assert!(command_uses_connection(&Commands::Graphql(GraphqlArgs {

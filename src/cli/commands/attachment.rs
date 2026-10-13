@@ -140,7 +140,12 @@ pub async fn handle(
             let status = response.status();
             let body = response.text().await?;
             if !(200..300).contains(&status) {
-                anyhow::bail!("Attachment upload failed with status {}: {}", status, body);
+                return Err(crate::client::error::ApiError::from_status(
+                    status,
+                    client.base_url(),
+                    Some(body),
+                )
+                .into());
             }
 
             let created: AttachmentSingleResponse = serde_json::from_str(&body)
@@ -198,11 +203,12 @@ async fn download_attachment_file(
     let status = response.status();
     if !(200..300).contains(&status) {
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!(
-            "Attachment download failed with status {}: {}",
+        return Err(crate::client::error::ApiError::from_status(
             status,
-            body
-        );
+            client.base_url(),
+            Some(body),
+        )
+        .into());
     }
 
     let mut file = tokio::fs::File::create(destination).await.map_err(|e| {

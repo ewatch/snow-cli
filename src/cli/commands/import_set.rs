@@ -2,6 +2,7 @@ use std::io::IsTerminal;
 
 use crate::cli::args::{ImportSetArgs, OutputFormat};
 use crate::cli::io::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
+use crate::models::validation::ValidationError;
 
 #[derive(Debug, serde::Deserialize)]
 struct ImportSetLoadResponse {
@@ -57,13 +58,23 @@ pub async fn handle(
         crate::cli::args::ImportSetCommands::Load {
             table,
             data,
-            fail_on_error,
+            fail_on_error: _, // Retained parser compatibility; failure is now the default.
+            allow_row_errors,
         } => {
+            // Validate the resolved format before consuming stdin or mutating the
+            // instance: CSV cannot represent this nested summary/result envelope.
+            if matches!(format, OutputFormat::Csv) {
+                return Err(ValidationError::new(
+                    "CSV output is not supported for import-set load; use --output json, jsonl, toon, text, or auto. No import request was sent."
+                ).into());
+            }
+
             tracing::info!("Loading data into staging table: {}", table);
 
             let body = read_data(data)?;
-            let _: serde_json::Value = serde_json::from_str(&body)
-                .map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
+            let _: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
+                ValidationError::new("Invalid JSON data; provide a valid JSON import payload.")
+            })?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -80,10 +91,16 @@ pub async fn handle(
 
             crate::cli::output::print_output(&output, format)?;
 
-            if fail_on_error && output.summary.error > 0 {
-                anyhow::bail!(
-                    "Import set load completed with {} row-level error(s). Re-run without --fail-on-error to inspect the structured response without failing the command.",
-                    output.summary.error
+            if output.summary.error > 0 {
+                if !allow_row_errors {
+                    return Err(crate::error::ImportSetRowError {
+                        count: output.summary.error,
+                    }
+                    .into());
+                }
+                tracing::warn!(
+                    row_errors = output.summary.error,
+                    "Import set load has row-level errors; --allow-row-errors explicitly accepts partial failure. Inspect the printed results before retrying"
                 );
             }
 
@@ -106,10 +123,20 @@ fn summarize_results(entries: &[ImportSetResultEntry]) -> ImportSetLoadSummary {
     };
 
     for entry in entries {
+        // Some transform responses provide error_message without a status.
+        // Count the row once, even if both fields indicate a failure.
+        if entry
+            .error_message
+            .as_deref()
+            .is_some_and(|message| !message.trim().is_empty())
+        {
+            summary.error += 1;
+            continue;
+        }
         match entry
             .status
             .as_deref()
-            .map(str::to_ascii_lowercase)
+            .map(|status| status.trim().to_ascii_lowercase())
             .as_deref()
         {
             Some("inserted") => summary.inserted += 1,
@@ -138,20 +165,19 @@ fn read_data_from<R: std::io::Read>(
     }
 
     if is_tty {
-        anyhow::bail!(
-            "No data provided. Use --data or pipe JSON. Examples: \
-             snow-cli import-set load u_import_table --data '{{\"name\":\"x\"}}' \
-             | echo '{{\"name\":\"x\"}}' | snow-cli import-set load u_import_table"
-        );
+        return Err(ValidationError::new(
+            "No data provided. Use --data or pipe JSON to snow-cli import-set load <table>.",
+        )
+        .into());
     }
 
     let buf = read_to_string_limited(reader, DEFAULT_MAX_STDIN_BYTES, "import-set stdin input")?;
 
     if buf.trim().is_empty() {
-        anyhow::bail!(
-            "No data received from stdin. Pipe valid JSON, for example: \
-             echo '{{\"name\":\"x\"}}' | snow-cli import-set load u_import_table"
-        );
+        return Err(ValidationError::new(
+            "No data received from stdin. Pipe valid JSON to snow-cli import-set load <table>.",
+        )
+        .into());
     }
 
     Ok(buf)
