@@ -1,0 +1,20 @@
+name = "domain-inspect"
+description = "Inspect direct global-domain relationships, allowing empty visible results"
+requires = ["credentials", "domain-separation"]
+
+[[setup]]
+args = ["profile", "add", "e2e-domain", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+shell = 'printf "%s" "$SNOW_E2E_PASSWORD" | "$SNOW_CLI_BIN" --profile e2e-domain auth login --password-stdin'
+
+[command]
+args = ["domain", "inspect", "global", "--profile", "e2e-domain", "--limit", "5", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ['"domain_id":"global"', '"relationships":']
+json_field_present = [".relationships.domain", ".relationships.domain_contains", ".relationships.sys_user_visibility", ".relationships.sys_user_group_visibility"]
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-domain", "--yes"]

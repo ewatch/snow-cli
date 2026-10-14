@@ -3,8 +3,10 @@ use crate::cli::{
     output,
 };
 use crate::client::SnowClient;
-use crate::config::{AppConfig, AuthMethod, Profile, credentials, native_session};
-use crate::models::secret::Secret;
+use crate::config::{
+    AppConfig, AuthMethod, Profile, credentials, error::ConfigError, native_session,
+};
+use crate::models::{secret::Secret, validation::ValidationError};
 
 pub async fn handle(
     args: SessionArgs,
@@ -19,12 +21,17 @@ pub async fn handle(
             password_stdin,
         } => {
             let mut config = AppConfig::load()?;
-            let source = config
-                .active_profile(Some(profile))
-                .ok_or_else(|| anyhow::anyhow!("Profile not found"))?;
+            let source = config.active_profile(Some(profile)).ok_or_else(|| {
+                ConfigError::new(
+                    "PROFILE_NOT_FOUND",
+                    config.profile_not_found_message(profile),
+                )
+            })?;
             anyhow::ensure!(
                 source.auth_method == AuthMethod::Basic,
-                "Native login requires a Basic profile. For SSO/MFA or another authentication method, use session attach --cookie-stdin with an authenticated cookie session."
+                ValidationError::new(
+                    "Native login requires a Basic profile. For SSO/MFA or another authentication method, use session attach --cookie-stdin with an authenticated cookie session."
+                )
             );
             let username = source
                 .username
@@ -55,9 +62,12 @@ pub async fn handle(
             cookie_stdin: _,
         } => {
             let mut config = AppConfig::load()?;
-            let source = config
-                .active_profile(Some(profile))
-                .ok_or_else(|| anyhow::anyhow!("Profile not found"))?;
+            let source = config.active_profile(Some(profile)).ok_or_else(|| {
+                ConfigError::new(
+                    "PROFILE_NOT_FOUND",
+                    config.profile_not_found_message(profile),
+                )
+            })?;
             let target_instance = crate::config::profile::validate_instance_url(
                 instance.unwrap_or(&source.instance),
             )?;
@@ -132,14 +142,19 @@ fn require_native_profile(profile: &str) -> anyhow::Result<()> {
         config
             .active_profile(Some(profile))
             .is_some_and(|profile| profile.auth_method == AuthMethod::NativeSession),
-        "Select a native_session profile created by session login/attach; ordinary Basic/OAuth profiles are separate sessions"
+        ValidationError::new(
+            "Select a native_session profile created by session login/attach; ordinary Basic/OAuth profiles are separate sessions"
+        )
     );
     Ok(())
 }
 
 fn read_secret_stdin(label: &str) -> anyhow::Result<Secret> {
     use std::io::IsTerminal;
-    anyhow::ensure!(!std::io::stdin().is_terminal(), "Pipe the {label} to stdin");
+    anyhow::ensure!(
+        !std::io::stdin().is_terminal(),
+        ValidationError::new(format!("Pipe the {label} to stdin"))
+    );
     let value = crate::cli::io::read_to_string_limited(
         std::io::stdin().lock(),
         64 * 1024,
@@ -148,7 +163,7 @@ fn read_secret_stdin(label: &str) -> anyhow::Result<Secret> {
     let value = value.trim_end_matches(['\r', '\n']).to_string();
     anyhow::ensure!(
         !value.is_empty() && !value.contains(['\r', '\n']),
-        "Expected one nonempty line for the {label}"
+        ValidationError::new(format!("Expected one nonempty line for the {label}"))
     );
     Ok(Secret::new(value))
 }
@@ -164,18 +179,24 @@ fn validate_target(
             && name
                 .chars()
                 .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.')),
-        "Session profile names may contain letters, digits, dot, dash, or underscore"
+        ValidationError::new(
+            "Session profile names may contain letters, digits, dot, dash, or underscore"
+        )
     );
     anyhow::ensure!(
         source != name,
-        "Use a separate session profile name so the source credential profile is preserved"
+        ValidationError::new(
+            "Use a separate session profile name so the source credential profile is preserved"
+        )
     );
     if let Some(existing) = config.profiles.get(name) {
         anyhow::ensure!(
             existing.auth_method == AuthMethod::NativeSession
                 && url::Url::parse(&existing.instance)?.origin()
                     == url::Url::parse(instance)?.origin(),
-            "Target profile already exists with different authentication or instance; choose another name"
+            ValidationError::new(
+                "Target profile already exists with different authentication or instance; choose another name"
+            )
         );
     }
     Ok(())

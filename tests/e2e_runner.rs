@@ -72,6 +72,56 @@ fn assert_success(output: &Output) {
 }
 
 #[test]
+fn native_ui_and_domain_scenarios_require_explicit_capability_opt_in() {
+    let fixture = tempfile::tempdir().unwrap();
+    write_executable(
+        &fixture.path().join("fake-snow-cli"),
+        "#!/usr/bin/env bash\nprintf '{\"ok\":true}\\n'\n",
+    );
+    let mut scenarios = Vec::new();
+    for tag in ["native-session", "domain-separation"] {
+        let scenario = fixture.path().join(format!("{tag}.toml"));
+        fs::write(&scenario, format!("name = '{tag}'\nrequires = ['{tag}']\n[command]\nargs = ['check']\n[expect]\nexit_code = 0\n")).unwrap();
+        scenarios.push(scenario);
+    }
+    let output = run_runner(
+        fixture.path(),
+        &scenarios,
+        &[
+            ("SNOW_E2E_NATIVE_SESSION", "0"),
+            ("SNOW_E2E_DOMAIN_SEPARATION", "0"),
+        ],
+    );
+    assert_success(&output);
+    let results = fs::read_to_string(fixture.path().join("artifacts/results.jsonl")).unwrap();
+    for line in results.lines() {
+        let result: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(result["status"], "skipped");
+        assert!(
+            !result["skip_reason"]
+                .as_str()
+                .unwrap()
+                .contains("unknown requirement")
+        );
+    }
+    let output = run_runner(
+        fixture.path(),
+        &scenarios,
+        &[
+            ("SNOW_E2E_NATIVE_SESSION", "1"),
+            ("SNOW_E2E_DOMAIN_SEPARATION", "1"),
+        ],
+    );
+    assert_success(&output);
+    let results = fs::read_to_string(fixture.path().join("artifacts/results.jsonl")).unwrap();
+    assert_eq!(results.lines().count(), 2);
+    for line in results.lines() {
+        let result: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(result["status"], "pass");
+    }
+}
+
+#[test]
 fn session_destructive_scenarios_run_last_and_still_run_cleanup() {
     let fixture = tempfile::tempdir().unwrap();
     let fake_cli = fixture.path().join("fake-snow-cli");

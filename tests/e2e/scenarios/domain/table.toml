@@ -1,0 +1,20 @@
+name = "domain-table"
+description = "Inspect inherited incident domain metadata without asserting domain activation"
+requires = ["credentials"]
+
+[[setup]]
+args = ["profile", "add", "e2e-domain", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+shell = 'printf "%s" "$SNOW_E2E_PASSWORD" | "$SNOW_CLI_BIN" --profile e2e-domain auth login --password-stdin'
+
+[command]
+args = ["domain", "table", "incident", "--profile", "e2e-domain", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ['"table":"incident"', '"domain_fields":', '"has_sys_domain":']
+json_field_present = [".hierarchy", ".note"]
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-domain", "--yes"]

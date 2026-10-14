@@ -84,6 +84,8 @@ allow_failure = true   # cleanup steps default to allow_failure = true
 | `none` | Always runs. |
 | `credentials` | `SNOW_E2E_INSTANCE_URL`, `SNOW_E2E_USERNAME`, `SNOW_E2E_PASSWORD` all set and non-empty. |
 | `sn-utils-bridge` | `SNOW_E2E_SN_UTILS=1`. |
+| `native-session` | `SNOW_E2E_NATIVE_SESSION=1`, after confirming Basic native-UI login and all three pickers are supported. |
+| `domain-separation` | `SNOW_E2E_DOMAIN_SEPARATION=1`, on a domain-separated instance with readable relationship tables. |
 
 An unknown tag is treated as unmet (the scenario is skipped, not silently
 run). A scenario can list multiple tags; all must be satisfied.
@@ -151,6 +153,25 @@ captured value.
 > (see "known gaps"), so these files may still contain instance-specific
 > values. Review any artifact before copying its content into committed
 > docs or examples, and never force-add the `artifacts/` tree.
+
+## Domain and native-session coverage
+
+The `domain/` and `session/` directories cover all ten leaves. Domain status and
+table inspection need ordinary credentials; listing and relationship inspection
+also require the explicit domain-separation capability tag. Native login, show,
+options, switch, and forget require credentials plus native-session capability.
+They create disposable `e2e-native-source` / `e2e-native` profiles and remove
+credentials and profiles in cleanup. Passwords are piped through stdin.
+
+The live switch scenario verifies the already-current application and all three
+contexts without a redundant PUT, so it does not intentionally change a user's
+picker preferences. It does not prove a real mutation or rollback. Real mutation,
+read-back failures, missing contexts, and read-only exclusions are covered by
+`tests/test_session.rs`. The attachment scenario checks empty-cookie rejection
+locally; successful attachment is mock-tested, not claimed as live evidence.
+`tests/test_release_scenarios.rs` executes all ten TOML scenarios against a mock
+HTTP instance through the real CLI and checks assertions, cleanup, and redaction.
+A mock matrix pass is not a live ServiceNow pass.
 
 ## Isolation
 

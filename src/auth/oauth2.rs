@@ -549,7 +549,8 @@ async fn send_oauth_token_request(url: &str, body: &str) -> anyhow::Result<Token
         .into());
     }
 
-    let token_response: TokenResponse = serde_json::from_slice(&response.body)?;
+    let token_response: TokenResponse = serde_json::from_slice(&response.body)
+        .map_err(|_| crate::client::error::TransportError::InvalidResponse)?;
 
     tracing::debug!(
         expires_in = token_response.expires_in,

@@ -1,0 +1,19 @@
+name = "domain-list"
+description = "Read a bounded page of visible domains without changing session context"
+requires = ["credentials", "domain-separation"]
+
+[[setup]]
+args = ["profile", "add", "e2e-domain", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+shell = 'printf "%s" "$SNOW_E2E_PASSWORD" | "$SNOW_CLI_BIN" --profile e2e-domain auth login --password-stdin'
+
+[command]
+args = ["domain", "list", "--profile", "e2e-domain", "--limit", "5", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ['"records":', '"returned":', '"offset":0']
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-domain", "--yes"]

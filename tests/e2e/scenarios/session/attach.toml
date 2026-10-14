@@ -1,0 +1,17 @@
+name = "session-attach"
+description = "Reject an empty piped cookie before network or credential persistence (happy-path attachment is mock-tested)"
+requires = ["none"]
+
+[[setup]]
+args = ["profile", "add", "e2e-attach-source", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[command]
+shell = 'printf "" | "$SNOW_CLI_BIN" --profile e2e-attach-source session attach e2e-attached --cookie-stdin'
+
+[expect]
+exit_code = 2
+stdout_contains = []
+stderr_contains = ['"code":"VALIDATION_ERROR"', '"class":"validation"', '"retry":"never"', "Expected one nonempty line"]
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-attach-source", "--yes"]

@@ -12,6 +12,29 @@ fn config() -> (tempfile::TempDir, std::path::PathBuf) {
     )
 }
 
+#[tokio::test]
+async fn zero_domain_limit_is_validation_error_without_requests() {
+    let server = MockServer::start().await;
+    let (_dir, config_path) = config();
+    for args in [
+        vec!["domain", "list", "--limit", "0"],
+        vec!["domain", "inspect", "global", "--limit", "0"],
+    ] {
+        let result = cargo_bin_cmd!("snow-cli")
+            .env("SNOW_CLI_CONFIG", &config_path)
+            .env("SNOW_CLI_API_TOKEN", "test-token")
+            .args(["--instance", &server.uri()])
+            .args(args)
+            .assert()
+            .code(2)
+            .stdout("");
+        let error: serde_json::Value = serde_json::from_slice(&result.get_output().stderr).unwrap();
+        assert_eq!(error["error"]["code"], "VALIDATION_ERROR");
+        assert_eq!(error["error"]["class"], "validation");
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
 async fn metadata(server: &MockServer, has_domain: bool) {
     Mock::given(method("GET"))
         .and(path("/api/now/table/sys_db_object"))

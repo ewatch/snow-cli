@@ -34,7 +34,10 @@ failures exit 3.
 
 Known local validation failures that previously fell back to `INTERNAL_ERROR`
 and exit 1 now use validation/config exit 2. Scripts that execute and fail and
-imports with row errors still exit 1. Unclassified command failures retain
+imports with row errors still exit 1. A `session switch` whose request, read-back,
+or verification fails reports `SESSION_SWITCH_UNCERTAIN` (class `command`, exit 1,
+`manual_review`), with any classified cause in `detail`; run `session show`
+before doing anything else. Unclassified command failures retain
 `INTERNAL_ERROR`, class `internal`, and unknown retry guidance.
 
 ## Retry guidance is not permission to replay

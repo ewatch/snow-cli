@@ -1,0 +1,26 @@
+name = "session-options"
+description = "List accessible application picker options without switching context"
+requires = ["credentials", "native-session"]
+
+[[setup]]
+args = ["profile", "add", "e2e-native-source", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+shell = 'printf "%s" "$SNOW_E2E_PASSWORD" | "$SNOW_CLI_BIN" --profile e2e-native-source session login e2e-native --password-stdin'
+
+[command]
+args = ["session", "options", "application", "--profile", "e2e-native", "--output", "json"]
+
+[expect]
+exit_code = 0
+json_field_present = [".[0].id"]
+stdout_contains = ['"scope":']
+
+[[cleanup]]
+args = ["session", "forget", "--profile", "e2e-native"]
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-native", "--yes"]
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-native-source", "--yes"]

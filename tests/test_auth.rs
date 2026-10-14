@@ -431,6 +431,38 @@ oauth_grant_type = "client_credentials"
     assert_eq!(login["verified_user"], "integration.user");
 }
 
+#[tokio::test]
+async fn malformed_oauth_success_response_is_transport_not_local_validation() {
+    for body in [
+        "not-json private-token",
+        r#"{"access_token":"private-token"}"#,
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth_token.do"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (_dir, config_path) = common::create_temp_config(&format!(
+            "default_profile='default'\n[profiles.default]\ninstance='{}'\nauth_method='oauth2'\nclient_id='client-id'\noauth_grant_type='client_credentials'\n",
+            server.uri()
+        ));
+        let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+        let result = login_command(&config_path, &keychain_store)
+            .env_remove("SNOW_CLI_CLIENT_SECRET")
+            .args(["auth", "login", "--client-secret", "new-secret"])
+            .assert()
+            .code(5);
+        assert_eq!(stdout_json(result.get_output())["verified"], false);
+        let error: serde_json::Value = serde_json::from_slice(&result.get_output().stderr).unwrap();
+        assert_eq!(error["error"]["code"], "INVALID_RESPONSE");
+        assert_eq!(error["error"]["class"], "transport");
+        assert_eq!(error["error"]["retry"], "unknown");
+        assert!(!String::from_utf8_lossy(&result.get_output().stderr).contains("private-token"));
+    }
+}
+
 // --- auth login: OAuth authorization code ---
 
 /// Config for an OAuth2 authorization-code profile with extra `settings` lines.
