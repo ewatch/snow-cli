@@ -928,12 +928,16 @@ async fn incomplete_context_blocks_even_already_current_switch_before_put() {
             .mount(&server)
             .await;
         let (_dir, config, store) = config(&server.uri());
-        command("full", &config, &store)
+        let rejected = command("full", &config, &store)
             .args(["session", "switch", "domain", "global"])
             .assert()
-            .code(1)
+            .code(2)
             .stdout("")
             .stderr(predicate::str::contains("No mutation was attempted"));
+        let error: Value = serde_json::from_slice(&rejected.get_output().stderr).unwrap();
+        assert_eq!(error["error"]["code"], "VALIDATION_ERROR");
+        assert_eq!(error["error"]["class"], "validation");
+        assert_eq!(error["error"]["retry"], "never");
         assert!(
             server
                 .received_requests()

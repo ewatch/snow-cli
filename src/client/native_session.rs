@@ -5,6 +5,7 @@ use crate::config::native_session::NativeSession;
 use crate::models::{
     secret::Secret,
     session::{SessionInspection, SessionSelection, SessionSwitchType, SessionUser},
+    validation::ValidationError,
 };
 use http::Method;
 use serde_json::{Value, json};
@@ -324,7 +325,9 @@ impl SnowClient {
         let before = self.inspect_native_session().await?;
         anyhow::ensure!(
             has_complete_context(&before),
-            "Cannot switch: all three picker contexts must be available. This UI may be unsupported, including instances without a domain picker; use session show. No mutation was attempted."
+            ValidationError::new(
+                "Cannot switch: all three picker contexts must be available. This UI may be unsupported, including instances without a domain picker; use session show. No mutation was attempted."
+            )
         );
         let options = self.native_session_options(kind).await?;
         // Resolve application scope names only through the actual accessible picker.
