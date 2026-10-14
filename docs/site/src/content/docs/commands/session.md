@@ -51,6 +51,14 @@ application or domain, so refresh them before selecting an update set.
 Each switch reads the session before and after, verifies the requested selection,
 and returns all three contexts. Application switching can also change the update
 set. An already-current selection is verified without sending a redundant PUT.
+Switching requires all three picker selections to be readable before and after
+the operation, including when the requested selection is already current.
+Missing or malformed contexts fail explicitly rather than reporting verified
+success. This includes instances whose UI does not expose a domain picker;
+`session show` can still report unknown context, but switching is unsupported:
+the command fails with `VALIDATION_ERROR` (exit 2) and no switch request is sent. A
+switch that was sent but cannot be verified reports `SESSION_SWITCH_UNCERTAIN`
+(exit 1, `retry: manual_review`).
 If mutation or read-back fails, inspect with `session show`; the CLI does not
 retry the mutation or perform an automatic rollback.
 

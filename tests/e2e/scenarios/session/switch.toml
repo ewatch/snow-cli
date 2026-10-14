@@ -1,0 +1,30 @@
+name = "session-switch"
+description = "Verify the already-current application and all three contexts without a redundant PUT; real context mutations are mock-tested"
+requires = ["credentials", "native-session"]
+
+[[setup]]
+args = ["profile", "add", "e2e-native-source", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+shell = 'printf "%s" "$SNOW_E2E_PASSWORD" | "$SNOW_CLI_BIN" --profile e2e-native-source session login e2e-native --password-stdin'
+
+[[setup]]
+args = ["session", "show", "--profile", "e2e-native", "--output", "json"]
+capture = { application = ".application.id" }
+
+[command]
+args = ["session", "switch", "application", "{{application}}", "--profile", "e2e-native", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ['"verified":true', '"changed":false', '"switched":"application"']
+json_field_present = [".before.domain.id", ".before.application.id", ".before.update_set.id", ".after.domain.id", ".after.application.id", ".after.update_set.id"]
+
+[[cleanup]]
+args = ["session", "forget", "--profile", "e2e-native"]
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-native", "--yes"]
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-native-source", "--yes"]

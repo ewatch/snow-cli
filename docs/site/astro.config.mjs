@@ -1,6 +1,7 @@
 // @ts-check
 import { readFileSync } from 'node:fs';
 import { defineConfig } from 'astro/config';
+import { unified } from '@astrojs/markdown-remark';
 
 // Single source of truth for the displayed snow-cli version: the crate version
 // in the repo-root Cargo.toml, read at build time and injected via Vite so the
@@ -42,10 +43,10 @@ export default defineConfig({
   site: 'https://ewatch.github.io',
   base: SITE_BASE,
   markdown: {
+    processor: unified({ rehypePlugins: [rehypeBaseLinks] }),
     shikiConfig: {
       theme: 'everforest-dark',
     },
-    rehypePlugins: [rehypeBaseLinks],
   },
   vite: {
     define: {

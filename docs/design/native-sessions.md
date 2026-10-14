@@ -48,7 +48,14 @@ The CLI authorizes mutation before reads, resolves a single accessible option,
 sends one PUT, and independently reads back all picker contexts. Failed mutation
 or verification never triggers an automatic retry or rollback. A freshly
 verified already-current option needs no PUT: this instance rejects redundant
-selection of its current Default update set. Read-only mode permits attachment
+selection of its current Default update set. Switching requires all three picker
+selections both before and after the operation; missing or malformed contexts
+fail explicitly, including an unavailable domain picker on a non-domain-separated
+instance. Inspection can still report those selections as unknown. Bootstrap
+HTTP failures retain their API status. Switch request, read-back, mismatch, and
+incomplete context after the request render `SESSION_SWITCH_UNCERTAIN` with
+`manual_review` guidance (see ADR 0009). Incomplete context before switching
+is a `VALIDATION_ERROR`; no switch request is sent. Read-only mode permits attachment
 and inspection but excludes form login and switching.
 
 ## Live evidence: dev404396, 2026-10-04

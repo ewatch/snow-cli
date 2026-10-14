@@ -296,7 +296,8 @@ fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutpu
         let source = match error {
             crate::client::NativeSessionSwitchError::RequestFailed(source)
             | crate::client::NativeSessionSwitchError::VerificationFailed(source) => Some(source),
-            crate::client::NativeSessionSwitchError::Mismatch => None,
+            crate::client::NativeSessionSwitchError::Mismatch
+            | crate::client::NativeSessionSwitchError::IncompleteContext => None,
         };
         // Render only classified sources through the existing sanitization boundary.
         // Unknown sources remain retained in the error chain, not exposed as raw text.

@@ -19,8 +19,13 @@ Upgrade later with:
 brew upgrade snow-cli
 ```
 
-This installs both `snow-cli` and `snow-cli-ro`. Homebrew keeps the formula up to
-date automatically, so `brew upgrade` always fetches the latest release.
+This installs both `snow-cli` and `snow-cli-ro`. To pick up a newer release,
+refresh Homebrew's formula metadata and upgrade:
+
+```sh
+brew update
+brew upgrade snow-cli
+```
 
 ## Quick install
 
@@ -49,13 +54,13 @@ Proceed? [Y/n]
 If you are running this in CI or prefer no prompts:
 
 ```bash
-FORCE=1 curl -fsSL https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.sh | FORCE=1 bash
 ```
 
 #### Use a different directory
 
 ```bash
-INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ewatch/snow-cli/main/scripts/install.sh | INSTALL_DIR=/usr/local/bin bash
 ```
 
 ### Windows

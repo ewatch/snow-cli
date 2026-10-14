@@ -3,7 +3,9 @@
 use crate::cli::args::{DomainArgs, DomainCommands, OutputFormat};
 use crate::cli::{commands::dictionary, output};
 use crate::client::{SnowClient, pagination::PaginationConfig};
-use crate::models::{domain::DomainId, identifiers::TableName, record::Record};
+use crate::models::{
+    domain::DomainId, identifiers::TableName, record::Record, validation::ValidationError,
+};
 
 const DOMAIN_FIELDS: [&str; 3] = ["sys_domain", "sys_domain_path", "sys_overrides"];
 // Observed on domain-separated instances; missing/hidden properties stay unknown.
@@ -29,7 +31,10 @@ pub async fn handle(
             limit,
             query_no_domain,
         } => {
-            anyhow::ensure!(limit > 0, "--limit must be greater than zero");
+            anyhow::ensure!(
+                limit > 0,
+                ValidationError::new("--limit must be greater than zero")
+            );
             let result = client
                 .get_table_records_with_domain(
                     &TableName::from_static("domain"),
@@ -191,7 +196,10 @@ async fn inspect(
     query_no_domain: bool,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    anyhow::ensure!(limit > 0, "--limit must be greater than zero");
+    anyhow::ensure!(
+        limit > 0,
+        ValidationError::new("--limit must be greater than zero")
+    );
     let mut relationships = serde_json::Map::new();
     for (table, query, fields) in [
         (

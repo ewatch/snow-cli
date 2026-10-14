@@ -41,7 +41,8 @@ Native endpoints depend on instance release and security settings; unsupported
 contracts fail explicitly. Browser cookies share context with their browser,
 and platform preferences can affect other sessions for the same user. Failed
 verification leaves the state uncertain and requires a fresh inspection. Typed
-switch failures distinguish request failure, verification failure, and mismatch;
+switch failures distinguish request failure, verification failure, mismatch, and
+incomplete context after the request;
 they preserve underlying causes and render `SESSION_SWITCH_UNCERTAIN` with
 `manual_review` guidance. Classified causes retain safe diagnostics and HTTP
 status; unclassified source text is not exposed. Unsupported output formats are

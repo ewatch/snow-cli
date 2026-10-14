@@ -345,6 +345,75 @@ async fn switch_verifies_all_contexts_and_resolves_scope_name() {
 }
 
 #[tokio::test]
+async fn switch_rejects_incomplete_context_after_mutation() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    for missing in ["currentDomain", "currentApplication", "currentUpdateSet"] {
+        let server = MockServer::start().await;
+        base(&server).await;
+        let switched = Arc::new(AtomicBool::new(false));
+        let read = switched.clone();
+        Mock::given(method("GET"))
+            .and(path("/api/now/ui/concoursepicker/current"))
+            .respond_with(move |_: &wiremock::Request| {
+                let mut context = pickers(if read.load(Ordering::SeqCst) {
+                    APP
+                } else {
+                    "global"
+                });
+                if read.load(Ordering::SeqCst) {
+                    context["result"].as_object_mut().unwrap().remove(missing);
+                }
+                ResponseTemplate::new(200).set_body_json(context)
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/now/ui/concoursepicker/application"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"result":{"list":[{"sysId":APP,"name":"App"}]}})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/api/now/ui/concoursepicker/application"))
+            .respond_with(move |_: &wiremock::Request| {
+                switched.store(true, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({"result":{}}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (_dir, config, store) = config(&server.uri());
+        let result = command("full", &config, &store)
+            .args(["session", "switch", "application", APP])
+            .assert()
+            .code(1)
+            .stdout("")
+            .stderr(predicate::str::contains("all three picker contexts"));
+        assert_uncertain_switch(result.get_output());
+    }
+}
+
+/// A sent switch that cannot be verified is a known uncertain outcome, never replay-safe.
+fn assert_uncertain_switch(output: &std::process::Output) {
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "SESSION_SWITCH_UNCERTAIN");
+    assert_eq!(error["error"]["class"], "command");
+    assert_eq!(error["error"]["retry"], "manual_review");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("session show")
+    );
+}
+
+#[tokio::test]
 async fn successful_http_status_does_not_mean_verified_switch() {
     let server = MockServer::start().await;
     base(&server).await;
@@ -369,13 +438,14 @@ async fn successful_http_status_does_not_mean_verified_switch() {
         .mount(&server)
         .await;
     let (_dir, config, store) = config(&server.uri());
-    command("full", &config, &store)
+    let result = command("full", &config, &store)
         .args(["session", "switch", "domain", APP])
         .assert()
         .failure()
         .stderr(predicate::str::contains("SESSION_SWITCH_UNCERTAIN"))
         .stderr(predicate::str::contains("manual_review"))
         .stderr(predicate::str::contains("session show"));
+    assert_uncertain_switch(result.get_output());
 }
 
 #[tokio::test]
@@ -811,4 +881,257 @@ async fn native_bootstrap_rejects_cross_origin_redirect_before_network() {
         .args(["session", "show"])
         .assert()
         .failure();
+}
+
+#[tokio::test]
+async fn bootstrap_http_errors_preserve_status_class_and_retry() {
+    for (status, code, exit, retry) in [
+        (403, "FORBIDDEN", 5, "never"),
+        (404, "NOT_FOUND", 4, "never"),
+        (503, "SERVER_ERROR", 5, "safe_reads_only"),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/navpage.do"))
+            .respond_with(ResponseTemplate::new(status).set_body_string("private bootstrap body"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (_dir, config, store) = config(&server.uri());
+        let result = command("ro", &config, &store)
+            .args(["session", "show"])
+            .assert()
+            .code(exit)
+            .stdout("");
+        let error: Value = serde_json::from_slice(&result.get_output().stderr).unwrap();
+        assert_eq!(error["error"]["code"], code);
+        assert_eq!(error["error"]["status"], status);
+        assert_eq!(error["error"]["class"], "api");
+        assert_eq!(error["error"]["retry"], retry);
+        assert!(
+            !String::from_utf8_lossy(&result.get_output().stderr)
+                .contains("private bootstrap body")
+        );
+    }
+}
+
+#[tokio::test]
+async fn incomplete_context_blocks_even_already_current_switch_before_put() {
+    for invalid in [Value::Null, json!({"sysId":42}), json!({"sysId":""})] {
+        let server = MockServer::start().await;
+        base(&server).await;
+        let mut context = pickers("global");
+        context["result"]["currentUpdateSet"] = invalid;
+        Mock::given(method("GET"))
+            .and(path("/api/now/ui/concoursepicker/current"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(context))
+            .mount(&server)
+            .await;
+        let (_dir, config, store) = config(&server.uri());
+        let rejected = command("full", &config, &store)
+            .args(["session", "switch", "domain", "global"])
+            .assert()
+            .code(2)
+            .stdout("")
+            .stderr(predicate::str::contains("No mutation was attempted"));
+        let error: Value = serde_json::from_slice(&rejected.get_output().stderr).unwrap();
+        assert_eq!(error["error"]["code"], "VALIDATION_ERROR");
+        assert_eq!(error["error"]["class"], "validation");
+        assert_eq!(error["error"]["retry"], "never");
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.method != "PUT")
+        );
+        // Inspection remains available with explicit unknown metadata.
+        let result = command("ro", &config, &store)
+            .args(["session", "show"])
+            .assert()
+            .success();
+        let inspection: Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+        assert!(inspection["update_set"].is_null());
+        assert!(
+            inspection["unavailable"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("update_set"))
+        );
+    }
+}
+
+#[tokio::test]
+async fn session_input_rejections_are_validation_errors_before_network() {
+    let server = MockServer::start().await;
+    let (_dir, config, store) = config(&server.uri());
+    for (args, stdin) in [
+        (
+            vec![
+                "--profile",
+                "source",
+                "session",
+                "attach",
+                "bad/name",
+                "--cookie-stdin",
+            ],
+            "cookie",
+        ),
+        (
+            vec![
+                "--profile",
+                "source",
+                "session",
+                "attach",
+                "source",
+                "--cookie-stdin",
+            ],
+            "cookie",
+        ),
+        (
+            vec![
+                "--profile",
+                "source",
+                "session",
+                "attach",
+                "new",
+                "--cookie-stdin",
+            ],
+            "",
+        ),
+        (
+            vec![
+                "--profile",
+                "source",
+                "session",
+                "attach",
+                "new",
+                "--cookie-stdin",
+            ],
+            "cookie\nsecond-line",
+        ),
+        (vec!["--profile", "source", "session", "show"], ""),
+        (
+            vec![
+                "--profile",
+                "native",
+                "session",
+                "login",
+                "new",
+                "--password-stdin",
+            ],
+            "secret",
+        ),
+    ] {
+        let result = command("full", &config, &store)
+            .args(args)
+            .write_stdin(stdin)
+            .assert()
+            .code(2)
+            .stdout("");
+        let error: Value = serde_json::from_slice(&result.get_output().stderr).unwrap();
+        assert_eq!(error["error"]["code"], "VALIDATION_ERROR");
+        assert_eq!(error["error"]["class"], "validation");
+        assert_eq!(error["error"]["retry"], "never");
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn switch_read_back_preserves_http_and_timeout_causes() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    for timeout in [false, true] {
+        let server = MockServer::start().await;
+        base(&server).await;
+        let switched = Arc::new(AtomicBool::new(false));
+        let read = switched.clone();
+        Mock::given(method("GET"))
+            .and(path("/api/now/ui/concoursepicker/current"))
+            .respond_with(move |_: &wiremock::Request| {
+                if read.load(Ordering::SeqCst) {
+                    if timeout {
+                        ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(2))
+                    } else {
+                        ResponseTemplate::new(403)
+                    }
+                } else {
+                    ResponseTemplate::new(200).set_body_json(pickers("global"))
+                }
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/now/ui/concoursepicker/application"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"result":{"list":[{"sysId":APP,"name":"App"}]}})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/api/now/ui/concoursepicker/application"))
+            .respond_with(move |_: &wiremock::Request| {
+                switched.store(true, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({"result":{}}))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (_dir, config, store) = config(&server.uri());
+        let result = command("full", &config, &store)
+            .args([
+                "--timeout-secs",
+                "1",
+                "session",
+                "switch",
+                "application",
+                APP,
+            ])
+            .assert()
+            .code(1)
+            .stdout("");
+        let error: Value = serde_json::from_slice(&result.get_output().stderr).unwrap();
+        assert_eq!(error["error"]["code"], "SESSION_SWITCH_UNCERTAIN");
+        // The PUT was already sent, so a transient cause must not read as replay-safe.
+        assert_eq!(error["error"]["retry"], "manual_review");
+        let detail = error["error"]["detail"].as_str().unwrap();
+        let cause = if timeout {
+            "REQUEST_TIMEOUT"
+        } else {
+            "FORBIDDEN"
+        };
+        assert!(detail.contains(cause), "{detail}");
+    }
+}
+
+#[tokio::test]
+async fn unknown_source_profile_is_config_error_before_network() {
+    let server = MockServer::start().await;
+    let (_dir, config, store) = config(&server.uri());
+    for args in [
+        vec!["--profile", "missing", "session", "login", "fresh"],
+        vec![
+            "--profile",
+            "missing",
+            "session",
+            "attach",
+            "fresh",
+            "--cookie-stdin",
+        ],
+    ] {
+        let result = command("full", &config, &store)
+            .args(args)
+            .write_stdin("secret")
+            .assert()
+            .code(2)
+            .stdout("");
+        let error: Value = serde_json::from_slice(&result.get_output().stderr).unwrap();
+        assert_eq!(error["error"]["code"], "PROFILE_NOT_FOUND");
+        assert_eq!(error["error"]["class"], "config");
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
 }

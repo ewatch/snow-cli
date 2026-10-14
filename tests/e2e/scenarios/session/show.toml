@@ -1,0 +1,26 @@
+name = "session-show"
+description = "Inspect effective user and native context in a disposable session"
+requires = ["credentials", "native-session"]
+
+[[setup]]
+args = ["profile", "add", "e2e-native-source", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+shell = 'printf "%s" "$SNOW_E2E_PASSWORD" | "$SNOW_CLI_BIN" --profile e2e-native-source session login e2e-native --password-stdin'
+
+[command]
+args = ["session", "show", "--profile", "e2e-native", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ['"transport":"native_cookie"', '"valid":true', '"record_domain":null']
+json_field_present = [".effective_user.sys_id", ".effective_user.user_name", ".application.id", ".domain.id", ".update_set.id"]
+
+[[cleanup]]
+args = ["session", "forget", "--profile", "e2e-native"]
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-native", "--yes"]
+
+[[cleanup]]
+args = ["profile", "remove", "e2e-native-source", "--yes"]

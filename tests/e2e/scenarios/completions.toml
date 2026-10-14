@@ -7,7 +7,9 @@ args = ["completions", "bash"]
 
 [expect]
 exit_code = 0
-stdout_contains = ["_snow-cli()", "COMPREPLY"]
+# Assert the registration, not clap_complete's internal function name
+# (4.6.11 renamed _snow-cli to _snow__cli).
+stdout_contains = ["COMPREPLY", "-o default snow-cli"]
 
 [[fuzzy]]
 expectation = "The generated script is a syntactically plausible bash completion function (defines a function, references COMPREPLY, mentions the snow-cli subcommand names like table/profile/auth)."

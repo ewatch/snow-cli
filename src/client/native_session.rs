@@ -5,6 +5,7 @@ use crate::config::native_session::NativeSession;
 use crate::models::{
     secret::Secret,
     session::{SessionInspection, SessionSelection, SessionSwitchType, SessionUser},
+    validation::ValidationError,
 };
 use http::Method;
 use serde_json::{Value, json};
@@ -24,6 +25,10 @@ pub enum NativeSessionSwitchError {
         "Context switch was sent, but verification did not match the requested value; session state is uncertain. Run session show before taking further action. No automatic retry or rollback was attempted."
     )]
     Mismatch,
+    #[error(
+        "Context switch was sent, but all three picker contexts could not be verified; session state is uncertain. Run session show before taking further action. No automatic retry or rollback was attempted."
+    )]
+    IncompleteContext,
 }
 
 const BOOTSTRAP: &str = "/navpage.do";
@@ -143,11 +148,15 @@ impl SnowClient {
                 url = self.authorize_instance_request(&Method::GET, next.as_str())?;
                 continue;
             }
-            anyhow::ensure!(
-                response.status().is_success(),
-                "Native session bootstrap failed (HTTP {})",
-                response.status().as_u16()
-            );
+            if !response.status().is_success() {
+                // Bootstrap is HTML, not a diagnostic envelope; never expose its body.
+                return Err(super::error::ApiError::from_status(
+                    response.status().as_u16(),
+                    self.base_url(),
+                    None,
+                )
+                .into());
+            }
             return Ok(super::ClientResponse { inner: response });
         }
         anyhow::bail!("Native session bootstrap exceeded the redirect limit")
@@ -314,6 +323,12 @@ impl SnowClient {
     ) -> anyhow::Result<(SessionInspection, SessionInspection)> {
         self.authorize_instance_request(&Method::PUT, "/api/now/ui/concoursepicker/current")?;
         let before = self.inspect_native_session().await?;
+        anyhow::ensure!(
+            has_complete_context(&before),
+            ValidationError::new(
+                "Cannot switch: all three picker contexts must be available. This UI may be unsupported, including instances without a domain picker; use session show. No mutation was attempted."
+            )
+        );
         let options = self.native_session_options(kind).await?;
         // Resolve application scope names only through the actual accessible picker.
         let candidates = options
@@ -348,12 +363,19 @@ impl SnowClient {
             .inspect_native_session()
             .await
             .map_err(NativeSessionSwitchError::VerificationFailed)?;
+        if !has_complete_context(&after) {
+            return Err(NativeSessionSwitchError::IncompleteContext.into());
+        }
         let actual = after.selection(kind);
         if actual.is_none_or(|actual| actual.id != selected.id) {
             return Err(NativeSessionSwitchError::Mismatch.into());
         }
         Ok((before, after))
     }
+}
+
+fn has_complete_context(context: &SessionInspection) -> bool {
+    context.domain.is_some() && context.application.is_some() && context.update_set.is_some()
 }
 
 fn text(value: &Value, key: &str) -> Option<String> {
