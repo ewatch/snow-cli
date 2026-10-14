@@ -365,9 +365,25 @@ Example:
 Design notes:
 
 - The `seed` field makes generation deterministic.
-- The spec can mix explicit records and generated templates.
-- Relationship definitions are resolved into concrete inserts during planning or
-  apply execution.
+- The spec can mix explicit records and generated templates. `count` applies to
+  generated template records; explicit `records` are added to that count.
+- Relationship definitions currently support `round_robin` and require the
+  referenced table to be present in the spec. The planner orders referenced
+  tables before dependents and rejects cycles.
+- `seed plan` validates the version-1 JSON spec offline and reports record
+  counts, dependencies, and the Table API strategy. It does not validate field
+  names against the instance schema or make network requests.
+- `seed apply` creates records through the Table API in dependency order,
+  replaces `{{index}}` and `{{seed}}` in string template values, and applies
+  `round_robin` references using created `sys_id` values. It requires an
+  interactive confirmation or `--yes`; `--dry-run` prints the plan without
+  contacting the instance.
+- Apply runs are tracked under `<config-dir>/seed-runs/<run-id>.json`. The run
+  file is updated after each successful create so partial runs remain cleanable.
+  `seed cleanup` deletes tracked records in reverse creation order, verifies the
+  run belongs to the selected instance, and supports `--dry-run`/`--yes`.
+- Seeding currently uses the Table API only; Import Set and server-side fast
+  paths are not selected for seed workloads.
 
 ## Strategy Selection
 

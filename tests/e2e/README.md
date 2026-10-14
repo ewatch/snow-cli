@@ -180,8 +180,8 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
   real PDI run.** The scenarios fall into three tiers:
   - **Network-free** (`requires = ["none"]`): run in any CI without credentials —
     `completions`, the local-config `profile *` and `auth status`/`logout` leaves,
-    and the `seed *` stubs (which assert the current "planned but not implemented
-    yet" contract). These have real deterministic assertions.
+    `seed plan`, `seed apply --dry-run`, and the unknown-run `seed cleanup`
+    error path (all offline; full apply/cleanup are covered by mocked API tests).
   - **Credentialed** (`requires = ["credentials"]`): the REST leaves (`api`,
     `table`, `attachment`, `auth login`/`token`, `data`, `import-set`, `scope`,
     `script`, `codesearch`, `graphql`, `profile sdk`). They run against the PDI
