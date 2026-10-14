@@ -8,12 +8,16 @@ pub(super) async fn handle_export(
     timeout_secs: Option<u64>,
     export: ExportRequest,
 ) -> anyhow::Result<()> {
-    tracing::info!("Exporting records from table: {}", export.table);
+    tracing::info!(table = %export.table, import_ready = export.import_ready, "Exporting records");
+    if export.import_ready && !matches!(format, OutputFormat::Json | OutputFormat::Auto) {
+        return Err(ValidationError::new(
+            "Import-ready export requires json or auto output so the artifact and omission report can be re-imported.",
+        ).into());
+    }
 
-    // Export artifacts are designed to be re-imported, and `data import` reads
-    // JSON only. The token-efficient `auto` format therefore degrades to JSON
-    // here so an export never produces an un-importable file. An explicit
-    // `--output toon` still forces TOON for a user who really wants it.
+    // `data import` reads JSON only, so auto output uses JSON artifacts.
+    // Archival exports still permit explicit alternative formats; field and
+    // destination compatibility require separate preparation and validation.
     let coerced_export_format;
     let format = if matches!(format, OutputFormat::Auto) {
         coerced_export_format = OutputFormat::Json;
@@ -25,7 +29,7 @@ pub(super) async fn handle_export(
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
     let pagination = PaginationConfig::default().with_limit(export.limit);
 
-    let records = client
+    let mut records = client
         .get_table_records(
             &export.table,
             export.query.as_deref(),
@@ -35,6 +39,19 @@ pub(super) async fn handle_export(
         )
         .await?;
 
+    let mut fields = split_csv_fields(export.fields.as_deref());
+    let preparation = if export.import_ready {
+        let schema =
+            fetch_table_schema(profile, instance, timeout_secs, export.table.as_str()).await?;
+        Some(prepare_import_ready_export(
+            &mut records,
+            &mut fields,
+            &schema,
+        )?)
+    } else {
+        None
+    };
+
     let artifact = TableExportArtifact {
         version: 1,
         kind: "table-export".to_string(),
@@ -42,10 +59,11 @@ pub(super) async fn handle_export(
         instance: client.base_url().to_string(),
         table: export.table.to_string(),
         query: export.query,
-        fields: split_csv_fields(export.fields.as_deref()),
+        fields,
         exported_at_unix_s: current_unix_timestamp(),
         record_count: records.len(),
         records,
+        preparation,
     };
 
     if let Some(out_path) = export.out_path {
@@ -59,6 +77,7 @@ pub(super) async fn handle_export(
             table: artifact.table,
             record_count: artifact.record_count,
             out_path,
+            preparation: artifact.preparation,
         };
         return output::print_output(&summary, format);
     }
@@ -70,6 +89,63 @@ pub(super) async fn handle_export(
         OutputFormat::Jsonl | OutputFormat::Toon => output::print_output(&artifact, format),
         OutputFormat::Text => output::print_output(&artifact, format),
     }
+}
+
+/// Remove fields conservatively using the same source metadata as validation.
+/// No value transformation or cross-instance reference remapping is performed.
+pub(super) fn prepare_import_ready_export(
+    records: &mut [Record],
+    fields: &mut Option<Vec<String>>,
+    schema: &[SchemaField],
+) -> anyhow::Result<ExportPreparation> {
+    if schema.is_empty() {
+        return Err(ValidationError::new(
+            "Import-ready export requires readable dictionary columns; no fields were available. Use an archival export or verify metadata access.",
+        ).into());
+    }
+    let schema_by_name = schema
+        .iter()
+        .map(|field| (field.name.as_str(), field))
+        .collect::<HashMap<_, _>>();
+    let names = record_field_names(fields.as_deref(), records);
+    let mut omitted_fields = Vec::new();
+    for name in names.into_iter().filter(|name| name != "*") {
+        let reason = if is_system_managed_field(&name) {
+            Some("system_managed")
+        } else {
+            match schema_by_name.get(name.as_str()) {
+                None => Some("unknown_field"),
+                Some(field) if field.read_only => Some("read_only"),
+                Some(field) if is_unsupported_field_type(&field.internal_type) => {
+                    Some("unsupported_field_type")
+                }
+                Some(_) => None,
+            }
+        };
+        if let Some(reason) = reason {
+            let affected_records = records
+                .iter_mut()
+                .filter_map(|record| record.fields.remove(&name))
+                .count();
+            omitted_fields.push(OmittedExportField {
+                field: name,
+                reason: reason.to_string(),
+                affected_records,
+            });
+        }
+    }
+    if let Some(selected) = fields {
+        selected.retain(|name| {
+            name != "*" && !omitted_fields.iter().any(|omitted| omitted.field == *name)
+        });
+    }
+    // Reflect the prepared payload rather than claiming omitted fields are present.
+    *fields = Some(record_field_names(fields.as_deref(), records));
+    Ok(ExportPreparation {
+        mode: "import_ready".to_string(),
+        reference_policy: "source_values_unchanged".to_string(),
+        omitted_fields,
+    })
 }
 
 pub(super) async fn handle_validate(
@@ -270,10 +346,10 @@ pub(super) async fn handle_import_flat(
 
     if !report.ready {
         return Err(ValidationError::new(format!(
-            "Dataset validation failed for table '{}' with {} error(s); run data validate --file <file> for itemized issues.",
+            "Dataset validation failed for table '{}' with {} error(s); inspect issues and fix the dataset before retrying.",
             report.table,
             report.errors.len()
-        )).into());
+        )).with_issues(report.errors).into());
     }
 
     if options.dry_run {

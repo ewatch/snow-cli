@@ -57,6 +57,16 @@ Required behavior:
 - Include export metadata such as instance, table, timestamp, query, selected
   fields, and record count.
 
+Default single-table export is archival and preserves returned values. The
+explicit `--import-ready` mode prepares JSON for create-only imports using the
+readable source schema. It omits unknown, system-managed, read-only, and
+unsupported-type fields with a deterministic `preparation.omitted_fields`
+report (field, reason, affected record count). No readable columns is a blocking
+validation failure. References and retained values are unchanged. This is not a
+destination ACL, business-rule, or portability guarantee; destination validation
+remains required. Related-dataset reference remapping stays explicit in package
+specs rather than being inferred from flat exports.
+
 ### `data validate`
 
 Validates a dataset against a target instance before import.
@@ -80,6 +90,10 @@ Required behavior:
 - Support create-only in v1.
 - Return per-run counts for created, failed, and skipped records.
 - Support `--dry-run` preview output for both flat imports and dataset packages.
+- Reject invalid flat/package datasets before writes with validation exit 2,
+  empty stdout, and itemized JSON stderr issues (up to 100, with full count and
+  explicit truncation metadata). Full validation reports remain available via
+  `data validate`; rejected record values are never included in diagnostics.
 
 ### `data export-package`
 

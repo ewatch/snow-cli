@@ -50,7 +50,11 @@ non-interactive delete confirmation, API header/body validation, GraphQL
 variables/document validation, script input, stdin limits, and dataset input
 syntax/shape or flat-import validation. This intentional reclassification does
 not change execution-error exits (including row failures and script evaluation).
-Dataset-specific itemized validation details remain a separate issue (#8.8).
+Dataset validation errors additionally carry optional `issues`, `issue_count`,
+and `issues_truncated`. Issues contain `kind`, optional `field` and zero-based
+`record_index`, and a scrubbed, bounded `message`, never rejected record values.
+At most 100 issues appear on stderr; `data validate` supplies the full report.
+Flat and package validation failures leave stdout empty and occur before writes.
 
 Other command-specific untyped failures conservatively retain `INTERNAL_ERROR`,
 class `internal`, exit 1, and unknown retry guidance. Do not infer a programming

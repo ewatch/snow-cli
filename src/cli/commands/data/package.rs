@@ -264,10 +264,10 @@ pub(super) async fn handle_import_package(
     let validation =
         build_package_validation_report(profile, instance, timeout_secs, file, manifest).await?;
     if !validation.ready {
-        anyhow::bail!(
-            "Dataset package validation failed with {} error(s)",
+        return Err(ValidationError::new(format!(
+            "Dataset package validation failed with {} error(s); inspect issues and fix the dataset before retrying.",
             validation.errors.len()
-        );
+        )).with_issues(validation.errors).into());
     }
 
     if dry_run {

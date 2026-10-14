@@ -22,6 +22,15 @@ cargo test --lib
 cargo test --test '*'
 ```
 
+## Documentation Example Checks
+
+`cargo test --test test_documented_examples` parses complete, literal single-line
+commands in Bash fences in `README.md` and the command reference using both CLI
+parsers. It does not execute examples, read configuration, authenticate, or
+contact an instance. It checks shell quoting and argument syntax, not runtime
+behavior. Placeholders, shell pipelines/control operators, variable expansions,
+and multiline commands are excluded from this initial coverage.
+
 ## Test Structure
 
 ```

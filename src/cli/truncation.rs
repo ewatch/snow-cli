@@ -1,14 +1,11 @@
 use crate::models::record::Record;
 use serde::Serialize;
 
-/// Default per-field character cap applied to previewable agent output when
-/// `--full` is omitted.
+/// Per-field character cap used only when `--preview` is explicitly requested.
 ///
 /// ServiceNow text fields (descriptions, work notes, scripts, widget bodies)
-/// can be tens of kilobytes; a bounded default keeps record output safe to
-/// read in agent contexts the same way the bounded list limit does for row
-/// counts. The cap is generous enough that ordinary short_description-style
-/// fields are never touched.
+/// can be tens of kilobytes. Preview bounds agent-facing content without
+/// changing lossless default output. The cap leaves ordinary short fields intact.
 pub(crate) const DEFAULT_FIELD_CHAR_LIMIT: usize = 2000;
 
 /// Machine-readable metadata for one shortened field.

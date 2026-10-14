@@ -100,6 +100,12 @@ pub struct ErrorBody {
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<crate::models::validation::ValidationIssue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issue_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issues_truncated: Option<bool>,
 }
 
 impl ErrorOutput {
@@ -121,6 +127,9 @@ impl ErrorOutput {
                 status: None,
                 detail: None,
                 instance: None,
+                issues: Vec::new(),
+                issue_count: None,
+                issues_truncated: None,
             },
         }
     }
@@ -205,15 +214,30 @@ fn error_output_and_exit_code(error: &anyhow::Error) -> (ErrorOutput, i32) {
 fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutput, i32)> {
     // Inspect typed sources through anyhow context, not message substrings.
     if let Some(error) = error.downcast_ref::<crate::models::validation::ValidationError>() {
-        return Some((
-            ErrorOutput::new(
-                "VALIDATION_ERROR",
-                &error.to_string(),
-                ErrorClass::Validation,
-                RetryAdvice::Never,
-            ),
-            2,
-        ));
+        let mut output = ErrorOutput::new(
+            "VALIDATION_ERROR",
+            &error.to_string(),
+            ErrorClass::Validation,
+            RetryAdvice::Never,
+        );
+        // Bound stderr for agent consumption; data validate provides the full report.
+        const MAX_VALIDATION_ISSUES: usize = 100;
+        if !error.issues().is_empty() {
+            output.error.issue_count = Some(error.issues().len());
+            output.error.issues_truncated = Some(error.issues().len() > MAX_VALIDATION_ISSUES);
+            output.error.issues = error
+                .issues()
+                .iter()
+                .take(MAX_VALIDATION_ISSUES)
+                .map(|issue| crate::models::validation::ValidationIssue {
+                    kind: issue.kind,
+                    field: issue.field.as_deref().map(safe_message),
+                    record_index: issue.record_index,
+                    message: safe_message(&issue.message),
+                })
+                .collect();
+        }
+        return Some((output, 2));
     }
     if let Some(error) = error.downcast_ref::<crate::config::error::ConfigError>() {
         return Some((
@@ -457,6 +481,30 @@ mod tests {
                 .unwrap()
                 .contains("private payload")
         );
+    }
+
+    #[test]
+    fn validation_issues_are_scrubbed_bounded_and_preserved_through_context() {
+        use crate::models::validation::{ValidationError, ValidationIssue};
+        let issues = (0..101)
+            .map(|index| ValidationIssue {
+                kind: "unknown_field",
+                field: Some("password=private-field".to_string()),
+                record_index: Some(index),
+                message: format!("token=private-value {}", "é".repeat(1000)),
+            })
+            .collect();
+        let error = anyhow::Error::new(ValidationError::new("Fix the dataset").with_issues(issues))
+            .context("private context");
+        let (output, exit) = error_output_and_exit_code(&error);
+        assert_eq!(exit, 2);
+        assert_eq!(output.error.issue_count, Some(101));
+        assert_eq!(output.error.issues_truncated, Some(true));
+        assert_eq!(output.error.issues.len(), 100);
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(!json.contains("private-"));
+        assert!(!json.contains("private context"));
+        assert!(output.error.issues[0].message.chars().count() < 520);
     }
 
     #[test]

@@ -229,7 +229,7 @@ pub enum ReadOnlyTableCommands {
         #[arg(long)]
         query_no_domain: bool,
 
-        /// Return complete field content instead of capping long values
+        /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
         full: bool,
 
@@ -255,7 +255,7 @@ pub enum ReadOnlyTableCommands {
         #[arg(long)]
         query_no_domain: bool,
 
-        /// Return complete field content instead of capping long values
+        /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
         full: bool,
 
@@ -351,6 +351,11 @@ pub enum ReadOnlyDataCommands {
         /// comma-separate several keys. Sent as ORDERBY clauses in the query.
         #[arg(long, allow_hyphen_values = true)]
         order_by: Option<OrderBy>,
+
+        /// Prepare a JSON create-only dataset using readable source dictionary metadata
+        /// (reports omitted fields; references are not remapped; validate on the target)
+        #[arg(long)]
+        import_ready: bool,
 
         /// Write the exported artifact to a file instead of stdout
         #[arg(long = "out", short = 'o')]
@@ -902,6 +907,7 @@ impl ReadOnlyDataCommands {
                 fields,
                 limit,
                 order_by,
+                import_ready,
                 out_path,
             } => DataCommands::Export {
                 table,
@@ -910,6 +916,7 @@ impl ReadOnlyDataCommands {
                 limit,
                 order_by,
                 out_path,
+                import_ready,
             },
             Self::ExportPackage { file, out_dir } => DataCommands::ExportPackage { file, out_dir },
             Self::Validate { file } => DataCommands::Validate { file },
