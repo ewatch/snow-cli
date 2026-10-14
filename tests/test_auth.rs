@@ -744,9 +744,32 @@ async fn test_auth_login_authorization_code_default_uses_loopback_callback() {
             "{callback_path}?code=loopback-code&state={state} HTTP/1.1\r\nHost: {address}\r\n\r\n"
         );
         stream.write_all(remaining.as_bytes()).unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        // Read the response by its HTTP framing, not until EOF. A loopback
+        // close can surface as ConnectionReset on macOS even after the complete
+        // response has arrived; the callback contract is the status and body,
+        // not an orderly TCP EOF.
+        let mut response = std::io::BufReader::new(stream);
+        let mut status_line = String::new();
+        response.read_line(&mut status_line).unwrap();
+        assert!(status_line.starts_with("HTTP/1.1 200"), "{status_line}");
+
+        let mut content_length = None;
+        loop {
+            let mut line = String::new();
+            response.read_line(&mut line).unwrap();
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(value) = line.strip_prefix("Content-Length:") {
+                content_length = Some(value.trim().parse::<usize>().unwrap());
+            }
+        }
+        let content_length = content_length.expect("OAuth response must declare its body length");
+        let mut body = vec![0; content_length];
+        response.read_exact(&mut body).unwrap();
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("Login complete"), "{body}");
+        drop(response);
         child.wait_with_output().unwrap()
     })
     .await
