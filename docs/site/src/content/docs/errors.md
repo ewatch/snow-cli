@@ -39,7 +39,7 @@ or verification fails, whose read-back does not match, or whose context is
 incomplete after the request reports `SESSION_SWITCH_UNCERTAIN` (class
 `command`, exit 1, `manual_review`), with any classified cause in `detail`; run
 `session show` before doing anything else. If the context is already incomplete
-before switching, nothing is sent and the command fails with `VALIDATION_ERROR`
+before switching, no switch request is sent and the command fails with `VALIDATION_ERROR`
 (exit 2). Unclassified command failures retain
 `INTERNAL_ERROR`, class `internal`, and unknown retry guidance.
 

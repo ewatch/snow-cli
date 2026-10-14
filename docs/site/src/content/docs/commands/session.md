@@ -56,7 +56,7 @@ the operation, including when the requested selection is already current.
 Missing or malformed contexts fail explicitly rather than reporting verified
 success. This includes instances whose UI does not expose a domain picker;
 `session show` can still report unknown context, but switching is unsupported:
-the command fails with `VALIDATION_ERROR` (exit 2) before sending anything. A
+the command fails with `VALIDATION_ERROR` (exit 2) and no switch request is sent. A
 switch that was sent but cannot be verified reports `SESSION_SWITCH_UNCERTAIN`
 (exit 1, `retry: manual_review`).
 If mutation or read-back fails, inspect with `session show`; the CLI does not

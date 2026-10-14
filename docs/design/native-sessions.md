@@ -53,8 +53,9 @@ selections both before and after the operation; missing or malformed contexts
 fail explicitly, including an unavailable domain picker on a non-domain-separated
 instance. Inspection can still report those selections as unknown. Bootstrap
 HTTP failures retain their API status. Switch request, read-back, mismatch, and
-incomplete-context failures render `SESSION_SWITCH_UNCERTAIN` with
-`manual_review` guidance (see ADR 0009). Read-only mode permits attachment
+incomplete context after the request render `SESSION_SWITCH_UNCERTAIN` with
+`manual_review` guidance (see ADR 0009). Incomplete context before switching
+is a `VALIDATION_ERROR`; no switch request is sent. Read-only mode permits attachment
 and inspection but excludes form login and switching.
 
 ## Live evidence: dev404396, 2026-10-04
