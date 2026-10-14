@@ -31,6 +31,7 @@ pub async fn handle(
             limit,
             order_by,
             out_path,
+            import_ready,
         } => {
             let export = ExportRequest {
                 table,
@@ -39,6 +40,7 @@ pub async fn handle(
                 limit,
                 order_by,
                 out_path,
+                import_ready,
             };
             handle_export(profile, format, instance, timeout_secs, export).await
         }

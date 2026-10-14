@@ -5,7 +5,7 @@ use crate::models::order_by::OrderBy;
 
 const DATA_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export sys_user --fields sys_id,user_name,email --out users.json\n  snow-cli data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli data validate --file export.json\n  snow-cli data import --file export.json\n  snow-cli data import --file users.json --import-set-table imp_user";
 
-const DATA_EXPORT_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export incident --fields sys_id,number,short_description --limit 50\n  snow-cli --output csv data export sys_user --fields sys_id,user_name,email --out users.csv";
+const DATA_EXPORT_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export incident --fields sys_id,number,short_description --limit 50\n  snow-cli data export incident --import-ready --limit 10 --out incidents.json\n  snow-cli --output csv data export sys_user --fields sys_id,user_name,email --out users.csv";
 
 const DATA_EXPORT_PACKAGE_AFTER_HELP: &str = "Examples:\n  snow-cli data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli data validate --file exported-dataset/manifest.json\n  snow-cli data import --file exported-dataset/manifest.json";
 // --- Scope ---
@@ -41,6 +41,11 @@ pub enum DataCommands {
         /// comma-separate several keys. Sent as ORDERBY clauses in the query.
         #[arg(long, allow_hyphen_values = true)]
         order_by: Option<OrderBy>,
+
+        /// Prepare a JSON create-only dataset using readable source dictionary metadata
+        /// (reports omitted fields; references are not remapped; validate on the target)
+        #[arg(long)]
+        import_ready: bool,
 
         /// Write the exported artifact to a file instead of stdout
         #[arg(long = "out", short = 'o')]

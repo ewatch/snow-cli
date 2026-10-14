@@ -60,7 +60,7 @@ pub enum TableCommands {
         #[arg(long)]
         query_no_domain: bool,
 
-        /// Return complete field content instead of capping long values
+        /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
         full: bool,
 
@@ -86,7 +86,7 @@ pub enum TableCommands {
         #[arg(long)]
         query_no_domain: bool,
 
-        /// Return complete field content instead of capping long values
+        /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
         full: bool,
 

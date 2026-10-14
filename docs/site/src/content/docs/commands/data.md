@@ -23,6 +23,7 @@ Important options:
 - `--limit <n>`: maximum records to export
 - `--order-by <spec>`: sort the export (`field`, `-field` or `field:desc`, comma-separated); sent as `ORDERBY` clauses in the query. Dataset package specs accept the same syntax in a table's `order_by`
 - `-o, --out <path>`: write to a file instead of stdout
+- `--import-ready`: prepare a create-only JSON dataset using readable source dictionary metadata; report omitted fields (JSON or auto output only, available in both binaries)
 
 Examples:
 
@@ -34,11 +35,28 @@ snow-cli --output csv data export sys_user --fields sys_id,user_name,email --out
 
 Use this command when you want a flat, single-table artifact that can later be validated or re-imported.
 
-Note: some exportable fields aren't re-importable. `sys_id` can always be
-exported, but `data validate`/`data import` reject it as not writable for
-create-style imports (`field_not_writable`). If an artifact is meant to be
-re-imported, export the writable fields you actually want to recreate rather
-than a full dump that includes system-managed fields like `sys_id`.
+Default exports preserve all returned field values for archival use. For a
+create-only dataset, choose `--import-ready` explicitly:
+
+```bash
+snow-cli data export incident --import-ready --limit 10 --out incidents.json
+snow-cli --profile destination data validate --file incidents.json
+snow-cli --profile destination data import --file incidents.json --dry-run
+```
+
+Preparation omits system-managed, read-only, unknown/unreadable dictionary
+fields, and unsupported field types (journal, journal_input, script,
+translated_html, password). The artifact and file-output summary contain
+`preparation.omitted_fields`, with `field`, `reason`, and `affected_records`.
+Values are not transformed. No readable dictionary columns causes a validation
+error rather than silently producing an empty projection.
+
+**Import-ready is source-schema preparation, not a destination compatibility
+or write-access guarantee.** References remain unchanged source values
+(`reference_policy: source_values_unchanged`); they are not automatically
+portable across instances. Use an explicitly curated `data export-package`
+spec for reference remapping. Always validate on the destination: ACLs, required
+fields, business rules, and metadata differences may still prevent import.
 
 ## `data export-package --file <spec> --out-dir <dir>`
 
@@ -109,6 +127,11 @@ Notes:
 - When `--import-set-table` is not used, the CLI falls back to direct create-only Table API writes.
 - `--fail-on-error` is mainly useful together with `--import-set-table`.
 - `data import` does not support `--output csv`.
+- Validation failure exits 2 before writes and leaves stdout empty. JSON stderr
+  includes `error.issues` with `kind`, optional `field`/zero-based `record_index`,
+  and `message`. `issue_count` reports the full count; `issues_truncated` indicates
+  whether the 100-issue stderr limit was exceeded. Use `data validate` for the full
+  report. Diagnostics never include rejected record values.
 
 ### Real-world export → validate → import workflow
 

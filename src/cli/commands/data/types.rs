@@ -17,6 +17,23 @@ pub(super) struct TableExportArtifact {
     #[serde(default)]
     pub(super) record_count: usize,
     pub(super) records: Vec<Record>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) preparation: Option<ExportPreparation>,
+}
+
+/// Source-schema preparation is not a destination ACL or portability guarantee.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct ExportPreparation {
+    pub(super) mode: String,
+    pub(super) reference_policy: String,
+    pub(super) omitted_fields: Vec<OmittedExportField>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct OmittedExportField {
+    pub(super) field: String,
+    pub(super) reason: String,
+    pub(super) affected_records: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -28,6 +45,8 @@ pub(super) struct ExportSummary {
     pub(super) table: String,
     pub(super) record_count: usize,
     pub(super) out_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) preparation: Option<ExportPreparation>,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,15 +62,7 @@ pub(super) struct ValidationReport {
     pub(super) warnings: Vec<ValidationIssue>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct ValidationIssue {
-    pub(super) kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) field: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) record_index: Option<usize>,
-    pub(super) message: String,
-}
+pub(super) use crate::models::validation::ValidationIssue;
 
 #[derive(Debug, Serialize)]
 pub(super) struct ImportReport {
@@ -265,6 +276,7 @@ pub(super) struct ExportRequest {
     pub(super) limit: Option<usize>,
     pub(super) order_by: Option<OrderBy>,
     pub(super) out_path: Option<String>,
+    pub(super) import_ready: bool,
 }
 
 pub(super) enum DatasetInput {

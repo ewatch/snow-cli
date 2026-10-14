@@ -61,16 +61,13 @@ detectable:
 server does not report one. For complete data set extraction, use
 `snow-cli data export`, which keeps its explicit full-export semantics.
 
-Field content is bounded too: unless `--full` is passed, `table list` and
-`table get` cap each field value at 2,000 characters. Oversized values are cut
-with an inline size hint so the truncation is self-describing:
-
-```json
-{ "script": "var gr = new GlideRecord('incident');… [truncated 2000 of 48213 chars; use --full]" }
-```
-
-When any field was capped, list metadata additionally carries
-`"fields_truncated": true` (omitted otherwise).
+Field content is lossless by default. Pass `--preview` to `table list` or
+`table get` to shorten oversized string fields at 2,000 characters in
+JSON/JSONL/TOON/text/auto output. Preview metadata reports each affected field,
+its original and shown character counts, and the `--full` escape hatch. CSV
+remains lossless and does not support preview metadata. Without `--preview`,
+field values are returned in full; `--full` is accepted as an explicit
+lossless option for commands copied from preview workflows.
 
 ## Agent-safe read-only access
 
