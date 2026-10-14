@@ -110,7 +110,7 @@ Important options:
 - `-f, --file <path>`: file to import
 - `--dry-run`: preview the import plan without creating records
 - `--import-set-table <table>`: use the Import Set API for a flat table-export artifact
-- `--fail-on-error`: exit non-zero when Import Set responses contain row-level errors
+- `--fail-on-error`: exit non-zero when Import Set responses contain row-level errors (opt-in; without it, row-level failures are reported but do not fail the command)
 
 Examples:
 
@@ -125,7 +125,7 @@ Notes:
 
 - `--import-set-table` currently works only for flat table-export artifacts, not multi-table package imports.
 - When `--import-set-table` is not used, the CLI falls back to direct create-only Table API writes.
-- `--fail-on-error` is mainly useful together with `--import-set-table`.
+- `--fail-on-error` is mainly useful together with `--import-set-table`. Unlike `snow-cli import-set load`, `data import` retains its existing default of exit 0 for Import Set row-level errors; pass this flag to fail on them. Inspect the report before retrying because some rows may already have changed.
 - `data import` does not support `--output csv`.
 - Validation failure exits 2 before writes and leaves stdout empty. JSON stderr
   includes `error.issues` with `kind`, optional `field`/zero-based `record_index`,

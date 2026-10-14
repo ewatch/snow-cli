@@ -41,6 +41,9 @@ snow-cli auth status --verify
 snow-cli table list incident --query 'active=true' --limit 20
 ```
 
+The default profile is used unless you pass `--profile <name>`. For the full
+command surface and global options, see the [command reference](/commands/).
+
 ## 5. Get one record
 
 ```bash
@@ -48,6 +51,9 @@ snow-cli table get incident <sys_id>
 ```
 
 ## 6. Create a record
+
+This step writes to the instance. Skip it if you only have read access, or use
+`--read-only` / `snow-cli-ro` for a client-side guard against mutations.
 
 ```bash
 snow-cli table create incident --data '{"short_description":"Created from snow-cli"}'
