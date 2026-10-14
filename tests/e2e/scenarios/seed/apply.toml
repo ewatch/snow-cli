@@ -1,28 +1,22 @@
-name = "seed-apply"
-description = "seed apply is a stub today — asserts the not-implemented contract (no instance required)"
-
-# See seed/plan.toml: seed is not implemented yet and returns a not-implemented
-# error before any network call. Runs without credentials.
+name = "seed-apply-dry-run"
+description = "seed apply dry-run validates specs without credentials or network"
 requires = ["none"]
 
 [[setup]]
-description = "Create an offline profile (seed resolves a profile before hitting the not-implemented stub; no network)"
+description = "Create an offline profile"
 args = ["profile", "add", "e2e-scenario", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
 
 [[setup]]
 description = "Write a minimal seed spec fixture"
-shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-seed.XXXXXX\") && mv \"$f\" \"$f.json\" && f=\"$f.json\" && printf '%s' '{\"kind\":\"seed\",\"records\":[]}' > \"$f\" && printf '%s' \"$f\""
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-seed.XXXXXX\") && mv \"$f\" \"$f.json\" && f=\"$f.json\" && printf '%s' '{\"version\":1,\"kind\":\"seed-spec\",\"tables\":[{\"name\":\"incident\",\"records\":[{\"short_description\":\"Preview only\"}]}]}' > \"$f\" && printf '%s' \"$f\""
 capture = { spec_path = "raw" }
 
 [command]
-args = ["seed", "apply", "--file", "{{spec_path}}", "--profile", "e2e-scenario"]
+args = ["seed", "apply", "--file", "{{spec_path}}", "--dry-run", "--profile", "e2e-scenario"]
 
 [expect]
-exit_code = 1
-stderr_contains = ["planned but not implemented yet"]
-
-[[fuzzy]]
-expectation = "The error is a structured JSON error object on stderr stating seed apply is not implemented yet."
+exit_code = 0
+stdout_contains = ["seed-plan", "incident", "\"total_records\":1"]
 
 [[cleanup]]
 description = "Remove the seed spec fixture"

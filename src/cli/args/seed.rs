@@ -24,6 +24,14 @@ pub enum SeedCommands {
         /// Seed specification file
         #[arg(long, short = 'f')]
         file: String,
+
+        /// Preview the plan without creating records
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Create records without an interactive confirmation
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Remove data created by a prior seed run

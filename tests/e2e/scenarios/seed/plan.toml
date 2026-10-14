@@ -1,31 +1,24 @@
 name = "seed-plan"
-description = "seed plan is a stub today — asserts the not-implemented contract (no instance required)"
+description = "seed plan validates and orders a declarative seed spec offline"
 
-# `seed` is planned but not implemented yet (docs/book/commands/seed.md). The
-# command validates args locally and returns a structured not-implemented error
-# on stderr with exit code 1, before any network call — so this runs without
-# credentials and pins the current contract. When seed is implemented, replace
-# this with a real credentialed plan scenario.
+# Planning is local and does not need instance credentials or network access.
 requires = ["none"]
 
 [[setup]]
-description = "Create an offline profile (seed resolves a profile before hitting the not-implemented stub; no network)"
+description = "Create an offline profile (planning makes no network requests)"
 args = ["profile", "add", "e2e-scenario", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
 
 [[setup]]
-description = "Write a minimal seed spec fixture"
-shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-seed.XXXXXX\") && mv \"$f\" \"$f.json\" && f=\"$f.json\" && printf '%s' '{\"kind\":\"seed\",\"records\":[]}' > \"$f\" && printf '%s' \"$f\""
+description = "Write a seed spec with a referenced table"
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-seed.XXXXXX\") && mv \"$f\" \"$f.json\" && f=\"$f.json\" && printf '%s' '{\"version\":1,\"kind\":\"seed-spec\",\"seed\":42,\"tables\":[{\"name\":\"incident\",\"count\":2,\"template\":{\"short_description\":\"Generated incident\"},\"references\":{\"location\":{\"table\":\"cmn_location\",\"strategy\":\"round_robin\"}}},{\"name\":\"cmn_location\",\"records\":[{\"name\":\"Berlin\"}]}]}' > \"$f\" && printf '%s' \"$f\""
 capture = { spec_path = "raw" }
 
 [command]
 args = ["seed", "plan", "--file", "{{spec_path}}", "--profile", "e2e-scenario"]
 
 [expect]
-exit_code = 1
-stderr_contains = ["planned but not implemented yet"]
-
-[[fuzzy]]
-expectation = "The error is a structured JSON error object on stderr stating seed plan is not implemented yet."
+exit_code = 0
+stdout_contains = ["seed-plan", "cmn_location", "incident", "\"total_records\":3"]
 
 [[cleanup]]
 description = "Remove the seed spec fixture"
