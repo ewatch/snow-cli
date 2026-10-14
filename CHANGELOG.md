@@ -7,20 +7,48 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-15
+
 ### Added
 
-- `auth status --verify` makes one authenticated request and reports `verified`, the session user (`verified_user`, `verified_user_sys_id`), `latency_ms`, and a best-effort `build`. On failure it reports `verification_error` and exits non-zero. It is available in `snow-cli-ro`.
+- `auth status --verify` makes an authenticated identity request plus a best-effort build lookup and reports `verified`, the session user (`verified_user`, `verified_user_sys_id`), `latency_ms`, and a best-effort `build`. On failure it reports `verification_error` and exits non-zero. It is available in `snow-cli-ro`.
+- Added ServiceNow SDK OAuth manual-code login with `auth login --sdk-oauth` and optional `--code-stdin`, without a localhost callback listener.
+- Added instance-bound native cookie sessions with `session login`, `attach`, `show`, `options`, `switch`, and `forget`; credentials remain in the OS keychain. Read-only mode excludes login and context switching.
+- Added domain-aware table reads and domain inspection commands, explicit `--query-no-domain`, and verified native domain/application/update-set context switching.
+- Added explicit table-list paging metadata (`offset` and `next_offset`) and opt-in `--preview` metadata for oversized table and Code Search fields; `--full` remains a lossless escape hatch.
+- Added cross-family response-contract tests for both binaries and supported output formats.
+- Added `seed apply` and `seed cleanup`. Seed specs are validated offline and planned in dependency order; `seed apply` supports `--dry-run`, template expansion, round-robin references, and per-record run tracking, and `seed cleanup` deletes tracked records in reverse order after an instance check, with `--dry-run` and confirmation. Seeding uses the Table API.
+- Added `data export --import-ready` to prepare a create-only JSON dataset from readable source dictionary metadata. It omits system-managed, read-only, unreadable, and unsupported field types and reports them in `preparation.omitted_fields`; references are not remapped, so validate on the destination.
+- Import validation failures now include bounded, value-free itemized `error.issues` (`kind`, optional `field` and `record_index`, `message`) with `issue_count` and `issues_truncated`.
 
 ### Changed
 
+- **Breaking:** `script run` against `/sys.scripts.do` now returns structured execution results for JSON, JSONL, TOON, and auto output (`output`, `duration_ms`, `scope`, `history_sys_id`, `errors`); text/CSV and custom endpoints retain their existing passthrough behavior.
+- **Breaking:** `import-set load` now exits nonzero for row-level errors by default while preserving its detailed result on stdout. Use `--allow-row-errors` to explicitly accept partial failures; `--fail-on-error` remains a compatibility flag. `data import --import-set-table` retains its opt-in `--fail-on-error` behavior.
+- **Breaking:** Known local validation, configuration, credential, transport, and I/O failures now use specific error codes and exit classifications instead of generic internal errors. Runtime JSON errors add mandatory `class` and conservative `retry` guidance; no automatic mutation retry is introduced. Clap usage diagnostics remain human-readable.
+- **Breaking:** Table and Code Search field content is lossless by default. Previously values over 2000 characters were cut with inline `[truncated N of M chars]` markers and `fields_truncated` metadata. Shortening now requires `--preview`, with separate machine-readable metadata rather than inline markers; preview is rejected with CSV output.
+- Refactored SN-Utils WebSocket action dispatch and updated Rust and Astro dependencies.
+- Refreshed Astro documentation, base-path link processing, Homebrew upgrade instructions, piped installer environment examples, and read-only quick-start guidance.
 - **Breaking:** `auth login` verifies stored passwords, API tokens, and OAuth client secrets (client-credentials and password grant) with one identity request. It reports `"status":"verified"` with `verified_user` and `verified_user_sys_id`; when the instance rejects the credentials it reports `"status":"stored"`, `verified: false`, and `verification_error`, keeps the secret, and exits non-zero. It previously printed `"status":"authenticated"` without contacting the instance, even for a wrong password. `--no-verify` stores without a request and reports `"status":"stored"`. Authorization-code logins now report `"status":"verified"`. All `auth` output except `auth token` now honours `--output`.
 - **Breaking:** `auth status` no longer reports `authenticated`. That field only meant a credential was stored, yet read as "the instance accepted it". It is replaced by `credentials_present`; use `auth status --verify` and its `verified` field for a real server check. The output now honours `--output` and is compact JSON by default.
 - `table schema` now returns the effective schema by default: columns inherited from parent tables are included (found by walking `sys_db_object.super_class`), each column is tagged with its defining `table`, and a child override replaces the parent definition. Use `--own-only` for columns defined on the table itself. `--include-inherited` is still accepted but hidden, since it is now the default; it previously returned only the table's own columns because `nameINSTANCEOF` does not work on `sys_dictionary.name`. `data validate` also uses the deduplicated effective schema.
 
 ### Fixed
 
+- `script run` now rejects recognized ServiceNow execution diagnostics with `SCRIPT_EXECUTION_FAILED`, nonzero exit, and no success output; scripts may already have had side effects.
+- `import-set load --output csv` is rejected before any mutation.
+- Code Search now resolves scoped searches correctly and bounds grouped hits.
+- Native cookie sessions now honor server expiry attributes. Context switching rejects missing or malformed picker selections before mutation and during read-back, rather than claiming verified success with unknown context.
+- Native bootstrap HTTP failures and context-switch failures preserve their status and typed runtime classifications. Uncertain context switches, including incomplete context after the request, report `SESSION_SWITCH_UNCERTAIN` with `manual_review` guidance. Malformed successful OAuth token responses are classified as remote transport response errors, not local JSON validation errors.
+- Invalid session input and zero domain limits report validation errors before network requests. Added all ten domain/session E2E scenario files with explicit native-UI and domain-separation capability gates, backed by a mock execution of the complete scenario matrix.
+- Piped tracing output no longer includes ANSI colors.
 - API errors now report the ServiceNow cause. The standard `{"error":{"message","detail"}}` envelope is surfaced in the structured JSON error after secret scrubbing and length bounding, with specific codes `INVALID_TABLE`, `RECORD_NOT_FOUND`, and `ACL_DENIED` where the message is unambiguous. The default-level `API request failed` log line that printed the raw response body on stderr is now a body-free `debug` event.
 - `table list --order-by` and `data export --order-by` now sort. They previously sent `sysparm_orderby`, which the Table API ignores, so results came back in default order. Sort keys are now appended to `sysparm_query` as `ORDERBY`/`ORDERBYDESC` clauses; `-field` and `field:desc` sort descending, several keys can be comma-separated, and invalid specs are rejected before any request. Dataset package `order_by` entries use the same syntax.
+
+### Security
+
+- Updated rustls to 0.23.46 to address RUSTSEC-2026-0285, RUSTSEC-2026-0346, RUSTSEC-2026-0347, RUSTSEC-2026-0348, and RUSTSEC-2026-0349, and the docs-site http-cache-semantics dependency to 4.3.0 (GHSA-ch52-4w7c-c8xp).
+- Hardened HTTP, SN-Utils, script, configuration, and runtime failure diagnostics: secret-like values are scrubbed, messages are bounded, and sensitive bodies, URLs, source excerpts, and stack traces are withheld from normal error output.
 
 ## [0.8.0] - 2026-08-25
 
