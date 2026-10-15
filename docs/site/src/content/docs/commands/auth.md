@@ -183,13 +183,15 @@ Use `snow-cli auth login` to update stale credentials.
 
 ## `auth token`
 
-Print the current access token to stdout.
+Print the current OAuth2 access token to stdout.
 
 ```bash
 snow-cli auth token
 ```
 
 This is useful for piping into other tools. For OAuth2 profiles, the command prints an actual short-lived access token rather than a stored client secret.
+
+For other profiles the "token" is the long-lived credential itself, so `auth token` refuses with `VALIDATION_ERROR` unless you pass `--reveal`. The refusal happens before the keychain is read. Native session credentials are never exported.
 
 Examples:
 
@@ -202,7 +204,11 @@ TOKEN=$(snow-cli auth token)
 curl -H "Authorization: Bearer $TOKEN" https://instance.service-now.com/api/now/table/incident
 ```
 
-For basic auth profiles, the output is a base64-encoded `username:password` string.
+With `--reveal`, basic auth profiles print a base64-encoded `username:password` string, which decodes to the password, and API-key profiles print the stored key. Avoid `--reveal` in agent sessions: the credential lands in the agent's context.
+
+```bash
+snow-cli auth token --reveal --profile basic-profile
+```
 
 ## `auth logout`
 
