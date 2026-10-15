@@ -35,9 +35,10 @@ fn import_ready_rejects_formats_that_cannot_be_reimported_before_client_creation
 #[tokio::test]
 async fn import_ready_does_not_overwrite_artifacts_when_schema_is_unavailable() {
     let server = MockServer::start().await;
-    let (_dir, config) = common::create_temp_config(
-        "default_profile = 'default'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
-    );
+    let (_dir, config) = common::create_temp_config(&format!(
+        "default_profile = 'default'\n[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n",
+        instance = server.uri()
+    ));
     for table in ["incident", "sys_db_object", "sys_dictionary"] {
         Mock::given(method("GET"))
             .and(path(format!("/api/now/table/{table}")))
@@ -73,9 +74,10 @@ async fn import_ready_does_not_overwrite_artifacts_when_schema_is_unavailable() 
 #[tokio::test]
 async fn import_validation_errors_are_itemized_without_record_values_or_writes() {
     let server = MockServer::start().await;
-    let (_dir, config) = common::create_temp_config(
-        "default_profile = 'default'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
-    );
+    let (_dir, config) = common::create_temp_config(&format!(
+        "default_profile = 'default'\n[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n",
+        instance = server.uri()
+    ));
     Mock::given(method("GET"))
         .and(path("/api/now/table/sys_db_object"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": []})))
@@ -140,9 +142,10 @@ async fn import_validation_errors_are_itemized_without_record_values_or_writes()
 #[tokio::test]
 async fn import_ready_export_round_trips_without_changing_archival_export() {
     let server = MockServer::start().await;
-    let (_dir, config) = common::create_temp_config(
-        "default_profile = 'default'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
-    );
+    let (_dir, config) = common::create_temp_config(&format!(
+        "default_profile = 'default'\n[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n",
+        instance = server.uri()
+    ));
     let records = json!([{
         "sys_id": "source-id", "short_description": "Representative incident",
         "computed": "derived", "sys_tags": "tag", "comments": "journal history",

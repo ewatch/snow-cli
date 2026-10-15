@@ -27,7 +27,7 @@ snow-cli <noun> <verb> --help
 Every command supports these top-level flags:
 
 - `--profile <name>`: use a specific saved profile
-- `--instance <url>`: temporarily override the instance URL from the active profile
+- `--instance <url>`: select a different URL form of the active profile's instance; a different scheme, host, or port is refused with `INSTANCE_MISMATCH` so profile credentials are never sent to another instance (add a profile for it instead)
 - `--output <json|csv|jsonl|toon|text|auto>`: choose the stdout format; when omitted, `SNOW_CLI_OUTPUT` and then the configured `profile output` default are consulted before falling back to JSON
 - `--timeout-secs <seconds>`: override the HTTP timeout for the current command
 - `--read-only`: block commands and HTTP methods that can mutate ServiceNow

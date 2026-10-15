@@ -7,16 +7,16 @@ use predicates::prelude::*;
 use wiremock::matchers::{body_string_contains, header, method, path, path_regex, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
+fn api_key_config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
         r#"
 default_profile = "default"
 
 [profiles.default]
-instance = "https://placeholder.service-now.com"
+instance = "{instance}"
 auth_method = "api_key"
-"#,
-    )
+"#
+    ))
 }
 
 async fn mount_scope_inventory_mocks(server: &MockServer) {
@@ -164,7 +164,7 @@ async fn test_scope_inspect_basic_json() {
     let server = MockServer::start().await;
     mount_scope_count_mocks(&server).await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -195,7 +195,7 @@ async fn test_scope_inventory_platform_scope_requires_limit() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -213,7 +213,7 @@ async fn test_scope_list_classifies_results_for_partial_search() {
     let server = MockServer::start().await;
     mount_scope_list_search_mocks(&server, "incident").await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -235,7 +235,7 @@ async fn test_scope_list_matches_exact_global_scope() {
     let server = MockServer::start().await;
     mount_scope_list_search_mocks(&server, "global").await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -252,7 +252,7 @@ async fn test_scope_list_filters_by_kind() {
     let server = MockServer::start().await;
     mount_scope_list_search_mocks(&server, "incident").await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -279,7 +279,7 @@ async fn test_scope_list_text_output_groups_rows() {
     let server = MockServer::start().await;
     mount_scope_list_search_mocks(&server, "incident").await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -312,7 +312,7 @@ async fn test_scope_list_text_output_includes_optional_columns() {
     let server = MockServer::start().await;
     mount_scope_list_search_mocks(&server, "incident").await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -341,7 +341,7 @@ async fn test_scope_inventory_json() {
     let server = MockServer::start().await;
     mount_scope_inventory_mocks(&server).await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -367,7 +367,7 @@ async fn test_scope_inventory_csv() {
     let server = MockServer::start().await;
     mount_scope_inventory_mocks(&server).await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -404,7 +404,7 @@ async fn test_scope_inspect_unknown_scope_fails() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -456,7 +456,7 @@ async fn test_scope_move_file_dry_run_returns_preview() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -510,7 +510,7 @@ async fn test_scope_move_file_dry_run_parses_real_script_wrapper() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -564,7 +564,7 @@ async fn test_scope_move_file_requires_yes_for_risky_records() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -668,7 +668,7 @@ async fn test_scope_move_file_custom_scope_to_custom_scope_dry_run() {
 
     mount_move_file_mocks(&server, "move-c2c-session", "move-c2c-gck", &result_json).await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -738,7 +738,7 @@ async fn test_scope_move_file_global_to_named_scope_dry_run() {
 
     mount_move_file_mocks(&server, "move-g2n-session", "move-g2n-gck", &result_json).await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -808,7 +808,7 @@ async fn test_scope_move_file_named_to_global_scope_dry_run() {
 
     mount_move_file_mocks(&server, "move-n2g-session", "move-n2g-gck", &result_json).await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -853,7 +853,7 @@ async fn test_scope_move_file_global_to_global_rejected() {
 
     mount_move_file_mocks(&server, "move-g2g-session", "move-g2g-gck", &result_json).await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)

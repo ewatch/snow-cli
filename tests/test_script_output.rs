@@ -32,9 +32,10 @@ async fn script_output_does_not_echo_transport_credentials() {
         )
         .mount(&server)
         .await;
-    let (_dir, config) = common::create_temp_config(
-        "default_profile='default'\n[profiles.default]\ninstance='https://placeholder.service-now.com'\nauth_method='api_key'\n",
-    );
+    let (_dir, config) = common::create_temp_config(&format!(
+        "default_profile='default'\n[profiles.default]\ninstance='{instance}'\nauth_method='api_key'\n",
+        instance = server.uri()
+    ));
     for endpoint in ["/sys.scripts.do", "/api/x_test/run"] {
         for format in ["json", "jsonl", "toon", "auto", "text", "csv"] {
             let assertion = cargo_bin_cmd!("snow-cli")
@@ -97,9 +98,10 @@ async fn script_execution_log_is_structured_and_text_is_preserved() {
         .respond_with(ResponseTemplate::new(200).set_body_string(response))
         .mount(&server)
         .await;
-    let (_dir, config) = common::create_temp_config(
-        "default_profile = 'default'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
-    );
+    let (_dir, config) = common::create_temp_config(&format!(
+        "default_profile = 'default'\n[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n",
+        instance = server.uri()
+    ));
     let expected = json!({"output": ["a", "{\"ok\":true}", "<foo>bar</foo>", ""], "duration_ms":6, "scope":"global", "history_sys_id":history, "errors":[]});
     for format in ["json", "jsonl", "toon", "auto", "text", "csv"] {
         let assertion = cargo_bin_cmd!("snow-cli")

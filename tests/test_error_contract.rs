@@ -18,10 +18,10 @@ use wiremock::{
     matchers::{method, path},
 };
 
-fn config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
-        "default_profile = 'default'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
-    )
+fn config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
+        "default_profile = 'default'\n[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n"
+    ))
 }
 
 fn assert_contract(output: &std::process::Output, code: &str, class: &str, retry: &str, exit: i32) {
@@ -41,8 +41,8 @@ fn assert_contract(output: &std::process::Output, code: &str, class: &str, retry
 
 #[tokio::test]
 async fn local_errors_are_classified_without_payloads_or_network_calls() {
-    let (dir, config) = config();
     let server = MockServer::start().await;
+    let (dir, config) = config(&server.uri());
     let missing = dir.path().join("private-path-secret.json");
     for binary in BINARIES {
         for format in FORMATS {
@@ -171,9 +171,9 @@ async fn malformed_configuration_never_echoes_toml_excerpts() {
 
 #[tokio::test]
 async fn missing_credentials_are_auth_errors_not_internal_errors() {
-    let (_dir, config) = config();
     let (_keychain_dir, store) = common::create_temp_keychain_store();
     let server = MockServer::start().await;
+    let (_dir, config) = config(&server.uri());
     for binary in BINARIES {
         let output = command(binary, &config, &server.uri(), "json")
             .env_remove("SNOW_CLI_API_TOKEN")
@@ -191,7 +191,6 @@ async fn missing_credentials_are_auth_errors_not_internal_errors() {
 
 #[tokio::test]
 async fn status_codes_have_retry_guidance_in_every_format() {
-    let (_dir, config) = config();
     for (status, code, retry, exit) in [
         (400, "BAD_REQUEST", "never", 5),
         (401, "UNAUTHORIZED", "never", 5),
@@ -201,6 +200,7 @@ async fn status_codes_have_retry_guidance_in_every_format() {
         (503, "SERVER_ERROR", "safe_reads_only", 5),
     ] {
         let server = MockServer::start().await;
+        let (_dir, config) = config(&server.uri());
         Mock::given(method("GET"))
             .and(path("/api/now/table/incident"))
             .respond_with(ResponseTemplate::new(status).set_body_string("private-http-body-secret"))
@@ -228,8 +228,8 @@ async fn status_codes_have_retry_guidance_in_every_format() {
 
 #[tokio::test]
 async fn transport_failure_never_includes_queries_or_request_urls() {
-    let (_dir, config) = config();
     let server = MockServer::start().await;
+    let (_dir, config) = config(&server.uri());
     Mock::given(method("GET"))
         .and(path("/api/now/table/incident"))
         .respond_with(
@@ -272,8 +272,8 @@ async fn transport_failure_never_includes_queries_or_request_urls() {
 
 #[tokio::test]
 async fn malformed_server_json_is_not_misclassified_as_local_validation() {
-    let (_dir, config) = config();
     let server = MockServer::start().await;
+    let (_dir, config) = config(&server.uri());
     Mock::given(method("GET"))
         .and(path("/api/now/table/incident"))
         .respond_with(ResponseTemplate::new(200).set_body_string("{private-response-secret"))
@@ -294,7 +294,7 @@ async fn malformed_server_json_is_not_misclassified_as_local_validation() {
 
 #[tokio::test]
 async fn policy_denial_is_non_retryable_and_precedes_config_resolution() {
-    let (dir, _) = config();
+    let (dir, _) = config("http://127.0.0.1:1");
     let output = command(
         "snow-cli",
         &dir.path().join("missing.toml"),
@@ -311,8 +311,8 @@ async fn policy_denial_is_non_retryable_and_precedes_config_resolution() {
 
 #[tokio::test]
 async fn safe_server_envelopes_do_not_leak_query_or_script_diagnostics() {
-    let (_dir, config) = config();
     let server = MockServer::start().await;
+    let (_dir, config) = config(&server.uri());
     Mock::given(method("GET")).and(path("/api/now/table/incident"))
         .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({"error": {
             "message": "Invalid request parameters",
@@ -338,8 +338,8 @@ async fn safe_server_envelopes_do_not_leak_query_or_script_diagnostics() {
 
 #[tokio::test]
 async fn failed_mutations_never_receive_unconditional_retry_permission() {
-    let (_dir, config) = config();
     let server = MockServer::start().await;
+    let (_dir, config) = config(&server.uri());
     Mock::given(method("POST")).and(path("/api/now/import/u_import"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": [
             {"status": "inserted", "sys_id": "created123"}, {"status": "error", "error_message": "bad row"}

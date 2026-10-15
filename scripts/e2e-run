@@ -47,6 +47,11 @@ usage() {
     '      built automatically if missing).' \
     '  SNOW_E2E_HARNESS, SNOW_E2E_MODEL' \
     '      Recorded in each result for provenance (default: this script name).' \
+    '  SNOW_E2E_REDACT_IDENTITY=1' \
+    '      Also replace the instance URL with <instance> and the username' \
+    '      (as a whole value or word) with <user> in artifacts. Use when' \
+    '      publishing artifacts, e.g. under artifacts/release/. By default' \
+    '      both stay visible; credentials are always redacted.' \
     '  SNOW_E2E_ARTIFACTS_DIR' \
     '      Override the exact artifact output directory (primarily for tests).' \
     '' \
@@ -232,11 +237,16 @@ fi
 # under structured token/cookie keys, including JSON encoded inside stdout or
 # stderr strings, are redacted everywhere else in the document too. The text
 # fallback covers common key/value and header forms when output is not JSON.
+# Discovered values shorter than the minimum are only redacted structurally,
+# never as substrings, so short values cannot mangle unrelated words.
+# The instance URL and username are not credentials: they stay visible unless
+# SNOW_E2E_REDACT_IDENTITY=1, which replaces them with placeholders.
 sanitize_artifact_json() {
   local artifact_json=$1
   jq \
     --arg pw "${SNOW_E2E_PASSWORD:-}" --arg un "${SNOW_E2E_USERNAME:-}" \
     --arg url "${SNOW_E2E_INSTANCE_URL:-}" --arg basic "$basic_auth_token" \
+    --arg strict "${SNOW_E2E_REDACT_IDENTITY:-0}" \
     '
     def sensitive_key:
       ascii_downcase | gsub("[^a-z0-9]"; "") as $key
@@ -252,10 +262,19 @@ sanitize_artifact_json() {
     def discovered_secrets:
       [documents | .. | objects | to_entries[]
         | select(.key | sensitive_key) | .value | .. | strings
-        | select(length > 0 and . != "[REDACTED]")] | unique;
+        | select(length >= 8 and . != "[REDACTED]")] | unique;
     def replace_literals($secrets):
       reduce $secrets[] as $secret (.;
         if $secret == "" then . else split($secret) | join("[REDACTED]") end);
+    def regex_escape: gsub("(?<c>[.^$*+?()\\[\\]{}|\\\\/-])"; "\\\(.c)");
+    def redact_identity:
+      if $strict != "1" then .
+      else
+        (if $url == "" then . else split($url | rtrimstr("/")) | join("<instance>") end)
+        | (if $un == "" then .
+           else gsub("(?<![A-Za-z0-9_.@-])" + ($un | regex_escape) + "(?![A-Za-z0-9_.@-])"; "<user>")
+           end)
+      end;
     def redact_labeled_text:
       gsub(
         "(?im)(?<prefix>^(?:authorization|proxy-authorization|cookie|set-cookie)[[:space:]]*:[[:space:]]*)[^\\r\\n]*";
@@ -279,11 +298,11 @@ sanitize_artifact_json() {
         | if (($decoded | type) == "object" or ($decoded | type) == "array") then
             $decoded | scrub($secrets) | tojson
           else
-            $text | replace_literals($secrets) | redact_labeled_text
+            $text | replace_literals($secrets) | redact_labeled_text | redact_identity
           end
       else .
       end;
-    ([$pw, $un, $url, $basic] | map(select(length > 0))) as $known_secrets
+    ([$pw, $basic] | map(select(length > 0))) as $known_secrets
     | (discovered_secrets + $known_secrets | unique | sort_by(length) | reverse) as $secrets
     | scrub($secrets)
     ' <<<"$artifact_json"

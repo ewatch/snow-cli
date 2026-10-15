@@ -16,16 +16,16 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const ADMIN_SYS_ID: &str = "6816f79cc0a8016401c5a33be04be441";
 
-fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
+fn api_key_config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
         r#"
 default_profile = "default"
 
 [profiles.default]
-instance = "https://placeholder.service-now.com"
+instance = "{instance}"
 auth_method = "api_key"
-"#,
-    )
+"#
+    ))
 }
 
 async fn mount_current_user(server: &MockServer, expected_calls: u64) {
@@ -62,7 +62,7 @@ fn stdout_json(output: &std::process::Output) -> serde_json::Value {
 
 #[test]
 fn test_auth_status_reports_credentials_present_without_server_check() {
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config("http://127.0.0.1:1");
 
     // No server: without --verify, status must not make a request.
     let assert = cargo_bin_cmd!("snow-cli")
@@ -84,7 +84,7 @@ fn test_auth_status_reports_credentials_present_without_server_check() {
 async fn test_auth_status_verify_succeeds_with_accepted_credentials() {
     let server = MockServer::start().await;
     mount_current_user(&server, 1).await;
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     let assert = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -103,7 +103,7 @@ async fn test_auth_status_verify_succeeds_with_accepted_credentials() {
 async fn test_auth_status_verify_fails_on_rejected_credentials() {
     let server = MockServer::start().await;
     mount_unauthorized(&server).await;
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     let assert = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -123,7 +123,7 @@ async fn test_auth_status_verify_fails_on_rejected_credentials() {
 
 #[test]
 fn test_auth_status_verify_fails_on_network_error() {
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config("http://127.0.0.1:1");
 
     let assert = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -157,15 +157,16 @@ async fn test_auth_status_browser_session_uses_cookie_env_var() {
         .expect(1)
         .mount(&server)
         .await;
-    let (_dir, config_path) = common::create_temp_config(
+    let (_dir, config_path) = common::create_temp_config(&format!(
         r#"
 default_profile = "sso"
 
 [profiles.sso]
-instance = "https://placeholder.service-now.com"
+instance = "{instance}"
 auth_method = "browser_session"
 "#,
-    );
+        instance = server.uri()
+    ));
 
     let assert = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -183,7 +184,7 @@ auth_method = "browser_session"
 
 #[test]
 fn test_auth_status_honours_output_format() {
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config("http://127.0.0.1:1");
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -205,7 +206,7 @@ async fn test_auth_status_verify_reports_identity_build_and_latency() {
         })))
         .mount(&server)
         .await;
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     // Verification is read-only, so it must behave the same in snow-cli-ro.
     for binary in ["snow-cli", "snow-cli-ro"] {
@@ -242,7 +243,7 @@ async fn test_auth_status_verify_tolerates_unreadable_build_properties() {
         })))
         .mount(&server)
         .await;
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     let assert = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)

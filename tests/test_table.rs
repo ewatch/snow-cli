@@ -17,16 +17,16 @@ use wiremock::matchers::{
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Create a temp config file for api_key auth and return (dir, config_path).
-fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
+fn api_key_config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
         r#"
 default_profile = "default"
 
 [profiles.default]
-instance = "https://placeholder.service-now.com"
+instance = "{instance}"
 auth_method = "api_key"
-"#,
-    )
+"#
+    ))
 }
 
 // --- table list ---
@@ -48,7 +48,7 @@ async fn test_table_list_json_output() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -71,7 +71,7 @@ async fn test_table_list_piped_stderr_has_plain_tracing_output() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let output = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -108,7 +108,7 @@ async fn test_table_list_previews_long_fields_with_preview_flag() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let run = |full: bool| {
         let mut command = cargo_bin_cmd!("snow-cli");
         command
@@ -156,7 +156,7 @@ async fn test_table_list_explicit_json_is_lossless_without_full_or_preview() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let output = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -195,7 +195,7 @@ async fn test_table_list_csv_output_is_lossless_for_long_fields() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let output = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -235,7 +235,7 @@ async fn test_table_list_csv_output() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -273,7 +273,7 @@ async fn test_table_list_jsonl_output() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     let assert = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -321,7 +321,7 @@ async fn test_table_list_jsonl_preview_uses_metadata_envelope() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let output = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -354,7 +354,7 @@ async fn test_table_list_jsonl_preview_uses_metadata_envelope() {
 
 #[tokio::test]
 async fn test_table_list_preview_rejects_csv_output() {
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config("http://127.0.0.1:9");
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -392,7 +392,7 @@ async fn test_table_list_toon_output() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -434,7 +434,7 @@ async fn test_table_list_with_query_params() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -478,7 +478,7 @@ async fn test_table_list_offset_returns_next_page_and_cursor() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let output = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -525,7 +525,7 @@ async fn test_table_list_offset_at_end_has_no_next_page() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let output = cargo_bin_cmd!("snow-cli-ro")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -568,7 +568,7 @@ async fn test_table_list_all_can_start_at_offset() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let output = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -615,7 +615,7 @@ async fn test_table_list_order_by_descending_without_query() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -638,7 +638,7 @@ async fn test_table_list_order_by_descending_without_query() {
 
 #[tokio::test]
 async fn test_table_list_invalid_order_by_is_rejected() {
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config("http://localhost:1");
 
     // No mock needed: the sort spec is rejected before any HTTP request.
     cargo_bin_cmd!("snow-cli")
@@ -674,7 +674,7 @@ async fn test_table_list_invalid_table_reports_servicenow_message_only() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     let assert = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -712,7 +712,7 @@ async fn test_table_list_empty_result() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -751,7 +751,7 @@ async fn test_table_list_default_is_bounded_with_compact_fields() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -795,7 +795,7 @@ async fn test_table_list_all_fetches_every_record() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -833,7 +833,7 @@ async fn test_table_list_fields_star_requests_all_fields() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -871,7 +871,7 @@ async fn test_table_list_404_error() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -897,7 +897,7 @@ async fn test_table_get_single_record() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -932,7 +932,7 @@ async fn test_table_get_with_fields() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -967,7 +967,7 @@ async fn test_table_get_previews_long_fields_with_preview_flag() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let run = |full: bool| {
         let mut command = cargo_bin_cmd!("snow-cli");
         command
@@ -1019,7 +1019,7 @@ async fn test_table_get_explicit_json_detail_is_lossless_without_full_or_preview
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let output = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -1066,7 +1066,7 @@ async fn test_table_create_with_data_flag() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1104,7 +1104,7 @@ async fn test_table_create_from_stdin() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1140,7 +1140,7 @@ async fn test_table_update_with_data_flag() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1177,7 +1177,7 @@ async fn test_table_delete_with_yes() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1208,7 +1208,7 @@ async fn test_table_list_server_error() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1221,7 +1221,7 @@ async fn test_table_list_server_error() {
 
 #[tokio::test]
 async fn test_table_create_invalid_json() {
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config("http://localhost:1");
 
     // No mock needed — invalid JSON is caught before the HTTP request
     cargo_bin_cmd!("snow-cli")
@@ -1268,7 +1268,7 @@ async fn test_table_schema_compact() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1322,7 +1322,7 @@ async fn test_table_schema_extended() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1393,7 +1393,7 @@ async fn test_table_schema_includes_inherited_columns_by_default() {
             .mount(&server)
             .await;
 
-        let (_dir, config_path) = api_key_config();
+        let (_dir, config_path) = api_key_config(&server.uri());
 
         let uri = server.uri();
         let mut args = vec!["--instance", uri.as_str(), "table", "schema", "incident"];
@@ -1485,7 +1485,7 @@ async fn test_table_schema_handles_link_object_internal_type() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1517,7 +1517,7 @@ async fn test_table_schema_csv_output() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1555,7 +1555,7 @@ async fn test_table_stats_ungrouped_count() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1600,7 +1600,7 @@ async fn test_table_stats_grouped_with_aggregates() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     let assert = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1652,7 +1652,7 @@ async fn test_table_stats_grouped_csv_output() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1676,7 +1676,7 @@ async fn test_table_stats_grouped_csv_output() {
 
 #[tokio::test]
 async fn test_table_stats_invalid_table_name() {
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config("http://localhost:1");
 
     // No mock needed — the invalid table name is rejected before the HTTP request.
     cargo_bin_cmd!("snow-cli")
@@ -1705,7 +1705,7 @@ async fn test_table_schema_empty_result() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -1720,4 +1720,26 @@ async fn test_table_schema_empty_result() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No columns found"));
+}
+
+#[tokio::test]
+async fn test_instance_override_to_foreign_origin_never_receives_credentials() {
+    let profile_server = MockServer::start().await;
+    let foreign = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&foreign)
+        .await;
+
+    let (_dir, config_path) = api_key_config(&profile_server.uri());
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args(["--instance", &foreign.uri(), "table", "list", "incident"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("INSTANCE_MISMATCH"))
+        .stderr(predicate::str::contains("test-api-token").not());
 }

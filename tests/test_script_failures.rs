@@ -42,9 +42,10 @@ async fn script_failures_exit_nonzero_with_safe_structured_stderr() {
                 "<HTML><BODY><pre>{marker}: private customer data g_ck=csrf-secret\n\tat com.glide.Script.run(Script.java:1)\n</pre>*** Script: {{\"ok\":true}}</BODY></HTML>"
             )))
             .expect(1).mount(&server).await;
-        let (_dir, config) = common::create_temp_config(
-            "default_profile = 'default'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
-        );
+        let (_dir, config) = common::create_temp_config(&format!(
+            "default_profile = 'default'\n[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n",
+            instance = server.uri()
+        ));
         let assertion = cargo_bin_cmd!("snow-cli")
             .env("SNOW_CLI_CONFIG", config)
             .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -102,9 +103,10 @@ async fn printed_error_words_and_json_data_are_not_execution_failures() {
             )
             .mount(&server)
             .await;
-        let (_dir, config) = common::create_temp_config(
-            "default_profile = 'default'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
-        );
+        let (_dir, config) = common::create_temp_config(&format!(
+            "default_profile = 'default'\n[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n",
+            instance = server.uri()
+        ));
         cargo_bin_cmd!("snow-cli")
             .env("SNOW_CLI_CONFIG", config)
             .env("SNOW_CLI_API_TOKEN", "test-api-token")

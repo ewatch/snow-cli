@@ -179,6 +179,26 @@ printf '{"ok":true}\n'
 
 #[test]
 fn artifacts_redact_structured_and_text_session_tokens_everywhere() {
+    let (fixture, result) = run_secrets_scenario(&[]);
+    assert!(result.contains("\"sys_created_by\\\":\\\"admin\\\""));
+    assert!(result.contains("https://secret-instance.example/api/now/table/incident"));
+    assert!(result.contains("sys_administrative"));
+    drop(fixture);
+}
+
+#[test]
+fn identity_redaction_mode_replaces_url_and_whole_username_only() {
+    let (fixture, result) = run_secrets_scenario(&[("SNOW_E2E_REDACT_IDENTITY", "1")]);
+    assert!(!result.contains("secret-instance.example"));
+    assert!(result.contains("<instance>/api/now/table/incident"));
+    assert!(result.contains("\"sys_created_by\\\":\\\"<user>\\\""));
+    assert!(result.contains("sys_administrative"));
+    drop(fixture);
+}
+
+/// Runs a scenario whose fake CLI emits credentials and identity values, checks
+/// that credentials never persist, and returns the per-scenario artifact.
+fn run_secrets_scenario(extra_env: &[(&str, &str)]) -> (tempfile::TempDir, String) {
     let fixture = tempfile::tempdir().unwrap();
     let fake_cli = fixture.path().join("fake-snow-cli");
     write_executable(
@@ -186,8 +206,8 @@ fn artifacts_redact_structured_and_text_session_tokens_everywhere() {
         r#"#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$SNOW_E2E_EXECUTION_LOG"
-printf '{"instance":{"g_ck":"%s","sys_id":"safe-sys-id"},"echo":"%s","sessionToken":"%s","Authorization":"Bearer %s"}\n' \
-  "$TEST_GCK" "$TEST_GCK" "$TEST_SESSION_TOKEN" "$TEST_AUTH_TOKEN"
+printf '{"instance":{"g_ck":"%s","sys_id":"safe-sys-id"},"echo":"%s","sessionToken":"%s","Authorization":"Bearer %s","sys_created_by":"%s","table":"sys_administrative","link":"%s/api/now/table/incident","lang":{"cookie":"en"},"word":"Incident sent"}\n' \
+  "$TEST_GCK" "$TEST_GCK" "$TEST_SESSION_TOKEN" "$TEST_AUTH_TOKEN" "$SNOW_E2E_USERNAME" "$SNOW_E2E_INSTANCE_URL"
 printf 'g_ck=%s X-UserToken: %s repeated=%s\nAuthorization: Bearer %s\nProxy-Authorization: Basic %s\n' \
   "$TEST_TEXT_GCK" "$TEST_HEADER_TOKEN" "$TEST_GCK" "$TEST_AUTH_TOKEN" "$TEST_PROXY_TOKEN" >&2
 "#,
@@ -220,13 +240,21 @@ expectation = "The generated session token $TEST_SESSION_TOKEN is never persiste
         ("TEST_ARGV_TOKEN", "argv-token-secret"),
         ("TEST_AUTH_TOKEN", "authorization-token-secret"),
         ("TEST_PROXY_TOKEN", "proxy-authorization-secret"),
-        ("SNOW_E2E_USERNAME", "admin"),
         ("SNOW_E2E_PASSWORD", "admin-TopSecret"),
-        ("SNOW_E2E_INSTANCE_URL", "https://secret-instance.example"),
         ("SNOW_E2E_HARNESS", "g_ck=harness-metadata-secret"),
         ("SNOW_E2E_MODEL", "session_token=model-metadata-secret"),
     ];
-    let output = run_runner(fixture.path(), &[scenario], &secrets);
+    let identity = [
+        ("SNOW_E2E_USERNAME", "admin"),
+        ("SNOW_E2E_INSTANCE_URL", "https://secret-instance.example"),
+    ];
+    let env: Vec<_> = secrets
+        .iter()
+        .chain(identity.iter())
+        .chain(extra_env.iter())
+        .copied()
+        .collect();
+    let output = run_runner(fixture.path(), &[scenario], &env);
     assert_success(&output);
 
     let artifact_path = fixture.path().join("artifacts/artifact-secrets.json");
@@ -277,6 +305,11 @@ expectation = "The generated session token $TEST_SESSION_TOKEN is never persiste
             .iter()
             .all(|arg| !arg.as_str().unwrap().contains("secret"))
     );
+    // A short value under a sensitive key is redacted in place only, never as a
+    // substring of unrelated words.
+    assert_eq!(stdout["lang"]["cookie"], "[REDACTED]");
+    assert_eq!(stdout["word"], "Incident sent");
+    (fixture, result)
 }
 
 #[test]

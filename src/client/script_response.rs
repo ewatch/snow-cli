@@ -40,10 +40,31 @@ impl fmt::Debug for BackgroundScriptResponse {
     }
 }
 
+/// Cookie values shorter than this are never redacted. ServiceNow session and
+/// routing credentials are long opaque strings; short values (e.g. a language
+/// cookie `en`) would otherwise mangle unrelated words in script output.
+const MIN_COOKIE_REDACTION_LEN: usize = 8;
+
+/// Whether a cookie carries a session credential rather than a preference.
+fn is_credential_cookie(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    name == "jsessionid"
+        || name.starts_with("glide_session")
+        || name.starts_with("glide_user")
+        || name.starts_with("glide_sso")
+        || name.contains("token")
+}
+
 #[derive(Default)]
 pub(super) struct ScriptRedactions(Vec<Secret>);
 
 impl ScriptRedactions {
+    fn add_cookie(&mut self, name: &str, value: &str) {
+        if is_credential_cookie(name) && value.len() >= MIN_COOKIE_REDACTION_LEN {
+            self.add(value);
+        }
+    }
+
     fn add(&mut self, value: &str) {
         if !value.is_empty() {
             self.0.push(Secret::new(value.to_string()));
@@ -76,10 +97,9 @@ impl ScriptRedactions {
             .get(http::header::COOKIE)
             .and_then(|v| v.to_str().ok())
         {
-            self.add(value);
             for cookie in value.split(';') {
-                if let Some((_, value)) = cookie.trim().split_once('=') {
-                    self.add(value);
+                if let Some((name, value)) = cookie.trim().split_once('=') {
+                    self.add_cookie(name, value);
                 }
             }
         }
@@ -91,9 +111,10 @@ impl ScriptRedactions {
     pub(super) fn observe_response(&mut self, headers: &HeaderMap) {
         for cookie in headers.get_all(http::header::SET_COOKIE) {
             if let Ok(cookie) = cookie.to_str()
-                && let Some((_, value)) = cookie.split(';').next().and_then(|v| v.split_once('='))
+                && let Some((name, value)) =
+                    cookie.split(';').next().and_then(|v| v.split_once('='))
             {
-                self.add(value);
+                self.add_cookie(name, value);
             }
         }
     }
@@ -141,6 +162,32 @@ mod tests {
         assert_eq!(
             redactions.redact("session%2Bprivate\ncsrf-private\nrotated-private\nkeep this".into()),
             "<redacted>\n<redacted>\n<redacted>\nkeep this"
+        );
+    }
+
+    #[test]
+    fn preference_and_short_cookies_do_not_mangle_output() {
+        let mut redactions = ScriptRedactions::default();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Cookie",
+            "JSESSIONID=session-private; glide_preferred_language=en; glide_user_route=x"
+                .parse()
+                .unwrap(),
+        );
+        redactions.observe_request(&headers);
+        headers.insert(
+            "Set-Cookie",
+            "BIGipServerpool_dev=1234567890.12345.0000; Path=/"
+                .parse()
+                .unwrap(),
+        );
+        redactions.observe_response(&headers);
+        assert_eq!(
+            redactions.redact(
+                "Incident sent to the Event queue\nsession-private\n1234567890.12345.0000".into()
+            ),
+            "Incident sent to the Event queue\n<redacted>\n1234567890.12345.0000"
         );
     }
 }

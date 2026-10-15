@@ -9,16 +9,16 @@ use predicates::prelude::*;
 use wiremock::matchers::{body_string_contains, header, header_regex, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
+fn api_key_config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
         r#"
 default_profile = "default"
 
 [profiles.default]
-instance = "https://placeholder.service-now.com"
+instance = "{instance}"
 auth_method = "api_key"
-"#,
-    )
+"#
+    ))
 }
 
 #[tokio::test]
@@ -48,7 +48,7 @@ async fn test_attachment_list() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -99,7 +99,7 @@ async fn test_attachment_download_to_explicit_path() {
 
     let temp_dir = tempfile::tempdir().unwrap();
     let out_path = temp_dir.path().join("downloaded.txt");
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -165,7 +165,7 @@ async fn test_attachment_upload() {
     let upload_path = temp_dir.path().join("upload.txt");
     std::fs::write(&upload_path, "upload body").unwrap();
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)

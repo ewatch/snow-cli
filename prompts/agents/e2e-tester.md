@@ -14,7 +14,9 @@ unavailable; never report them as passed.
 Store evidence under `artifacts/e2e/<version>/`. For every scenario, record the
 exact command and arguments, exit code, assertion result, sanitized stdout and
 stderr, and the harness and model used. Remove credentials, instance URLs,
-sys_ids, session tokens, and unstable generated values before writing artifacts.
+sys_ids, session tokens, and unstable generated values before writing artifacts;
+run `scripts/e2e-run` with `SNOW_E2E_REDACT_IDENTITY=1` so the instance URL and
+username are replaced with `<instance>` and `<user>`.
 
 SN-Utils bridge local protocol tests are required. Live ServiceNow or
 browser-helper smoke tests are optional only when the required staging setup is

@@ -63,6 +63,9 @@ pub fn build_client_with_timeout(
     let instance_url = crate::config::profile::validate_instance_url(
         instance_override.unwrap_or(&profile.instance),
     )?;
+    if instance_override.is_some() {
+        ensure_same_instance(&profile.instance, &instance_url)?;
+    }
 
     let authenticator = if profile.auth_method == crate::config::AuthMethod::NativeSession {
         crate::auth::native_session::NativeSessionAuth::stored(profile_name, &instance_url)
@@ -83,6 +86,25 @@ pub fn build_client_with_timeout(
     )
 }
 
+/// Refuse an `--instance` override whose origin differs from the profile's.
+///
+/// Profile credentials are bound to the profile's instance; sending them to
+/// another origin would leak them (e.g. a prompt-injected `--instance`).
+fn ensure_same_instance(profile_instance: &str, target: &str) -> anyhow::Result<()> {
+    let expected = crate::config::profile::validate_instance_url(profile_instance)?;
+    let same = url::Url::parse(&expected)?.origin() == url::Url::parse(target)?.origin();
+    anyhow::ensure!(
+        same,
+        crate::config::error::ConfigError::new(
+            "INSTANCE_MISMATCH",
+            format!(
+                "--instance does not match this profile's instance ({expected}); credentials are bound to it. Add a profile for the other instance and select it with --profile."
+            ),
+        )
+    );
+    Ok(())
+}
+
 /// Default request timeout in seconds. ServiceNow table, script, and attachment
 /// endpoints can legitimately spend tens of seconds on ACL evaluation, query
 /// planning, or script execution; keep this high enough for those workflows
@@ -91,3 +113,33 @@ const DEFAULT_TIMEOUT_SECS: u64 = 90;
 
 const FORM_SCRIPT_ENDPOINT: &str = "/sys.scripts.do";
 const FORM_SCRIPT_BOOTSTRAP_PATH: &str = "/sys.scripts.modern.do";
+
+#[cfg(test)]
+mod instance_binding_tests {
+    use super::ensure_same_instance;
+
+    #[test]
+    fn same_origin_override_is_allowed() {
+        ensure_same_instance(
+            "https://dev1.service-now.com",
+            "https://DEV1.service-now.com",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn foreign_origin_override_is_refused() {
+        for target in [
+            "https://attacker.example",
+            "http://dev1.service-now.com",
+            "https://dev1.service-now.com:8443",
+            "https://dev2.service-now.com",
+        ] {
+            let error = ensure_same_instance("https://dev1.service-now.com", target).unwrap_err();
+            let config = error
+                .downcast_ref::<crate::config::error::ConfigError>()
+                .unwrap();
+            assert_eq!(config.code, "INSTANCE_MISMATCH", "{target}");
+        }
+    }
+}

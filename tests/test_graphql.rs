@@ -9,16 +9,16 @@ use predicates::prelude::*;
 use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
+fn api_key_config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
         r#"
 default_profile = "default"
 
 [profiles.default]
-instance = "https://placeholder.service-now.com"
+instance = "{instance}"
 auth_method = "api_key"
-"#,
-    )
+"#
+    ))
 }
 
 #[tokio::test]
@@ -48,7 +48,7 @@ async fn inline_query_and_variables_emit_only_graphql_data() {
         .mount(&server)
         .await;
 
-    let (_directory, config_path) = api_key_config();
+    let (_directory, config_path) = api_key_config(&server.uri());
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -88,7 +88,7 @@ async fn query_file_is_posted_with_default_empty_variables() {
     let query_directory = tempfile::tempdir().unwrap();
     let query_path = query_directory.path().join("incident.graphql");
     std::fs::write(&query_path, query).unwrap();
-    let (_config_directory, config_path) = api_key_config();
+    let (_config_directory, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -116,7 +116,7 @@ async fn query_can_be_read_from_stdin() {
         .mount(&server)
         .await;
 
-    let (_directory, config_path) = api_key_config();
+    let (_directory, config_path) = api_key_config(&server.uri());
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -136,7 +136,7 @@ async fn malformed_variables_are_rejected_without_a_request() {
         .expect(0)
         .mount(&server)
         .await;
-    let (_directory, config_path) = api_key_config();
+    let (_directory, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -166,7 +166,7 @@ async fn absent_document_is_rejected_without_a_request() {
         .expect(0)
         .mount(&server)
         .await;
-    let (_directory, config_path) = api_key_config();
+    let (_directory, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -197,7 +197,7 @@ async fn graphql_errors_are_structured_and_raw_envelope_is_suppressed() {
         .expect(1)
         .mount(&server)
         .await;
-    let (_directory, config_path) = api_key_config();
+    let (_directory, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)

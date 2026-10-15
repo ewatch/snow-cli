@@ -15,15 +15,14 @@ use wiremock::{
     matchers::{method, path},
 };
 
-fn config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
-        "default_profile = 'default'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
-    )
+fn config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
+        "default_profile = 'default'\n[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n"
+    ))
 }
 
 #[tokio::test]
 async fn list_states_formats_and_binaries() {
-    let (_dir, config) = config();
     // Unicode, CSV quoting, and fields beyond the preview threshold must survive.
     let description = format!("quoted, \"text\"\n{}END", "é".repeat(2001));
     let record = json!({"sys_id": "abc123", "description": description});
@@ -33,6 +32,7 @@ async fn list_states_formats_and_binaries() {
         ("partial", json!([record]), 3),
     ] {
         let server = MockServer::start().await;
+        let (_dir, config) = config(&server.uri());
         Mock::given(method("GET"))
             .and(path("/api/now/table/incident"))
             .respond_with(
@@ -89,7 +89,6 @@ async fn list_states_formats_and_binaries() {
 
 #[tokio::test]
 async fn detail_aggregate_and_mutation_formats() {
-    let (_dir, config) = config();
     // These classes all produce a single record, unlike the list envelope.
     for (class, verb, endpoint, args, response, expected) in [
         (
@@ -129,6 +128,7 @@ async fn detail_aggregate_and_mutation_formats() {
         ),
     ] {
         let server = MockServer::start().await;
+        let (_dir, config) = config(&server.uri());
         let runs = if class == "mutation" {
             1
         } else {
@@ -177,9 +177,9 @@ async fn detail_aggregate_and_mutation_formats() {
 
 #[tokio::test]
 async fn artifacts_are_lossless_and_summary_respects_format() {
-    let (dir, config) = config();
     let record = json!({"sys_id": "abc123", "description": "é".repeat(2001)});
     let server = MockServer::start().await;
+    let (dir, config) = config(&server.uri());
     Mock::given(method("GET"))
         .and(path("/api/now/table/incident"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": [record]})))
@@ -223,8 +223,8 @@ async fn artifacts_are_lossless_and_summary_respects_format() {
 
 #[tokio::test]
 async fn previews_are_explicit_and_diagnostics_stay_off_stdout() {
-    let (_dir, config) = config();
     let server = MockServer::start().await;
+    let (_dir, config) = config(&server.uri());
     Mock::given(method("GET"))
         .and(path("/api/now/table/incident"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": [
@@ -260,8 +260,8 @@ async fn previews_are_explicit_and_diagnostics_stay_off_stdout() {
 
 #[tokio::test]
 async fn raw_passthrough_is_an_intentional_format_exception() {
-    let (_dir, config) = config();
     let server = MockServer::start().await;
+    let (_dir, config) = config(&server.uri());
     let body = "plain response, not JSON\nsecond line";
     Mock::given(method("GET"))
         .and(path("/api/contract"))
@@ -286,7 +286,6 @@ async fn raw_passthrough_is_an_intentional_format_exception() {
 
 #[tokio::test]
 async fn errors_are_structured_on_stderr_in_every_format() {
-    let (_dir, config) = config();
     for (status, code) in [
         (403, "FORBIDDEN"),
         (404, "NOT_FOUND"),
@@ -294,6 +293,7 @@ async fn errors_are_structured_on_stderr_in_every_format() {
         (500, "SERVER_ERROR"),
     ] {
         let server = MockServer::start().await;
+        let (_dir, config) = config(&server.uri());
         Mock::given(method("GET"))
             .and(path("/api/now/table/incident"))
             .respond_with(
@@ -325,8 +325,8 @@ async fn errors_are_structured_on_stderr_in_every_format() {
 
 #[tokio::test]
 async fn timeout_has_no_result_or_credential_leak() {
-    let (_dir, config) = config();
     let server = MockServer::start().await;
+    let (_dir, config) = config(&server.uri());
     Mock::given(method("GET"))
         .and(path("/api/now/table/incident"))
         .respond_with(
@@ -352,8 +352,8 @@ async fn timeout_has_no_result_or_credential_leak() {
 
 #[tokio::test]
 async fn discovery_parse_errors_and_read_only_denial_do_not_touch_network() {
-    let (_dir, config) = config();
     let server = MockServer::start().await;
+    let (_dir, config) = config(&server.uri());
     for binary in BINARIES {
         for args in [
             vec!["--help"],
@@ -429,8 +429,8 @@ async fn discovery_parse_errors_and_read_only_denial_do_not_touch_network() {
 
 #[tokio::test]
 async fn unsupported_import_csv_never_mutates_or_emits_partial_results() {
-    let (_dir, config) = config();
     let server = MockServer::start().await;
+    let (_dir, config) = config(&server.uri());
     for allow in [false, true] {
         for payload in [None, Some("{}"), Some("not JSON")] {
             let mut cmd = command("snow-cli", &config, &server.uri(), "csv");
@@ -464,8 +464,8 @@ async fn unsupported_import_csv_never_mutates_or_emits_partial_results() {
 
 #[tokio::test]
 async fn import_partial_failure_keeps_results_and_requires_explicit_acceptance() {
-    let (_dir, config) = config();
     let server = MockServer::start().await;
+    let (_dir, config) = config(&server.uri());
     Mock::given(method("POST")).and(path("/api/now/import/u_contract"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result": [
             {"status": "inserted", "sys_id": "abc123"}, {"status": "error", "error_message": "bad row"}

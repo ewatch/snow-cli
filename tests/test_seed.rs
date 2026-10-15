@@ -7,16 +7,16 @@ use predicates::prelude::*;
 use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
+fn api_key_config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
         r#"
 default_profile = "default"
 
 [profiles.default]
-instance = "https://placeholder.service-now.com"
+instance = "{instance}"
 auth_method = "api_key"
-"#,
-    )
+"#
+    ))
 }
 
 #[tokio::test]
@@ -58,7 +58,7 @@ async fn seed_apply_tracks_records_and_cleanup_deletes_in_reverse_order() {
         .mount(&server)
         .await;
 
-    let (dir, config_path) = api_key_config();
+    let (dir, config_path) = api_key_config(&server.uri());
     let spec_path = dir.path().join("seed.json");
     std::fs::write(
         &spec_path,
@@ -122,7 +122,7 @@ async fn seed_apply_tracks_records_and_cleanup_deletes_in_reverse_order() {
 
 #[tokio::test]
 async fn seed_apply_dry_run_does_not_require_credentials_or_network() {
-    let (dir, config_path) = api_key_config();
+    let (dir, config_path) = api_key_config("http://127.0.0.1:1");
     let spec_path = dir.path().join("seed.json");
     std::fs::write(
         &spec_path,
