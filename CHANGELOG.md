@@ -7,6 +7,20 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-15
+
+### Security
+
+- `--instance` no longer sends a profile's credentials to another instance. An override must match the profile's scheme, host, and port; otherwise the command fails with `INSTANCE_MISMATCH` (config class, exit 2) before any credential is read. Previously the stored password or token was sent to any URL that passed shape validation, so a prompt-injected `--instance` could leak it. **Behavior change:** to use another instance, add a profile for it and select it with `--profile`.
+
+### Fixed
+
+- `script run` output no longer shows `<redacted>` inside ordinary words. Redaction removed every cookie value as a substring, so short preference cookies (for example a language cookie `en`) turned "Incident" into `Incid<redacted>t`. Only session and token cookies of at least 8 characters are now redacted; the password, `Authorization` header, and `X-UserToken` are still always redacted.
+
+### Changed
+
+- E2E artifacts keep the instance URL and username visible by default and no longer redact them inside other words (`sys_[REDACTED]istrative`). Credentials are still always redacted. Set `SNOW_E2E_REDACT_IDENTITY=1` to replace them with `<instance>` and `<user>` for published artifacts; the release E2E tester uses it.
+
 ## [0.9.0] - 2026-10-15
 
 ### Added
