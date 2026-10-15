@@ -47,6 +47,11 @@ usage() {
     '      built automatically if missing).' \
     '  SNOW_E2E_HARNESS, SNOW_E2E_MODEL' \
     '      Recorded in each result for provenance (default: this script name).' \
+    '  SNOW_E2E_REAL_KEYCHAIN=1' \
+    '      Use the real OS keychain instead of the per-run file keychain.' \
+    '      Exercises the macOS/OS keychain path, may show keychain prompts,' \
+    '      and skips scenarios tagged requires = ["isolated-keychain"]' \
+    '      (now-sdk alias store writes that cannot be undone).' \
     '  SNOW_E2E_REDACT_IDENTITY=1' \
     '      Also replace the instance URL with <instance> and the username' \
     '      (as a whole value or word) with <user> in artifacts. Use when' \
@@ -55,9 +60,10 @@ usage() {
     '  SNOW_E2E_ARTIFACTS_DIR' \
     '      Override the exact artifact output directory (primarily for tests).' \
     '' \
-    'Every run gets an isolated SNOW_CLI_CONFIG (a fresh temp file), so' \
-    'scenarios never touch your real profiles or OS keychain entries under' \
-    'your normal profile names — see the "Isolation" section of the README.' \
+    'Every run gets an isolated SNOW_CLI_CONFIG and, unless' \
+    'SNOW_E2E_REAL_KEYCHAIN=1, an isolated file keychain (fresh temp files),' \
+    'so scenarios never touch your real profiles, keychain entries, or now-sdk' \
+    'aliases — see the "Isolation" section of the README.' \
     '' \
     'Results are written to artifacts/e2e/<version>/. Exit status is nonzero' \
     'if any scenario FAILED (skipped scenarios do not fail the run).'
@@ -88,11 +94,19 @@ version=$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' Cargo.toml)
 artifacts_dir=${SNOW_E2E_ARTIFACTS_DIR:-"$repo_root/artifacts/e2e/$version"}
 mkdir -p "$artifacts_dir"
 
-# Isolate every run from the caller's real profiles/keychain entries. Scratch
-# dir is removed on exit; scenarios that create profiles named "e2e-scenario"
-# never touch anything persistent.
+# Isolate every run from the caller's real profiles and keychain. The scratch
+# dir is removed on exit. By default snow-cli's file keychain lives in it too,
+# so credentials and the shared now-sdk alias store (keychain service
+# "ServiceNow", account "now-sdk") are never written to the OS keychain and no
+# keychain prompt can stall the run. SNOW_E2E_REAL_KEYCHAIN=1 opts back in.
 scratch_dir=$(mktemp -d "${TMPDIR:-/tmp}/snow-cli-e2e.XXXXXX")
 export SNOW_CLI_CONFIG="$scratch_dir/config.toml"
+if [[ ${SNOW_E2E_REAL_KEYCHAIN:-0} == "1" ]]; then
+  unset SNOW_CLI_TEST_KEYCHAIN_STORE SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN
+else
+  export SNOW_CLI_TEST_KEYCHAIN_STORE="$scratch_dir/keychain.json"
+  export SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN=1
+fi
 
 # SN-Utils bridge harness (scripts/e2e-snu-harness): a headless-browser
 # process that drives the real SN-Utils extension so `sn-utils-bridge`
@@ -394,6 +408,11 @@ for file in "${scenario_files[@]}"; do
       credentials)
         if [[ -z ${SNOW_E2E_INSTANCE_URL:-} || -z ${SNOW_E2E_USERNAME:-} || -z ${SNOW_E2E_PASSWORD:-} ]]; then
           skip_reason="missing credentials (SNOW_E2E_INSTANCE_URL/SNOW_E2E_USERNAME/SNOW_E2E_PASSWORD)"
+        fi
+        ;;
+      isolated-keychain)
+        if [[ ${SNOW_E2E_REAL_KEYCHAIN:-0} == "1" ]]; then
+          skip_reason="writes the shared now-sdk alias store, which cannot be restored on the real keychain (unset SNOW_E2E_REAL_KEYCHAIN)"
         fi
         ;;
       sn-utils-bridge)

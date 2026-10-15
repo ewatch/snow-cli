@@ -4,9 +4,10 @@ requires = ["credentials"]
 
 # NOTE: unlike other scenarios, the command under test is itself the login. It
 # runs as a `shell` step so the password can be piped via stdin (never passed as
-# an argv value). This writes a real OS keychain entry under the `e2e-scenario`
-# profile name; cleanup logs out and removes the profile (there is no keychain
-# sandbox — see tests/e2e/README.md "Isolation").
+# an argv value). By default this writes to the per-run file keychain; with
+# SNOW_E2E_REAL_KEYCHAIN=1 it writes a real OS keychain entry under the
+# `e2e-scenario` profile name. Cleanup logs out and removes the profile either
+# way (see tests/e2e/README.md "Isolation").
 
 [[setup]]
 description = "Create the scenario profile (no credentials stored yet)"

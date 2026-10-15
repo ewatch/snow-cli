@@ -86,6 +86,7 @@ allow_failure = true   # cleanup steps default to allow_failure = true
 | `sn-utils-bridge` | `SNOW_E2E_SN_UTILS=1`. |
 | `native-session` | `SNOW_E2E_NATIVE_SESSION=1`, after confirming Basic native-UI login and all three pickers are supported. |
 | `domain-separation` | `SNOW_E2E_DOMAIN_SEPARATION=1`, on a domain-separated instance with readable relationship tables. |
+| `isolated-keychain` | The default per-run file keychain; skipped when `SNOW_E2E_REAL_KEYCHAIN=1`. For scenarios whose keychain writes cannot be undone (see "Isolation"). |
 
 An unknown tag is treated as unmet (the scenario is skipped, not silently
 run). A scenario can list multiple tags; all must be satisfied.
@@ -193,9 +194,21 @@ scenario, and the runner's exit trap terminates the browser harness and the
 isolated broker. This ordering is intentional: auto-starting a stopped broker
 does not recreate the `/token` captured at harness startup.
 
-This does **not** sandbox the OS keychain: `auth login` still writes a real
-keychain entry under the scenario's profile name. Cleanup best-effort-removes
-it via `profile remove`, but there's no keychain sandbox — see "known gaps".
+The keychain is isolated too. By default the runner points snow-cli's file
+keychain (`SNOW_CLI_TEST_KEYCHAIN_STORE` with
+`SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN=1`) at a file in the same scratch
+directory. Credentials from `auth login`, OAuth tokens, and the now-sdk alias
+store (keychain service `ServiceNow`, account `now-sdk`, which also holds the
+user's own now-sdk aliases) are written there and deleted with it. No OS
+keychain prompt can stall a run. The file holds plaintext credentials only for
+the length of the run, inside a `mktemp -d` directory readable only by you.
+
+Set `SNOW_E2E_REAL_KEYCHAIN=1` to exercise the real OS keychain instead. In
+that mode `auth login` writes real keychain entries under the scenario's
+profile name (cleanup removes them via `profile remove`), and scenarios tagged
+`requires = ["isolated-keychain"]` are skipped. Those are `profile sdk export`
+and `profile sdk import`: their aliases would land in the user's real now-sdk
+store, and snow-cli has no command to remove an alias again.
 
 ## Known gaps
 
