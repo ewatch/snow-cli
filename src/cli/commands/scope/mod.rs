@@ -30,6 +30,9 @@ pub async fn handle(
             kind,
             show_source_table,
             show_sys_id,
+            limit,
+            offset,
+            all,
         } => {
             handle_list(
                 profile,
@@ -38,9 +41,12 @@ pub async fn handle(
                 timeout_secs,
                 search.as_ref(),
                 &kind,
-                ScopeListTextOptions {
-                    show_source_table,
-                    show_sys_id,
+                ScopeListView {
+                    window: ScopeListWindow::new(limit, offset, all),
+                    text: ScopeListTextOptions {
+                        show_source_table,
+                        show_sys_id,
+                    },
                 },
             )
             .await

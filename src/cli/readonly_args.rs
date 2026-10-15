@@ -405,6 +405,18 @@ pub enum ReadOnlyScopeCommands {
         /// Include the sys_id column in text output
         #[arg(long)]
         show_sys_id: bool,
+
+        /// Maximum number of rows to return (default: 20)
+        #[arg(long, conflicts_with = "all")]
+        limit: Option<usize>,
+
+        /// Skip this many matching rows (default: 0)
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+
+        /// Return every matching row instead of the bounded default
+        #[arg(long)]
+        all: bool,
     },
 
     /// Inspect scope metadata and artifact counts
@@ -932,11 +944,17 @@ impl ReadOnlyScopeCommands {
                 kind,
                 show_source_table,
                 show_sys_id,
+                limit,
+                offset,
+                all,
             } => ScopeCommands::List {
                 search,
                 kind,
                 show_source_table,
                 show_sys_id,
+                limit,
+                offset,
+                all,
             },
             Self::Inspect {
                 scope,

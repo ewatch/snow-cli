@@ -21,6 +21,13 @@ pub(super) struct ScopeListTextOptions {
     pub(super) show_sys_id: bool,
 }
 
+/// How `scope list` presents matching rows: which page, and text columns.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ScopeListView {
+    pub(super) window: ScopeListWindow,
+    pub(super) text: ScopeListTextOptions,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct MoveFileOutput {
     pub(super) ok: bool,
@@ -87,9 +94,53 @@ pub(super) struct ScopeListOutput {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) kind_filter: Vec<String>,
     pub(super) counts: ScopeListCounts,
+    pub(super) offset: usize,
+    pub(super) returned: usize,
+    pub(super) truncated: bool,
+    pub(super) next_offset: Option<usize>,
     pub(super) rows: Vec<ScopeListRow>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) warnings: Vec<String>,
+}
+
+/// Default number of `scope list` rows. A PDI has over 2,000 scopes, store
+/// apps, and plugins (about 400 KB of JSON), too much for an agent's context.
+const DEFAULT_SCOPE_LIST_LIMIT: usize = 20;
+
+/// Which slice of the merged, sorted scope rows to return.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ScopeListWindow {
+    offset: usize,
+    limit: Option<usize>,
+}
+
+impl ScopeListWindow {
+    pub(super) fn new(limit: Option<usize>, offset: usize, all: bool) -> Self {
+        let limit = if all {
+            None
+        } else {
+            Some(limit.unwrap_or(DEFAULT_SCOPE_LIST_LIMIT))
+        };
+        Self { offset, limit }
+    }
+}
+
+impl ScopeListOutput {
+    /// Keeps only the requested window of rows. `counts` still describe every
+    /// matching row, so `counts.total` is the paging total.
+    pub(super) fn apply_window(&mut self, window: ScopeListWindow) {
+        let total = self.rows.len();
+        let start = window.offset.min(total);
+        let end = window
+            .limit
+            .map_or(total, |limit| start.saturating_add(limit).min(total));
+        self.rows.truncate(end);
+        self.rows.drain(..start);
+        self.offset = window.offset;
+        self.returned = self.rows.len();
+        self.truncated = end < total;
+        self.next_offset = self.truncated.then_some(end);
+    }
 }
 
 #[derive(Debug, serde::Serialize)]

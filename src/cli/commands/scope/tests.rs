@@ -217,3 +217,58 @@ fn test_build_move_file_script_limits_records_to_sys_metadata_tables() {
     assert!(script.contains("new GlideRecord('sys_db_object')"));
     assert!(script.contains("getValue('super_class')"));
 }
+
+fn scope_list_output(row_count: usize) -> ScopeListOutput {
+    let rows = (0..row_count)
+        .map(|index| ScopeListRow {
+            kind: "custom".to_string(),
+            scope: format!("x_app_{index:02}"),
+            name: format!("App {index}"),
+            version: String::new(),
+            identifier: String::new(),
+            source_table: "sys_scope".to_string(),
+            sys_id: index.to_string(),
+        })
+        .collect::<Vec<_>>();
+    ScopeListOutput {
+        search: None,
+        kind_filter: Vec::new(),
+        counts: ScopeListCounts::from_rows(&rows),
+        offset: 0,
+        returned: rows.len(),
+        truncated: false,
+        next_offset: None,
+        rows,
+        warnings: Vec::new(),
+    }
+}
+
+#[test]
+fn test_scope_list_window_defaults_to_bounded_page_with_full_counts() {
+    let mut output = scope_list_output(25);
+    output.apply_window(ScopeListWindow::new(None, 0, false));
+    assert_eq!(output.returned, 20);
+    assert_eq!(output.counts.total, 25);
+    assert!(output.truncated);
+    assert_eq!(output.next_offset, Some(20));
+
+    let mut output = scope_list_output(25);
+    output.apply_window(ScopeListWindow::new(None, 20, false));
+    assert_eq!(output.rows[0].scope, "x_app_20");
+    assert_eq!(output.returned, 5);
+    assert!(!output.truncated);
+    assert_eq!(output.next_offset, None);
+}
+
+#[test]
+fn test_scope_list_window_all_and_out_of_range_offset() {
+    let mut output = scope_list_output(25);
+    output.apply_window(ScopeListWindow::new(None, 0, true));
+    assert_eq!(output.returned, 25);
+    assert!(!output.truncated);
+
+    let mut output = scope_list_output(3);
+    output.apply_window(ScopeListWindow::new(Some(2), 10, false));
+    assert_eq!(output.returned, 0);
+    assert_eq!(output.next_offset, None);
+}
