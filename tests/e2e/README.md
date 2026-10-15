@@ -250,8 +250,8 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
   don't appear in `--help` output, so the gate can't require a scenario for
   them. Unhide + add a scenario together when a hidden command ships.
 - **Artifact redaction is structural and conservative, but not a publication
-  guarantee.** `scripts/e2e-run` redacts the known `SNOW_E2E_*` env var values
-  (URL, username, password), the derived HTTP Basic auth token
+  guarantee.** `scripts/e2e-run` redacts the `SNOW_E2E_PASSWORD` value, the
+  derived HTTP Basic auth token
   (`base64(user:pass)`), and values under token/session/cookie keys such as
   `g_ck`, `session_token`, `X-UserToken`, and `JSESSIONID`. JSON embedded in
   stdout or stderr is parsed and sanitized structurally; discovered values are
@@ -260,7 +260,13 @@ it via `profile remove`, but there's no keychain sandbox — see "known gaps".
   gets a conservative key/value and header-pattern fallback, including complete
   `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` values.
   Known and discovered values are replaced longest-first so overlapping
-  credentials cannot expose a secret suffix. Safe response
+  credentials cannot expose a secret suffix. Discovered values shorter than 8
+  characters are redacted only in place, never as substrings elsewhere, so a
+  short value such as a language cookie `en` cannot mangle unrelated words.
+  The instance URL and username are identity, not credentials, and stay
+  visible by default; set `SNOW_E2E_REDACT_IDENTITY=1` to replace the URL with
+  `<instance>` and the username (as a whole value or word) with `<user>` before
+  publishing artifacts, as release runs do. Safe response
   shape and values such as `sys_id` remain available for debugging. Novel
   unlabeled secret formats can still evade pattern-based redaction, so
   `docs/guides/releasing.md` step 3 still requires review before publishing an
