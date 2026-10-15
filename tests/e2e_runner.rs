@@ -373,3 +373,61 @@ exit_code = 0
             .contains("cleanup[0] has unresolved capture placeholder {{sys_id}}")
     );
 }
+
+#[test]
+fn shell_steps_keep_env_secrets_out_of_the_bash_command_line() {
+    let fixture = tempfile::tempdir().unwrap();
+    let fake_cli = fixture.path().join("fake-snow-cli");
+    let stdin_log = fixture.path().join("stdin.log");
+    let parent_args_log = fixture.path().join("parent-args.log");
+    write_executable(
+        &fake_cli,
+        &format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ $1 == login-stdin ]]; then
+  cat > "{stdin}"
+  # The parent is the `bash -c` process that runs the shell step.
+  ps -o args= -p "$PPID" > "{parent}"
+fi
+printf '{{}}\n'
+"#,
+            stdin = stdin_log.display(),
+            parent = parent_args_log.display(),
+        ),
+    );
+
+    let scenario = fixture.path().join("shell-secret.toml");
+    fs::write(
+        &scenario,
+        r#"name = "shell-secret"
+requires = ["none"]
+
+[[setup]]
+description = "Pipe the password via stdin"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" login-stdin"
+
+[command]
+args = ["noop"]
+
+[expect]
+exit_code = 0
+"#,
+    )
+    .unwrap();
+
+    let output = run_runner(
+        fixture.path(),
+        &[scenario],
+        &[("SNOW_E2E_PASSWORD", "shell-step-TopSecret")],
+    );
+    assert_success(&output);
+
+    assert_eq!(
+        fs::read_to_string(&stdin_log).unwrap(),
+        "shell-step-TopSecret"
+    );
+    let parent_args = fs::read_to_string(&parent_args_log).unwrap();
+    assert!(parent_args.contains("$SNOW_E2E_PASSWORD"), "{parent_args}");
+    assert!(!parent_args.contains("TopSecret"), "{parent_args}");
+}

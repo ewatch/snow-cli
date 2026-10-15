@@ -9,7 +9,8 @@ process execution and control flow itself.
 Subcommands:
   parse <file.toml>
       Print the whole scenario as JSON, with $VAR / ${VAR} occurrences in
-      every string value substituted from the current environment.
+      every string value except `shell` steps substituted from the current
+      environment. bash expands `shell` steps itself when it runs them.
 
   step-count <file.toml> <setup|cleanup>
       Print the number of steps in that phase (0 if absent).
@@ -18,7 +19,7 @@ Subcommands:
       Print one step as JSON, ready to execute:
         {"kind": "args"|"shell", "argv": [...], "shell": "...",
          "capture": {...}, "allow_failure": bool, "description": "..."}
-      $VAR substitution is applied first, then {{name}} placeholders are
+      $VAR substitution (not for `shell`) is applied first, then {{name}} placeholders are
       replaced using captured_json (a JSON object of previously captured
       values). Resolution exits with status 2 before process invocation if a
       placeholder is missing, null, or otherwise remains unresolved. `index`
@@ -46,7 +47,12 @@ def expand_env(value):
     if isinstance(value, list):
         return [expand_env(v) for v in value]
     if isinstance(value, dict):
-        return {k: expand_env(v) for k, v in value.items()}
+        # `shell` steps are left for bash to expand at run time from its own
+        # environment. Expanding here would put values such as
+        # $SNOW_E2E_PASSWORD into the `bash -c` argv, visible to `ps`.
+        return {
+            k: v if k == "shell" else expand_env(v) for k, v in value.items()
+        }
     return value
 
 

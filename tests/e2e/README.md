@@ -92,8 +92,11 @@ run). A scenario can list multiple tags; all must be satisfied.
 
 ### Placeholders
 
-- `$VAR` / `${VAR}` in `args` and `shell` values are substituted from the
-  process environment at parse time (via Python's `os.path.expandvars`).
+- `$VAR` / `${VAR}` in `args` values are substituted from the process
+  environment at parse time (via Python's `os.path.expandvars`). `shell`
+  values are not: bash expands them when it runs the step, so a value such as
+  `$SNOW_E2E_PASSWORD` never appears in the `bash -c` command line that `ps`
+  shows. This also means bash-local variables like `$f` work as written.
   Never put a real credential literally in a scenario file — use env var
   placeholders, matching `SNOW_E2E_INSTANCE_URL` / `SNOW_E2E_USERNAME` /
   `SNOW_E2E_PASSWORD`.
