@@ -1754,3 +1754,40 @@ auth_method = "api_key"
         .stderr(predicate::str::contains("not implemented yet"))
         .stderr(predicate::str::contains("panicked").not());
 }
+
+#[test]
+fn test_auth_token_requires_reveal_for_long_lived_credentials() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+username = "admin"
+"#,
+    );
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+    common::write_test_keychain_entry(&keychain_store, "snow-cli", "dev:password", "secret");
+    let token = |extra: &[&str]| {
+        let mut cmd = cargo_bin_cmd!("snow-cli");
+        cmd.env("SNOW_CLI_CONFIG", &config_path)
+            .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+            .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+            .args(["auth", "token"])
+            .args(extra);
+        cmd
+    };
+
+    token(&[])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("VALIDATION_ERROR"))
+        .stderr(predicate::str::contains("--reveal"));
+    // base64("admin:secret")
+    token(&["--reveal"])
+        .assert()
+        .success()
+        .stdout("YWRtaW46c2VjcmV0");
+}
