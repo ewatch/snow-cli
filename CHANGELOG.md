@@ -23,6 +23,7 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 - `scope list` output is bounded to 20 rows by default, with `--limit`, `--offset`, and `--all`. It adds `offset`, `returned`, `truncated`, and `next_offset` like `table list`; `counts` still cover every matching row. On a PDI the unbounded list was about 2,200 rows (418 KB).
 - E2E artifacts keep the instance URL and username visible by default and no longer redact them inside other words (`sys_[REDACTED]istrative`). Credentials are still always redacted. Set `SNOW_E2E_REDACT_IDENTITY=1` to replace them with `<instance>` and `<user>` for published artifacts; the release E2E tester uses it.
+- E2E `shell` steps are expanded by bash at run time instead of by the scenario parser, so `$SNOW_E2E_PASSWORD` no longer appears in the `bash -c` command line visible to `ps`.
 
 ## [0.9.0] - 2026-10-15
 
