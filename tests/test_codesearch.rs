@@ -14,16 +14,16 @@ use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Create a temp config file for api_key auth.
-fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
+fn api_key_config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
         r#"
 default_profile = "default"
 
 [profiles.default]
-instance = "https://placeholder.service-now.com"
+instance = "{instance}"
 auth_method = "api_key"
-"#,
-    )
+"#
+    ))
 }
 
 #[tokio::test]
@@ -53,7 +53,7 @@ async fn test_codesearch_basic() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -92,7 +92,7 @@ async fn test_codesearch_with_table_filter() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -130,7 +130,7 @@ async fn test_codesearch_with_custom_limit() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -161,7 +161,7 @@ async fn test_codesearch_empty_result() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -198,7 +198,7 @@ async fn test_codesearch_previews_long_match_text_with_preview_flag() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let run = |full: bool| {
         let mut command = cargo_bin_cmd!("snow-cli");
         command
@@ -255,7 +255,7 @@ async fn test_codesearch_explicit_json_is_lossless_without_full_or_preview() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let output = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -281,7 +281,7 @@ async fn test_codesearch_explicit_json_is_lossless_without_full_or_preview() {
 
 #[tokio::test]
 async fn test_codesearch_preview_rejects_csv_output() {
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config("http://127.0.0.1:9");
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -318,7 +318,7 @@ async fn test_codesearch_csv_output() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -348,7 +348,7 @@ async fn test_codesearch_server_error() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -373,7 +373,7 @@ async fn test_codesearch_non_standard_response() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -408,7 +408,7 @@ async fn test_codesearch_with_scope_filter() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -450,7 +450,7 @@ async fn test_codesearch_with_global_scope_filter() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -481,7 +481,7 @@ async fn test_codesearch_current_scope_uses_session_scope() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     cargo_bin_cmd!("snow-cli-ro")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -513,7 +513,7 @@ async fn test_codesearch_grouped_response_omits_empty_tables_and_keeps_count() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let output = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -553,7 +553,7 @@ async fn test_codesearch_grouped_preview_paths_match_filtered_output() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let output = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -595,7 +595,7 @@ async fn test_codesearch_grouped_csv_flattens_hits() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     cargo_bin_cmd!("snow-cli-ro")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")

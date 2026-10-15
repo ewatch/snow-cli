@@ -9,16 +9,16 @@ use wiremock::matchers::{
 };
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
+fn api_key_config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
         r#"
 default_profile = "default"
 
 [profiles.default]
-instance = "https://placeholder.service-now.com"
+instance = "{instance}"
 auth_method = "api_key"
-"#,
-    )
+"#
+    ))
 }
 
 fn write_dataset_file(dir: &tempfile::TempDir, body: serde_json::Value) -> std::path::PathBuf {
@@ -57,7 +57,7 @@ async fn test_data_export_json_output() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -100,7 +100,7 @@ async fn test_data_export_csv_output() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -136,7 +136,7 @@ async fn test_data_export_writes_file_and_prints_summary() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let temp_dir = tempfile::tempdir().unwrap();
     let export_path = temp_dir.path().join("incident-export.json");
 
@@ -174,7 +174,7 @@ async fn test_data_export_404_error() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -213,7 +213,7 @@ async fn test_data_validate_success() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let dataset_dir = tempfile::tempdir().unwrap();
     let dataset_path = write_dataset_file(
         &dataset_dir,
@@ -276,7 +276,7 @@ async fn test_data_validate_reports_read_only_and_missing_required_fields() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let dataset_dir = tempfile::tempdir().unwrap();
     let dataset_path = write_dataset_file(
         &dataset_dir,
@@ -342,7 +342,7 @@ async fn test_data_import_success() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let dataset_dir = tempfile::tempdir().unwrap();
     let dataset_path = write_dataset_file(
         &dataset_dir,
@@ -408,7 +408,7 @@ async fn test_data_import_partial_failure_reports_summary() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let dataset_dir = tempfile::tempdir().unwrap();
     let dataset_path = write_dataset_file(
         &dataset_dir,
@@ -482,7 +482,7 @@ async fn test_data_import_flat_uses_import_set_when_selected() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let dataset_dir = tempfile::tempdir().unwrap();
     let dataset_path = write_dataset_file(
         &dataset_dir,
@@ -556,7 +556,7 @@ async fn test_data_import_flat_import_set_reports_row_errors() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let dataset_dir = tempfile::tempdir().unwrap();
     let dataset_path = write_dataset_file(
         &dataset_dir,
@@ -630,7 +630,7 @@ async fn test_data_import_flat_import_set_fail_on_error_returns_explicit_error()
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let dataset_dir = tempfile::tempdir().unwrap();
     let dataset_path = write_dataset_file(
         &dataset_dir,
@@ -738,7 +738,7 @@ async fn test_data_validate_accepts_inherited_fields() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let dataset_dir = tempfile::tempdir().unwrap();
     let dataset_path = write_dataset_file(
         &dataset_dir,
@@ -808,7 +808,7 @@ async fn test_data_export_package_writes_manifest_and_reference_placeholders() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let temp_dir = tempfile::tempdir().unwrap();
     let spec_path = write_dataset_file(
         &temp_dir,
@@ -941,7 +941,7 @@ async fn test_data_import_package_remaps_references() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let temp_dir = tempfile::tempdir().unwrap();
     let dataset_dir = temp_dir.path().join("dataset");
     std::fs::create_dir_all(&dataset_dir).unwrap();
@@ -1104,7 +1104,7 @@ async fn test_data_import_package_dry_run_reports_plan_without_writes() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
     let temp_dir = tempfile::tempdir().unwrap();
     let dataset_dir = temp_dir.path().join("dataset");
     std::fs::create_dir_all(&dataset_dir).unwrap();

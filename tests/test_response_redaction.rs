@@ -28,9 +28,10 @@ async fn move_file_non_json_failure_does_not_echo_script_output() {
         .expect(1)
         .mount(&server)
         .await;
-    let (_dir, config) = common::create_temp_config(
-        "default_profile = 'default'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
-    );
+    let (_dir, config) = common::create_temp_config(&format!(
+        "default_profile = 'default'\n[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n",
+        instance = server.uri()
+    ));
     let assertion = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", config)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -88,9 +89,10 @@ async fn command_http_errors_do_not_echo_response_bodies() {
                 .mount(&server)
                 .await;
         }
-        let (dir, config) = common::create_temp_config(
-            "default_profile = 'default'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
-        );
+        let (dir, config) = common::create_temp_config(&format!(
+            "default_profile = 'default'\n[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n",
+            instance = server.uri()
+        ));
         let file = dir.path().join("test.txt");
         std::fs::write(&file, "test attachment").unwrap();
         let mut cmd = cargo_bin_cmd!("snow-cli");

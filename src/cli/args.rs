@@ -51,7 +51,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub profile: Option<String>,
 
-    /// Override the ServiceNow instance URL
+    /// Override the instance URL (must match the profile's scheme, host, and port)
     #[arg(long, global = true)]
     pub instance: Option<String>,
 

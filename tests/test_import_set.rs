@@ -7,16 +7,16 @@ use predicates::prelude::*;
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
+fn api_key_config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
         r#"
 default_profile = "default"
 
 [profiles.default]
-instance = "https://placeholder.service-now.com"
+instance = "{instance}"
 auth_method = "api_key"
-"#,
-    )
+"#
+    ))
 }
 
 #[tokio::test]
@@ -36,12 +36,13 @@ async fn test_import_set_csv_is_rejected_before_post() {
 
     for source in ["flag", "env", "config"] {
         let (_dir, config_path) = common::create_temp_config(&format!(
-            "default_profile = 'default'\n{}[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
+            "default_profile = 'default'\n{}[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n",
             if source == "config" {
                 "default_output = 'csv'\n"
             } else {
                 ""
-            }
+            },
+            instance = server.uri()
         ));
         for row_flag in [None, Some("--allow-row-errors"), Some("--fail-on-error")] {
             let mut cmd = cargo_bin_cmd!("snow-cli");
@@ -93,9 +94,10 @@ async fn test_import_set_explicit_json_overrides_csv_defaults() {
         .expect(1)
         .mount(&server)
         .await;
-    let (_dir, config_path) = common::create_temp_config(
-        "default_profile = 'default'\ndefault_output = 'csv'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
-    );
+    let (_dir, config_path) = common::create_temp_config(&format!(
+        "default_profile = 'default'\ndefault_output = 'csv'\n[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n",
+        instance = server.uri()
+    ));
     let assertion = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
@@ -139,7 +141,7 @@ async fn test_import_set_load_with_data_flag() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -177,7 +179,7 @@ async fn test_import_set_load_from_stdin() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -219,7 +221,7 @@ async fn test_import_set_load_summarizes_mixed_statuses() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -255,7 +257,7 @@ async fn test_import_set_load_with_errors_fails_by_default() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -289,7 +291,7 @@ async fn test_import_set_load_fail_on_error_returns_failure() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -325,7 +327,7 @@ async fn row_error_opt_out_warns_and_error_messages_without_status_fail() {
         .expect(2)
         .mount(&server)
         .await;
-    let (_dir, config) = api_key_config();
+    let (_dir, config) = api_key_config(&server.uri());
     for allow in [false, true] {
         let mut cmd = cargo_bin_cmd!("snow-cli");
         cmd.env("SNOW_CLI_CONFIG", &config)
@@ -387,7 +389,7 @@ fn test_import_set_transform_still_fails_gracefully() {
     // Isolate from ambient config so the command reaches the "not implemented
     // yet" branch instead of failing earlier at profile resolution in a clean
     // environment (e.g. CI).
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config("http://127.0.0.1:1");
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)

@@ -6,16 +6,16 @@ use predicates::prelude::*;
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
-        "default_profile = 'default'\n[profiles.default]\ninstance = 'https://placeholder.service-now.com'\nauth_method = 'api_key'\n",
-    )
+fn config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
+        "default_profile = 'default'\n[profiles.default]\ninstance = '{instance}'\nauth_method = 'api_key'\n"
+    ))
 }
 
 #[tokio::test]
 async fn zero_domain_limit_is_validation_error_without_requests() {
     let server = MockServer::start().await;
-    let (_dir, config_path) = config();
+    let (_dir, config_path) = config(&server.uri());
     for args in [
         vec!["domain", "list", "--limit", "0"],
         vec!["domain", "inspect", "global", "--limit", "0"],
@@ -81,7 +81,7 @@ async fn domain_filter_constrains_nq_and_is_available_read_only() {
         .expect(2)
         .mount(&server)
         .await;
-    let (_dir, config_path) = config();
+    let (_dir, config_path) = config(&server.uri());
     for binary in ["snow-cli", "snow-cli-ro"] {
         let mut command = if binary == "snow-cli" {
             cargo_bin_cmd!("snow-cli")
@@ -117,7 +117,7 @@ async fn unverifiable_domain_field_refuses_target_read() {
         .expect(0)
         .mount(&server)
         .await;
-    let (_dir, config_path) = config();
+    let (_dir, config_path) = config(&server.uri());
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "token")
@@ -153,7 +153,7 @@ async fn query_no_domain_is_sent_on_every_page() {
             .mount(&server)
             .await;
     }
-    let (_dir, config_path) = config();
+    let (_dir, config_path) = config(&server.uri());
     cargo_bin_cmd!("snow-cli-ro")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "token")
@@ -194,7 +194,7 @@ async fn get_bypass_is_opt_in_and_preserves_server_denial() {
         .expect(1)
         .mount(&server)
         .await;
-    let (_dir, config_path) = config();
+    let (_dir, config_path) = config(&server.uri());
     for bypass in [false, true] {
         let mut cmd = cargo_bin_cmd!("snow-cli-ro");
         cmd.env("SNOW_CLI_CONFIG", &config_path)
@@ -228,7 +228,7 @@ async fn status_keeps_missing_activation_and_session_unknown() {
             .mount(&server)
             .await;
     }
-    let (_dir, config_path) = config();
+    let (_dir, config_path) = config(&server.uri());
     cargo_bin_cmd!("snow-cli-ro")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "token")
@@ -243,7 +243,7 @@ async fn status_keeps_missing_activation_and_session_unknown() {
 async fn table_diagnostic_reports_inherited_field_definition() {
     let server = MockServer::start().await;
     metadata(&server, true).await;
-    let (_dir, config_path) = config();
+    let (_dir, config_path) = config(&server.uri());
     cargo_bin_cmd!("snow-cli-ro")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "token")
@@ -271,7 +271,7 @@ async fn stats_domain_filter_does_not_send_table_api_bypass() {
         .expect(1)
         .mount(&server)
         .await;
-    let (_dir, config_path) = config();
+    let (_dir, config_path) = config(&server.uri());
     cargo_bin_cmd!("snow-cli-ro")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "token")
@@ -331,7 +331,7 @@ async fn inspect_reads_contains_and_visibility_without_claiming_effective_access
             .mount(&server)
             .await;
     }
-    let (_dir, config_path) = config();
+    let (_dir, config_path) = config(&server.uri());
     cargo_bin_cmd!("snow-cli-ro")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "token")

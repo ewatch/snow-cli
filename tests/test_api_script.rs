@@ -13,16 +13,16 @@ use wiremock::matchers::{body_string_contains, header, method, path, query_param
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Create a temp config file for api_key auth.
-fn api_key_config() -> (tempfile::TempDir, std::path::PathBuf) {
-    common::create_temp_config(
+fn api_key_config(instance: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    common::create_temp_config(&format!(
         r#"
 default_profile = "default"
 
 [profiles.default]
-instance = "https://placeholder.service-now.com"
+instance = "{instance}"
 auth_method = "api_key"
-"#,
-    )
+"#
+    ))
 }
 
 // =============================================================
@@ -44,7 +44,7 @@ async fn test_api_get_json_response() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -73,7 +73,7 @@ async fn test_api_get_with_custom_header() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -111,7 +111,7 @@ async fn test_api_post_with_data() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -142,7 +142,7 @@ async fn test_api_post_from_stdin() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -176,7 +176,7 @@ async fn test_api_put_with_data() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -209,7 +209,7 @@ async fn test_api_delete() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     // 204 No Content — the response body is empty, output should still succeed
     cargo_bin_cmd!("snow-cli")
@@ -240,7 +240,7 @@ async fn test_api_get_404_returns_error() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -307,7 +307,7 @@ async fn test_script_run_with_inline_code() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -368,7 +368,7 @@ async fn test_script_run_with_custom_scope() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -418,7 +418,7 @@ async fn test_script_run_with_form_execution_flags() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -454,7 +454,7 @@ async fn test_script_run_with_custom_endpoint_json_payload() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -507,7 +507,7 @@ async fn test_script_run_from_file() {
     let script_path = dir.path().join("test_script.js");
     std::fs::write(&script_path, "gs.info('from_file_script')").unwrap();
 
-    let (_config_dir, config_path) = api_key_config();
+    let (_config_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -553,7 +553,7 @@ async fn test_script_run_from_stdin() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
@@ -583,7 +583,7 @@ async fn test_script_run_fails_when_bootstrap_has_no_g_ck() {
         .mount(&server)
         .await;
 
-    let (_dir, config_path) = api_key_config();
+    let (_dir, config_path) = api_key_config(&server.uri());
 
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)

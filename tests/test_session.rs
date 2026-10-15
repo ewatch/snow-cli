@@ -630,7 +630,7 @@ async fn cross_instance_override_is_rejected_before_sending_cookies() {
         .args(["--instance", &second.uri(), "table", "list", "incident"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("different instance"));
+        .stderr(predicate::str::contains("INSTANCE_MISMATCH"));
 }
 
 #[tokio::test]
