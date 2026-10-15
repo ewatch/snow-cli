@@ -82,7 +82,7 @@ pub fn print_list<T: Serialize>(values: &[T], format: &OutputFormat) -> anyhow::
 
 /// Write a single Record to stdout.
 ///
-/// Records use `#[serde(flatten)]` on a HashMap, which the csv crate cannot
+/// Records use `#[serde(flatten)]` on a BTreeMap, which the csv crate cannot
 /// serialize directly. This function handles both JSON and CSV output for
 /// the dynamic field layout.
 pub fn print_record(record: &Record, format: &OutputFormat) -> anyhow::Result<()> {
@@ -390,7 +390,7 @@ pub fn print_status(message: &str, format: &OutputFormat) -> anyhow::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     #[derive(serde::Serialize)]
     struct TestRecord {
@@ -480,13 +480,13 @@ mod tests {
     fn test_write_records_csv_basic() {
         let records = vec![
             Record {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("sys_id".to_string(), serde_json::json!("abc123")),
                     ("number".to_string(), serde_json::json!("INC001")),
                 ]),
             },
             Record {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("sys_id".to_string(), serde_json::json!("def456")),
                     ("number".to_string(), serde_json::json!("INC002")),
                 ]),
@@ -507,13 +507,13 @@ mod tests {
     fn test_write_records_csv_missing_fields() {
         let records = vec![
             Record {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("sys_id".to_string(), serde_json::json!("abc123")),
                     ("state".to_string(), serde_json::json!("1")),
                 ]),
             },
             Record {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("sys_id".to_string(), serde_json::json!("def456")),
                     ("priority".to_string(), serde_json::json!("2")),
                 ]),
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn test_write_records_csv_neutralizes_spreadsheet_formulas() {
         let records = vec![Record {
-            fields: HashMap::from([
+            fields: BTreeMap::from([
                 (
                     "formula".to_string(),
                     serde_json::json!("=HYPERLINK(\"http://evil\")"),
@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn test_write_records_csv_numeric_and_null_values() {
         let records = vec![Record {
-            fields: HashMap::from([
+            fields: BTreeMap::from([
                 ("count".to_string(), serde_json::json!(42)),
                 ("active".to_string(), serde_json::json!(true)),
                 ("notes".to_string(), serde_json::Value::Null),

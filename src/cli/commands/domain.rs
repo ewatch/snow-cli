@@ -59,7 +59,7 @@ pub async fn handle(
                 .any(|row| row.get_str("element") == Some("sys_domain"));
             output::print_record(
                 &Record {
-                    fields: std::collections::HashMap::from([
+                    fields: std::collections::BTreeMap::from([
                         ("table".into(), serde_json::json!(table.as_str())),
                         (
                             "hierarchy".into(),
@@ -123,7 +123,7 @@ async fn status(client: &mut SnowClient, format: &OutputFormat) -> anyhow::Resul
         .await?;
     output::print_record(
         &Record {
-            fields: std::collections::HashMap::from([
+            fields: std::collections::BTreeMap::from([
                 ("enabled".into(), serde_json::json!(enabled)),
                 ("properties".into(), serde_json::to_value(properties)?),
                 (
@@ -241,7 +241,7 @@ async fn inspect(
     }
     output::print_record(
         &Record {
-            fields: std::collections::HashMap::from([
+            fields: std::collections::BTreeMap::from([
                 ("domain_id".into(), serde_json::json!(domain.to_string())),
                 (
                     "relationships".into(),

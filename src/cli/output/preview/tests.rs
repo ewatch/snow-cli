@@ -1,6 +1,6 @@
 use super::super::write_toon;
 use super::*;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 #[test]
 fn ordinary_envelopes_use_canonical_serialization() {
@@ -48,13 +48,13 @@ fn sample_list_result(total: Option<usize>, truncated: bool) -> TableListResult 
     TableListResult {
         records: vec![
             Record {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("sys_id".to_string(), serde_json::json!("abc123")),
                     ("number".to_string(), serde_json::json!("INC001")),
                 ]),
             },
             Record {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("sys_id".to_string(), serde_json::json!("def456")),
                     ("number".to_string(), serde_json::json!("INC002")),
                 ]),
@@ -188,7 +188,7 @@ fn test_write_table_list_jsonl_preview_uses_single_envelope_line() {
 #[test]
 fn test_write_record_preview_toon_includes_metadata_and_record() {
     let record = Record {
-        fields: HashMap::from([(
+        fields: BTreeMap::from([(
             "description".to_string(),
             serde_json::json!("x".repeat(2000)),
         )]),

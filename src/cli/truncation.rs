@@ -184,7 +184,7 @@ pub(crate) fn preview_codesearch_fields(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     #[test]
     fn short_and_exact_limit_values_are_untouched() {
@@ -211,7 +211,7 @@ mod tests {
     fn records_return_field_metadata_and_preserve_other_values() {
         let mut records = vec![
             Record {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("number".to_string(), serde_json::json!("INC001")),
                     ("description".to_string(), serde_json::json!("x".repeat(30))),
                     ("tags".to_string(), serde_json::json!(["keep", "array"])),
@@ -224,7 +224,7 @@ mod tests {
                 ]),
             },
             Record {
-                fields: HashMap::from([("number".to_string(), serde_json::json!("INC002"))]),
+                fields: BTreeMap::from([("number".to_string(), serde_json::json!("INC002"))]),
             },
         ];
 
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn single_record_paths_use_record_root() {
         let mut records = vec![Record {
-            fields: HashMap::from([("work/notes".to_string(), serde_json::json!("x".repeat(12)))]),
+            fields: BTreeMap::from([("work/notes".to_string(), serde_json::json!("x".repeat(12)))]),
         }];
 
         let report = preview_record_fields(&mut records, 3, RecordPreviewRoot::Record, "--full");

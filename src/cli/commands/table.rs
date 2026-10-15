@@ -336,7 +336,7 @@ fn flatten_stats_response(response: &serde_json::Value) -> anyhow::Result<StatsO
 
 /// Flatten one Aggregate API result entry into a flat row.
 fn flatten_stats_entry(entry: &serde_json::Value) -> crate::models::record::Record {
-    let mut fields = std::collections::HashMap::new();
+    let mut fields = std::collections::BTreeMap::new();
 
     // Groupby field values keep their raw string values (they are categorical,
     // e.g. state "1"), so they are inserted as-is.
@@ -810,7 +810,7 @@ mod tests {
     #[test]
     fn test_field_value_as_text_supports_string_and_link_object() {
         let string_record = crate::models::record::Record {
-            fields: std::collections::HashMap::from([(
+            fields: std::collections::BTreeMap::from([(
                 "internal_type".to_string(),
                 serde_json::json!("string"),
             )]),
@@ -821,7 +821,7 @@ mod tests {
         );
 
         let object_record = crate::models::record::Record {
-            fields: std::collections::HashMap::from([(
+            fields: std::collections::BTreeMap::from([(
                 "internal_type".to_string(),
                 serde_json::json!({
                     "link": "https://example.com/api/now/table/sys_glide_object?name=reference",
