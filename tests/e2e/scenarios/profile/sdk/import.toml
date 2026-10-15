@@ -1,6 +1,8 @@
 name = "profile-sdk-import"
 description = "Import saved now-sdk aliases into snow-cli profiles (profile sdk: import leg)"
-requires = ["credentials"]
+# Writes an alias into the now-sdk alias store, one keychain item shared with
+# the user's own now-sdk aliases. Only safe in the per-run file keychain.
+requires = ["credentials", "isolated-keychain"]
 
 # TOOLCHAIN PREREQUISITE: requires the now-sdk toolchain installed (see
 # profile/sdk/list.toml). This chains an export first so there is at least one
