@@ -7,16 +7,17 @@ pub(super) async fn handle_list(
     timeout_secs: Option<u64>,
     search: Option<&EncodedQueryValue>,
     kinds: &[ScopeListKind],
-    text_options: ScopeListTextOptions,
+    view: ScopeListView,
 ) -> anyhow::Result<()> {
-    let payload = list_scopes(profile, instance, timeout_secs, search, kinds).await?;
+    let mut payload = list_scopes(profile, instance, timeout_secs, search, kinds).await?;
+    payload.apply_window(view.window);
 
     match format {
         OutputFormat::Json | OutputFormat::Jsonl | OutputFormat::Toon | OutputFormat::Auto => {
             output::print_output(&payload, format)
         }
         OutputFormat::Csv => output::print_list(&payload.rows, format),
-        OutputFormat::Text => print_scope_list_text(&payload, text_options),
+        OutputFormat::Text => print_scope_list_text(&payload, view.text),
     }
 }
 
@@ -69,6 +70,10 @@ pub(super) async fn list_scopes(
     Ok(ScopeListOutput {
         search: search.map(ToString::to_string),
         kind_filter: kinds.iter().map(|kind| kind.as_str().to_string()).collect(),
+        offset: 0,
+        returned: rows.len(),
+        truncated: false,
+        next_offset: None,
         counts,
         rows,
         warnings,
@@ -231,6 +236,14 @@ pub(super) fn print_scope_list_text(
         writeln!(&mut out, "Kinds: {}", payload.kind_filter.join(", "))?;
     }
     writeln!(&mut out, "Total: {}", payload.counts.total)?;
+    if let Some(next_offset) = payload.next_offset {
+        writeln!(
+            &mut out,
+            "Showing {}-{}; next page: --offset {next_offset} (or --all)",
+            payload.offset + 1,
+            payload.offset + payload.returned,
+        )?;
+    }
 
     if !payload.counts.by_kind.is_empty() {
         let counts = payload

@@ -718,7 +718,7 @@ pub(super) fn build_dataset_table_artifact(
                 .iter()
                 .filter(|(key, _)| exported_fields.contains(*key))
                 .map(|(key, value)| (key.clone(), value.clone()))
-                .collect::<HashMap<_, _>>()
+                .collect::<std::collections::BTreeMap<_, _>>()
         };
         fields.remove("sys_id");
 

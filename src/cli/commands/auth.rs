@@ -79,7 +79,7 @@ pub async fn handle(
         AuthCommands::Status { verify } => {
             handle_status(profile_name, format, instance, timeout_secs, verify).await
         }
-        AuthCommands::Token => handle_token(profile_name).await,
+        AuthCommands::Token { reveal } => handle_token(profile_name, reveal).await,
     }
 }
 
@@ -1026,7 +1026,7 @@ fn verification_error_code(error: &anyhow::Error) -> String {
 /// ```bash
 /// curl -H "Authorization: Basic $(snow-cli auth token)" https://...
 /// ```
-async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
+async fn handle_token(profile_name: &str, reveal: bool) -> anyhow::Result<()> {
     let config = AppConfig::load()?;
     let profile = config
         .active_profile(Some(profile_name))
@@ -1035,6 +1035,15 @@ async fn handle_token(profile_name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         profile.auth_method != AuthMethod::NativeSession,
         "Native session credentials are not exported; use the session profile directly"
+    );
+    // Only OAuth2 yields a short-lived token. Anything else is the long-lived
+    // credential itself (Basic is a reversible encoding of the password), so it
+    // must be requested explicitly; checked before any keychain read.
+    anyhow::ensure!(
+        reveal || profile.auth_method == AuthMethod::Oauth2,
+        crate::models::validation::ValidationError::new(
+            "auth token prints a short-lived token only for OAuth2 profiles; this profile's token is its long-lived credential. Pass --reveal to print it anyway."
+        )
     );
     match &profile.auth_method {
         crate::config::profile::AuthMethod::Basic => {

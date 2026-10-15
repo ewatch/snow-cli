@@ -1,9 +1,10 @@
 name = "auth-token"
-description = "Print the current access token for a logged-in profile (for piping)"
+description = "Refuse to print a Basic profile's long-lived credential without --reveal"
 requires = ["credentials"]
 
-# `auth token` prints the raw token to stdout with no JSON envelope, so
-# exit_code plus a non-empty stdout is the deterministic signal.
+# For non-OAuth2 profiles the token is the long-lived credential itself, so
+# `auth token` refuses without --reveal. Asserting the refusal keeps the Basic
+# credential out of artifacts.
 
 [[setup]]
 description = "Create the scenario profile"
@@ -17,10 +18,11 @@ shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --pro
 args = ["auth", "token", "--profile", "e2e-scenario"]
 
 [expect]
-exit_code = 0
+exit_code = 2
+stderr_contains = ["VALIDATION_ERROR", "--reveal"]
 
 [[fuzzy]]
-expectation = "A non-empty credential/token string is printed to stdout (for basic auth this is the HTTP Basic token) with no surrounding JSON."
+expectation = "Nothing is printed to stdout, and the error explains that only OAuth2 profiles print a short-lived token and that --reveal prints the long-lived credential."
 
 [[cleanup]]
 description = "Clear stored credentials"

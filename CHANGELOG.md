@@ -7,6 +7,25 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-15
+
+### Security
+
+- **Breaking:** `--instance` no longer sends a profile's credentials to another instance. An override must match the profile's scheme, host, and port; otherwise the command fails with `INSTANCE_MISMATCH` (config class, exit 2) before any credential is read. Previously the stored password or token was sent to any URL that passed shape validation, so a prompt-injected `--instance` could leak it. To use another instance, add a profile for it and select it with `--profile`.
+- **Breaking:** `auth token` prints only OAuth2 access tokens by default. For Basic profiles it printed `base64(username:password)`, which decodes to the password, and for API-key profiles the stored key. Those profiles now fail with `VALIDATION_ERROR` before the keychain is read unless `--reveal` is passed.
+
+### Fixed
+
+- `script run` output no longer shows `<redacted>` inside ordinary words. Redaction removed every cookie value as a substring, so short preference cookies (for example a language cookie `en`) turned "Incident" into `Incid<redacted>t`. Only session and token cookies of at least 8 characters are now redacted; the password, `Authorization` header, and `X-UserToken` are still always redacted.
+- JSON, JSONL, and TOON output now lists record fields in a stable, sorted key order. Previously the order changed between identical runs.
+
+### Changed
+
+- **Breaking:** `scope list` output is bounded to 20 rows by default (pass `--all` for the previous behavior), with `--limit`, `--offset`, and `--all`. It adds `offset`, `returned`, `truncated`, and `next_offset` like `table list`; `counts` still cover every matching row. On a PDI the unbounded list was about 2,200 rows (418 KB).
+- E2E artifacts keep the instance URL and username visible by default and no longer redact them inside other words (`sys_[REDACTED]istrative`). Credentials are still always redacted. Set `SNOW_E2E_REDACT_IDENTITY=1` to replace them with `<instance>` and `<user>` for published artifacts; the release E2E tester uses it.
+- E2E `shell` steps are expanded by bash at run time instead of by the scenario parser, so `$SNOW_E2E_PASSWORD` no longer appears in the `bash -c` command line visible to `ps`.
+- E2E runs now use a per-run file keychain by default, deleted with the run's scratch directory. Previously `profile sdk export` and `import` scenarios wrote aliases with the test instance's credentials into the user's real now-sdk alias store and left them there. Set `SNOW_E2E_REAL_KEYCHAIN=1` to test the OS keychain; the now-sdk export and import scenarios are then skipped.
+
 ## [0.9.0] - 2026-10-15
 
 ### Added

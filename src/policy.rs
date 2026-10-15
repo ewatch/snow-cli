@@ -222,7 +222,7 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             }
             // `auth token` exports a reusable credential/bearer token that could be
             // replayed by a full client to perform writes, so it stays denied.
-            AuthCommands::Token => deny(
+            AuthCommands::Token { .. } => deny(
                 "auth token",
                 CommandCapability::CredentialExport,
                 "read-only policy does not allow exporting reusable credentials",
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn read_only_denies_mutating_and_sensitive_commands() {
         assert_denied(Commands::Auth(AuthArgs {
-            command: AuthCommands::Token,
+            command: AuthCommands::Token { reveal: false },
         }));
         assert_denied(Commands::Table(TableArgs {
             command: TableCommands::Update {

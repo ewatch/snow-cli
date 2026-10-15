@@ -2,7 +2,7 @@ use clap::{Args, Subcommand};
 
 use crate::models::identifiers::{EncodedQueryValue, SysId, TableName};
 
-const SCOPE_AFTER_HELP: &str = "Examples:\n  snow-cli scope list\n  snow-cli scope list incident\n  snow-cli scope list sn_ot_incident_mgmt\n  snow-cli scope inspect x_my_app\n  snow-cli scope inspect 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --details full\n  snow-cli scope move-file sys_script_include 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --target-scope x_target_app --dry-run\n  snow-cli scope move-file sys_script_include 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --target-scope x_target_app --yes";
+const SCOPE_AFTER_HELP: &str = "Examples:\n  snow-cli scope list\n  snow-cli scope list incident\n  snow-cli scope list sn_ot_incident_mgmt\n  snow-cli scope list --limit 50 --offset 50   # second page; output is bounded to 20 rows by default\n  snow-cli scope inspect x_my_app\n  snow-cli scope inspect 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --details full\n  snow-cli scope move-file sys_script_include 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --target-scope x_target_app --dry-run\n  snow-cli scope move-file sys_script_include 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --target-scope x_target_app --yes";
 // --- Scope ---
 
 #[derive(Args, Debug)]
@@ -30,6 +30,18 @@ pub enum ScopeCommands {
         /// Include the sys_id column in text output
         #[arg(long)]
         show_sys_id: bool,
+
+        /// Maximum number of rows to return (default: 20)
+        #[arg(long, conflicts_with = "all")]
+        limit: Option<usize>,
+
+        /// Skip this many matching rows (default: 0)
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+
+        /// Return every matching row instead of the bounded default
+        #[arg(long)]
+        all: bool,
     },
 
     /// Inspect scope metadata and artifact counts
@@ -154,6 +166,7 @@ mod tests {
                     kind,
                     show_source_table,
                     show_sys_id,
+                    ..
                 } => {
                     assert_eq!(search.map(|v| v.to_string()), Some("global".to_string()));
                     assert_eq!(kind, vec![ScopeListKind::Plugin, ScopeListKind::StoreApp]);

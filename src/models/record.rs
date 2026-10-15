@@ -1,15 +1,16 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 /// Generic ServiceNow table record.
 ///
 /// ServiceNow records are dynamic — different tables have different fields.
-/// This type represents a record as a map of field names to values.
+/// This type represents a record as a map of field names to values. Fields are
+/// kept sorted so output key order is stable across runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
     #[serde(flatten)]
-    pub fields: HashMap<String, serde_json::Value>,
+    pub fields: BTreeMap<String, serde_json::Value>,
 }
 
 /// ServiceNow Table API response wrapper.
@@ -57,7 +58,7 @@ mod tests {
 
     #[test]
     fn test_record_serialization_is_flat() {
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("sys_id".to_string(), serde_json::json!("abc123"));
         fields.insert("number".to_string(), serde_json::json!("INC0010001"));
 
@@ -67,5 +68,15 @@ mod tests {
         // Flat serialization — no "fields" wrapper
         assert!(json.contains("\"sys_id\":\"abc123\""));
         assert!(!json.contains("\"fields\""));
+    }
+
+    #[test]
+    fn test_record_keys_serialize_in_stable_sorted_order() {
+        let json = r#"{"sys_id": "a", "state": "1", "number": "INC1", "priority": "3"}"#;
+        let record: Record = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            serde_json::to_string(&record).unwrap(),
+            r#"{"number":"INC1","priority":"3","state":"1","sys_id":"a"}"#
+        );
     }
 }

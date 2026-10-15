@@ -23,6 +23,13 @@ Important options:
 - `--kind <kind>`: filter by one or more kinds
 - `--show-source-table`: include the source table column in text output
 - `--show-sys-id`: include the sys_id column in text output
+- `--limit <n>`: maximum rows to return (default: 20)
+- `--offset <n>`: skip this many matching rows
+- `--all`: return every matching row
+
+Output is bounded to 20 rows by default. `counts` always describe every
+matching row; `offset`, `returned`, `truncated`, and `next_offset` describe the
+returned page, as in `table list`.
 
 Supported `--kind` values:
 
@@ -38,6 +45,7 @@ Examples:
 snow-cli scope list
 snow-cli scope list sn_ot_incident_mgmt
 snow-cli scope list incident --kind plugin --kind store-app
+snow-cli scope list --limit 50 --offset 50   # second page of 50
 ```
 
 Note: on PDIs, `scope list` may warn that `sys_store_app` (HTTP 403) and

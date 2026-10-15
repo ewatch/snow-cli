@@ -95,6 +95,11 @@ pub enum AuthCommands {
         verify: bool,
     },
 
-    /// Print the current access token to stdout (for piping to other tools)
-    Token,
+    /// Print the current OAuth2 access token to stdout (for piping to other tools)
+    Token {
+        /// Also print long-lived credentials for non-OAuth2 profiles: the Basic
+        /// `base64(username:password)` value or the stored API key
+        #[arg(long)]
+        reveal: bool,
+    },
 }
