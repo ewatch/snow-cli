@@ -60,6 +60,11 @@ pub enum TableCommands {
         #[arg(long)]
         query_no_domain: bool,
 
+        /// Add each record's domain (sys_domain, sys_domain_path, and a resolved
+        /// sys_domain_name) and, for lists, a per-domain summary of the page
+        #[arg(long)]
+        with_domain: bool,
+
         /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
         full: bool,
@@ -85,6 +90,11 @@ pub enum TableCommands {
         /// Request cross-domain Table API reads (admin or query_no_domain_table_api required)
         #[arg(long)]
         query_no_domain: bool,
+
+        /// Add each record's domain (sys_domain, sys_domain_path, and a resolved
+        /// sys_domain_name) and, for lists, a per-domain summary of the page
+        #[arg(long)]
+        with_domain: bool,
 
         /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]

@@ -306,6 +306,7 @@ mod tests {
             command: TableCommands::List {
                 domain: None,
                 query_no_domain: false,
+                with_domain: false,
                 table: "incident".parse().unwrap(),
                 query: None,
                 fields: None,

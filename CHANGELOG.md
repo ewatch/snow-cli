@@ -7,6 +7,18 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ## [Unreleased]
 
+### Added
+
+- `domain table <table> --counts` counts records per domain from one Aggregate API request, with names and display paths, scoped to the session's visible domains. For admin or `query_no_domain_table_api` sessions it also reports `hidden` records from two Table API totals. The Aggregate API ignores `sysparm_query_no_domain` even with the role.
+- `domain table --counts --via-script` counts across all domains with one read-only `GlideAggregate` background script. It is admin-only and denied in `snow-cli-ro`.
+- `table list` and `table get --with-domain` add `sys_domain`, `sys_domain_path`, and a resolved `sys_domain_name` to records; lists add a `domains_in_page` summary.
+- `domain status` reports `separation_in_use: true` when the user's home domain is not `global`, which works without access to `sys_properties`.
+
+### Changed
+
+- `domain table` reports `has_sys_domain: false` when the dictionary is readable and the table has no `sys_domain` field; `null` now only means the dictionary could not be read.
+- `--query-no-domain` prints a warning when the session has neither `admin` nor `query_no_domain_table_api`, because ServiceNow silently ignores the option in that case.
+
 ## [0.10.0] - 2026-10-15
 
 ### Security

@@ -46,6 +46,7 @@ fn preview_compatibility_errors_are_typed() {
 }
 fn sample_list_result(total: Option<usize>, truncated: bool) -> TableListResult {
     TableListResult {
+        domains_in_page: None,
         records: vec![
             Record {
                 fields: BTreeMap::from([
@@ -301,6 +302,7 @@ fn test_write_table_list_auto_keeps_meta() {
 #[test]
 fn test_write_table_list_empty_is_definitive() {
     let result = TableListResult {
+        domains_in_page: None,
         records: Vec::new(),
         total: Some(0),
         offset: 0,
