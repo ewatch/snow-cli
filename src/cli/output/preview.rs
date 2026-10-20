@@ -18,6 +18,8 @@ struct TableListMeta {
     truncated: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     fields_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    domains_in_page: Option<std::collections::BTreeMap<String, usize>>,
 }
 
 impl TableListMeta {
@@ -29,6 +31,7 @@ impl TableListMeta {
             next_offset: result.next_offset(),
             truncated: result.truncated,
             fields_truncated: result.fields_truncated || !preview.is_empty(),
+            domains_in_page: result.domains_in_page.clone(),
         }
     }
 }

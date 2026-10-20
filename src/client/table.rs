@@ -139,6 +139,7 @@ impl SnowClient {
         };
 
         Ok(pagination::TableListResult {
+            domains_in_page: None,
             records: all_records,
             offset: pagination.offset,
             total,
