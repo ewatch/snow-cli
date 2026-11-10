@@ -1,13 +1,41 @@
 version: 2
+
+# Patch/minor updates are grouped into one PR per ecosystem and auto-merged by
+# .github/workflows/dependabot-automerge.yml once required checks pass. Major
+# updates (and 0.x minor updates, which are breaking under Cargo semver) stay
+# as individual PRs for manual review.
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Wait before adopting fresh releases to limit exposure to compromised or
+    # yanked versions.
+    cooldown:
+      default-days: 3
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /docs/site
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    groups:
+      docs-minor-patch:
+        update-types: [minor, patch]
