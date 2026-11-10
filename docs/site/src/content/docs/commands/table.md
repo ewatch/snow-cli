@@ -274,6 +274,7 @@ the double-quoted form only when the value must interpolate a shell variable.
 Use `--domain global|<domain_sys_id>` on `table list` and `table stats` to filter
 exact record ownership within server visibility. On `table list` and `table get`,
 `--query-no-domain` explicitly requests the privileged Table API option. It is
-never enabled automatically. See the [domain guide](/commands/domain/) for
+never enabled automatically. `--with-domain` adds each record's domain name and,
+for lists, a per-domain `domains_in_page` summary. See the [domain guide](/commands/domain/) for
 inherited-field validation, query branching, role requirements, and how to
 interpret empty results.

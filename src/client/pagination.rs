@@ -31,6 +31,9 @@ pub struct TableListResult {
     /// content cap. Always `false` at fetch time; the presentation layer
     /// sets it after applying the cap so metadata reflects what is printed.
     pub fields_truncated: bool,
+
+    /// Records per domain name on this page, set by `table list --with-domain`.
+    pub domains_in_page: Option<std::collections::BTreeMap<String, usize>>,
 }
 
 impl TableListResult {

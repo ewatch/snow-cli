@@ -228,7 +228,16 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 "read-only policy does not allow exporting reusable credentials",
             ),
         },
-        Commands::Domain(_) => PolicyDecision::Allow,
+        Commands::Domain(args) => match &args.command {
+            crate::cli::args::DomainCommands::Table {
+                via_script: true, ..
+            } => deny(
+                "domain table --via-script",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow background script execution",
+            ),
+            _ => PolicyDecision::Allow,
+        },
         Commands::Session(args) => match &args.command {
             crate::cli::args::SessionCommands::Show
             | crate::cli::args::SessionCommands::Options { .. }
@@ -454,6 +463,7 @@ mod tests {
             command: TableCommands::List {
                 domain: None,
                 query_no_domain: false,
+                with_domain: false,
                 table: "incident".parse().unwrap(),
                 query: None,
                 fields: None,
@@ -468,6 +478,7 @@ mod tests {
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::Get {
                 query_no_domain: false,
+                with_domain: false,
                 table: "incident".parse().unwrap(),
                 sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 fields: None,
@@ -726,6 +737,21 @@ mod tests {
         assert_allowed(Commands::Auth(AuthArgs {
             command: AuthCommands::Logout,
         }));
+    }
+
+    #[test]
+    fn read_only_allows_domain_counts_but_denies_script_counts() {
+        let table = |via_script| {
+            Commands::Domain(crate::cli::args::DomainArgs {
+                command: crate::cli::args::DomainCommands::Table {
+                    table: "incident".parse().unwrap(),
+                    counts: true,
+                    via_script,
+                },
+            })
+        };
+        assert_allowed(table(false));
+        assert_denied(table(true));
     }
 
     #[test]

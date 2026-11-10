@@ -29,6 +29,7 @@ pub async fn handle(
             full: _,
             preview,
             query_no_domain,
+            with_domain,
         } => {
             tracing::info!("Listing records from table: {}", table);
             output::ensure_preview_supported(preview, format)?;
@@ -39,11 +40,12 @@ pub async fn handle(
                 Some(limit.unwrap_or(DEFAULT_LIST_LIMIT))
             };
             let mut effective_fields = resolve_list_fields(table.as_str(), fields.as_deref());
-            if fields.is_none()
-                && (domain.is_some() || query_no_domain)
-                && let Some(projection) = &mut effective_fields
-            {
-                projection.push_str(",sys_domain");
+            if let Some(projection) = &mut effective_fields {
+                if with_domain {
+                    add_domain_fields(projection);
+                } else if fields.is_none() && (domain.is_some() || query_no_domain) {
+                    projection.push_str(",sys_domain");
+                }
             }
 
             let mut client =
@@ -55,6 +57,9 @@ pub async fn handle(
                 query,
             )
             .await?;
+            if query_no_domain {
+                crate::cli::commands::domain::warn_if_query_no_domain_ignored(&mut client).await;
+            }
             let pagination = PaginationConfig::default()
                 .with_limit(effective_limit)
                 .with_offset(offset);
@@ -69,6 +74,16 @@ pub async fn handle(
                     query_no_domain,
                 )
                 .await?;
+            if with_domain {
+                result.domains_in_page = Some(
+                    crate::cli::commands::domain::annotate_record_domains(
+                        &mut client,
+                        &mut result.records,
+                        query_no_domain,
+                    )
+                    .await,
+                );
+            }
 
             let preview_report = if preview {
                 truncation::preview_record_fields(
@@ -92,6 +107,7 @@ pub async fn handle(
             full: _,
             preview,
             query_no_domain,
+            with_domain,
         } => {
             tracing::info!("Getting record {} from table: {}", sys_id, table);
             output::ensure_preview_supported(preview, format)?;
@@ -99,7 +115,17 @@ pub async fn handle(
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
+            if query_no_domain {
+                crate::cli::commands::domain::warn_if_query_no_domain_ignored(&mut client).await;
+            }
             let path = format!("/api/now/table/{table}/{sys_id}");
+            // Without --fields every field is returned, including the domain ones.
+            let fields = fields.map(|mut projection| {
+                if with_domain {
+                    add_domain_fields(&mut projection);
+                }
+                projection
+            });
             let mut params = Vec::new();
             if query_no_domain {
                 params.push(("sysparm_query_no_domain", "true"));
@@ -124,6 +150,14 @@ pub async fn handle(
             } else {
                 truncation::PreviewReport::default()
             };
+            if with_domain {
+                crate::cli::commands::domain::annotate_record_domains(
+                    &mut client,
+                    std::slice::from_mut(&mut response.result),
+                    query_no_domain,
+                )
+                .await;
+            }
 
             output::print_record_preview(&response.result, format, &preview_report)?;
             Ok(())
@@ -289,6 +323,20 @@ fn default_list_fields(table: &str) -> &'static str {
             "sys_id,name,sys_class_name,operational_status,sys_updated_on"
         }
         _ => "sys_id,number,name,short_description,state,sys_updated_on",
+    }
+}
+
+/// Append the domain fields `--with-domain` reports, skipping ones already
+/// requested.
+fn add_domain_fields(projection: &mut String) {
+    for field in ["sys_domain", "sys_domain_path"] {
+        if !projection
+            .split(',')
+            .any(|existing| existing.trim() == field)
+        {
+            projection.push(',');
+            projection.push_str(field);
+        }
     }
 }
 
