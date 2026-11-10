@@ -3,7 +3,7 @@ use clap::{Args, Subcommand};
 
 #[derive(Args, Debug)]
 #[command(
-    after_help = "Examples:\n  snow-cli domain status\n  snow-cli domain list\n  snow-cli domain table incident\n  snow-cli domain inspect <domain_sys_id>\n\nDomain separation is independent of application scope. Home domain is not proof of session domain; empty results can reflect restricted visibility. These commands read configuration and never calculate effective access or switch session domains."
+    after_help = "Examples:\n  snow-cli domain status\n  snow-cli domain list\n  snow-cli domain table incident\n  snow-cli domain table incident --counts\n  snow-cli domain table incident --counts --via-script   # admin: all domains\n  snow-cli domain inspect <domain_sys_id>\n\nDomain separation is independent of application scope. Home domain is not proof of session domain; empty results can reflect restricted visibility. These commands read configuration and never calculate effective access or switch session domains."
 )]
 pub struct DomainArgs {
     #[command(subcommand)]
@@ -35,5 +35,15 @@ pub enum DomainCommands {
         query_no_domain: bool,
     },
     /// Inspect inherited domain fields on a table
-    Table { table: TableName },
+    Table {
+        table: TableName,
+        /// Count records per domain. Covers the domains visible to this session
+        /// and, for admin or query_no_domain_table_api, reports hidden records
+        #[arg(long)]
+        counts: bool,
+        /// With --counts: count across all domains in one background script
+        /// (admin only; not available in snow-cli-ro)
+        #[arg(long, requires = "counts")]
+        via_script: bool,
+    },
 }
