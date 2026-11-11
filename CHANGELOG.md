@@ -16,6 +16,7 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ### Changed
 
+- TOON output follows TOON spec v4.4 (toon-format 0.7). Empty arrays now encode as `key: []` instead of `key[0]:`. Other shapes are unchanged.
 - `domain table` reports `has_sys_domain: false` when the dictionary is readable and the table has no `sys_domain` field; `null` now only means the dictionary could not be read.
 - `--query-no-domain` prints a warning when the session has neither `admin` nor `query_no_domain_table_api`, because ServiceNow silently ignores the option in that case.
 
