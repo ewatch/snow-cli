@@ -1,0 +1,44 @@
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    name: Enable auto-merge for safe updates
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+
+      - name: Classify update
+        id: classify
+        env:
+          DEPS: ${{ steps.meta.outputs.updated-dependencies-json }}
+        # Safe = every dependency is a patch bump, or a minor bump of a >=1.0
+        # version. 0.x minor bumps are breaking under Cargo semver.
+        run: |
+          safe=$(jq -r '
+            def v: ltrimstr("v") | split(".") | map(tonumber? // 0);
+            all(.[];
+              (.prevVersion | v) as $p | (.newVersion | v) as $n
+              | $p[0] == $n[0]
+                and ($p[0] > 0 or $p[1] == $n[1])
+            )' <<<"$DEPS")
+          echo "safe=$safe" >> "$GITHUB_OUTPUT"
+          echo "safe=$safe for: $(jq -r 'map("\(.dependencyName) \(.prevVersion)->\(.newVersion)") | join(", ")' <<<"$DEPS")"
+
+      - name: Enable auto-merge
+        if: steps.classify.outputs.safe == 'true'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Auto-merge waits for the required checks configured in the main
+        # branch ruleset; without a ruleset it would merge immediately.
+        run: gh pr merge --auto --squash "$PR_URL"

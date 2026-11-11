@@ -43,3 +43,27 @@ jobs:
 
       - name: Run tests
         run: cargo test
+
+  docs:
+    # Runs on every PR (not path-filtered) so it can be a required check and
+    # docs-site dependency bumps are built before they merge.
+    name: Build documentation site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/site/package-lock.json
+
+      - name: Build documentation
+        working-directory: docs/site
+        env:
+          BASE_PATH: /snow-cli/
+        run: |
+          npm ci
+          npm run build
