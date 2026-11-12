@@ -9,6 +9,7 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ### Added
 
+- Windows users can install with Scoop: `scoop bucket add ewatch https://github.com/ewatch/scoop-bucket`, then `scoop install ewatch/snow-cli`. Releases notify the bucket, which updates its manifest from the release's `SHA256SUMS`.
 - `domain table <table> --counts` counts records per domain from one Aggregate API request, with names and display paths, scoped to the session's visible domains. For admin or `query_no_domain_table_api` sessions it also reports `hidden` records from two Table API totals. The Aggregate API ignores `sysparm_query_no_domain` even with the role.
 - `domain table --counts --via-script` counts across all domains with one read-only `GlideAggregate` background script. It is admin-only and denied in `snow-cli-ro`.
 - `table list` and `table get --with-domain` add `sys_domain`, `sys_domain_path`, and a resolved `sys_domain_name` to records; lists add a `domains_in_page` summary.
