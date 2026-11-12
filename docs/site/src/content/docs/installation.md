@@ -1,7 +1,7 @@
 # Installation
 
 Install `snow-cli` and its read-only companion, `snow-cli-ro`, with Homebrew,
-the platform installer, or a source build. The platform installer selects the
+Scoop, the platform installer, or a source build. The platform installer selects the
 latest GitHub release for your platform and asks before it downloads anything.
 
 ## Homebrew (macOS and Linux)
@@ -25,6 +25,23 @@ refresh Homebrew's formula metadata and upgrade:
 ```sh
 brew update
 brew upgrade snow-cli
+```
+
+## Scoop (Windows)
+
+On Windows, install from the snow-cli Scoop bucket:
+
+```powershell
+scoop bucket add ewatch https://github.com/ewatch/scoop-bucket
+scoop install ewatch/snow-cli
+```
+
+This installs both `snow-cli.exe` and `snow-cli-ro.exe` on your `PATH`.
+The bucket picks up each new release automatically. Upgrade with:
+
+```powershell
+scoop update
+scoop update snow-cli
 ```
 
 ## Quick install
