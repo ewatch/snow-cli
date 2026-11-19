@@ -106,6 +106,10 @@ if [[ ${SNOW_E2E_REAL_KEYCHAIN:-0} == "1" ]]; then
 else
   export SNOW_CLI_TEST_KEYCHAIN_STORE="$scratch_dir/keychain.json"
   export SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN=1
+  # now-sdk 4.14+ keeps aliases in an encrypted file (default
+  # ~/.now-sdk/credentials.enc); keep it in the scratch directory too.
+  export SN_SDK_CREDENTIALS_DIR="$scratch_dir/now-sdk"
+  unset SN_SDK_KEY_SOURCE SN_SDK_ENCRYPTION_KEY
 fi
 
 # SN-Utils bridge harness (scripts/e2e-snu-harness): a headless-browser
@@ -146,6 +150,12 @@ if [[ ${SNOW_E2E_SN_UTILS:-0} == "1" ]]; then
       exit 2
     }
   fi
+  # A Playwright upgrade needs its matching Chromium build; this is a no-op
+  # when that build is already cached.
+  (cd "$snu_harness_dir" && npx --no-install playwright install chromium >&2) || {
+    echo "playwright install chromium failed for $snu_harness_dir" >&2
+    exit 2
+  }
 
   export SNOW_CLI_SNU_WS_ADDR=$snu_harness_ws_addr
   export SNOW_CLI_SNU_BROKER_ADDR=$snu_harness_broker_addr

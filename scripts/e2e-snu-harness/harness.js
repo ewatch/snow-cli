@@ -123,20 +123,26 @@ function patchExtensionForIsolatedPort(extDir) {
     "utf8",
   );
 
+  // Match only the stable prefix: SN-Utils appends a suffix such as
+  // `+ (resume ? "/?resume=1" : "")` (10.3.x), which must keep working.
   const scriptsyncPath = path.join(extDir, "scriptsync.js");
   const scriptsyncSrc = fs.readFileSync(scriptsyncPath, "utf8");
-  const wsNeedle = 'ws = new WebSocket("ws://127.0.0.1:1978");';
-  if (!scriptsyncSrc.includes(wsNeedle)) {
+  const wsNeedle = 'new WebSocket("ws://127.0.0.1:1978"';
+  const occurrences = scriptsyncSrc.split(wsNeedle).length - 1;
+  if (occurrences !== 1) {
     fail(
-      "scriptsync.js WebSocket setup no longer matches the expected " +
-        "literal — SN-Utils likely shipped an update; this patch needs " +
-        "updating before the harness can run safely.",
+      `scriptsync.js has ${occurrences} WebSocket setups matching ` +
+        `${wsNeedle} (expected exactly 1) — SN-Utils likely shipped an ` +
+        "update; this patch needs updating before the harness can run safely.",
     );
   }
-  const wsReplacement =
-    "var __snowCliTestPort = new URLSearchParams(window.location.search).get('port') || 1978;\n" +
-    "        ws = new WebSocket(\"ws://127.0.0.1:\" + __snowCliTestPort);";
-  fs.writeFileSync(scriptsyncPath, scriptsyncSrc.replace(wsNeedle, wsReplacement), "utf8");
+  const portPrelude =
+    "var __snowCliTestPort = new URLSearchParams(window.location.search).get('port') || '1978';\n";
+  const patched = scriptsyncSrc.replace(
+    wsNeedle,
+    'new WebSocket("ws://127.0.0.1:" + __snowCliTestPort',
+  );
+  fs.writeFileSync(scriptsyncPath, portPrelude + patched, "utf8");
 
   log("patched extension for isolated-port testing");
 }
