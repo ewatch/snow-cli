@@ -32,6 +32,7 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 - `table stats --having` works. The Aggregate API rejected the raw clause with HTTP 400 ("Invalid HAVING clause"); `count>5` is now sent as `count^*^>^5` and `avg(priority)>=2` as `avg^priority^>=^2`. Comma-separated clauses must all match, and native `aggregate^field^operator^value` clauses are sent unchanged.
 - `attachment list` no longer sends `sysparm_fields`, which the Attachment API ignores, and keeps only the seven metadata fields client-side instead of about 20 columns.
 - `profile list` prints profiles sorted by name instead of in a different order on every run, and saving the config keeps the `[profiles.*]` sections in file order instead of reshuffling them.
+- `session switch application` accepts the id `session show` reports for the current application. Live instances report Global as a sys_id while the picker lists it as `global`, so switching to the already-current application failed. An unknown or ambiguous context is now a `VALIDATION_ERROR` (exit 2) instead of `INTERNAL_ERROR`.
 
 ## [0.10.0] - 2026-10-15
 

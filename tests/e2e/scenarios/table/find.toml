@@ -11,15 +11,15 @@ description = "Store credentials for the scenario profile"
 shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
 
 [command]
-args = ["table", "find", "incident", "--limit", "5", "--profile", "e2e-scenario", "--output", "json"]
+args = ["table", "find", "flow", "--limit", "5", "--profile", "e2e-scenario", "--output", "json"]
 
 [expect]
 exit_code = 0
-stdout_contains = ["\"name\":\"incident\"", "\"returned\":5", "\"truncated\":true"]
+stdout_contains = ["\"returned\":5", "\"truncated\":true"]
 json_field_present = [".total", ".records[0].name", ".records[0].label"]
 
 [[fuzzy]]
-expectation = "Records are sorted by name, each has name, label, extends, and scope, and the incident row extends task."
+expectation = "Records are sorted by name, every name or label contains 'flow' (case-insensitive), and each row has name, label, extends, and scope."
 
 [[cleanup]]
 description = "Remove the scenario profile"
