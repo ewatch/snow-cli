@@ -11,15 +11,27 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 - Windows users can install with Scoop: `scoop bucket add ewatch https://github.com/ewatch/scoop-bucket`, then `scoop install ewatch/snow-cli`. Releases notify the bucket, which updates its manifest from the release's `SHA256SUMS`.
 - `domain table <table> --counts` counts records per domain from one Aggregate API request, with names and display paths, scoped to the session's visible domains. For admin or `query_no_domain_table_api` sessions it also reports `hidden` records from two Table API totals. The Aggregate API ignores `sysparm_query_no_domain` even with the role.
-- `domain table --counts --via-script` counts across all domains with one read-only `GlideAggregate` background script. It is admin-only and denied in `snow-cli-ro`.
+- `domain table --counts all` counts across all domains with one read-only `GlideAggregate` background script. It is admin-only and denied in `snow-cli-ro`. `--counts` without a value (or `--counts visible`) keeps the Aggregate API counts for visible domains.
 - `table list` and `table get --with-domain` add `sys_domain`, `sys_domain_path`, and a resolved `sys_domain_name` to records; lists add a `domains_in_page` summary.
 - `domain status` reports `separation_in_use: true` when the user's home domain is not `global`, which works without access to `sys_properties`.
+- `table find <text>` finds tables whose name or label contains the text, from `sys_db_object`. Rows have `name`, `label`, `extends` (the parent table), and `scope`, use the `table list` envelope, and are bounded to 20 by default. Available in `snow-cli-ro`.
+- `table choices <table> [field]` lists active choice values and labels from `sys_choice`. It walks the table hierarchy, so `incident.priority` returns the choices defined on `task`, and each row names the table that defines it. `--language` defaults to `en`. Available in `snow-cli-ro`.
+- Usage errors now say what to do next. An unknown subcommand lists the valid ones and suggests the likely call (`snow-cli table incident` suggests `table list incident`; `snow-cli codesearch foo` suggests `codesearch search 'foo'`). An unknown option lists the command's options instead of clap's misleading "use '-- --x'" tip. `snow-cli-ro` explains when a command is missing because it writes. Exit code stays 2.
 
 ### Changed
 
 - TOON output follows TOON spec v4.4 (toon-format 0.7). Empty arrays now encode as `key: []` instead of `key[0]:`. Other shapes are unchanged.
 - `domain table` reports `has_sys_domain: false` when the dictionary is readable and the table has no `sys_domain` field; `null` now only means the dictionary could not be read.
 - `--query-no-domain` prints a warning when the session has neither `admin` nor `query_no_domain_table_api`, because ServiceNow silently ignores the option in that case.
+- **Breaking:** `attachment list` returns the `table list` envelope (`total`, `returned`, `offset`, `next_offset`, `truncated`, `records`) instead of a bare array, and is bounded to 20 attachments by default. Use `--limit`, `--offset`, or `--all`.
+- `profile add`, `edit`, `default`, and `remove` honor `--output` instead of always printing JSON. `profile current` and `profile show` print compact JSON for `--output json`.
+- `api` and `script run` on custom endpoints print compact JSON for `--output json`, like every other command. Previously they pretty-printed it.
+
+### Fixed
+
+- `table stats --having` works. The Aggregate API rejected the raw clause with HTTP 400 ("Invalid HAVING clause"); `count>5` is now sent as `count^*^>^5` and `avg(priority)>=2` as `avg^priority^>=^2`. Comma-separated clauses must all match, and native `aggregate^field^operator^value` clauses are sent unchanged.
+- `attachment list` no longer sends `sysparm_fields`, which the Attachment API ignores, and keeps only the seven metadata fields client-side instead of about 20 columns.
+- `profile list` prints profiles sorted by name instead of in a different order on every run, and saving the config keeps the `[profiles.*]` sections in file order instead of reshuffling them.
 
 ## [0.10.0] - 2026-10-15
 

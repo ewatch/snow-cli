@@ -298,7 +298,7 @@ pub(super) fn restore_profiles_after_failed_import(
                     .insert(profile_name.clone(), profile.clone());
             }
             None => {
-                config.profiles.remove(profile_name);
+                config.profiles.shift_remove(profile_name);
             }
         }
         credentials::restore_stored_credential(

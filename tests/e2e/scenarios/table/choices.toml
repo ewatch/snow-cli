@@ -1,0 +1,27 @@
+name = "table-choices"
+description = "List choice labels for a field defined on a parent table (read-only)"
+requires = ["credentials"]
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["table", "choices", "incident", "priority", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["\"element\":\"priority\"", "\"table\":\"task\"", "\"value\":\"1\""]
+json_field_present = [".[0].label"]
+
+[[fuzzy]]
+expectation = "incident.priority choices are resolved from the parent task table and list values 1-5 with labels such as '1 - Critical', ordered by sequence."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

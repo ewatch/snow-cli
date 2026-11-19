@@ -25,9 +25,11 @@ args = ["attachment", "list", "incident", "{{sys_id}}", "--profile", "e2e-scenar
 
 [expect]
 exit_code = 0
+stdout_contains = ["\"returned\":1", "\"truncated\":false", "\"table_name\":\"incident\""]
+json_field_present = [".records[0].sys_id", ".records[0].download_link"]
 
 [[fuzzy]]
-expectation = "The listing is a JSON array with at least one attachment whose table is incident and whose table_sys_id matches the record we created."
+expectation = "The envelope lists exactly one attachment whose table_sys_id matches the record we created, with only the seven metadata fields (no hash or image columns)."
 
 [[cleanup]]
 description = "Delete the record (cascades to its attachments)"

@@ -11,15 +11,15 @@ description = "Store credentials for the scenario profile"
 shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
 
 [command]
-args = ["table", "list", "incident", "--profile", "e2e-scenario", "--limit", "1", "--output", "json"]
+args = ["table", "list", "incident", "--profile", "e2e-scenario", "--limit", "1", "--with-domain", "--output", "json"]
 
 [expect]
 exit_code = 0
-stdout_contains = ["returned", "records"]
-json_field_present = [".returned", ".records"]
+stdout_contains = ["\"returned\":1", "records", "\"domains_in_page\":"]
+json_field_present = [".returned", ".records[0].sys_id", ".records[0].sys_domain_name", ".records[0].sys_domain_path"]
 
 [[fuzzy]]
-expectation = "`.records` has at most 1 entry, each entry looks like a real incident record (sys_id is a 32-char hex string, number matches INCxxxxxxx), and `.returned` matches the array length."
+expectation = "`.records` has at most 1 entry, each entry looks like a real incident record (sys_id is a 32-char hex string, number matches INCxxxxxxx), `.returned` matches the array length, and `.domains_in_page` counts that record under its `sys_domain_name`."
 
 [[cleanup]]
 description = "Remove the scenario profile"

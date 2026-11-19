@@ -89,7 +89,7 @@ async fn test_api_get_with_custom_header() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains(r#""custom": true"#));
+        .stdout(predicate::str::contains(r#""custom":true"#));
 }
 
 // =============================================================
@@ -157,7 +157,7 @@ async fn test_api_post_from_stdin() {
         .write_stdin(r#"{"key":"stdin_value"}"#)
         .assert()
         .success()
-        .stdout(predicate::str::contains(r#""ok": true"#));
+        .stdout(predicate::str::contains(r#""ok":true"#));
 }
 
 // =============================================================

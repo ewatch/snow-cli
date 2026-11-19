@@ -3,9 +3,26 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::args::{AttachmentArgs, AttachmentCommands, OutputFormat};
 use crate::cli::output;
+use crate::client::pagination::PaginationConfig;
 use crate::models::identifiers::EncodedQueryValue;
 
 const MAX_ATTACHMENT_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Bounded default row count for `attachment list` without `--limit`/`--all`,
+/// matching `table list`.
+const DEFAULT_ATTACHMENT_LIST_LIMIT: usize = 20;
+
+/// Metadata fields `attachment list` returns. The Attachment API returns about
+/// 20 columns per attachment and ignores `sysparm_fields`.
+const ATTACHMENT_LIST_FIELDS: [&str; 7] = [
+    "sys_id",
+    "file_name",
+    "content_type",
+    "size_bytes",
+    "table_name",
+    "table_sys_id",
+    "download_link",
+];
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 struct AttachmentRecord {
@@ -26,11 +43,6 @@ struct AttachmentRecord {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct AttachmentListResponse {
-    result: Vec<AttachmentRecord>,
-}
-
-#[derive(Debug, serde::Deserialize)]
 struct AttachmentSingleResponse {
     result: AttachmentRecord,
 }
@@ -43,8 +55,14 @@ pub async fn handle(
     timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
-        AttachmentCommands::List { table, sys_id } => {
-            tracing::info!("Listing attachments for {}/{}", table, sys_id);
+        AttachmentCommands::List {
+            table,
+            sys_id,
+            limit,
+            offset,
+            all,
+        } => {
+            tracing::info!(table = %table, sys_id = %sys_id, "Listing attachments");
             // sys_id is also embedded in an encoded query below, so it must
             // additionally satisfy the (stricter, operator-character-free)
             // encoded-query rules on top of the path-segment rules already
@@ -54,20 +72,25 @@ pub async fn handle(
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
             let query = format!("table_name={table}^table_sys_id={sys_id}");
-            let response: AttachmentListResponse = client
-                .get_json_with_params(
+            let pagination = PaginationConfig::default()
+                .with_limit((!all).then(|| limit.unwrap_or(DEFAULT_ATTACHMENT_LIST_LIMIT)))
+                .with_offset(offset);
+            // The Attachment API ignores `sysparm_fields`, so project the
+            // documented metadata fields client-side.
+            let mut result = client
+                .get_paged_records(
                     "/api/now/attachment",
-                    &[
-                        ("sysparm_query", query.as_str()),
-                        (
-                            "sysparm_fields",
-                            "sys_id,file_name,content_type,size_bytes,table_name,table_sys_id,download_link",
-                        ),
-                    ],
+                    &[("sysparm_query", query.as_str())],
+                    &pagination,
                 )
                 .await?;
+            for record in &mut result.records {
+                record
+                    .fields
+                    .retain(|field, _| ATTACHMENT_LIST_FIELDS.contains(&field.as_str()));
+            }
 
-            output::print_list(&response.result, format)?;
+            output::print_table_list(&result, format)?;
             Ok(())
         }
         AttachmentCommands::Download { sys_id, out_path } => {

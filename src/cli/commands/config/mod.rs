@@ -49,22 +49,21 @@ pub async fn handle(
             oauth_redirect_port,
             oauth_redirect_path,
             name,
-        } => {
-            handle_init_with_oauth_options(
-                &config_path,
-                instance,
-                auth_method,
-                username,
-                client_id,
-                oauth_grant_type,
-                oauth_scope,
-                oauth_redirect_host,
-                oauth_redirect_port,
-                oauth_redirect_path,
-                name,
-            )
-            .await
-        }
+        } => handle_init_with_oauth_options(
+            &config_path,
+            instance,
+            auth_method,
+            username,
+            client_id,
+            oauth_grant_type,
+            oauth_scope,
+            oauth_redirect_host,
+            oauth_redirect_port,
+            oauth_redirect_path,
+            name,
+        )
+        .await
+        .and_then(|result| output::print_output(&result, output_format)),
         ConfigCommands::Add {
             name,
             instance,
@@ -79,25 +78,24 @@ pub async fn handle(
             cert_path,
             key_path,
             sso_login_url,
-        } => {
-            handle_add_profile_with_oauth_options(
-                &config_path,
-                name,
-                instance,
-                auth_method,
-                username,
-                client_id,
-                oauth_grant_type,
-                oauth_scope,
-                oauth_redirect_host,
-                oauth_redirect_port,
-                oauth_redirect_path,
-                cert_path,
-                key_path,
-                sso_login_url,
-            )
-            .await
-        }
+        } => handle_add_profile_with_oauth_options(
+            &config_path,
+            name,
+            instance,
+            auth_method,
+            username,
+            client_id,
+            oauth_grant_type,
+            oauth_scope,
+            oauth_redirect_host,
+            oauth_redirect_port,
+            oauth_redirect_path,
+            cert_path,
+            key_path,
+            sso_login_url,
+        )
+        .await
+        .and_then(|result| output::print_output(&result, output_format)),
         ConfigCommands::Edit {
             name,
             instance,
@@ -112,25 +110,24 @@ pub async fn handle(
             cert_path,
             key_path,
             sso_login_url,
-        } => {
-            handle_edit_profile_with_oauth_options(
-                &config_path,
-                name,
-                instance,
-                auth_method,
-                username,
-                client_id,
-                oauth_grant_type,
-                oauth_scope,
-                oauth_redirect_host,
-                oauth_redirect_port,
-                oauth_redirect_path,
-                cert_path,
-                key_path,
-                sso_login_url,
-            )
-            .await
-        }
+        } => handle_edit_profile_with_oauth_options(
+            &config_path,
+            name,
+            instance,
+            auth_method,
+            username,
+            client_id,
+            oauth_grant_type,
+            oauth_scope,
+            oauth_redirect_host,
+            oauth_redirect_port,
+            oauth_redirect_path,
+            cert_path,
+            key_path,
+            sso_login_url,
+        )
+        .await
+        .and_then(|result| output::print_output(&result, output_format)),
         ConfigCommands::SetProfile {
             name,
             instance,
@@ -145,25 +142,24 @@ pub async fn handle(
             cert_path,
             key_path,
             sso_login_url,
-        } => {
-            handle_set_profile_with_oauth_options(
-                &config_path,
-                name,
-                instance,
-                auth_method,
-                username,
-                client_id,
-                oauth_grant_type,
-                oauth_scope,
-                oauth_redirect_host,
-                oauth_redirect_port,
-                oauth_redirect_path,
-                cert_path,
-                key_path,
-                sso_login_url,
-            )
-            .await
-        }
+        } => handle_set_profile_with_oauth_options(
+            &config_path,
+            name,
+            instance,
+            auth_method,
+            username,
+            client_id,
+            oauth_grant_type,
+            oauth_scope,
+            oauth_redirect_host,
+            oauth_redirect_port,
+            oauth_redirect_path,
+            cert_path,
+            key_path,
+            sso_login_url,
+        )
+        .await
+        .and_then(|result| output::print_output(&result, output_format)),
         ConfigCommands::ListProfiles => handle_list_profiles(&config_path, output_format).await,
         ConfigCommands::FindProfile { instance } => {
             handle_find_profile(&config_path, output_format, instance).await
@@ -195,7 +191,10 @@ pub async fn handle(
             alias,
             set_default,
         } => handle_export_now_sdk(&config_path, output_format, profile, alias, set_default).await,
-        ConfigCommands::UseProfile { name } => handle_default_profile(&config_path, name).await,
+        ConfigCommands::UseProfile { name } => {
+            let result = handle_default_profile(&config_path, name).await?;
+            output::print_output(&result, output_format)
+        }
         ConfigCommands::Current => {
             handle_current(&config_path, active_profile, output_format).await
         }
@@ -204,7 +203,10 @@ pub async fn handle(
             name,
             yes,
             new_default,
-        } => handle_delete_profile(&config_path, name, yes, new_default).await,
+        } => {
+            let result = handle_delete_profile(&config_path, name, yes, new_default).await?;
+            output::print_output(&result, output_format)
+        }
         ConfigCommands::Output { format, reset } => {
             handle_output_default(&config_path, format, reset).await
         }

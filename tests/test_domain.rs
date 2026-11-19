@@ -502,11 +502,32 @@ async fn counts_with_cross_domain_role_report_hidden_records() {
 }
 
 #[tokio::test]
+async fn counts_reject_a_group_without_a_count_instead_of_reporting_zero() {
+    let server = MockServer::start().await;
+    metadata(&server, true).await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/stats/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": [
+            {"stats": {}, "groupby_fields": [{"field": "sys_domain", "value": "global", "display_value": "global"}]}
+        ]})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config_path) = config(&server.uri());
+    domain_cmd("ro", &config_path, &server)
+        .args(["domain", "table", "incident", "--counts"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains("INVALID_RESPONSE"));
+}
+
+#[tokio::test]
 async fn script_counts_are_denied_read_only_and_require_admin() {
     let server = MockServer::start().await;
     let (_dir, config_path) = config(&server.uri());
     domain_cmd("ro", &config_path, &server)
-        .args(["domain", "table", "incident", "--counts", "--via-script"])
+        .args(["domain", "table", "incident", "--counts", "all"])
         .assert()
         .code(7)
         .stderr(predicate::str::contains("POLICY_DENIED"));
@@ -520,7 +541,7 @@ async fn script_counts_are_denied_read_only_and_require_admin() {
     )
     .await;
     domain_cmd("full", &config_path, &server)
-        .args(["domain", "table", "incident", "--counts", "--via-script"])
+        .args(["domain", "table", "incident", "--counts", "all"])
         .assert()
         .code(2)
         .stderr(predicate::str::contains("VALIDATION_ERROR"))

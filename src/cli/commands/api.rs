@@ -136,7 +136,7 @@ fn read_data_from<R: std::io::Read>(
 
 /// Print the raw HTTP response body to stdout.
 ///
-/// For JSON format: pretty-prints if the body is valid JSON, otherwise raw.
+/// A JSON body follows `--output` (compact for JSON); any other body is raw.
 /// For CSV format: prints raw body as-is (API responses may not be tabular).
 async fn print_response(
     response: crate::client::ClientResponse,
@@ -147,35 +147,7 @@ async fn print_response(
 
     tracing::debug!(status = status, body_len = body.len(), "Response");
 
-    match format {
-        OutputFormat::Json => {
-            // Try to pretty-print as JSON; if it's not valid JSON, output raw
-            match serde_json::from_str::<serde_json::Value>(&body) {
-                Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
-                Err(_) => println!("{}", body),
-            }
-        }
-        OutputFormat::Csv => {
-            // Raw API responses aren't necessarily tabular; output as-is
-            println!("{}", body);
-        }
-        OutputFormat::Jsonl => match serde_json::from_str::<serde_json::Value>(&body) {
-            Ok(json) => output::write_jsonl_value(&json, &mut std::io::stdout())?,
-            Err(_) => println!("{}", body),
-        },
-        OutputFormat::Toon => match serde_json::from_str::<serde_json::Value>(&body) {
-            Ok(json) => output::write_toon(&json, &mut std::io::stdout())?,
-            Err(_) => println!("{}", body),
-        },
-        OutputFormat::Text => match serde_json::from_str::<serde_json::Value>(&body) {
-            Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
-            Err(_) => println!("{}", body),
-        },
-        OutputFormat::Auto => match serde_json::from_str::<serde_json::Value>(&body) {
-            Ok(json) => output::emit_auto(&json, &mut std::io::stdout())?,
-            Err(_) => println!("{}", body),
-        },
-    }
+    output::print_passthrough(&body, format)?;
 
     Ok(())
 }

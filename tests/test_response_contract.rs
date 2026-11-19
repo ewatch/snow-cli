@@ -377,7 +377,10 @@ async fn discovery_parse_errors_and_read_only_denial_do_not_touch_network() {
             .clone();
         assert!(output.stdout.is_empty());
         assert_eq!(output.status.code(), Some(2));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("unknown option '--unknown-contract-flag'")
+        );
         let output = command(binary, &config, &server.uri(), "json")
             .assert()
             .code(2)
@@ -398,7 +401,7 @@ async fn discovery_parse_errors_and_read_only_denial_do_not_touch_network() {
         assert!(output.stdout.is_empty());
         if binary == "snow-cli-ro" {
             assert_eq!(output.status.code(), Some(2));
-            assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+            assert!(String::from_utf8_lossy(&output.stderr).contains("can change remote data"));
         } else {
             assert_eq!(error(&output.stderr)["error"]["code"], "POLICY_DENIED");
         }

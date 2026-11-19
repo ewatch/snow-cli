@@ -35,6 +35,10 @@ async fn domain_and_session_scenarios_execute_and_clean_up_with_mock_instance() 
             json!([{"name":"incident","element":"sys_domain","internal_type":"reference"}]),
         ),
         (
+            "/api/now/stats/incident".to_string(),
+            json!([{"stats":{"count":"2"},"groupby_fields":[{"field":"sys_domain","value":"global","display_value":"global"}]}]),
+        ),
+        (
             "/api/now/ui/user/current_user".to_string(),
             json!({"user_sys_id":user,"user_name":"admin"}),
         ),

@@ -165,6 +165,39 @@ snow-cli table schema incident --own-only
 
 This is especially useful before building imports, exports, or scripted automation.
 
+## `table find <text>`
+
+Find tables whose name or label contains `<text>`. Use it when you do not know
+a table's exact name.
+
+```bash
+snow-cli table find flow
+snow-cli table find 'service catalog' --limit 50
+```
+
+Each row has `name`, `label`, `extends` (the parent table, or `null` for a
+base table), and `scope`. Rows are sorted by name and use the `table list`
+envelope (`total`, `returned`, `offset`, `next_offset`, `truncated`,
+`records`). Output is bounded to 20 tables; use `--limit`, `--offset`, or
+`--all`. Query operators such as `^` and `=` are rejected in `<text>`.
+
+## `table choices <table> [field]`
+
+List active choice values and their labels, so codes such as `state: "2"` can
+be read as `In Progress`.
+
+```bash
+snow-cli table choices incident priority
+snow-cli table choices incident
+snow-cli table choices change_request state --language de
+```
+
+Choice lists are often defined on a parent table: `incident.priority` choices
+live on `task`. The command walks the table hierarchy and, for each field,
+returns the choices of the most specific table that defines any. Each row has
+`element`, `value`, `label`, `sequence`, `table` (where the choices are
+defined), and `dependent_value` when set. `--language` defaults to `en`.
+
 ## `table stats <table>`
 
 Count and aggregate records using the ServiceNow Aggregate API
@@ -179,7 +212,8 @@ Important options:
 - `--query <encoded-query>`: ServiceNow encoded query string
 - `--group-by <a,b>`: comma-separated fields to group by (one result row per group)
 - `--avg <a,b>` / `--min <a,b>` / `--max <a,b>` / `--sum <a,b>`: per-field aggregates
-- `--having <clause>`: filter aggregate rows (e.g. `count>5`)
+- `--having <clause>`: keep only groups whose aggregate matches, such as `count>5` or
+  `avg(priority)>=2`. Separate clauses with commas to require all of them.
 
 Without aggregate flags, the command returns the matching record count — a
 cheap way to answer "how many rows match?" without fetching records:
@@ -200,10 +234,11 @@ Notes:
 - Numeric strings in the response are converted to numbers where they parse cleanly.
 - Group values (like `state`) stay strings because they are categorical codes.
 - `table stats` is available in `snow-cli-ro` because it only reads data.
-- `--having` is currently rejected by tested instances (Zurich-era PDIs
-  returned HTTP 400, "Invalid HAVING clause") for clauses like `count>5`, even
-  though the flag exists. Prefer restricting rows with `--query` instead of
-  relying on `--having` until this is confirmed working against your instance.
+- `--having` translates `count>5` into the Aggregate API's native
+  `count^*^>^5` form and `avg(priority)>=2` into `avg^priority^>=^2`.
+  Aggregates are `count`, `avg`, `min`, `max`, and `sum`; operators are `>`,
+  `>=`, `<`, `<=`, `=`, and `!=`. A clause that already contains `^` is sent
+  unchanged.
 
 ## Common examples
 

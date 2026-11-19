@@ -8,7 +8,7 @@ use std::io::Write;
 mod preview;
 pub use preview::print_table_list;
 pub(crate) use preview::{
-    ensure_preview_supported, print_record_preview, print_table_list_preview,
+    DomainSummary, ensure_preview_supported, print_record_preview, print_table_list_preview,
 };
 
 /// Write a value to stdout in the requested output format.
@@ -78,6 +78,26 @@ pub fn print_list<T: Serialize>(values: &[T], format: &OutputFormat) -> anyhow::
         }
     }
     Ok(())
+}
+
+/// Write a raw response body from a passthrough command (`api`, `script run`
+/// on custom endpoints).
+///
+/// A JSON body is re-encoded in the requested format, so explicit JSON stays
+/// compact. A body that is not JSON, or any body with `--output csv` (raw
+/// responses are not tabular), is written unchanged.
+pub fn print_passthrough(body: &str, format: &OutputFormat) -> anyhow::Result<()> {
+    let json = match format {
+        OutputFormat::Csv => None,
+        _ => serde_json::from_str::<Value>(body).ok(),
+    };
+    match json {
+        Some(json) => print_output(&json, format),
+        None => {
+            println!("{body}");
+            Ok(())
+        }
+    }
 }
 
 /// Write a single Record to stdout.

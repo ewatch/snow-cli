@@ -269,7 +269,9 @@ fn test_snow_cli_ro_rejects_mutating_command_at_parse_time() {
         .args(["table", "delete", "incident", "abc123", "--yes"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("unrecognized subcommand 'delete'"));
+        .stderr(predicate::str::contains(
+            "'delete' is not a `snow-cli-ro table` subcommand",
+        ));
 }
 
 #[test]
@@ -278,7 +280,9 @@ fn test_snow_cli_ro_rejects_api_post_at_parse_time() {
         .args(["api", "post", "/api/x/action", "--data", "{}"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("unrecognized subcommand 'post'"));
+        .stderr(predicate::str::contains(
+            "'post' is not a `snow-cli-ro api` subcommand",
+        ));
 }
 
 #[test]
@@ -310,7 +314,7 @@ fn test_snow_cli_ro_rejects_snu_update_record_at_parse_time() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "unrecognized subcommand 'update-record'",
+            "'update-record' is not a `snow-cli-ro snu` subcommand",
         ));
 }
 
@@ -374,7 +378,7 @@ username = "admin"
         .args(["--read-only", "api", "get", "/api/x_myapp/status"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"ok\": true"));
+        .stdout(predicate::str::contains("\"ok\":true"));
 }
 
 // --- Config integration tests ---
@@ -530,8 +534,49 @@ username = "admin"
         .args(["profile", "current"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"active_profile\": \"dev\""))
+        .stdout(predicate::str::contains("\"active_profile\":\"dev\""))
         .stdout(predicate::str::contains("dev.service-now.com"));
+}
+
+#[test]
+fn test_profile_list_is_sorted_and_use_keeps_file_order() {
+    let names = ["d", "f", "a", "e", "b", "c"];
+    let mut source = String::from("default_profile = \"d\"\n");
+    for name in names {
+        source.push_str(&format!(
+            "\n[profiles.{name}]\ninstance = \"https://{name}.service-now.com\"\nauth_method = \"basic\"\n"
+        ));
+    }
+    let (_dir, config_path) = common::create_temp_config(&source);
+
+    for _ in 0..3 {
+        let output = cargo_bin_cmd!("snow-cli")
+            .env("SNOW_CLI_CONFIG", &config_path)
+            .args(["--output", "json", "profile", "list"])
+            .output()
+            .unwrap();
+        let profiles: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        let listed: Vec<&str> = profiles
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(listed, ["a", "b", "c", "d", "e", "f"]);
+    }
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args(["profile", "use", "c"])
+        .assert()
+        .success();
+    let saved = std::fs::read_to_string(&config_path).unwrap();
+    let positions: Vec<usize> = names
+        .iter()
+        .map(|name| saved.find(&format!("[profiles.{name}]")).unwrap())
+        .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "{saved}"
+    );
 }
 
 #[test]

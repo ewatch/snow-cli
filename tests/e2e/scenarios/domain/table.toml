@@ -9,12 +9,15 @@ args = ["profile", "add", "e2e-domain", "--instance", "$SNOW_E2E_INSTANCE_URL", 
 shell = 'printf "%s" "$SNOW_E2E_PASSWORD" | "$SNOW_CLI_BIN" --profile e2e-domain auth login --password-stdin'
 
 [command]
-args = ["domain", "table", "incident", "--profile", "e2e-domain", "--output", "json"]
+args = ["domain", "table", "incident", "--counts", "--profile", "e2e-domain", "--output", "json"]
 
 [expect]
 exit_code = 0
-stdout_contains = ['"table":"incident"', '"domain_fields":', '"has_sys_domain":']
-json_field_present = [".hierarchy", ".note"]
+stdout_contains = ['"table":"incident"', '"domain_fields":', '"has_sys_domain":true', '"source":"aggregate_api"', '"scope":"visible_domains"']
+json_field_present = [".hierarchy", ".note", ".counts.by_domain[0].domain"]
+
+[[fuzzy]]
+expectation = "counts.total equals the sum of counts.by_domain[].count; for an admin session counts.cross_domain reports visible_total, all_total, and hidden (0 on a non-domain-separated instance)."
 
 [[cleanup]]
 args = ["profile", "remove", "e2e-domain", "--yes"]
