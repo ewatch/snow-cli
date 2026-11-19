@@ -1,0 +1,26 @@
+name: Build documentation site
+description: >-
+  Install the docs-site dependencies and build it into docs/site/dist.
+  Shared by the CI docs check and the Pages deployment so both build the
+  site the same way. Expects the repository to be checked out.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v7
+      with:
+        node-version: 22
+        cache: npm
+        cache-dependency-path: docs/site/package-lock.json
+
+    - name: Build documentation
+      shell: bash
+      working-directory: docs/site
+      env:
+        # Project site is served at https://ewatch.github.io/snow-cli/, so the
+        # build must emit assets and links under that base (see astro.config.mjs).
+        BASE_PATH: /snow-cli/
+      run: |
+        npm ci
+        npm run build
