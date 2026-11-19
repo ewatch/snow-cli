@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::keychain;
 use crate::models::secret::Secret;
 
+mod credential_file;
+
 pub const NOW_SDK_SERVICE_NAME: &str = "ServiceNow";
 pub const NOW_SDK_ACCOUNT_NAME: &str = "now-sdk";
 
@@ -110,42 +112,146 @@ impl StoredAlias {
     }
 }
 
-pub fn load_store() -> anyhow::Result<AliasStore> {
-    let Some(raw) = keychain::get_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME)? else {
-        return Ok(BTreeMap::new());
-    };
+/// Where now-sdk keeps its alias store on this machine.
+enum Backend {
+    /// The pre-4.14 JSON blob in the keychain (`ServiceNow` / `now-sdk`).
+    /// Used while no encrypted store exists; now-sdk 4.14+ migrates it.
+    Legacy,
+    /// now-sdk 4.14+ `credentials.enc` with its key.
+    Encrypted {
+        key: credential_file::FileKey,
+        path: std::path::PathBuf,
+    },
+    /// `SN_SDK_KEY_SOURCE=env` without a key and without a file: now-sdk
+    /// reads this as empty and refuses to write.
+    EnvKeyMissing,
+}
 
+/// Detect the store now-sdk would use, following its own rules: a key
+/// selects the encrypted file; a file without its key is never touched.
+fn backend() -> anyhow::Result<Backend> {
+    let source = credential_file::KeySource::from_env()?;
+    let key = source.key()?;
+    let path = credential_file::credentials_path();
+    match key {
+        Some(key) => Ok(Backend::Encrypted { key, path }),
+        None if path.exists() => Err(crate::config::error::ConfigError::new(
+            "NOW_SDK_CREDENTIALS_UNREADABLE",
+            format!(
+                "now-sdk encrypted credentials exist at {} but their key is unavailable ({}). \
+                 snow-cli did not modify them; unlock the keychain or set the key, then retry.",
+                path.display(),
+                match source {
+                    credential_file::KeySource::Keyring => "keychain entry missing or locked",
+                    credential_file::KeySource::Env => "SN_SDK_ENCRYPTION_KEY is not set",
+                }
+            ),
+        )
+        .into()),
+        None if source == credential_file::KeySource::Env => Ok(Backend::EnvKeyMissing),
+        None => Ok(Backend::Legacy),
+    }
+}
+
+fn parse_store(raw: &str, origin: &str) -> anyhow::Result<AliasStore> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(BTreeMap::new());
     }
-
     serde_json::from_str(trimmed).map_err(|error| {
-        anyhow::anyhow!(
-            "Failed to parse now-sdk keychain entry for service '{}' account '{}': {error}",
-            NOW_SDK_SERVICE_NAME,
-            NOW_SDK_ACCOUNT_NAME,
-        )
+        anyhow::anyhow!("Failed to parse now-sdk credentials from {origin}: {error}")
     })
 }
 
-pub fn save_store(store: &AliasStore) -> anyhow::Result<()> {
-    if store.is_empty() {
-        return keychain::delete_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME);
+pub fn load_store() -> anyhow::Result<AliasStore> {
+    match backend()? {
+        Backend::Legacy => {
+            match keychain::get_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME)? {
+                Some(raw) => parse_store(
+                    &raw,
+                    &format!(
+                        "keychain service '{NOW_SDK_SERVICE_NAME}' account '{NOW_SDK_ACCOUNT_NAME}'"
+                    ),
+                ),
+                None => Ok(BTreeMap::new()),
+            }
+        }
+        Backend::Encrypted { key, path } => match credential_file::read_raw(&path)? {
+            Some(file) => parse_store(
+                &credential_file::decrypt(&key, &file, &path)?,
+                &path.display().to_string(),
+            ),
+            None => Ok(BTreeMap::new()),
+        },
+        Backend::EnvKeyMissing => Ok(BTreeMap::new()),
     }
-
-    let raw = serde_json::to_string(store)?;
-    keychain::set_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME, &raw)
 }
 
-pub fn snapshot_raw_store() -> anyhow::Result<Option<String>> {
-    keychain::get_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME)
+pub fn save_store(store: &AliasStore) -> anyhow::Result<()> {
+    match backend()? {
+        Backend::Legacy => {
+            if store.is_empty() {
+                return keychain::delete_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME);
+            }
+            let raw = serde_json::to_string(store)?;
+            keychain::set_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME, &raw)
+        }
+        Backend::Encrypted { key, path } => {
+            let file = credential_file::encrypt(&key, &serde_json::to_string(store)?)?;
+            credential_file::write_atomic(&path, &file)
+        }
+        Backend::EnvKeyMissing => anyhow::bail!(
+            "SN_SDK_KEY_SOURCE=env but SN_SDK_ENCRYPTION_KEY is not set; set it to the base64 key \
+             now-sdk uses before writing now-sdk credentials."
+        ),
+    }
 }
 
-pub fn restore_raw_store(snapshot: Option<&str>) -> anyhow::Result<()> {
+/// The now-sdk store's raw state, restored if a multi-step write fails.
+#[derive(Debug)]
+pub enum StoreSnapshot {
+    Legacy(Option<Secret<String>>),
+    Encrypted {
+        path: std::path::PathBuf,
+        file: Option<Vec<u8>>,
+    },
+    /// Nothing can be written, so nothing needs restoring.
+    Unwritable,
+}
+
+pub fn snapshot_raw_store() -> anyhow::Result<StoreSnapshot> {
+    Ok(match backend()? {
+        Backend::Legacy => StoreSnapshot::Legacy(
+            keychain::get_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME)?.map(Secret::new),
+        ),
+        Backend::Encrypted { path, .. } => StoreSnapshot::Encrypted {
+            file: credential_file::read_raw(&path)?,
+            path,
+        },
+        Backend::EnvKeyMissing => StoreSnapshot::Unwritable,
+    })
+}
+
+pub fn restore_raw_store(snapshot: &StoreSnapshot) -> anyhow::Result<()> {
     match snapshot {
-        Some(raw) => keychain::set_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME, raw),
-        None => keychain::delete_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME),
+        StoreSnapshot::Legacy(Some(raw)) => keychain::set_password(
+            NOW_SDK_SERVICE_NAME,
+            NOW_SDK_ACCOUNT_NAME,
+            raw.expose_secret(),
+        ),
+        StoreSnapshot::Legacy(None) => {
+            keychain::delete_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME)
+        }
+        StoreSnapshot::Encrypted {
+            path,
+            file: Some(file),
+        } => credential_file::write_atomic(path, file),
+        StoreSnapshot::Encrypted { path, file: None } => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        },
+        StoreSnapshot::Unwritable => Ok(()),
     }
 }
 

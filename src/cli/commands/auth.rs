@@ -822,7 +822,7 @@ fn store_basic_login(
                 existing_password.as_deref(),
             )?;
             if let Some(snapshot) = now_sdk_snapshot.as_ref() {
-                now_sdk::restore_raw_store(snapshot.as_deref())?;
+                now_sdk::restore_raw_store(snapshot)?;
             }
             Err(error)
         }

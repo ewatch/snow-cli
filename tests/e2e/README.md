@@ -201,7 +201,11 @@ directory. Credentials from `auth login`, OAuth tokens, and the now-sdk alias
 store (keychain service `ServiceNow`, account `now-sdk`, which also holds the
 user's own now-sdk aliases) are written there and deleted with it. No OS
 keychain prompt can stall a run. The file holds plaintext credentials only for
-the length of the run, inside a `mktemp -d` directory readable only by you.
+the length of the run, inside a `mktemp -d` directory readable only by you. now-sdk
+4.14+ keeps its aliases in an encrypted `credentials.enc` instead of the keychain
+blob; the runner sets `SN_SDK_CREDENTIALS_DIR` to the same scratch directory
+(and clears `SN_SDK_KEY_SOURCE` / `SN_SDK_ENCRYPTION_KEY`), so your real
+`~/.now-sdk` is never read or written.
 
 Set `SNOW_E2E_REAL_KEYCHAIN=1` to exercise the real OS keychain instead. In
 that mode `auth login` writes real keychain entries under the scenario's

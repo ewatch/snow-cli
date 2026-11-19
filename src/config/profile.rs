@@ -385,7 +385,7 @@ fn dirs_config_path() -> PathBuf {
     }
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         std::env::var("USERPROFILE").ok().map(PathBuf::from)

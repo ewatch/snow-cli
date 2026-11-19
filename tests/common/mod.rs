@@ -84,3 +84,13 @@ fn read_store(store_path: &std::path::Path) -> Value {
 
     serde_json::from_str(&content).unwrap()
 }
+
+/// now-sdk 4.14+ credential directory beside a temp keychain store, so tests
+/// never read or write the developer's real `~/.now-sdk/credentials.enc`.
+#[allow(
+    dead_code,
+    reason = "shared helpers are compiled separately by each integration test crate"
+)]
+pub fn now_sdk_credentials_dir(keychain_store: &std::path::Path) -> PathBuf {
+    keychain_store.with_file_name("now-sdk")
+}

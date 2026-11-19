@@ -219,7 +219,7 @@ pub(super) async fn handle_export_now_sdk(
     match apply_result {
         Ok(result) => output::print_output(&result, output_format),
         Err(error) => {
-            now_sdk::restore_raw_store(snapshot.as_deref())?;
+            now_sdk::restore_raw_store(&snapshot)?;
             Err(error)
         }
     }

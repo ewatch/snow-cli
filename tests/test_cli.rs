@@ -375,6 +375,12 @@ username = "admin"
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env(
+            "SN_SDK_CREDENTIALS_DIR",
+            common::now_sdk_credentials_dir(&keychain_store),
+        )
+        .env_remove("SN_SDK_KEY_SOURCE")
+        .env_remove("SN_SDK_ENCRYPTION_KEY")
         .args(["--read-only", "api", "get", "/api/x_myapp/status"])
         .assert()
         .success()
@@ -1075,6 +1081,12 @@ fn test_config_list_now_sdk_profiles() {
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env(
+            "SN_SDK_CREDENTIALS_DIR",
+            common::now_sdk_credentials_dir(&keychain_store),
+        )
+        .env_remove("SN_SDK_KEY_SOURCE")
+        .env_remove("SN_SDK_ENCRYPTION_KEY")
         .args(["profile", "sdk", "list"])
         .assert()
         .success()
@@ -1112,6 +1124,12 @@ fn test_config_import_now_sdk_alias_creates_profile_and_password() {
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env(
+            "SN_SDK_CREDENTIALS_DIR",
+            common::now_sdk_credentials_dir(&keychain_store),
+        )
+        .env_remove("SN_SDK_KEY_SOURCE")
+        .env_remove("SN_SDK_ENCRYPTION_KEY")
         .args([
             "profile",
             "sdk",
@@ -1172,6 +1190,12 @@ username = "olduser"
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env(
+            "SN_SDK_CREDENTIALS_DIR",
+            common::now_sdk_credentials_dir(&keychain_store),
+        )
+        .env_remove("SN_SDK_KEY_SOURCE")
+        .env_remove("SN_SDK_ENCRYPTION_KEY")
         .args(["profile", "sdk", "import", "--alias", "dev"])
         .assert()
         .success();
@@ -1225,6 +1249,12 @@ fn test_config_import_now_sdk_all_fails_when_oauth_present() {
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env(
+            "SN_SDK_CREDENTIALS_DIR",
+            common::now_sdk_credentials_dir(&keychain_store),
+        )
+        .env_remove("SN_SDK_KEY_SOURCE")
+        .env_remove("SN_SDK_ENCRYPTION_KEY")
         .args(["profile", "sdk", "import", "--all"])
         .assert()
         .failure()
@@ -1274,6 +1304,12 @@ fn test_config_import_now_sdk_all_preserves_now_sdk_default_alias() {
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env(
+            "SN_SDK_CREDENTIALS_DIR",
+            common::now_sdk_credentials_dir(&keychain_store),
+        )
+        .env_remove("SN_SDK_KEY_SOURCE")
+        .env_remove("SN_SDK_ENCRYPTION_KEY")
         .args(["profile", "sdk", "import", "--all"])
         .assert()
         .success();
@@ -1301,6 +1337,12 @@ username = "admin"
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env(
+            "SN_SDK_CREDENTIALS_DIR",
+            common::now_sdk_credentials_dir(&keychain_store),
+        )
+        .env_remove("SN_SDK_KEY_SOURCE")
+        .env_remove("SN_SDK_ENCRYPTION_KEY")
         .args([
             "profile",
             "sdk",
@@ -1340,6 +1382,12 @@ username = "admin"
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env(
+            "SN_SDK_CREDENTIALS_DIR",
+            common::now_sdk_credentials_dir(&keychain_store),
+        )
+        .env_remove("SN_SDK_KEY_SOURCE")
+        .env_remove("SN_SDK_ENCRYPTION_KEY")
         .args([
             "auth",
             "login",
@@ -1385,6 +1433,12 @@ auth_method = "api_key"
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env(
+            "SN_SDK_CREDENTIALS_DIR",
+            common::now_sdk_credentials_dir(&keychain_store),
+        )
+        .env_remove("SN_SDK_KEY_SOURCE")
+        .env_remove("SN_SDK_ENCRYPTION_KEY")
         .args(["auth", "login", "--token-stdin", "--no-verify"])
         .write_stdin("stdin-token\n")
         .assert()
@@ -1415,6 +1469,12 @@ auth_method = "api_key"
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env(
+            "SN_SDK_CREDENTIALS_DIR",
+            common::now_sdk_credentials_dir(&keychain_store),
+        )
+        .env_remove("SN_SDK_KEY_SOURCE")
+        .env_remove("SN_SDK_ENCRYPTION_KEY")
         .args(["auth", "login", "--token", "abc123", "--also-now-sdk"])
         .assert()
         .failure()
@@ -1485,6 +1545,12 @@ oauth_grant_type = "client_credentials"
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
         .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env(
+            "SN_SDK_CREDENTIALS_DIR",
+            common::now_sdk_credentials_dir(&keychain_store),
+        )
+        .env_remove("SN_SDK_KEY_SOURCE")
+        .env_remove("SN_SDK_ENCRYPTION_KEY")
         .args(["auth", "token"])
         .assert()
         .success()
@@ -1819,6 +1885,12 @@ username = "admin"
         cmd.env("SNOW_CLI_CONFIG", &config_path)
             .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
             .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+            .env(
+                "SN_SDK_CREDENTIALS_DIR",
+                common::now_sdk_credentials_dir(&keychain_store),
+            )
+            .env_remove("SN_SDK_KEY_SOURCE")
+            .env_remove("SN_SDK_ENCRYPTION_KEY")
             .args(["auth", "token"])
             .args(extra);
         cmd

@@ -154,6 +154,24 @@ Important options:
 
 Note: current interoperability is aimed at basic-auth profiles.
 
+### Where `now-sdk` keeps its aliases
+
+`snow-cli` reads and writes the same store `now-sdk` uses:
+
+- **now-sdk 4.14 and later** keep aliases in an encrypted file,
+  `~/.now-sdk/credentials.enc` (or the directory in `SN_SDK_CREDENTIALS_DIR`).
+  The key is in the OS keychain (`ServiceNow` / `now-sdk-credentials-key`), or,
+  with `SN_SDK_KEY_SOURCE=env`, in `SN_SDK_ENCRYPTION_KEY`. `snow-cli` honors
+  the same variables.
+- **Older now-sdk versions** keep all aliases in one keychain entry
+  (`ServiceNow` / `now-sdk`). `snow-cli` uses it only when no encrypted file or
+  key exists. now-sdk 4.14 moves it into the encrypted file the next time it
+  runs and leaves the old entry for older versions.
+
+If the encrypted file exists but its key is missing, or the key does not
+decrypt it, `snow-cli` stops with `NOW_SDK_CREDENTIALS_UNREADABLE` and leaves
+the file unchanged. Fix the key with `now-sdk`; `snow-cli` never resets it.
+
 ## `profile default <name>`
 
 Set the profile used when `--profile` is not provided.

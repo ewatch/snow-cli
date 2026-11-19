@@ -38,6 +38,35 @@ pub fn set_password(service: &str, account: &str, value: &str) -> anyhow::Result
     Ok(())
 }
 
+/// Read a binary secret. The plaintext test store holds text, so a test
+/// secret is returned as its UTF-8 bytes.
+pub fn get_secret(service: &str, account: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    if test_store_path()?.is_some() {
+        return Ok(get_password(service, account)?.map(String::into_bytes));
+    }
+
+    let entry = keyring::Entry::new(service, account)?;
+    match entry.get_secret() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Write a binary secret. The plaintext test store only accepts UTF-8.
+pub fn set_secret(service: &str, account: &str, value: &[u8]) -> anyhow::Result<()> {
+    if test_store_path()?.is_some() {
+        let text = std::str::from_utf8(value).map_err(|_| {
+            anyhow::anyhow!("the plaintext test keychain only stores UTF-8 secrets")
+        })?;
+        return set_password(service, account, text);
+    }
+
+    let entry = keyring::Entry::new(service, account)?;
+    entry.set_secret(value)?;
+    Ok(())
+}
+
 pub fn delete_password(service: &str, account: &str) -> anyhow::Result<()> {
     if let Some(path) = test_store_path()? {
         let mut store = load_test_store(&path)?;

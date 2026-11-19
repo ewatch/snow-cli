@@ -57,6 +57,9 @@ httpdate = "1"
 
 # Base64 encoding (for Basic auth and SN-Utils attachment payloads)
 base64 = "0.23"
+# now-sdk 4.14+ credential file: AES-256-GCM (ring) inside a CBOR envelope.
+ring = "0.17"
+ciborium = "0.2"
 rpassword = "7.4.0"
 open = "5.3.4"
 rand = "0.10.1"

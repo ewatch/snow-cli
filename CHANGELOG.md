@@ -29,6 +29,7 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ### Fixed
 
+- `profile sdk list`, `import`, and `export` and `auth login --also-now-sdk` work with now-sdk 4.14+, which moved aliases from the `ServiceNow` / `now-sdk` keychain entry into an encrypted `~/.now-sdk/credentials.enc`. snow-cli read a stale pre-migration copy and exported aliases now-sdk never saw. It now uses the encrypted file whenever it or its key exists, honoring `SN_SDK_CREDENTIALS_DIR`, `SN_SDK_KEY_SOURCE`, and `SN_SDK_ENCRYPTION_KEY`, and keeps writing the keychain entry only when no encrypted store exists. A file whose key is missing or wrong is reported as `NOW_SDK_CREDENTIALS_UNREADABLE` and never modified.
 - `table stats --having` works. The Aggregate API rejected the raw clause with HTTP 400 ("Invalid HAVING clause"); `count>5` is now sent as `count^*^>^5` and `avg(priority)>=2` as `avg^priority^>=^2`. Comma-separated clauses must all match, and native `aggregate^field^operator^value` clauses are sent unchanged.
 - `attachment list` no longer sends `sysparm_fields`, which the Attachment API ignores, and keeps only the seven metadata fields client-side instead of about 20 columns.
 - `profile list` prints profiles sorted by name instead of in a different order on every run, and saving the config keeps the `[profiles.*]` sections in file order instead of reshuffling them.
