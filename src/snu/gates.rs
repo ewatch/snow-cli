@@ -358,13 +358,29 @@ fn batch_sub_methods(payload: &Value) -> BatchMethods {
 
 /// Resolve the target origin without retaining any session or action payload.
 pub fn payload_origin(payload: &Value) -> Option<String> {
-    // Page commands read `params.url` before the top-level `url`, like the helper.
-    payload
-        .pointer("/instance/url")
-        .or_else(|| payload.pointer("/params/url"))
-        .or_else(|| payload.get("url"))
-        .and_then(Value::as_str)
-        .and_then(normalize_origin)
+    let page_action = matches!(
+        payload.get("action").and_then(Value::as_str),
+        Some(
+            "agentRunUiAction"
+                | "agentSetField"
+                | "agentClickElement"
+                | "agentGetFormState"
+                | "agentNavigate"
+                | "takeScreenshot"
+        )
+    );
+    // Page actions act on the tab their URL selects, never on `instance`;
+    // like the helper, `params.url` wins over the top-level `url`.
+    let url = if page_action {
+        payload
+            .pointer("/params/url")
+            .or_else(|| payload.get("url"))
+    } else {
+        payload
+            .pointer("/instance/url")
+            .or_else(|| payload.get("url"))
+    };
+    url.and_then(Value::as_str).and_then(normalize_origin)
 }
 
 impl HelperCapabilitiesReport {

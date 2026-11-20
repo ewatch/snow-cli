@@ -252,9 +252,11 @@ Drive the community Agent API for a live ServiceNow tab. `form-state` is a
 read; `set-field` changes the unsaved form, while `run-ui-action`, `click`, and
 `navigate` can cause browser or instance side effects. `run-ui-action` commits
 the open record, so it is governed by the `updateRecords` gate, or by
-`deleteRecords` when the action name mentions delete or destroy. When `--url`
-is a pattern, the action must be allowed on every authorized instance it
-matches.
+`deleteRecords` when the action name mentions delete or destroy. Because SN-Utils
+cannot tell which instance a tab id or a wildcard pattern selects,
+`run-ui-action` needs `--url` naming one exact instance, for example
+`--url 'https://dev12345.service-now.com/incident.do*'`; `--tab-id` and
+`https://*.service-now.com/*` are refused for it.
 
 ```bash
 snow-cli snu page form-state --fields number,state --url 'https://dev12345.service-now.com/*'
@@ -300,8 +302,15 @@ snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png
   default); approval must happen within `--timeout-secs`. A rejection returns
   `SNU_REVIEW_REJECTED` with your note. Helper tabs too old to hold commands
   for review refuse approve-mode commands with `SNU_REVIEW_UNSUPPORTED`.
-- Only the SN-Utils helper tab (a browser extension page) can act as the
-  helper: connections from ordinary web pages are refused.
+- Connections from ordinary web pages are refused, so a page open in your
+  browser cannot act as the helper. Like SN-Utils' own bridge, the bridge
+  cannot authenticate local programs: any process on your machine that
+  connects to `127.0.0.1:1978` can take over as the helper. Only browser
+  extension pages receive the bridge's identity.
+- If an approved command's reply is lost, snow-cli reports
+  `SNU_APPROVED_NO_REPLY`: the command was sent and may have run, so check the
+  instance before retrying. A command that would need a new approval is not
+  retried automatically.
 - snow-cli identifies its bridge to SN-Utils with a private id stored in
   `snu-bridge-id` next to the config file. After one manual `/token` with
   snow-cli connected, SN-Utils 10.3+ refreshes session tokens on its own.

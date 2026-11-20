@@ -213,54 +213,6 @@ pub fn save_store(store: &AliasStore) -> anyhow::Result<()> {
     }
 }
 
-/// The now-sdk store's raw state, restored if a multi-step write fails.
-#[derive(Debug)]
-pub enum StoreSnapshot {
-    Legacy(Option<Secret<String>>),
-    Encrypted {
-        path: std::path::PathBuf,
-        file: Option<Vec<u8>>,
-    },
-    /// Nothing can be written, so nothing needs restoring.
-    Unwritable,
-}
-
-pub fn snapshot_raw_store() -> anyhow::Result<StoreSnapshot> {
-    Ok(match backend()? {
-        Backend::Legacy => StoreSnapshot::Legacy(
-            keychain::get_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME)?.map(Secret::new),
-        ),
-        Backend::Encrypted { path, .. } => StoreSnapshot::Encrypted {
-            file: credential_file::read_raw(&path)?,
-            path,
-        },
-        Backend::EnvKeyMissing => StoreSnapshot::Unwritable,
-    })
-}
-
-pub fn restore_raw_store(snapshot: &StoreSnapshot) -> anyhow::Result<()> {
-    match snapshot {
-        StoreSnapshot::Legacy(Some(raw)) => keychain::set_password(
-            NOW_SDK_SERVICE_NAME,
-            NOW_SDK_ACCOUNT_NAME,
-            raw.expose_secret(),
-        ),
-        StoreSnapshot::Legacy(None) => {
-            keychain::delete_password(NOW_SDK_SERVICE_NAME, NOW_SDK_ACCOUNT_NAME)
-        }
-        StoreSnapshot::Encrypted {
-            path,
-            file: Some(file),
-        } => credential_file::write_atomic(path, file),
-        StoreSnapshot::Encrypted { path, file: None } => match std::fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        },
-        StoreSnapshot::Unwritable => Ok(()),
-    }
-}
-
 pub fn list_profiles() -> anyhow::Result<Vec<ProfileSummary>> {
     let store = load_store()?;
     let mut profiles: Vec<_> = store.values().map(StoredAlias::summary).collect();

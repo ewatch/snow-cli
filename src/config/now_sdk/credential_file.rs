@@ -230,11 +230,13 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("invalid now-sdk credentials path"))?;
+    // Restrict only a directory created here: an existing one (possibly a
+    // symlink to a shared directory) keeps the permissions its owner chose.
+    let existed = dir.exists();
     std::fs::create_dir_all(dir)?;
     #[cfg(unix)]
-    {
+    if !existed {
         use std::os::unix::fs::PermissionsExt;
-        // Best effort: the directory may be a shared mount this user does not own.
         if let Err(error) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
             tracing::debug!(%error, "could not restrict now-sdk credentials directory");
         }

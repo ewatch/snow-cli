@@ -810,11 +810,11 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             timeout_secs,
         } => {
             let preflight = preflight_for_dispatch(broker, &payload, timeout_secs).await?;
-            if let Some(message) =
-                review_before_dispatch(broker, &payload, &preflight, timeout_secs).await?
-            {
-                return Ok(message_response(message));
-            }
+            let host_reviewed =
+                match review_before_dispatch(broker, &payload, &preflight, timeout_secs).await? {
+                    ReviewStep::Done(message) => return Ok(message_response(*message)),
+                    ReviewStep::Proceed { host_reviewed } => host_reviewed,
+                };
             let result = send_action_with_refresh(
                 broker,
                 &mut payload,
@@ -823,7 +823,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 preflight.generation,
             )
             .await;
-            let message = explain_approval_timeout(result, &preflight)?;
+            let message = explain_approval_timeout(result, &preflight, host_reviewed)?;
             Ok(message_response(message))
         }
         BrokerRequest::SendActionForAction {
@@ -832,11 +832,11 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             timeout_secs,
         } => {
             let preflight = preflight_for_dispatch(broker, &payload, timeout_secs).await?;
-            if let Some(message) =
-                review_before_dispatch(broker, &payload, &preflight, timeout_secs).await?
-            {
-                return Ok(message_response(message));
-            }
+            let host_reviewed =
+                match review_before_dispatch(broker, &payload, &preflight, timeout_secs).await? {
+                    ReviewStep::Done(message) => return Ok(message_response(*message)),
+                    ReviewStep::Proceed { host_reviewed } => host_reviewed,
+                };
             let result = broker
                 .manager
                 .request_on_generation(
@@ -847,7 +847,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 )
                 .await
                 .map_err(anyhow::Error::from);
-            let message = explain_approval_timeout(result, &preflight)?;
+            let message = explain_approval_timeout(result, &preflight, host_reviewed)?;
             Ok(message_response(message))
         }
         BrokerRequest::SendActionWithLegacyFallback {
@@ -858,11 +858,13 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             timeout_secs,
         } => {
             let preflight = preflight_for_dispatch(broker, &current_payload, timeout_secs).await?;
-            if let Some(message) =
-                review_before_dispatch(broker, &current_payload, &preflight, timeout_secs).await?
-            {
-                return Ok(message_response(message));
-            }
+            let host_reviewed =
+                match review_before_dispatch(broker, &current_payload, &preflight, timeout_secs)
+                    .await?
+                {
+                    ReviewStep::Done(message) => return Ok(message_response(*message)),
+                    ReviewStep::Proceed { host_reviewed } => host_reviewed,
+                };
             let result = if preflight.decision == GateDecision::LegacyUnrestricted {
                 let _legacy_guard = broker.legacy_action_lock.lock().await;
                 refresh_payload_instance_from_cache(broker, &mut legacy_payload).await?;
@@ -884,7 +886,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 )
                 .await
             };
-            let message = explain_approval_timeout(result, &preflight)?;
+            let message = explain_approval_timeout(result, &preflight, host_reviewed)?;
             Ok(message_response(message))
         }
         BrokerRequest::RefreshSession {
@@ -985,27 +987,86 @@ async fn preflight_for_dispatch(
     Ok(preflight)
 }
 
-/// Hold an approve-mode action for review in the helper tab. Returns the
-/// helper's reply when it ran the approved action itself; `None` means
-/// dispatch the action now (no review needed, or approved for dispatch).
+/// Result of the review step before a dispatch.
+enum ReviewStep {
+    /// Dispatch now. `host_reviewed` is true when this bridge ran a review
+    /// and the user approved it.
+    Proceed { host_reviewed: bool },
+    /// Approved and already run by the helper; this is its reply.
+    Done(Box<SnuMessage>),
+}
+
+/// Hold an approve-mode action for review in the helper tab.
 async fn review_before_dispatch(
     broker: &Broker,
     payload: &Value,
     preflight: &PreflightResult,
     timeout_secs: u64,
-) -> anyhow::Result<Option<SnuMessage>> {
+) -> anyhow::Result<ReviewStep> {
     use crate::snu::review::{ReviewOutcome, review_if_required};
-    match review_if_required(&broker.manager, payload, preflight, timeout_secs).await? {
-        ReviewOutcome::NotRequired | ReviewOutcome::Dispatch => Ok(None),
-        ReviewOutcome::Executed(message) => Ok(Some(*message)),
+    Ok(
+        match review_if_required(&broker.manager, payload, preflight, timeout_secs).await? {
+            ReviewOutcome::NotRequired => ReviewStep::Proceed {
+                host_reviewed: false,
+            },
+            ReviewOutcome::Dispatch => ReviewStep::Proceed {
+                host_reviewed: true,
+            },
+            ReviewOutcome::Executed(message) => ReviewStep::Done(message),
+        },
+    )
+}
+
+/// Preflight a retry. A retry that would need a fresh host-run review is not
+/// retried automatically: the original failure is returned so the caller
+/// re-runs the command and the user approves it again.
+async fn retry_preflight(
+    broker: &Broker,
+    payload: &Value,
+    timeout_secs: u64,
+    failure: &str,
+) -> anyhow::Result<PreflightResult> {
+    let preflight = preflight_for_dispatch(broker, payload, timeout_secs).await?;
+    if crate::snu::review::needs_host_review(payload, &preflight) {
+        return Err(BridgeError::ActionFailed(failure.to_owned()).into());
     }
+    Ok(preflight)
 }
 
 fn explain_approval_timeout(
     result: anyhow::Result<SnuMessage>,
     preflight: &PreflightResult,
+    host_reviewed: bool,
 ) -> anyhow::Result<SnuMessage> {
+    let gate = || {
+        preflight
+            .gate
+            .map(|gate| gate.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    };
+    let origin = || {
+        preflight
+            .origin
+            .clone()
+            .unwrap_or_else(|| "unknown instance".to_string())
+    };
     match result {
+        // Approved here and sent: the action may have run, so it must not be
+        // reported as an approval timeout that invites a retry.
+        Err(error)
+            if host_reviewed
+                && error
+                    .downcast_ref::<BridgeError>()
+                    .is_some_and(|error| matches!(error, BridgeError::Timeout { .. })) =>
+        {
+            Err(BridgeError::ApprovedWithoutReply {
+                gate: gate(),
+                origin: origin(),
+            }
+            .into())
+        }
+        // The helper itself holds this action (background scripts) while the
+        // user decides, so a timeout here is an approval timeout.
         Err(error)
             if preflight.decision == GateDecision::ApprovalRequired
                 && error
@@ -1076,7 +1137,7 @@ async fn send_action_with_refresh(
 
     if is_transient_helper_text(&text) {
         sleep(HELPER_SETTLE_DELAY).await;
-        let retry_preflight = preflight_for_dispatch(broker, payload, timeout_secs).await?;
+        let retry_preflight = retry_preflight(broker, payload, timeout_secs, &text).await?;
         let message = broker
             .manager
             .request_on_generation(
@@ -1124,7 +1185,7 @@ async fn send_action_with_refresh(
         object.insert("instance".to_string(), serde_json::to_value(&fresh)?);
     }
     sleep(HELPER_SETTLE_DELAY).await;
-    let retry_preflight = preflight_for_dispatch(broker, payload, timeout_secs).await?;
+    let retry_preflight = retry_preflight(broker, payload, timeout_secs, &text).await?;
     let message = broker
         .manager
         .request_on_generation(
@@ -1890,7 +1951,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tab_and_pattern_targets_need_every_matching_instance_to_allow() {
+    async fn gated_page_actions_need_one_exact_instance_url() {
         let auto = serde_json::json!({"backgroundScripts": "auto", "deleteRecords": "auto",
             "createArtifacts": "auto", "updateRecords": "auto",
             "restRequest": "auto", "browserDebugger": "auto"});
@@ -1928,8 +1989,12 @@ mod tests {
             let error = request.await.unwrap().unwrap_err();
             assert_eq!(
                 error.downcast_ref::<BridgeError>().unwrap().code(),
-                "SNU_GATE_BLOCKED",
+                "SNU_GATE_STATE_UNAVAILABLE",
                 "payload: {payload}"
+            );
+            assert!(
+                format!("{error:#}").contains("exact instance URL"),
+                "{error:#}"
             );
             assert_nothing_sent(&mut helper).await;
         }
@@ -1941,6 +2006,7 @@ mod tests {
         let request = spawn_dispatch(&broker, rest_delete());
         answer_capabilities_review(&mut helper, approve_gates(), true).await;
         let review = answer_review(&mut helper, true, false).await;
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
         assert_eq!(review["command"], "rest_request");
         assert_eq!(review["params"]["method"], "DELETE");
         assert!(
@@ -1973,6 +2039,7 @@ mod tests {
         let request = spawn_dispatch(&broker, payload);
         answer_capabilities_review(&mut helper, approve_gates(), true).await;
         let review = answer_review(&mut helper, true, false).await;
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
         assert_eq!(review["command"], "run_ui_action");
         assert_eq!(review["params"]["uiAction"], "sysverb_update");
         let execute = next_json(&mut helper).await;
@@ -2000,6 +2067,89 @@ mod tests {
             }
             assert_nothing_sent(&mut helper).await;
         }
+    }
+
+    #[tokio::test]
+    async fn a_gate_switched_off_during_review_runs_nothing() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        let request = spawn_dispatch(&broker, rest_delete());
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        answer_review(&mut helper, true, false).await;
+        let mut off = approve_gates();
+        off["deleteRecords"] = Value::from("off");
+        answer_capabilities_review(&mut helper, off, true).await;
+        let error = request.await.unwrap().unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<BridgeError>().unwrap().code(),
+            "SNU_GATE_BLOCKED"
+        );
+        assert_nothing_sent(&mut helper).await;
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_review_is_cancelled_and_a_late_approval_runs_nothing() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        let mut payload = rest_delete();
+        payload["agentRequestId"] = Value::from("late-1");
+        let request = {
+            let broker = Arc::clone(&broker);
+            tokio::spawn(async move {
+                dispatch(
+                    BrokerRequest::SendAction {
+                        payload,
+                        correlation_id: "late-1".to_string(),
+                        timeout_secs: 1,
+                    },
+                    &broker,
+                )
+                .await
+            })
+        };
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        let review = next_json(&mut helper).await;
+        assert_eq!(review["action"], "reviewRequest");
+        let error = request.await.unwrap().unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<BridgeError>().unwrap().code(),
+            "SNU_APPROVAL_TIMEOUT"
+        );
+        let cancel = next_json(&mut helper).await;
+        assert_eq!(cancel["action"], "cancelReview");
+        assert_eq!(cancel["reviewId"], review["reviewId"]);
+        // A late approval finds no waiter: nothing is executed or dispatched.
+        send_json(
+            &mut helper,
+            serde_json::json!({"action": "reviewResponse", "agentRequestId": review["agentRequestId"],
+                "reviewId": review["reviewId"], "nonce": review["nonce"],
+                "payloadHash": review["payloadHash"], "approved": true}),
+        )
+        .await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), helper.next())
+                .await
+                .is_err(),
+            "nothing may follow a late approval"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lost_reply_after_approval_is_not_called_an_approval_timeout() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        let request = spawn_dispatch(&broker, rest_delete());
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        answer_review(&mut helper, true, false).await;
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        let execute = next_json(&mut helper).await;
+        assert_eq!(execute["action"], "executeApproved");
+        send_json(&mut helper, serde_json::json!({"agentRequestId": "del-1", "success": true, "approvedNotExecuted": true})).await;
+        let action = next_json(&mut helper).await;
+        assert_eq!(action["action"], "agentRestApi");
+        // The helper never answers the dispatched delete.
+        let error = request.await.unwrap().unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<BridgeError>().unwrap().code(),
+            "SNU_APPROVED_NO_REPLY"
+        );
     }
 
     #[tokio::test]
@@ -2162,6 +2312,10 @@ mod tests {
             if action_name == "agentRestApi" {
                 payload["method"] = Value::String("GET".to_string());
             }
+            if action_name == "agentRunUiAction" {
+                // A gated page action names its instance by URL.
+                payload["url"] = Value::String("https://dev.service-now.com/*".to_string());
+            }
             let request_correlation_id = correlation_id.clone();
             let request = tokio::spawn(async move {
                 dispatch(
@@ -2205,9 +2359,10 @@ mod tests {
         let payload = serde_json::json!({
             "action": "takeScreenshot",
             "agentRequestId": "screenshot-1",
-            // Only debugger-based capture is gated.
+            // Only debugger-based capture is gated, and a gated page action
+            // names its instance by URL.
             "cdp": true,
-            "tabId": 42,
+            "url": "https://dev.service-now.com/*",
             "instance": {
                 "name": "dev",
                 "url": "https://dev.service-now.com",

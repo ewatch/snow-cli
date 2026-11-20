@@ -33,6 +33,13 @@ pub enum ReviewOutcome {
     Executed(Box<SnuMessage>),
 }
 
+/// Whether this bridge must run a review: approve mode, except for
+/// background scripts, which SN-Utils holds in the helper tab itself.
+pub fn needs_host_review(payload: &Value, preflight: &PreflightResult) -> bool {
+    preflight.decision == GateDecision::ApprovalRequired
+        && gates_for_payload(payload) != [GateName::BackgroundScripts]
+}
+
 /// Hold an approve-mode action for review in the helper tab.
 pub async fn review_if_required(
     manager: &BridgeManager,
@@ -40,11 +47,7 @@ pub async fn review_if_required(
     preflight: &PreflightResult,
     timeout_secs: u64,
 ) -> Result<ReviewOutcome, BridgeError> {
-    if preflight.decision != GateDecision::ApprovalRequired {
-        return Ok(ReviewOutcome::NotRequired);
-    }
-    // SN-Utils reviews background scripts in the helper tab on its own.
-    if gates_for_payload(payload) == [GateName::BackgroundScripts] {
+    if !needs_host_review(payload, preflight) {
         return Ok(ReviewOutcome::NotRequired);
     }
     let gate = preflight
@@ -67,6 +70,13 @@ pub async fn review_if_required(
     let command = review_command(payload);
     let params = review_params(payload);
     let payload_hash = payload_hash(&origin, &command, &params);
+    // The helper runs UI actions from the parameters on the card, so those
+    // stay exact; other cards may shorten large values for display.
+    let card_params = if command == "run_ui_action" {
+        params.clone()
+    } else {
+        summarize_large_values(&params)
+    };
     let review_correlation = format!("{correlation_id}-review");
 
     let request = json!({
@@ -75,7 +85,7 @@ pub async fn review_if_required(
         "nonce": nonce,
         "payloadHash": payload_hash,
         "command": command,
-        "params": params,
+        "params": card_params,
         "instanceOrigin": origin,
         "instance": review_instance(payload),
         "client": {
@@ -125,6 +135,21 @@ pub async fn review_if_required(
         });
     }
 
+    // The gate may have changed while the card was open: re-check it on the
+    // same helper generation before anything runs.
+    let recheck = manager.preflight(payload, timeout_secs).await?;
+    if recheck.generation != preflight.generation {
+        cancel(manager, &review_id).await;
+        return Err(BridgeError::Disconnected);
+    }
+    if recheck.decision == GateDecision::Blocked {
+        cancel(manager, &review_id).await;
+        return Err(BridgeError::GateBlocked {
+            gate: recheck.gate.map_or(gate, |gate| gate.to_string()),
+            origin,
+        });
+    }
+
     let execute = json!({
         "action": "executeApproved",
         "reviewId": review_id,
@@ -132,14 +157,22 @@ pub async fn review_if_required(
         "payloadHash": payload_hash,
         "agentRequestId": correlation_id,
     });
-    let executed = manager
+    let executed = match manager
         .request_on_generation(
             &execute,
             Matcher::Correlation(correlation_id),
             timeout_secs,
             preflight.generation,
         )
-        .await?;
+        .await
+    {
+        Ok(executed) => executed,
+        // Approved and handed to the helper: it may have run.
+        Err(BridgeError::Timeout { .. }) => {
+            return Err(BridgeError::ApprovedWithoutReply { gate, origin });
+        }
+        Err(error) => return Err(error),
+    };
     if executed
         .extra
         .get("approvedNotExecuted")
@@ -189,6 +222,27 @@ fn review_params(payload: &Value) -> Value {
     Value::Object(params)
 }
 
+/// Longest string value shown in full on a review card.
+const CARD_VALUE_LIMIT: usize = 2048;
+
+/// Replace long string values (for example base64 attachment content) with
+/// their size and digest, so the card stays readable.
+fn summarize_large_values(params: &Value) -> Value {
+    match params {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), summarize_large_values(value)))
+                .collect(),
+        ),
+        Value::String(text) if text.len() > CARD_VALUE_LIMIT => Value::String(format!(
+            "<{} characters, sha256 {}>",
+            text.len(),
+            &hex(digest(&SHA256, text.as_bytes()).as_ref())[..16]
+        )),
+        other => other.clone(),
+    }
+}
+
 /// Instance name and URL only; never the session token.
 fn review_instance(payload: &Value) -> Value {
     let instance = payload.get("instance");
@@ -235,6 +289,25 @@ mod tests {
         let instance = review_instance(&payload);
         assert!(!instance.to_string().contains("secret"));
         assert_eq!(review_command(&payload), "rest_request");
+    }
+
+    #[test]
+    fn large_values_are_summarized_for_the_card() {
+        let params = json!({"file_name": "a.png", "content": "A".repeat(5000), "nested": {"x": "B".repeat(3000)}});
+        let card = summarize_large_values(&params);
+        assert_eq!(card["file_name"], "a.png");
+        assert!(
+            card["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("<5000 characters, sha256 ")
+        );
+        assert!(
+            card["nested"]["x"]
+                .as_str()
+                .unwrap()
+                .starts_with("<3000 characters")
+        );
     }
 
     #[test]

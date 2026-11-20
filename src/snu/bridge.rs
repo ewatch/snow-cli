@@ -113,6 +113,10 @@ pub enum BridgeError {
     #[error("SN-Utils review reply did not match the request; the action was not run")]
     ReviewMismatch,
     #[error(
+        "the action was approved in the helper tab for SN-Utils security gate {gate} on {origin} and sent, but no reply arrived in time; it may have run, so check the instance before retrying"
+    )]
+    ApprovedWithoutReply { gate: String, origin: String },
+    #[error(
         "SN-Utils bridge port {0} is already in use. Only one bridge can own this port at a time, so this usually means the `sn-scriptsync` VS Code extension or another process is bound to it. Stop the other owner and retry; the broker keeps retrying the port automatically."
     )]
     PortConflict(SocketAddr),
@@ -142,6 +146,7 @@ impl BridgeError {
             Self::ReviewUnsupported { .. } => "SNU_REVIEW_UNSUPPORTED",
             Self::ReviewRejected { .. } => "SNU_REVIEW_REJECTED",
             Self::ReviewMismatch => "SNU_REVIEW_MISMATCH",
+            Self::ApprovedWithoutReply { .. } => "SNU_APPROVED_NO_REPLY",
             _ => "SNU_BRIDGE_ERROR",
         }
     }
@@ -506,36 +511,22 @@ impl BridgeManager {
                 decision: GateDecision::LegacyUnrestricted,
             }),
             CapabilityNegotiation::Gated(status) => {
-                // The helper acts on an explicit tab and ignores the URL, and
-                // the tab's instance is unknown here: then every authorized
-                // instance must allow the action.
+                // A gated page action must name exactly one instance by URL:
+                // the helper acts on an explicit tab or the first tab matching
+                // a pattern, and neither tells which instance that is, so the
+                // gate could not be checked against the right instance.
                 let targets_tab = ["/tabId", "/params/tabId"]
                     .iter()
                     .any(|pointer| payload.pointer(pointer).is_some_and(|tab| !tab.is_null()));
-                let origin = match origin {
-                    Some(origin) => origin,
-                    None if targets_tab => "the targeted tab's instance".to_owned(),
-                    None => {
-                        return Err(BridgeError::GateStateUnavailable(format!(
-                            "action requires {first_gate}, but its instance origin is unknown"
-                        )));
-                    }
+                let Some(origin) = origin.filter(|origin| !origin.contains('*') && !targets_tab)
+                else {
+                    return Err(BridgeError::GateStateUnavailable(format!(
+                        "action requires {first_gate}; target it with an exact instance URL \
+                         (for example --url 'https://dev12345.service-now.com/*') instead of a \
+                         tab id or a wildcard pattern"
+                    )));
                 };
-                // A page command can target tabs by pattern
-                // (`https://*.service-now.com`); it must then be allowed on
-                // every authorized instance the pattern matches.
-                let snapshots: Vec<_> = if targets_tab {
-                    status.instance_gates.values().collect()
-                } else if origin.contains('*') {
-                    status
-                        .instance_gates
-                        .iter()
-                        .filter(|(candidate, _)| origin_matches_pattern(candidate, &origin))
-                        .map(|(_, snapshot)| snapshot)
-                        .collect()
-                } else {
-                    status.instance_gates.get(&origin).into_iter().collect()
-                };
+                let snapshots: Vec<_> = status.instance_gates.get(&origin).into_iter().collect();
                 if snapshots.is_empty() {
                     return Err(BridgeError::GateUnauthorized(origin));
                 }
@@ -805,22 +796,6 @@ const REPLACED_GRACE: Duration = Duration::from_secs(2);
 const HELPER_REPLACED: u16 = 4001;
 /// Close code for an automatic reconnect while another helper is active.
 const HELPER_STANDBY: u16 = 4002;
-
-/// Whether `origin` (scheme://host:port) matches a tab pattern such as
-/// `https://*.service-now.com:443`, where `*` stands for any run of
-/// characters other than `/`.
-fn origin_matches_pattern(origin: &str, pattern: &str) -> bool {
-    fn matches(text: &[u8], pattern: &[u8]) -> bool {
-        match pattern.split_first() {
-            None => text.is_empty(),
-            Some((b'*', rest)) => (0..=text.len())
-                .take_while(|&skip| skip == 0 || text[skip - 1] != b'/')
-                .any(|skip| matches(&text[skip..], rest)),
-            Some((first, rest)) => text.first() == Some(first) && matches(&text[1..], rest),
-        }
-    }
-    matches(origin.as_bytes(), pattern.as_bytes())
-}
 
 /// Who opened a bridge WebSocket, judged by its `Origin` header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1489,31 +1464,6 @@ mod tests {
             .unwrap();
         let hello = resumed.next().await.unwrap().unwrap();
         assert!(hello.to_text().unwrap().contains("hostHello"));
-    }
-
-    #[test]
-    fn tab_patterns_match_instance_origins() {
-        let pattern = "https://*.service-now.com:443";
-        assert!(origin_matches_pattern(
-            "https://dev1.service-now.com:443",
-            pattern
-        ));
-        assert!(origin_matches_pattern(
-            "https://a.b.service-now.com:443",
-            pattern
-        ));
-        assert!(!origin_matches_pattern(
-            "https://dev1.service-now.com.evil:443",
-            pattern
-        ));
-        assert!(!origin_matches_pattern(
-            "http://dev1.service-now.com:443",
-            pattern
-        ));
-        assert!(!origin_matches_pattern(
-            "https://evil.com/x.service-now.com:443",
-            pattern
-        ));
     }
 
     #[test]
