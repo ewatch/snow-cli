@@ -7,6 +7,10 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ## [Unreleased]
 
+### Security
+
+- `snu` commands enforce the SN-Utils Agent Access settings the way SN-Utils' own bridge (`@snutils/snu` 0.6.6) does. snow-cli ignored the `updateRecords` gate (SN-Utils 10.2+), so `snu page run-ui-action` could commit a form the user had set to off or approve; it now requires `updateRecords` (falling back to `createArtifacts` on older helpers), or `deleteRecords` when the action name mentions delete or destroy. A Batch API call (`POST /api/now/v1/batch`) is classified by its sub-requests, so a batched DELETE needs `deleteRecords`. A command that targets tabs by pattern must be allowed on every authorized instance the pattern matches.
+
 ### Added
 
 - Windows users can install with Scoop: `scoop bucket add ewatch https://github.com/ewatch/scoop-bucket`, then `scoop install ewatch/snow-cli`. Releases notify the bucket, which updates its manifest from the release's `SHA256SUMS`.
@@ -29,6 +33,7 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ### Fixed
 
+- `snu` works with SN-Utils 10.3. The bridge sends a private `bridgeId` (kept in `snu-bridge-id` beside the config file), so after one manual `/token` SN-Utils refreshes session tokens automatically, including the automatic `/token` that `snu wait-token` relies on. A replaced helper tab is closed with code 4001 and an automatic reconnect (`?resume=1`) is told to stand by with 4002 while another helper is live, so two helper tabs no longer take the connection from each other every second. `snu screenshot` needs the `browserDebugger` gate only for debugger capture, as in SN-Utils.
 - `profile sdk list`, `import`, and `export` and `auth login --also-now-sdk` work with now-sdk 4.14+, which moved aliases from the `ServiceNow` / `now-sdk` keychain entry into an encrypted `~/.now-sdk/credentials.enc`. snow-cli read a stale pre-migration copy and exported aliases now-sdk never saw. It now uses the encrypted file whenever it or its key exists, honoring `SN_SDK_CREDENTIALS_DIR`, `SN_SDK_KEY_SOURCE`, and `SN_SDK_ENCRYPTION_KEY`, and keeps writing the keychain entry only when no encrypted store exists. A file whose key is missing or wrong is reported as `NOW_SDK_CREDENTIALS_UNREADABLE` and never modified.
 - `table stats --having` works. The Aggregate API rejected the raw clause with HTTP 400 ("Invalid HAVING clause"); `count>5` is now sent as `count^*^>^5` and `avg(priority)>=2` as `avg^priority^>=^2`. Comma-separated clauses must all match, and native `aggregate^field^operator^value` clauses are sent unchanged.
 - `attachment list` no longer sends `sysparm_fields`, which the Attachment API ignores, and keeps only the seven metadata fields client-side instead of about 20 columns.

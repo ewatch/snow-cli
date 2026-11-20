@@ -222,6 +222,7 @@ async function configureTestGateModes(scriptSyncPage, instanceUrl) {
     "createArtifacts",
     "restRequest",
     "browserDebugger",
+    "updateRecords",
   ]);
   for (const [gate, mode] of Object.entries(modes)) {
     if (!knownGates.has(gate) || !["off", "approve", "auto"].includes(mode)) {
@@ -378,6 +379,47 @@ async function attemptTokenCapture(page) {
   }
 }
 
+/// SN-Utils 10.3 holds background scripts and deletes for approval in the
+/// helper tab's Review Queue by default. Like a user at the keyboard, approve
+/// each card as it appears so the run proves snow-cli's approval round trip.
+/// Logs each card's title only, never its payload. SNU_HARNESS_AUTO_APPROVE=0
+/// turns it off (for example to exercise a rejection or timeout by hand).
+function startReviewAutoApproval(scriptSyncPage) {
+  if (process.env.SNU_HARNESS_AUTO_APPROVE === "0") {
+    log("review auto-approval disabled");
+    return { count: () => 0, enabled: false };
+  }
+  let approved = 0;
+  let busy = false;
+  const timer = setInterval(async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const titles = await scriptSyncPage.evaluate(() => {
+        const clicked = [];
+        document.querySelectorAll(".review-card").forEach((card) => {
+          const button = card.querySelector(".review-btn-approve");
+          if (!button || button.disabled || card.dataset.snowCliApproved) return;
+          card.dataset.snowCliApproved = "1";
+          clicked.push(card.querySelector(".review-card-title")?.textContent?.trim() || "review");
+          button.click();
+        });
+        return clicked;
+      });
+      for (const title of titles) {
+        approved += 1;
+        log(`approved review card: ${title}`);
+      }
+    } catch {
+      // The page may be navigating or closing; try again on the next tick.
+    } finally {
+      busy = false;
+    }
+  }, 500);
+  timer.unref();
+  return { count: () => approved, enabled: true };
+}
+
 async function main() {
   const instanceUrl = requireEnv("SNOW_E2E_INSTANCE_URL");
   const username = requireEnv("SNOW_E2E_USERNAME");
@@ -425,6 +467,8 @@ async function main() {
     log(`WARNING: ServiceNow login failed, continuing bridge-only: ${err.message}`);
   }
 
+  const reviewApproval = startReviewAutoApproval(scriptSyncPage);
+
   fs.writeFileSync(
     readyFile,
     JSON.stringify(
@@ -437,6 +481,7 @@ async function main() {
         token_capture: tokenCapture,
         authorization_ui: authorizationUi,
         configured_gate_modes: configuredGateModes,
+        review_auto_approval: reviewApproval.enabled,
       },
       null,
       2,
@@ -448,7 +493,7 @@ async function main() {
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    log("shutting down");
+    log(`shutting down (approved ${reviewApproval.count()} review card(s))`);
     await context.close().catch(() => {});
     process.exit(0);
   };

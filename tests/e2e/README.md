@@ -334,6 +334,15 @@ store, and snow-cli has no command to remove an alias again.
     (`window.snusettings`/`window.snuSlashCommandShow` load asynchronously
     after login — the harness waits up to 15s) or SN-Utils' own internals
     changed since 2026-07-17.
+  - SN-Utils 10.3+ holds background scripts and deletes for approval in the
+    helper tab's Review Queue by default. The harness approves each review card
+    as it appears, like a user would, so `execute-bg-script`, `update-record`,
+    and `delete-record` also prove snow-cli's approval round trip. It logs only
+    each card's title; set `SNU_HARNESS_AUTO_APPROVE=0` to disable it.
+  - snow-cli sends a private `bridgeId` (kept in `snu-bridge-id` beside the
+    config file; the runner's config lives in its scratch directory) so the
+    harness's manual `/token` trusts the bridge and `wait-token`'s automatic
+    `/token` refresh is accepted.
   - The behavioral SNU scenarios require an administrator-like PDI account:
     they create and delete incidents, run background scripts for mutations,
     upload an attachment, and create/read/switch/delete `sys_update_set`

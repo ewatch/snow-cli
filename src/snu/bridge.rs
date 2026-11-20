@@ -12,14 +12,18 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, timeout};
 use tokio_tungstenite::{
-    WebSocketStream, accept_async,
-    tungstenite::{Bytes, Message},
+    WebSocketStream, accept_hdr_async,
+    tungstenite::{
+        Bytes, Message,
+        handshake::server::{Request, Response},
+        protocol::{CloseFrame, frame::coding::CloseCode},
+    },
 };
 
 use crate::snu::gates::{
     CapabilityNegotiation, GateDecision, GateMode, GateSnapshot, HelperBuildInfo,
     HelperCapabilitiesReport, HelperLicenseInfo, HelperSecurityGateSupport, HelperStatus,
-    PreflightResult, gate_for_payload, payload_origin,
+    PreflightResult, gates_for_payload, payload_origin,
 };
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
@@ -191,6 +195,9 @@ pub struct BridgeConfig {
     pub heartbeat_interval: Duration,
     pub connect_timeout: Duration,
     pub rebind_delay: Duration,
+    /// Private identity sent in `hostHello` (see [`crate::snu::bridge_identity`]).
+    /// Empty disables SN-Utils' automatic token refresh for this bridge.
+    pub bridge_id: String,
 }
 
 impl Default for BridgeConfig {
@@ -200,6 +207,7 @@ impl Default for BridgeConfig {
             heartbeat_interval: DEFAULT_HEARTBEAT_INTERVAL,
             connect_timeout: Duration::from_secs(HELPER_CONNECT_TIMEOUT_SECS),
             rebind_delay: DEFAULT_REBIND_DELAY,
+            bridge_id: String::new(),
         }
     }
 }
@@ -208,6 +216,7 @@ impl BridgeConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
             addr: ws_addr()?,
+            bridge_id: crate::snu::bridge_identity::load(),
             ..Self::default()
         })
     }
@@ -461,7 +470,8 @@ impl BridgeManager {
         payload: &Value,
         timeout_secs: u64,
     ) -> Result<PreflightResult, BridgeError> {
-        let Some(gate) = gate_for_payload(payload) else {
+        let gates = gates_for_payload(payload);
+        let Some(&first_gate) = gates.first() else {
             return Ok(PreflightResult {
                 generation: None,
                 origin: payload_origin(payload),
@@ -474,24 +484,50 @@ impl BridgeManager {
             CapabilityNegotiation::Legacy { generation } => Ok(PreflightResult {
                 generation: Some(generation),
                 origin,
-                gate: Some(gate),
+                gate: Some(first_gate),
                 decision: GateDecision::LegacyUnrestricted,
             }),
             CapabilityNegotiation::Gated(status) => {
                 let origin = origin.ok_or_else(|| {
                     BridgeError::GateStateUnavailable(format!(
-                        "action requires {gate}, but its instance origin is unknown"
+                        "action requires {first_gate}, but its instance origin is unknown"
                     ))
                 })?;
-                let snapshot = status
-                    .instance_gates
-                    .get(&origin)
-                    .ok_or_else(|| BridgeError::GateUnauthorized(origin.clone()))?;
-                let decision = match snapshot.gates.mode(gate) {
-                    GateMode::Off => GateDecision::Blocked,
-                    GateMode::Approve => GateDecision::ApprovalRequired,
-                    GateMode::Auto => GateDecision::Automatic,
+                // A page command can target tabs by pattern
+                // (`https://*.service-now.com`); it must then be allowed on
+                // every authorized instance the pattern matches.
+                let snapshots: Vec<_> = if origin.contains('*') {
+                    status
+                        .instance_gates
+                        .iter()
+                        .filter(|(candidate, _)| origin_matches_pattern(candidate, &origin))
+                        .map(|(_, snapshot)| snapshot)
+                        .collect()
+                } else {
+                    status.instance_gates.get(&origin).into_iter().collect()
                 };
+                if snapshots.is_empty() {
+                    return Err(BridgeError::GateUnauthorized(origin));
+                }
+                // Every gate must allow the action: the strictest one decides
+                // (off, then approve, then auto) and is the one reported.
+                let (gate, decision) = gates
+                    .iter()
+                    .flat_map(|&gate| snapshots.iter().map(move |snapshot| (gate, snapshot)))
+                    .map(|(gate, snapshot)| {
+                        let decision = match snapshot.gates.mode(gate) {
+                            GateMode::Off => GateDecision::Blocked,
+                            GateMode::Approve => GateDecision::ApprovalRequired,
+                            GateMode::Auto => GateDecision::Automatic,
+                        };
+                        (gate, decision)
+                    })
+                    .max_by_key(|(_, decision)| match decision {
+                        GateDecision::Blocked => 2,
+                        GateDecision::ApprovalRequired => 1,
+                        _ => 0,
+                    })
+                    .unwrap_or((first_gate, GateDecision::Automatic));
                 Ok(PreflightResult {
                     generation: Some(status.generation),
                     origin: Some(origin),
@@ -706,17 +742,57 @@ impl BridgeManager {
     }
 }
 
-fn host_hello_message() -> Message {
-    Message::Text(
-        serde_json::json!({
-            "action": "hostHello",
-            "hostKind": "standalone",
-            "appName": "snow-cli",
-            "protocolVersion": 1,
-        })
-        .to_string()
-        .into(),
-    )
+fn host_hello_message(bridge_id: &str) -> Message {
+    let mut hello = serde_json::json!({
+        "action": "hostHello",
+        "hostKind": "standalone",
+        "appName": "snow-cli",
+        "hostVersion": env!("CARGO_PKG_VERSION"),
+        "protocolVersion": 1,
+    });
+    // SN-Utils 10.3+ only refreshes tokens automatically for a bridge it
+    // recognises by this id; an empty id keeps manual `/token` behaviour.
+    if !bridge_id.is_empty() {
+        hello["bridgeId"] = Value::String(bridge_id.to_owned());
+    }
+    Message::Text(hello.to_string().into())
+}
+
+/// How long a replaced helper may take to flush its close frame.
+const REPLACED_GRACE: Duration = Duration::from_secs(2);
+
+/// Close code for a helper replaced by a newer helper tab (SN-Utils 10.3).
+const HELPER_REPLACED: u16 = 4001;
+/// Close code for an automatic reconnect while another helper is active.
+const HELPER_STANDBY: u16 = 4002;
+
+/// Whether `origin` (scheme://host:port) matches a tab pattern such as
+/// `https://*.service-now.com:443`, where `*` stands for any run of
+/// characters other than `/`.
+fn origin_matches_pattern(origin: &str, pattern: &str) -> bool {
+    fn matches(text: &[u8], pattern: &[u8]) -> bool {
+        match pattern.split_first() {
+            None => text.is_empty(),
+            Some((b'*', rest)) => (0..=text.len())
+                .take_while(|&skip| skip == 0 || text[skip - 1] != b'/')
+                .any(|skip| matches(&text[skip..], rest)),
+            Some((first, rest)) => text.first() == Some(first) && matches(&text[1..], rest),
+        }
+    }
+    matches(origin.as_bytes(), pattern.as_bytes())
+}
+
+/// Whether a helper's WebSocket URL marks an automatic reconnect.
+fn is_resume_request(uri: &str) -> bool {
+    uri.split_once('?')
+        .is_some_and(|(_, query)| query.split('&').any(|pair| pair == "resume=1"))
+}
+
+fn close_message(code: u16, reason: &'static str) -> Message {
+    Message::Close(Some(CloseFrame {
+        code: CloseCode::from(code),
+        reason: reason.into(),
+    }))
 }
 
 fn banner_message(message: &str) -> Message {
@@ -759,26 +835,49 @@ async fn accept_loop(inner: Arc<Inner>) {
                     continue;
                 }
             };
-            let socket = match accept_async(stream).await {
+            let mut resume = false;
+            #[allow(
+                clippy::result_large_err,
+                reason = "tungstenite's handshake Callback trait fixes this Result type"
+            )]
+            let read_resume = |request: &Request, response: Response| {
+                resume = is_resume_request(&request.uri().to_string());
+                Ok(response)
+            };
+            let socket = match accept_hdr_async(stream, read_resume).await {
                 Ok(socket) => socket,
                 Err(error) => {
                     tracing::debug!(%error, %peer_addr, "SN-Utils bridge handshake failed");
                     continue;
                 }
             };
-            attach_connection(&inner, socket, peer_addr).await;
+            attach_connection(&inner, socket, peer_addr, resume).await;
         }
     }
 }
 
-/// Install a freshly accepted helper-tab connection, replacing (and tearing
-/// down) any previous one. The newest connection always wins: a tab reload
-/// reconnects within ~1s and immediately becomes the active bridge.
+/// Install a freshly accepted helper-tab connection, following SN-Utils
+/// 10.3's helper rules: an automatic reconnect (`?resume=1`) never takes over
+/// from a live helper and is told to stand by (4002); any other connection (a
+/// newly opened tab, or "Use this tab") replaces the current helper, which is
+/// told why (4001). Without the codes, two helper tabs (one per Chrome
+/// profile, say) would replace each other every second.
 async fn attach_connection(
     inner: &Arc<Inner>,
-    socket: WebSocketStream<TcpStream>,
+    mut socket: WebSocketStream<TcpStream>,
     peer_addr: SocketAddr,
+    resume: bool,
 ) {
+    if resume && inner.conn.lock().await.is_some() {
+        tracing::debug!(%peer_addr, "SN-Utils helper reconnect told to stand by");
+        let _ = socket
+            .send(close_message(
+                HELPER_STANDBY,
+                "Another helper tab is active",
+            ))
+            .await;
+        return;
+    }
     let generation = inner.generation.fetch_add(1, Ordering::Relaxed) + 1;
     let (sink, stream) = socket.split();
     let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<Message>();
@@ -805,7 +904,20 @@ async fn attach_connection(
     };
     if let Some(previous) = previous {
         previous.reader.abort();
-        previous.writer.abort();
+        // Tell the replaced tab why so it stands by instead of reconnecting
+        // straight away. The writer flushes the close frame and exits once its
+        // senders are gone; a dead socket is cut off after a short grace.
+        let _ = previous.outbound.send(close_message(
+            HELPER_REPLACED,
+            "Replaced by a newer helper tab",
+        ));
+        let writer_abort = previous.writer.abort_handle();
+        let writer = previous.writer;
+        tokio::spawn(async move {
+            if timeout(REPLACED_GRACE, writer).await.is_err() {
+                writer_abort.abort();
+            }
+        });
         fail_waiters_for_generation(inner, previous.generation).await;
         tracing::debug!(
             replaced = previous.generation,
@@ -818,7 +930,7 @@ async fn attach_connection(
         generation,
         ..HelperStatus::default()
     };
-    let _ = outbound_tx.send(host_hello_message());
+    let _ = outbound_tx.send(host_hello_message(&inner.config.bridge_id));
     if let Some(banner) = inner.pending_banner.lock().await.take() {
         let _ = outbound_tx.send(banner_message(&banner));
     }
@@ -1103,6 +1215,7 @@ mod tests {
             heartbeat_interval: heartbeat,
             connect_timeout: Duration::from_secs(5),
             rebind_delay: Duration::from_millis(50),
+            bridge_id: String::new(),
         }
     }
 
@@ -1135,6 +1248,120 @@ mod tests {
         let hello: Value = serde_json::from_str(hello.to_text().unwrap()).unwrap();
         assert_eq!(hello["action"], "hostHello");
         socket
+    }
+
+    /// The close code of the next close frame, skipping any other frames.
+    async fn next_close_code(helper: &mut HelperSocket) -> Option<u16> {
+        loop {
+            match timeout(Duration::from_secs(3), helper.next())
+                .await
+                .ok()??
+            {
+                Ok(Message::Close(frame)) => return frame.map(|frame| u16::from(frame.code)),
+                Ok(_) => continue,
+                Err(_) => return None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hello_carries_bridge_id_and_version() {
+        let mut config = test_config(([127, 0, 0, 1], 0).into(), Duration::from_secs(60));
+        config.bridge_id = "ab".repeat(32);
+        let (manager, _sessions) = BridgeManager::start(config);
+        let addr = manager.wait_bound(Duration::from_secs(2)).await.unwrap();
+        let mut helper = connect_helper_raw(addr).await;
+        let hello = helper.next().await.unwrap().unwrap();
+        let hello: Value = serde_json::from_str(hello.to_text().unwrap()).unwrap();
+        assert_eq!(hello["bridgeId"], "ab".repeat(32));
+        assert_eq!(hello["hostVersion"], env!("CARGO_PKG_VERSION"));
+
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut helper = connect_helper_raw(addr).await;
+        let hello = helper.next().await.unwrap().unwrap();
+        let hello: Value = serde_json::from_str(hello.to_text().unwrap()).unwrap();
+        assert!(hello.get("bridgeId").is_none(), "no id, no field");
+        drop(manager);
+    }
+
+    #[tokio::test]
+    async fn resumed_reconnect_stands_by_while_a_helper_is_live() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut first = connect_helper(addr).await;
+
+        let (mut resumed, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/?resume=1"))
+            .await
+            .unwrap();
+        assert_eq!(next_close_code(&mut resumed).await, Some(HELPER_STANDBY));
+
+        // The live helper keeps the connection and still receives messages.
+        manager.send_banner("still here").await;
+        let banner = timeout(Duration::from_secs(2), first.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(banner.to_text().unwrap().contains("still here"));
+    }
+
+    #[tokio::test]
+    async fn a_new_helper_replaces_the_old_one_with_close_code_4001() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut first = connect_helper(addr).await;
+        let mut second = connect_helper(addr).await;
+        assert_eq!(next_close_code(&mut first).await, Some(HELPER_REPLACED));
+
+        manager.send_banner("to the newest tab").await;
+        let banner = timeout(Duration::from_secs(2), second.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(banner.to_text().unwrap().contains("to the newest tab"));
+    }
+
+    #[tokio::test]
+    async fn a_resumed_reconnect_is_accepted_when_no_helper_is_live() {
+        let (_manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let (mut resumed, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/?resume=1"))
+            .await
+            .unwrap();
+        let hello = resumed.next().await.unwrap().unwrap();
+        assert!(hello.to_text().unwrap().contains("hostHello"));
+    }
+
+    #[test]
+    fn tab_patterns_match_instance_origins() {
+        let pattern = "https://*.service-now.com:443";
+        assert!(origin_matches_pattern(
+            "https://dev1.service-now.com:443",
+            pattern
+        ));
+        assert!(origin_matches_pattern(
+            "https://a.b.service-now.com:443",
+            pattern
+        ));
+        assert!(!origin_matches_pattern(
+            "https://dev1.service-now.com.evil:443",
+            pattern
+        ));
+        assert!(!origin_matches_pattern(
+            "http://dev1.service-now.com:443",
+            pattern
+        ));
+        assert!(!origin_matches_pattern(
+            "https://evil.com/x.service-now.com:443",
+            pattern
+        ));
+    }
+
+    #[test]
+    fn resume_flag_is_read_from_the_query_only() {
+        assert!(is_resume_request("/?resume=1"));
+        assert!(is_resume_request("/?a=b&resume=1"));
+        assert!(!is_resume_request("/?resume=10"));
+        assert!(!is_resume_request("/resume=1"));
+        assert!(!is_resume_request("/"));
     }
 
     async fn send_json(helper: &mut HelperSocket, value: Value) {

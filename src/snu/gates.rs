@@ -24,6 +24,8 @@ pub enum GateName {
     CreateArtifacts,
     RestRequest,
     BrowserDebugger,
+    /// Changing fields on existing records (SN-Utils 10.2+).
+    UpdateRecords,
 }
 
 impl std::fmt::Display for GateName {
@@ -34,6 +36,7 @@ impl std::fmt::Display for GateName {
             Self::CreateArtifacts => "createArtifacts",
             Self::RestRequest => "restRequest",
             Self::BrowserDebugger => "browserDebugger",
+            Self::UpdateRecords => "updateRecords",
         };
         formatter.write_str(name)
     }
@@ -48,11 +51,16 @@ pub struct InstanceGates {
     pub create_artifacts: GateMode,
     pub rest_request: GateMode,
     pub browser_debugger: GateMode,
+    /// Absent on helpers that predate the gate; it then follows
+    /// `createArtifacts`, as SN-Utils' own bridge does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_records: Option<GateMode>,
 }
 
 impl InstanceGates {
     pub fn mode(&self, gate: GateName) -> GateMode {
         match gate {
+            GateName::UpdateRecords => self.update_records.unwrap_or(self.create_artifacts),
             GateName::BackgroundScripts => self.background_scripts,
             GateName::DeleteRecords => self.delete_records,
             GateName::CreateArtifacts => self.create_artifacts,
@@ -194,27 +202,131 @@ struct RawCapabilitiesReport {
     instance_gates: HashMap<String, GateSnapshot>,
 }
 
-/// Classify an outbound helper action before it reaches the browser socket.
-/// Actions not covered by an extension security gate return `None`.
-pub fn gate_for_payload(payload: &Value) -> Option<GateName> {
-    let action = payload.get("action").and_then(Value::as_str)?;
+/// Classify an outbound helper action before it reaches the browser socket,
+/// following SN-Utils' own bridge (`@snutils/snu` 0.6.6 `getCommandPolicy`).
+/// Every returned gate must allow the action; an empty list means ungated.
+pub fn gates_for_payload(payload: &Value) -> Vec<GateName> {
+    let Some(action) = payload.get("action").and_then(Value::as_str) else {
+        return Vec::new();
+    };
     match action {
-        "executeBackgroundScript" | "agentRunBackgroundScript" => Some(GateName::BackgroundScripts),
-        "createRecord" | "uploadAttachment" => Some(GateName::CreateArtifacts),
-        "takeScreenshot" => Some(GateName::BrowserDebugger),
-        "agentRestApi" => match payload
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or("GET")
-            .to_ascii_uppercase()
-            .as_str()
-        {
-            "GET" | "HEAD" | "OPTIONS" => None,
-            "DELETE" => Some(GateName::DeleteRecords),
-            _ => Some(GateName::RestRequest),
+        "executeBackgroundScript" | "agentRunBackgroundScript" => vec![GateName::BackgroundScripts],
+        "createRecord" | "uploadAttachment" => vec![GateName::CreateArtifacts],
+        // Running a UI action commits the open form, so it updates an existing
+        // record; a name mentioning delete/destroy only ever escalates.
+        "agentRunUiAction" => {
+            let name = payload
+                .get("uiAction")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if name.contains("delete") || name.contains("destroy") {
+                vec![GateName::DeleteRecords]
+            } else {
+                vec![GateName::UpdateRecords]
+            }
+        }
+        // A screenshot is a read; only debugger-based capture needs the gate.
+        "takeScreenshot" => {
+            let uses_debugger = ["cdp", "allowDebugger"]
+                .iter()
+                .any(|key| payload.get(*key).and_then(Value::as_bool) == Some(true));
+            if uses_debugger {
+                vec![GateName::BrowserDebugger]
+            } else {
+                Vec::new()
+            }
+        }
+        "agentRestApi" => rest_gates(payload),
+        action if action.starts_with("agentCdp") => vec![GateName::BrowserDebugger],
+        _ => Vec::new(),
+    }
+}
+
+fn rest_gates(payload: &Value) -> Vec<GateName> {
+    let method = payload
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("GET")
+        .to_ascii_uppercase();
+    match method.as_str() {
+        "POST" | "PUT" | "PATCH" => match batch_sub_methods(payload) {
+            // Not a Batch API call: a plain write.
+            BatchMethods::NotBatch => vec![GateName::RestRequest],
+            BatchMethods::Methods(methods)
+                if methods
+                    .iter()
+                    .all(|m| matches!(m.as_str(), "GET" | "POST" | "PUT" | "PATCH")) =>
+            {
+                vec![GateName::RestRequest]
+            }
+            // A DELETE, an unreadable method, or an unreadable body.
+            BatchMethods::Methods(_) | BatchMethods::Unreadable => {
+                vec![GateName::DeleteRecords, GateName::RestRequest]
+            }
         },
-        action if action.starts_with("agentCdp") => Some(GateName::BrowserDebugger),
-        _ => None,
+        "DELETE" => vec![GateName::DeleteRecords],
+        "GET" | "HEAD" | "OPTIONS" => Vec::new(),
+        _ => vec![GateName::RestRequest],
+    }
+}
+
+enum BatchMethods {
+    NotBatch,
+    Methods(Vec<String>),
+    Unreadable,
+}
+
+/// The sub-request methods of a Batch API call (`/api/now/v1/batch`). The
+/// endpoint is normalized like a browser URL first, so dot segments or
+/// encoded dots cannot hide it.
+fn batch_sub_methods(payload: &Value) -> BatchMethods {
+    let endpoint = payload
+        .get("endpoint")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let Ok(base) = url::Url::parse("https://instance.invalid") else {
+        return BatchMethods::Unreadable;
+    };
+    let Ok(url) = base.join(endpoint) else {
+        return BatchMethods::Unreadable;
+    };
+    let mut path = url.path().to_ascii_lowercase();
+    while path.contains("//") {
+        path = path.replace("//", "/");
+    }
+    let path = path.strip_suffix('/').unwrap_or(&path);
+    let is_batch = path
+        .strip_prefix("/api/now/v")
+        .and_then(|rest| rest.split_once("/batch"))
+        .is_some_and(|(version, tail)| {
+            !version.is_empty() && version.chars().all(|c| c.is_ascii_digit()) && tail.is_empty()
+        });
+    if !is_batch {
+        return BatchMethods::NotBatch;
+    }
+    let body = match payload.get("body") {
+        Some(Value::String(text)) => match serde_json::from_str::<Value>(text) {
+            Ok(body) => body,
+            Err(_) => return BatchMethods::Unreadable,
+        },
+        Some(body) => body.clone(),
+        None => return BatchMethods::Unreadable,
+    };
+    match body.get("rest_requests").and_then(Value::as_array) {
+        Some(entries) => BatchMethods::Methods(
+            entries
+                .iter()
+                .map(|entry| {
+                    entry
+                        .get("method")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_ascii_uppercase()
+                })
+                .collect(),
+        ),
+        None => BatchMethods::Unreadable,
     }
 }
 
@@ -255,61 +367,116 @@ mod tests {
 
     #[test]
     fn classifies_protocol_actions_at_the_dispatch_seam() {
+        use GateName::*;
+        let batch = |requests: serde_json::Value| {
+            serde_json::json!({"action": "agentRestApi", "method": "POST",
+                "endpoint": "/api/now/v1/batch", "body": {"rest_requests": requests}})
+        };
         let cases = [
-            (serde_json::json!({"action": "agentQueryRecords"}), None),
-            (serde_json::json!({"action": "requestTableStructure"}), None),
-            (serde_json::json!({"action": "requestAppMeta"}), None),
-            (serde_json::json!({"action": "runSlashCommand"}), None),
-            (serde_json::json!({"action": "activateTab"}), None),
-            (serde_json::json!({"action": "switchContext"}), None),
-            (serde_json::json!({"action": "agentGetContext"}), None),
-            (serde_json::json!({"action": "agentGetParentOptions"}), None),
-            (serde_json::json!({"action": "agentGetFormState"}), None),
-            (serde_json::json!({"action": "agentSetField"}), None),
-            (serde_json::json!({"action": "agentRunUiAction"}), None),
-            (serde_json::json!({"action": "agentClickElement"}), None),
-            (serde_json::json!({"action": "agentNavigate"}), None),
+            (serde_json::json!({"action": "agentQueryRecords"}), vec![]),
+            (
+                serde_json::json!({"action": "requestTableStructure"}),
+                vec![],
+            ),
+            (serde_json::json!({"action": "requestAppMeta"}), vec![]),
+            (serde_json::json!({"action": "runSlashCommand"}), vec![]),
+            (serde_json::json!({"action": "activateTab"}), vec![]),
+            (serde_json::json!({"action": "switchContext"}), vec![]),
+            (serde_json::json!({"action": "agentGetContext"}), vec![]),
+            (
+                serde_json::json!({"action": "agentGetParentOptions"}),
+                vec![],
+            ),
+            (serde_json::json!({"action": "agentGetFormState"}), vec![]),
+            (serde_json::json!({"action": "agentSetField"}), vec![]),
+            (serde_json::json!({"action": "agentClickElement"}), vec![]),
+            (serde_json::json!({"action": "agentNavigate"}), vec![]),
+            (
+                serde_json::json!({"action": "agentRunUiAction", "uiAction": "sysverb_update"}),
+                vec![UpdateRecords],
+            ),
+            (
+                serde_json::json!({"action": "agentRunUiAction", "uiAction": "sysverb_delete"}),
+                vec![DeleteRecords],
+            ),
             (
                 serde_json::json!({"action": "executeBackgroundScript"}),
-                Some(GateName::BackgroundScripts),
+                vec![BackgroundScripts],
             ),
             (
                 serde_json::json!({"action": "agentRunBackgroundScript"}),
-                Some(GateName::BackgroundScripts),
+                vec![BackgroundScripts],
             ),
             (
                 serde_json::json!({"action": "createRecord"}),
-                Some(GateName::CreateArtifacts),
+                vec![CreateArtifacts],
             ),
             (
                 serde_json::json!({"action": "uploadAttachment"}),
-                Some(GateName::CreateArtifacts),
+                vec![CreateArtifacts],
             ),
+            (serde_json::json!({"action": "takeScreenshot"}), vec![]),
             (
-                serde_json::json!({"action": "takeScreenshot"}),
-                Some(GateName::BrowserDebugger),
+                serde_json::json!({"action": "takeScreenshot", "cdp": true}),
+                vec![BrowserDebugger],
             ),
             (
                 serde_json::json!({"action": "agentCdpCaptureScreenshot"}),
-                Some(GateName::BrowserDebugger),
+                vec![BrowserDebugger],
             ),
             (
                 serde_json::json!({"action": "agentRestApi", "method": "GET"}),
-                None,
+                vec![],
             ),
             (
                 serde_json::json!({"action": "agentRestApi", "method": "PATCH"}),
-                Some(GateName::RestRequest),
+                vec![RestRequest],
             ),
             (
                 serde_json::json!({"action": "agentRestApi", "method": "DELETE"}),
-                Some(GateName::DeleteRecords),
+                vec![DeleteRecords],
+            ),
+            (
+                batch(serde_json::json!([{"method": "GET"}, {"method": "patch"}])),
+                vec![RestRequest],
+            ),
+            (
+                batch(serde_json::json!([{"method": "GET"}, {"method": "DELETE"}])),
+                vec![DeleteRecords, RestRequest],
+            ),
+            (
+                batch(serde_json::json!([{}])),
+                vec![DeleteRecords, RestRequest],
+            ),
+            (
+                serde_json::json!({"action": "agentRestApi", "method": "POST",
+                    "endpoint": "/api/now/v1/batch", "body": "not json"}),
+                vec![DeleteRecords, RestRequest],
+            ),
+            (
+                // Dot segments and doubled slashes cannot hide the endpoint.
+                serde_json::json!({"action": "agentRestApi", "method": "POST",
+                    "endpoint": "/api/now/table/../v2//Batch/",
+                    "body": {"rest_requests": [{"method": "DELETE"}]}}),
+                vec![DeleteRecords, RestRequest],
             ),
         ];
 
         for (payload, expected) in cases {
-            assert_eq!(gate_for_payload(&payload), expected, "payload: {payload}");
+            assert_eq!(gates_for_payload(&payload), expected, "payload: {payload}");
         }
+    }
+
+    #[test]
+    fn update_records_follows_create_artifacts_until_published() {
+        let mut gates: InstanceGates = serde_json::from_value(serde_json::json!({
+            "backgroundScripts": "approve", "deleteRecords": "approve",
+            "createArtifacts": "off", "restRequest": "auto", "browserDebugger": "auto"
+        }))
+        .unwrap();
+        assert_eq!(gates.mode(GateName::UpdateRecords), GateMode::Off);
+        gates.update_records = Some(GateMode::Approve);
+        assert_eq!(gates.mode(GateName::UpdateRecords), GateMode::Approve);
     }
 
     #[test]
@@ -321,6 +488,7 @@ mod tests {
             create_artifacts: GateMode::Auto,
             rest_request: GateMode::Auto,
             browser_debugger: GateMode::Auto,
+            update_records: None,
         };
         status.apply_gate_snapshot(
             "https://dev.service-now.com:443".into(),

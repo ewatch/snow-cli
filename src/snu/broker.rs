@@ -1657,6 +1657,7 @@ mod tests {
             heartbeat_interval: Duration::from_secs(60),
             connect_timeout: Duration::from_secs(2),
             rebind_delay: Duration::from_millis(50),
+            bridge_id: String::new(),
         };
         let (manager, _sessions) = BridgeManager::start(config);
         let ws_addr = manager
@@ -1713,6 +1714,96 @@ mod tests {
             ))
             .await
             .unwrap();
+    }
+
+    /// Answer the capability check with explicit per-gate modes.
+    async fn answer_capabilities_with(
+        helper: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        gates: Value,
+    ) {
+        let capability_request = helper.next().await.unwrap().unwrap();
+        let capability_request: Value =
+            serde_json::from_str(capability_request.to_text().unwrap()).unwrap();
+        assert_eq!(capability_request["action"], "agentGetCapabilities");
+        helper
+            .send(Message::Text(
+                serde_json::json!({
+                    "action": "agentGetCapabilitiesResponse",
+                    "agentRequestId": capability_request["agentRequestId"],
+                    "success": true,
+                    "capabilities": {"protocolVersion": 1, "instanceSecurityGates": 1},
+                    "instanceGates": {
+                        "https://dev.service-now.com": {"revision": 1, "gates": gates}
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn user_gate_settings_block_form_commits_and_batch_deletes() {
+        let instance = serde_json::json!({
+            "name": "dev", "url": "https://dev.service-now.com", "g_ck": "token"
+        });
+        let cases = [
+            (
+                serde_json::json!({"action": "agentRunUiAction", "uiAction": "sysverb_update",
+                    "instance": instance}),
+                serde_json::json!({"backgroundScripts": "auto", "deleteRecords": "auto",
+                    "createArtifacts": "auto", "updateRecords": "off",
+                    "restRequest": "auto", "browserDebugger": "auto"}),
+                "updateRecords",
+            ),
+            (
+                // An older helper without updateRecords: it follows createArtifacts.
+                serde_json::json!({"action": "agentRunUiAction", "uiAction": "sysverb_update",
+                    "instance": instance}),
+                serde_json::json!({"backgroundScripts": "auto", "deleteRecords": "auto",
+                    "createArtifacts": "off", "restRequest": "auto", "browserDebugger": "auto"}),
+                "updateRecords",
+            ),
+            (
+                serde_json::json!({"action": "agentRestApi", "method": "POST",
+                    "endpoint": "/api/now/v1/batch",
+                    "body": {"rest_requests": [{"method": "DELETE", "url": "/api/now/table/incident/x"}]},
+                    "instance": instance}),
+                serde_json::json!({"backgroundScripts": "auto", "deleteRecords": "off",
+                    "createArtifacts": "auto", "restRequest": "auto", "browserDebugger": "auto"}),
+                "deleteRecords",
+            ),
+        ];
+        for (mut payload, gates, blocked_gate) in cases {
+            let (broker, mut helper) = gated_test_bridge().await;
+            payload["agentRequestId"] = Value::String("blocked-1".to_string());
+            let request_broker = Arc::clone(&broker);
+            let request = tokio::spawn(async move {
+                dispatch(
+                    BrokerRequest::SendAction {
+                        payload,
+                        correlation_id: "blocked-1".to_string(),
+                        timeout_secs: 2,
+                    },
+                    &request_broker,
+                )
+                .await
+            });
+            answer_capabilities_with(&mut helper, gates).await;
+            let error = request.await.unwrap().unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains(blocked_gate), "{message}");
+            // Nothing beyond the capability check reached the browser.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), helper.next())
+                    .await
+                    .is_err(),
+                "a blocked action must not be sent"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1814,6 +1905,10 @@ mod tests {
                 .await
             });
 
+            if action_name == "agentRunUiAction" {
+                // Committing a form is gated on updateRecords.
+                answer_capabilities(&mut helper, "auto").await;
+            }
             let action = helper.next().await.unwrap().unwrap();
             let action: Value = serde_json::from_str(action.to_text().unwrap()).unwrap();
             assert_eq!(action["action"], action_name);
@@ -1840,6 +1935,8 @@ mod tests {
         let payload = serde_json::json!({
             "action": "takeScreenshot",
             "agentRequestId": "screenshot-1",
+            // Only debugger-based capture is gated.
+            "cdp": true,
             "tabId": 42,
             "instance": {
                 "name": "dev",
