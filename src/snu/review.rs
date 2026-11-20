@@ -72,10 +72,12 @@ pub async fn review_if_required(
     let payload_hash = payload_hash(&origin, &command, &params);
     // The helper runs UI actions from the parameters on the card, so those
     // stay exact; other cards may shorten large values for display.
-    let card_params = if command == "run_ui_action" {
-        params.clone()
-    } else {
+    // Only an attachment upload's file content is shortened on the card;
+    // every other value is shown in full so the reviewer sees what runs.
+    let card_params = if command == "upload_attachment" {
         summarize_large_values(&params)
+    } else {
+        params.clone()
     };
     let review_correlation = format!("{correlation_id}-review");
 
@@ -137,7 +139,13 @@ pub async fn review_if_required(
 
     // The gate may have changed while the card was open: re-check it on the
     // same helper generation before anything runs.
-    let recheck = manager.preflight(payload, timeout_secs).await?;
+    let recheck = match manager.preflight(payload, timeout_secs).await {
+        Ok(recheck) => recheck,
+        Err(error) => {
+            cancel(manager, &review_id).await;
+            return Err(error);
+        }
+    };
     if recheck.generation != preflight.generation {
         cancel(manager, &review_id).await;
         return Err(BridgeError::Disconnected);
@@ -179,6 +187,18 @@ pub async fn review_if_required(
         .and_then(Value::as_bool)
         == Some(true)
     {
+        // Narrow the window for a gate change while executeApproved was in
+        // flight: check once more right before the action is sent.
+        let last = manager.preflight(payload, timeout_secs).await?;
+        if last.generation != preflight.generation {
+            return Err(BridgeError::Disconnected);
+        }
+        if last.decision == GateDecision::Blocked {
+            return Err(BridgeError::GateBlocked {
+                gate: last.gate.map_or(gate, |gate| gate.to_string()),
+                origin,
+            });
+        }
         Ok(ReviewOutcome::Dispatch)
     } else {
         Ok(ReviewOutcome::Executed(Box::new(executed)))

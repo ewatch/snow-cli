@@ -305,8 +305,11 @@ snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png
 - Connections from ordinary web pages are refused, so a page open in your
   browser cannot act as the helper. Like SN-Utils' own bridge, the bridge
   cannot authenticate local programs: any process on your machine that
-  connects to `127.0.0.1:1978` can take over as the helper. Only browser
-  extension pages receive the bridge's identity.
+  connects to `127.0.0.1:1978` can take over as the helper, and the bridge's
+  identity goes to any connection presenting a browser-extension `Origin`,
+  which a local program can fake. SN-Utils also picks the tab for a page action
+  without re-checking it, so a tab that navigates in that moment can receive
+  the action.
 - If an approved command's reply is lost, snow-cli reports
   `SNU_APPROVED_NO_REPLY`: the command was sent and may have run, so check the
   instance before retrying. A command that would need a new approval is not

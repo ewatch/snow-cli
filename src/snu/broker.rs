@@ -2019,6 +2019,8 @@ mod tests {
         assert_eq!(execute["agentRequestId"], "del-1");
         assert_eq!(execute["nonce"], review["nonce"]);
         send_json(&mut helper, serde_json::json!({"agentRequestId": "del-1", "success": true, "approvedNotExecuted": true})).await;
+        // The gate is checked once more right before dispatch.
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
 
         let action = next_json(&mut helper).await;
         assert_eq!(
@@ -2089,7 +2091,12 @@ mod tests {
     #[tokio::test]
     async fn an_unanswered_review_is_cancelled_and_a_late_approval_runs_nothing() {
         let (broker, mut helper) = gated_test_bridge().await;
-        let mut payload = rest_delete();
+        // A Batch API delete: classified by its sub-requests, so it is held.
+        let mut payload = serde_json::json!({
+            "action": "agentRestApi", "method": "POST", "endpoint": "/api/now/v1/batch",
+            "body": {"rest_requests": [{"method": "DELETE", "url": "/api/now/table/incident/abc"}]},
+            "instance": {"name": "dev", "url": "https://dev.service-now.com", "g_ck": "secret-token"}
+        });
         payload["agentRequestId"] = Value::from("late-1");
         let request = {
             let broker = Arc::clone(&broker);
@@ -2142,6 +2149,8 @@ mod tests {
         let execute = next_json(&mut helper).await;
         assert_eq!(execute["action"], "executeApproved");
         send_json(&mut helper, serde_json::json!({"agentRequestId": "del-1", "success": true, "approvedNotExecuted": true})).await;
+        // The gate is checked once more right before dispatch.
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
         let action = next_json(&mut helper).await;
         assert_eq!(action["action"], "agentRestApi");
         // The helper never answers the dispatched delete.
@@ -2173,7 +2182,7 @@ mod tests {
         let cases = [
             (
                 serde_json::json!({"action": "agentRunUiAction", "uiAction": "sysverb_update",
-                    "instance": instance}),
+                    "url": "https://dev.service-now.com/incident.do*"}),
                 serde_json::json!({"backgroundScripts": "auto", "deleteRecords": "auto",
                     "createArtifacts": "auto", "updateRecords": "off",
                     "restRequest": "auto", "browserDebugger": "auto"}),
@@ -2182,7 +2191,7 @@ mod tests {
             (
                 // An older helper without updateRecords: it follows createArtifacts.
                 serde_json::json!({"action": "agentRunUiAction", "uiAction": "sysverb_update",
-                    "instance": instance}),
+                    "url": "https://dev.service-now.com/incident.do*"}),
                 serde_json::json!({"backgroundScripts": "auto", "deleteRecords": "auto",
                     "createArtifacts": "off", "restRequest": "auto", "browserDebugger": "auto"}),
                 "updateRecords",
@@ -2215,6 +2224,11 @@ mod tests {
             answer_capabilities_with(&mut helper, gates).await;
             let error = request.await.unwrap().unwrap_err();
             let message = format!("{error:#}");
+            assert_eq!(
+                error.downcast_ref::<BridgeError>().unwrap().code(),
+                "SNU_GATE_BLOCKED",
+                "{message}"
+            );
             assert!(message.contains(blocked_gate), "{message}");
             // Nothing beyond the capability check reached the browser.
             assert!(
