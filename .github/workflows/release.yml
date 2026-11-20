@@ -345,7 +345,9 @@ jobs:
       - name: Dispatch new-release event to ${{ matrix.target.repo }}
         shell: bash
         env:
-          DISPATCH_TOKEN: ${{ secrets[matrix.target.secret] }}
+          # Static secret references: a dynamic `secrets[...]` lookup makes
+          # GitHub pass every repository secret to the runner.
+          DISPATCH_TOKEN: ${{ matrix.target.secret == 'HOMEBREW_TAP_TOKEN' && secrets.HOMEBREW_TAP_TOKEN || matrix.target.secret == 'SCOOP_BUCKET_TOKEN' && secrets.SCOOP_BUCKET_TOKEN || '' }}
           TARGET_REPO: ${{ matrix.target.repo }}
           SKIP_NOTE: ${{ matrix.target.skip_note }}
         run: |

@@ -142,10 +142,9 @@ pub(super) fn decrypt(key: &FileKey, file: &[u8], path: &Path) -> anyhow::Result
 
 /// Encrypt alias-store JSON into a `credentials.enc` payload with a fresh IV.
 pub(super) fn encrypt(key: &FileKey, json: &str) -> anyhow::Result<Vec<u8>> {
-    let mut iv = [0u8; NONCE_LEN];
-    SystemRandom::new()
-        .fill(&mut iv)
-        .map_err(|_| anyhow::anyhow!("could not generate a random IV"))?;
+    let iv: [u8; NONCE_LEN] = ring::rand::generate(&SystemRandom::new())
+        .map_err(|_| anyhow::anyhow!("could not generate a random IV"))?
+        .expose();
     let mut data = json.as_bytes().to_vec();
     cipher(key)
         .seal_in_place_append_tag(Nonce::assume_unique_for_key(iv), Aad::empty(), &mut data)
