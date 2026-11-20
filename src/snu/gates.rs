@@ -132,9 +132,21 @@ pub struct HelperStatus {
     pub license: Option<HelperLicenseInfo>,
     #[serde(default)]
     pub instance_gates: HashMap<String, GateSnapshot>,
+    /// Capabilities from the latest active `agentGetCapabilities` refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub negotiated_capabilities: Option<HelperProtocolCapabilities>,
 }
 
 impl HelperStatus {
+    /// Whether the helper can hold commands for host-driven review.
+    pub fn supports_command_review(&self) -> bool {
+        let advertised = |caps: Option<&HelperProtocolCapabilities>| {
+            caps.and_then(|caps| caps.command_review).unwrap_or(0) >= 1
+        };
+        advertised(self.build.as_ref().map(|build| &build.capabilities))
+            || advertised(self.negotiated_capabilities.as_ref())
+    }
+
     pub fn advertises_instance_gates(&self) -> bool {
         self.build
             .as_ref()
@@ -215,12 +227,20 @@ pub fn gates_for_payload(payload: &Value) -> Vec<GateName> {
         // Running a UI action commits the open form, so it updates an existing
         // record; a name mentioning delete/destroy only ever escalates.
         "agentRunUiAction" => {
-            let name = payload
-                .get("uiAction")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if name.contains("delete") || name.contains("destroy") {
+            // The helper reads `params` when present, else the payload, and
+            // takes `uiAction` or `actionName`. Any delete/destroy name in
+            // either place only ever escalates.
+            let deletes = [
+                "/uiAction",
+                "/actionName",
+                "/params/uiAction",
+                "/params/actionName",
+            ]
+            .iter()
+            .filter_map(|pointer| payload.pointer(pointer).and_then(Value::as_str))
+            .map(str::to_ascii_lowercase)
+            .any(|name| name.contains("delete") || name.contains("destroy"));
+            if deletes {
                 vec![GateName::DeleteRecords]
             } else {
                 vec![GateName::UpdateRecords]
@@ -238,6 +258,12 @@ pub fn gates_for_payload(payload: &Value) -> Vec<GateName> {
             }
         }
         "agentRestApi" => rest_gates(payload),
+        // Winding a debugger session down stays possible after the gate is
+        // switched off mid-capture, as in SN-Utils' own bridge.
+        "agentCdpStopConsoleCapture"
+        | "agentCdpStopNetworkCapture"
+        | "agentCdpClearDialogHandler"
+        | "agentCdpDetach" => Vec::new(),
         action if action.starts_with("agentCdp") => vec![GateName::BrowserDebugger],
         _ => Vec::new(),
     }
@@ -332,8 +358,10 @@ fn batch_sub_methods(payload: &Value) -> BatchMethods {
 
 /// Resolve the target origin without retaining any session or action payload.
 pub fn payload_origin(payload: &Value) -> Option<String> {
+    // Page commands read `params.url` before the top-level `url`, like the helper.
     payload
         .pointer("/instance/url")
+        .or_else(|| payload.pointer("/params/url"))
         .or_else(|| payload.get("url"))
         .and_then(Value::as_str)
         .and_then(normalize_origin)
@@ -398,6 +426,28 @@ mod tests {
             (
                 serde_json::json!({"action": "agentRunUiAction", "uiAction": "sysverb_delete"}),
                 vec![DeleteRecords],
+            ),
+            (
+                serde_json::json!({"action": "agentRunUiAction", "params": {"actionName": "delete_all"}}),
+                vec![DeleteRecords],
+            ),
+            (
+                serde_json::json!({"action": "agentRunUiAction", "uiAction": "save",
+                    "params": {"uiAction": "sysverb_destroy"}}),
+                vec![DeleteRecords],
+            ),
+            (
+                serde_json::json!({"action": "agentCdpStopNetworkCapture"}),
+                vec![],
+            ),
+            (serde_json::json!({"action": "agentCdpDetach"}), vec![]),
+            (
+                serde_json::json!({"action": "agentCdpStartNetworkCapture"}),
+                vec![BrowserDebugger],
+            ),
+            (
+                serde_json::json!({"action": "agentCdp"}),
+                vec![BrowserDebugger],
             ),
             (
                 serde_json::json!({"action": "executeBackgroundScript"}),

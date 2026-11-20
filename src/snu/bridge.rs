@@ -15,7 +15,8 @@ use tokio_tungstenite::{
     WebSocketStream, accept_hdr_async,
     tungstenite::{
         Bytes, Message,
-        handshake::server::{Request, Response},
+        handshake::server::{ErrorResponse, Request, Response},
+        http::StatusCode,
         protocol::{CloseFrame, frame::coding::CloseCode},
     },
 };
@@ -99,6 +100,19 @@ pub enum BridgeError {
     #[error("timed out awaiting browser approval for SN-Utils security gate {gate} on {origin}")]
     ApprovalTimeout { gate: String, origin: String },
     #[error(
+        "SN-Utils security gate {gate} requires approval on {origin}, but this helper tab cannot hold commands for review; update SN-Utils, or set the gate to auto"
+    )]
+    ReviewUnsupported { gate: String, origin: String },
+    #[error("approval for SN-Utils security gate {gate} on {origin} was rejected in the helper tab{}", .feedback.as_ref().map(|text| format!(": {text}")).unwrap_or_default())]
+    ReviewRejected {
+        gate: String,
+        origin: String,
+        /// The user's own rejection note from the review card.
+        feedback: Option<String>,
+    },
+    #[error("SN-Utils review reply did not match the request; the action was not run")]
+    ReviewMismatch,
+    #[error(
         "SN-Utils bridge port {0} is already in use. Only one bridge can own this port at a time, so this usually means the `sn-scriptsync` VS Code extension or another process is bound to it. Stop the other owner and retry; the broker keeps retrying the port automatically."
     )]
     PortConflict(SocketAddr),
@@ -125,6 +139,9 @@ impl BridgeError {
             Self::GateUnauthorized(_) => "SNU_GATE_UNAUTHORIZED",
             Self::GateBlocked { .. } => "SNU_GATE_BLOCKED",
             Self::ApprovalTimeout { .. } => "SNU_APPROVAL_TIMEOUT",
+            Self::ReviewUnsupported { .. } => "SNU_REVIEW_UNSUPPORTED",
+            Self::ReviewRejected { .. } => "SNU_REVIEW_REJECTED",
+            Self::ReviewMismatch => "SNU_REVIEW_MISMATCH",
             _ => "SNU_BRIDGE_ERROR",
         }
     }
@@ -451,6 +468,7 @@ impl BridgeManager {
             return Err(BridgeError::Disconnected);
         }
         status.security_gate_support = HelperSecurityGateSupport::Gated;
+        status.negotiated_capabilities = Some(report.protocol.clone());
         let refreshed_instance_gates = report.instance_gates;
         for (origin, snapshot) in &refreshed_instance_gates {
             status.apply_gate_snapshot(origin.clone(), snapshot.clone());
@@ -488,15 +506,27 @@ impl BridgeManager {
                 decision: GateDecision::LegacyUnrestricted,
             }),
             CapabilityNegotiation::Gated(status) => {
-                let origin = origin.ok_or_else(|| {
-                    BridgeError::GateStateUnavailable(format!(
-                        "action requires {first_gate}, but its instance origin is unknown"
-                    ))
-                })?;
+                // The helper acts on an explicit tab and ignores the URL, and
+                // the tab's instance is unknown here: then every authorized
+                // instance must allow the action.
+                let targets_tab = ["/tabId", "/params/tabId"]
+                    .iter()
+                    .any(|pointer| payload.pointer(pointer).is_some_and(|tab| !tab.is_null()));
+                let origin = match origin {
+                    Some(origin) => origin,
+                    None if targets_tab => "the targeted tab's instance".to_owned(),
+                    None => {
+                        return Err(BridgeError::GateStateUnavailable(format!(
+                            "action requires {first_gate}, but its instance origin is unknown"
+                        )));
+                    }
+                };
                 // A page command can target tabs by pattern
                 // (`https://*.service-now.com`); it must then be allowed on
                 // every authorized instance the pattern matches.
-                let snapshots: Vec<_> = if origin.contains('*') {
+                let snapshots: Vec<_> = if targets_tab {
+                    status.instance_gates.values().collect()
+                } else if origin.contains('*') {
                     status
                         .instance_gates
                         .iter()
@@ -535,6 +565,16 @@ impl BridgeManager {
                     decision,
                 })
             }
+        }
+    }
+
+    /// Send a message to the connected helper without waiting for a reply.
+    /// Does nothing when no helper is connected.
+    pub async fn send_untracked(&self, payload: &Value) {
+        if let Some(conn) = self.inner.conn.lock().await.as_ref() {
+            let _ = conn
+                .outbound
+                .send(Message::Text(payload.to_string().into()));
         }
     }
 
@@ -782,6 +822,40 @@ fn origin_matches_pattern(origin: &str, pattern: &str) -> bool {
     matches(origin.as_bytes(), pattern.as_bytes())
 }
 
+/// Who opened a bridge WebSocket, judged by its `Origin` header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeerOrigin {
+    /// A browser extension page: the SN-Utils helper tab.
+    Extension,
+    /// No `Origin`: a native client (browsers always send one).
+    Native,
+    /// Any web page, including an opaque `null` origin. Refused, so a page
+    /// cannot replace the helper and receive token-bearing agent payloads.
+    Refused,
+}
+
+fn peer_origin(origin: Option<&str>) -> PeerOrigin {
+    let Some(origin) = origin else {
+        return PeerOrigin::Native;
+    };
+    let is_extension = [
+        "chrome-extension://",
+        "moz-extension://",
+        "safari-web-extension://",
+    ]
+    .iter()
+    .any(|scheme| {
+        origin.strip_prefix(scheme).is_some_and(|host| {
+            !host.is_empty() && !host.contains('/') && host.bytes().all(|b| b.is_ascii_graphic())
+        })
+    });
+    if is_extension {
+        PeerOrigin::Extension
+    } else {
+        PeerOrigin::Refused
+    }
+}
+
 /// Whether a helper's WebSocket URL marks an automatic reconnect.
 fn is_resume_request(uri: &str) -> bool {
     uri.split_once('?')
@@ -836,22 +910,37 @@ async fn accept_loop(inner: Arc<Inner>) {
                 }
             };
             let mut resume = false;
+            let mut extension_peer = false;
             #[allow(
                 clippy::result_large_err,
                 reason = "tungstenite's handshake Callback trait fixes this Result type"
             )]
-            let read_resume = |request: &Request, response: Response| {
-                resume = is_resume_request(&request.uri().to_string());
-                Ok(response)
+            let screen_handshake = |request: &Request, response: Response| {
+                let origin = request
+                    .headers()
+                    .get("origin")
+                    .map(|value| value.to_str().unwrap_or("invalid"));
+                match peer_origin(origin) {
+                    PeerOrigin::Refused => {
+                        let mut refusal = ErrorResponse::new(Some("Not allowed".to_owned()));
+                        *refusal.status_mut() = StatusCode::FORBIDDEN;
+                        Err(refusal)
+                    }
+                    kind => {
+                        extension_peer = kind == PeerOrigin::Extension;
+                        resume = is_resume_request(&request.uri().to_string());
+                        Ok(response)
+                    }
+                }
             };
-            let socket = match accept_hdr_async(stream, read_resume).await {
+            let socket = match accept_hdr_async(stream, screen_handshake).await {
                 Ok(socket) => socket,
                 Err(error) => {
-                    tracing::debug!(%error, %peer_addr, "SN-Utils bridge handshake failed");
+                    tracing::debug!(%error, %peer_addr, "SN-Utils bridge handshake refused or failed");
                     continue;
                 }
             };
-            attach_connection(&inner, socket, peer_addr, resume).await;
+            attach_connection(&inner, socket, peer_addr, resume, extension_peer).await;
         }
     }
 }
@@ -867,6 +956,7 @@ async fn attach_connection(
     mut socket: WebSocketStream<TcpStream>,
     peer_addr: SocketAddr,
     resume: bool,
+    extension_peer: bool,
 ) {
     if resume && inner.conn.lock().await.is_some() {
         tracing::debug!(%peer_addr, "SN-Utils helper reconnect told to stand by");
@@ -930,7 +1020,14 @@ async fn attach_connection(
         generation,
         ..HelperStatus::default()
     };
-    let _ = outbound_tx.send(host_hello_message(&inner.config.bridge_id));
+    // Only an extension page is the SN-Utils helper; native peers never learn
+    // the bridge identity SN-Utils trusts for automatic token refresh.
+    let bridge_id = if extension_peer {
+        inner.config.bridge_id.as_str()
+    } else {
+        ""
+    };
+    let _ = outbound_tx.send(host_hello_message(bridge_id));
     if let Some(banner) = inner.pending_banner.lock().await.take() {
         let _ = outbound_tx.send(banner_message(&banner));
     }
@@ -1264,24 +1361,88 @@ mod tests {
         }
     }
 
+    async fn connect_with_origin(
+        addr: SocketAddr,
+        origin: &str,
+    ) -> Result<HelperSocket, tokio_tungstenite::tungstenite::Error> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://{addr}").into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("origin", origin.parse().unwrap());
+        tokio_tungstenite::connect_async(request)
+            .await
+            .map(|(socket, _)| socket)
+    }
+
     #[tokio::test]
-    async fn hello_carries_bridge_id_and_version() {
+    async fn hello_carries_bridge_id_only_for_extension_pages() {
         let mut config = test_config(([127, 0, 0, 1], 0).into(), Duration::from_secs(60));
         config.bridge_id = "ab".repeat(32);
         let (manager, _sessions) = BridgeManager::start(config);
         let addr = manager.wait_bound(Duration::from_secs(2)).await.unwrap();
-        let mut helper = connect_helper_raw(addr).await;
+
+        let mut helper = connect_with_origin(addr, "chrome-extension://abcdefghijklmnop")
+            .await
+            .unwrap();
         let hello = helper.next().await.unwrap().unwrap();
         let hello: Value = serde_json::from_str(hello.to_text().unwrap()).unwrap();
         assert_eq!(hello["bridgeId"], "ab".repeat(32));
         assert_eq!(hello["hostVersion"], env!("CARGO_PKG_VERSION"));
 
-        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
-        let mut helper = connect_helper_raw(addr).await;
-        let hello = helper.next().await.unwrap().unwrap();
+        // A native client (no Origin) may connect but never learns the id.
+        let mut native = connect_helper_raw(addr).await;
+        let hello = native.next().await.unwrap().unwrap();
         let hello: Value = serde_json::from_str(hello.to_text().unwrap()).unwrap();
-        assert!(hello.get("bridgeId").is_none(), "no id, no field");
-        drop(manager);
+        assert_eq!(hello["action"], "hostHello");
+        assert!(hello.get("bridgeId").is_none());
+    }
+
+    #[tokio::test]
+    async fn web_pages_cannot_take_over_the_helper() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut helper = connect_with_origin(addr, "chrome-extension://abcdefghijklmnop")
+            .await
+            .unwrap();
+        let _hello = helper.next().await.unwrap().unwrap();
+        for origin in [
+            "https://evil.example",
+            "null",
+            "chrome-extension://",
+            "chrome-extension://a/b",
+        ] {
+            assert!(
+                connect_with_origin(addr, origin).await.is_err(),
+                "origin {origin} must be refused"
+            );
+        }
+        // The real helper is still the active connection.
+        manager.send_banner("still the helper").await;
+        let banner = timeout(Duration::from_secs(2), helper.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(banner.to_text().unwrap().contains("still the helper"));
+    }
+
+    #[test]
+    fn peer_origins_are_classified() {
+        assert_eq!(peer_origin(None), PeerOrigin::Native);
+        assert_eq!(
+            peer_origin(Some("moz-extension://1234-5678")),
+            PeerOrigin::Extension
+        );
+        assert_eq!(
+            peer_origin(Some("safari-web-extension://X")),
+            PeerOrigin::Extension
+        );
+        assert_eq!(
+            peer_origin(Some("https://dev.service-now.com")),
+            PeerOrigin::Refused
+        );
+        assert_eq!(peer_origin(Some("null")), PeerOrigin::Refused);
+        assert_eq!(peer_origin(Some("invalid")), PeerOrigin::Refused);
     }
 
     #[tokio::test]

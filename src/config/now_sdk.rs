@@ -133,9 +133,15 @@ fn backend() -> anyhow::Result<Backend> {
     let source = credential_file::KeySource::from_env()?;
     let key = source.key()?;
     let path = credential_file::credentials_path();
-    match key {
-        Some(key) => Ok(Backend::Encrypted { key, path }),
-        None if path.exists() => Err(crate::config::error::ConfigError::new(
+    match (key, path) {
+        (Some(_), None) => Err(crate::config::error::ConfigError::new(
+            "NOW_SDK_CREDENTIALS_UNREADABLE",
+            "now-sdk encrypted credentials need a home directory or SN_SDK_CREDENTIALS_DIR; \
+             neither is set.",
+        )
+        .into()),
+        (Some(key), Some(path)) => Ok(Backend::Encrypted { key, path }),
+        (None, Some(path)) if path.exists() => Err(crate::config::error::ConfigError::new(
             "NOW_SDK_CREDENTIALS_UNREADABLE",
             format!(
                 "now-sdk encrypted credentials exist at {} but their key is unavailable ({}). \
@@ -148,8 +154,8 @@ fn backend() -> anyhow::Result<Backend> {
             ),
         )
         .into()),
-        None if source == credential_file::KeySource::Env => Ok(Backend::EnvKeyMissing),
-        None => Ok(Backend::Legacy),
+        (None, _) if source == credential_file::KeySource::Env => Ok(Backend::EnvKeyMissing),
+        (None, _) => Ok(Backend::Legacy),
     }
 }
 

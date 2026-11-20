@@ -229,3 +229,60 @@ fn env_key_source_without_a_key_reads_empty_and_refuses_to_write() {
         .failure()
         .stderr(predicate::str::contains("Unknown SN_SDK_KEY_SOURCE"));
 }
+
+#[cfg(unix)]
+#[test]
+fn export_with_a_wrong_key_fails_without_replacing_the_file() {
+    use std::os::unix::fs::MetadataExt;
+    let env = Env::new().with_fixture();
+    env.cmd()
+        .args([
+            "profile",
+            "add",
+            "dev",
+            "--instance",
+            "https://dev.service-now.com",
+            "--auth-method",
+            "basic",
+            "--username",
+            "admin",
+        ])
+        .assert()
+        .success();
+    common::write_test_keychain_entry(&env.keychain, "snow-cli", "dev:password", "dev-password");
+    let before = std::fs::metadata(env.file()).unwrap();
+    let bytes = read(&env.file());
+
+    env.cmd()
+        .env("SN_SDK_KEY_SOURCE", "env")
+        .env(
+            "SN_SDK_ENCRYPTION_KEY",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        )
+        .args(["profile", "sdk", "export", "dev"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("NOW_SDK_CREDENTIALS_UNREADABLE"));
+
+    let after = std::fs::metadata(env.file()).unwrap();
+    assert_eq!(before.ino(), after.ino(), "the file was not replaced");
+    assert_eq!(read(&env.file()), bytes);
+}
+
+#[test]
+fn reads_with_a_raw_32_byte_keychain_key_as_now_sdk_4_14_0_wrote() {
+    let env = Env::new().with_fixture();
+    // The fixture key is 32 ASCII bytes, so the plaintext test keychain can
+    // hold it raw, as now-sdk 4.14.0 stored keys.
+    common::write_test_keychain_entry(
+        &env.keychain,
+        "ServiceNow",
+        "now-sdk-credentials-key",
+        "snow-cli-now-sdk-fixture-key-32b",
+    );
+    env.cmd()
+        .args(["--output", "json", "profile", "sdk", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fixture-basic"));
+}

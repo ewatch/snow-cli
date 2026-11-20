@@ -793,6 +793,9 @@ fn store_basic_login(
         None
     };
 
+    // Restore now-sdk only after this call wrote it: a store snow-cli could
+    // not read (for example a wrong encryption key) must stay untouched.
+    let mut now_sdk_written = false;
     let write_result = (|| -> anyhow::Result<()> {
         credentials::store_credential(profile_name, "password", password)?;
 
@@ -807,6 +810,7 @@ fn store_basic_login(
                 password,
                 set_now_sdk_default,
             );
+            now_sdk_written = true;
             now_sdk::save_store(&store)?;
         }
 
@@ -821,7 +825,7 @@ fn store_basic_login(
                 "password",
                 existing_password.as_deref(),
             )?;
-            if let Some(snapshot) = now_sdk_snapshot.as_ref() {
+            if let Some(snapshot) = now_sdk_snapshot.as_ref().filter(|_| now_sdk_written) {
                 now_sdk::restore_raw_store(snapshot)?;
             }
             Err(error)

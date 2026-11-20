@@ -194,6 +194,9 @@ pub(super) async fn handle_export_now_sdk(
 
     let alias_name = alias.unwrap_or_else(|| profile_name.clone());
     let snapshot = now_sdk::snapshot_raw_store()?;
+    // Restore only after this call wrote the store: a store snow-cli could not
+    // read (for example a wrong encryption key) must stay untouched.
+    let mut written = false;
     let apply_result = (|| -> anyhow::Result<ExportNowSdkResult> {
         let mut store = now_sdk::load_store()?;
         now_sdk::upsert_basic_alias(
@@ -204,6 +207,7 @@ pub(super) async fn handle_export_now_sdk(
             &password,
             set_default,
         );
+        written = true;
         now_sdk::save_store(&store)?;
 
         Ok(ExportNowSdkResult {
@@ -219,7 +223,9 @@ pub(super) async fn handle_export_now_sdk(
     match apply_result {
         Ok(result) => output::print_output(&result, output_format),
         Err(error) => {
-            now_sdk::restore_raw_store(&snapshot)?;
+            if written {
+                now_sdk::restore_raw_store(&snapshot)?;
+            }
             Err(error)
         }
     }

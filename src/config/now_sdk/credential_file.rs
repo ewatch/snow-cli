@@ -106,17 +106,19 @@ fn decode_base64_key(value: &str) -> Option<FileKey> {
 }
 
 /// The directory holding `credentials.enc`.
-pub(super) fn credentials_dir() -> PathBuf {
+/// `None` when neither `SN_SDK_CREDENTIALS_DIR` nor a home directory is set:
+/// never fall back to the current directory, which may be a repository.
+pub(super) fn credentials_dir() -> Option<PathBuf> {
     match std::env::var(DIR_ENV) {
-        Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
+        Ok(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
         _ => crate::config::profile::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".now-sdk"),
+            .filter(|home| !home.as_os_str().is_empty())
+            .map(|home| home.join(".now-sdk")),
     }
 }
 
-pub(super) fn credentials_path() -> PathBuf {
-    credentials_dir().join(FILE_NAME)
+pub(super) fn credentials_path() -> Option<PathBuf> {
+    credentials_dir().map(|dir| dir.join(FILE_NAME))
 }
 
 /// Raw file bytes, or `None` when the file does not exist.
@@ -237,9 +239,16 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
             tracing::debug!(%error, "could not restrict now-sdk credentials directory");
         }
     }
-    let tmp = dir.join(format!(".{FILE_NAME}.tmp-{}", std::process::id()));
+    // Unpredictable name, created exclusively: a symlink planted in a shared
+    // credentials directory is never followed or truncated.
+    let mut suffix = [0u8; 16];
+    SystemRandom::new()
+        .fill(&mut suffix)
+        .map_err(|_| anyhow::anyhow!("could not generate a temporary file name"))?;
+    let suffix: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
+    let tmp = dir.join(format!(".{FILE_NAME}.tmp-{suffix}"));
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -252,8 +261,11 @@ pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         file.sync_all()?;
         std::fs::rename(&tmp, path)
     };
-    write().inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
+    write().inspect_err(|error| {
+        // Only remove a temp file this call created.
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            let _ = std::fs::remove_file(&tmp);
+        }
     })?;
     Ok(())
 }

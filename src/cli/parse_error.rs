@@ -13,9 +13,9 @@ use clap::{Command, CommandFactory, FromArgMatches};
 /// Parse `std::env::args_os()` into `P`, exiting with an actionable message
 /// on a usage error.
 pub fn parse_or_exit<P: CommandFactory + FromArgMatches>() -> P {
-    let args: Vec<String> = std::env::args_os()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
+    // Clap gets the original OS strings, so non-UTF-8 paths stay intact; the
+    // lossy text is only used to locate the command in a diagnostic.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let mut command = P::command();
     let error = match command
         .try_get_matches_from_mut(&args)
@@ -25,7 +25,11 @@ pub fn parse_or_exit<P: CommandFactory + FromArgMatches>() -> P {
         Err(error) => error,
     };
     command.build();
-    match actionable_message(&error, &command, &args) {
+    let display_args: Vec<String> = args
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    match actionable_message(&error, &command, &display_args) {
         Some(message) => clap::Error::raw(error.kind(), message).exit(),
         None => error.with_cmd(&command).exit(),
     }

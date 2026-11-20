@@ -294,9 +294,14 @@ snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png
 - The helper tab's **Agent Access** settings apply per instance: background
   scripts, record deletes, artifact creation, record updates, REST writes, and
   the browser debugger can each be off, need approval, or run automatically.
-  snow-cli checks them before sending a command, and waits for you to approve
-  a held command in the helper tab's Review Queue (SN-Utils 10.3 holds
-  background scripts and deletes by default).
+  snow-cli checks them before sending a command. A command whose setting is
+  "approve" waits until you approve or reject it in the helper tab's Review
+  Queue (SN-Utils 10.3 sets background scripts and deletes to approve by
+  default); approval must happen within `--timeout-secs`. A rejection returns
+  `SNU_REVIEW_REJECTED` with your note. Helper tabs too old to hold commands
+  for review refuse approve-mode commands with `SNU_REVIEW_UNSUPPORTED`.
+- Only the SN-Utils helper tab (a browser extension page) can act as the
+  helper: connections from ordinary web pages are refused.
 - snow-cli identifies its bridge to SN-Utils with a private id stored in
   `snu-bridge-id` next to the config file. After one manual `/token` with
   snow-cli connected, SN-Utils 10.3+ refreshes session tokens on its own.

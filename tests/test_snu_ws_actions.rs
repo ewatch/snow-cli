@@ -89,8 +89,11 @@ fn run_snu_with_fake_broker(args: &[&str]) -> (Output, Vec<Value>) {
         }
     });
 
+    let config_dir = tempfile::tempdir().unwrap();
     let output = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_SNU_BROKER_ADDR", addr.to_string())
+        // Never touch the real ~/.servicenow, even if a broker were started.
+        .env("SNOW_CLI_CONFIG", config_dir.path().join("config.toml"))
         .args(args)
         .output()
         .unwrap();
