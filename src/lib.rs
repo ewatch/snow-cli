@@ -11,7 +11,6 @@ pub mod models;
 pub mod policy;
 pub mod snu;
 
-use clap::Parser;
 use cli::args::Cli;
 use cli::readonly_args::ReadOnlyCli;
 use policy::{ExecutionPolicy, PolicyMode};
@@ -19,7 +18,7 @@ use std::io::IsTerminal;
 
 /// Parse command-line arguments and run the full snow-cli command surface.
 pub async fn run_cli() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let cli: Cli = cli::parse_error::parse_or_exit();
     let policy = if cli.read_only {
         ExecutionPolicy::read_only()
     } else {
@@ -31,7 +30,7 @@ pub async fn run_cli() -> anyhow::Result<()> {
 
 /// Parse command-line arguments and run the reduced read-only command surface.
 pub async fn run_read_only_cli() -> anyhow::Result<()> {
-    let ro_cli = ReadOnlyCli::parse();
+    let ro_cli: ReadOnlyCli = cli::parse_error::parse_or_exit();
     if let cli::readonly_args::ReadOnlyCommands::Completions { shell } = ro_cli.command {
         cli::readonly_args::generate_completions(shell);
         return Ok(());
@@ -305,8 +304,7 @@ mod tests {
         assert!(command_uses_connection(&Commands::Table(TableArgs {
             command: TableCommands::List {
                 domain: None,
-                query_no_domain: false,
-                with_domain: false,
+                domain_read: Default::default(),
                 table: "incident".parse().unwrap(),
                 query: None,
                 fields: None,

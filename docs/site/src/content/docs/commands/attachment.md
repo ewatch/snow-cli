@@ -21,13 +21,24 @@ Arguments:
 - `<table>`: table name, for example `incident`
 - `<sys_id>`: record `sys_id`
 
-Example:
+Options:
+
+- `--limit <n>`: maximum attachments to return (default: 20)
+- `--offset <n>`: skip this many attachments (default: 0)
+- `--all`: return every attachment instead of the bounded default
+
+Examples:
 
 ```bash
 snow-cli attachment list incident 46d44a4b2f13000044e0bfc8fb99b6fd
+snow-cli attachment list incident 46d44a4b2f13000044e0bfc8fb99b6fd --all
 ```
 
-The result includes fields such as file name, content type, size, and download link.
+The output uses the same envelope as `table list`: `total`, `returned`,
+`offset`, `next_offset`, `truncated`, and `records`. Each record has
+`sys_id`, `file_name`, `content_type`, `size_bytes`, `table_name`,
+`table_sys_id`, and `download_link`. The Attachment API ignores
+`sysparm_fields` and returns about 20 columns, so the CLI keeps only these.
 
 ## `attachment download <sys_id>`
 

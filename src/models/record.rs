@@ -31,6 +31,20 @@ impl Record {
         self.fields.get(field).and_then(|v| v.as_str())
     }
 
+    /// Get a reference field's sys_id, whether the Table API returned it as a
+    /// plain string or as a `{"link": ..., "value": ...}` object. An empty
+    /// reference is `None`.
+    pub fn reference_value(&self, field: &str) -> Option<&str> {
+        match self.fields.get(field)? {
+            serde_json::Value::String(value) => Some(value.as_str()),
+            serde_json::Value::Object(object) => {
+                object.get("value").and_then(serde_json::Value::as_str)
+            }
+            _ => None,
+        }
+        .filter(|value| !value.is_empty())
+    }
+
     /// Get the sys_id of this record.
     pub fn sys_id(&self) -> Option<&str> {
         self.get_str("sys_id")
@@ -54,6 +68,24 @@ mod tests {
         assert_eq!(response.result.len(), 2);
         assert_eq!(response.result[0].sys_id(), Some("abc123"));
         assert_eq!(response.result[0].get_str("number"), Some("INC0010001"));
+    }
+
+    #[test]
+    fn reference_value_reads_plain_and_link_objects() {
+        let record: Record = serde_json::from_value(serde_json::json!({
+            "plain": "abc",
+            "link": {"value": "def", "link": "https://x"},
+            "empty": "",
+            "empty_link": {"value": "", "link": "https://x"},
+            "number": 7,
+        }))
+        .unwrap();
+        assert_eq!(record.reference_value("plain"), Some("abc"));
+        assert_eq!(record.reference_value("link"), Some("def"));
+        assert_eq!(record.reference_value("empty"), None);
+        assert_eq!(record.reference_value("empty_link"), None);
+        assert_eq!(record.reference_value("number"), None);
+        assert_eq!(record.reference_value("missing"), None);
     }
 
     #[test]

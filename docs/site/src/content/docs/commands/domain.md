@@ -37,10 +37,12 @@ alone does not prove activation or which records the user can access.
 
 ```bash
 snow-cli --profile dev --output json domain table incident --counts
-snow-cli --profile dev --output json domain table incident --counts --via-script
+snow-cli --profile dev --output json domain table incident --counts all
 ```
 
-`--counts` adds a `counts` object. `by_domain` lists each domain's `domain` name,
+`--counts` (the same as `--counts visible`) adds a `counts` object. Put the
+table name before a bare `--counts`, since a following word is read as its
+value. `by_domain` lists each domain's `domain` name,
 its `display` path (for example `TOP/ACME`), its `sys_domain` sys_id, and `count`,
 from one Aggregate API request. `scope: "visible_domains"` means the counts cover
 only the domains this session can see: a user in ACME does not see records in
@@ -54,11 +56,15 @@ even with the role, which is why the Table API is used. Without the role,
 `available` is `false` and `hidden` is `null`. Equal counts never prove that
 nothing is hidden.
 
-`--via-script` replaces the Aggregate API with one read-only `GlideAggregate`
+`--counts all` replaces the Aggregate API with one read-only `GlideAggregate`
 using `queryNoDomain()`, giving per-domain counts across all domains with
 `scope: "all_domains"`. It needs the admin role, runs as a background script
 (recorded in the instance's script execution history), and is refused by
 `snow-cli-ro`.
+
+A count the server returns without a valid number, or a group without its
+`sys_domain` value, fails the command with `INVALID_RESPONSE` instead of being
+reported as zero.
 
 `domain inspect <domain_sys_id|global>` reads the domain and its direct children,
 Contains relationships in both directions, and user/group visibility grants

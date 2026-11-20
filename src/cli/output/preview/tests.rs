@@ -7,7 +7,7 @@ fn ordinary_envelopes_use_canonical_serialization() {
     let result = sample_list_result(Some(10), true);
     let preview = PreviewReport::default();
     let envelope = TableListEnvelope {
-        meta: TableListMeta::from_result(&result, &preview),
+        meta: TableListMeta::from_result(&result, &preview, None),
         preview: &preview,
         records: &result.records,
     };
@@ -19,7 +19,7 @@ fn ordinary_envelopes_use_canonical_serialization() {
     ] {
         let mut framed = Vec::new();
         let mut canonical = Vec::new();
-        write_table_list_with_preview(&result, &format, &preview, &mut framed).unwrap();
+        write_table_list_with_preview(&result, &format, &preview, None, &mut framed).unwrap();
         write_output(&envelope, &format, &mut canonical).unwrap();
         assert_eq!(framed, canonical, "{}", format.as_str());
     }
@@ -46,7 +46,6 @@ fn preview_compatibility_errors_are_typed() {
 }
 fn sample_list_result(total: Option<usize>, truncated: bool) -> TableListResult {
     TableListResult {
-        domains_in_page: None,
         records: vec![
             Record {
                 fields: BTreeMap::from([
@@ -77,6 +76,7 @@ fn test_write_table_list_json_envelope() {
         &result,
         &OutputFormat::Json,
         &PreviewReport::default(),
+        None,
         &mut output,
     )
     .unwrap();
@@ -98,6 +98,7 @@ fn test_write_table_list_json_omits_unknown_total() {
         &result,
         &OutputFormat::Json,
         &PreviewReport::default(),
+        None,
         &mut output,
     )
     .unwrap();
@@ -117,6 +118,7 @@ fn test_write_table_list_fields_truncated_flag() {
         &result,
         &OutputFormat::Json,
         &PreviewReport::default(),
+        None,
         &mut output,
     )
     .unwrap();
@@ -131,6 +133,7 @@ fn test_write_table_list_fields_truncated_flag() {
         &result,
         &OutputFormat::Json,
         &PreviewReport::default(),
+        None,
         &mut output,
     )
     .unwrap();
@@ -150,7 +153,8 @@ fn test_write_table_list_preview_metadata_is_outside_records() {
         }],
     };
     let mut output = Vec::new();
-    write_table_list_with_preview(&result, &OutputFormat::Json, &preview, &mut output).unwrap();
+    write_table_list_with_preview(&result, &OutputFormat::Json, &preview, None, &mut output)
+        .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
 
     assert_eq!(value["fields_truncated"], true);
@@ -173,7 +177,8 @@ fn test_write_table_list_jsonl_preview_uses_single_envelope_line() {
         }],
     };
     let mut output = Vec::new();
-    write_table_list_with_preview(&result, &OutputFormat::Jsonl, &preview, &mut output).unwrap();
+    write_table_list_with_preview(&result, &OutputFormat::Jsonl, &preview, None, &mut output)
+        .unwrap();
     let text = String::from_utf8(output).unwrap();
     let lines: Vec<&str> = text.trim().split('\n').collect();
     let envelope: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
@@ -224,6 +229,7 @@ fn test_write_table_list_jsonl_meta_line_first() {
         &result,
         &OutputFormat::Jsonl,
         &PreviewReport::default(),
+        None,
         &mut output,
     )
     .unwrap();
@@ -248,6 +254,7 @@ fn test_write_table_list_csv_stays_plain_records() {
         &result,
         &OutputFormat::Csv,
         &PreviewReport::default(),
+        None,
         &mut output,
     )
     .unwrap();
@@ -267,6 +274,7 @@ fn test_write_table_list_toon_includes_meta() {
         &result,
         &OutputFormat::Toon,
         &PreviewReport::default(),
+        None,
         &mut output,
     )
     .unwrap();
@@ -287,6 +295,7 @@ fn test_write_table_list_auto_keeps_meta() {
         &result,
         &OutputFormat::Auto,
         &PreviewReport::default(),
+        None,
         &mut output,
     )
     .unwrap();
@@ -302,7 +311,6 @@ fn test_write_table_list_auto_keeps_meta() {
 #[test]
 fn test_write_table_list_empty_is_definitive() {
     let result = TableListResult {
-        domains_in_page: None,
         records: Vec::new(),
         total: Some(0),
         offset: 0,
@@ -315,6 +323,7 @@ fn test_write_table_list_empty_is_definitive() {
         &result,
         &OutputFormat::Json,
         &PreviewReport::default(),
+        None,
         &mut output,
     )
     .unwrap();
@@ -324,4 +333,48 @@ fn test_write_table_list_empty_is_definitive() {
     assert_eq!(value["returned"], 0);
     assert_eq!(value["truncated"], false);
     assert_eq!(value["records"], serde_json::json!([]));
+}
+
+#[test]
+fn domain_summary_is_reported_in_list_metadata_only_when_given() {
+    let result = sample_list_result(Some(2), false);
+    let summary = DomainSummary::from([("ACME".to_string(), 1), ("global".to_string(), 1)]);
+    let expected = serde_json::json!({"ACME": 1, "global": 1});
+
+    let mut json = Vec::new();
+    write_table_list_with_preview(
+        &result,
+        &OutputFormat::Json,
+        &PreviewReport::default(),
+        Some(&summary),
+        &mut json,
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    assert_eq!(value["domains_in_page"], expected);
+
+    let mut jsonl = Vec::new();
+    write_table_list_with_preview(
+        &result,
+        &OutputFormat::Jsonl,
+        &PreviewReport::default(),
+        Some(&summary),
+        &mut jsonl,
+    )
+    .unwrap();
+    let text = String::from_utf8(jsonl).unwrap();
+    let meta: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(meta["meta"]["domains_in_page"], expected);
+
+    let mut plain = Vec::new();
+    write_table_list_with_preview(
+        &result,
+        &OutputFormat::Json,
+        &PreviewReport::default(),
+        None,
+        &mut plain,
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+    assert!(value.get("domains_in_page").is_none());
 }

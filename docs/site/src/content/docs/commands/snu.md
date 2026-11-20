@@ -250,7 +250,13 @@ snow-cli snu records parent-options sys_db_object --fields sys_id,name --limit 1
 
 Drive the community Agent API for a live ServiceNow tab. `form-state` is a
 read; `set-field` changes the unsaved form, while `run-ui-action`, `click`, and
-`navigate` can cause browser or instance side effects.
+`navigate` can cause browser or instance side effects. `run-ui-action` commits
+the open record, so it is governed by the `updateRecords` gate, or by
+`deleteRecords` when the action name mentions delete or destroy. Because SN-Utils
+cannot tell which instance a tab id or a wildcard pattern selects,
+`run-ui-action` needs `--url` naming one exact instance, for example
+`--url 'https://dev12345.service-now.com/incident.do*'`; `--tab-id` and
+`https://*.service-now.com/*` are refused for it.
 
 ```bash
 snow-cli snu page form-state --fields number,state --url 'https://dev12345.service-now.com/*'
@@ -265,9 +271,9 @@ debugger calls) are intentionally not exposed by `snow-cli snu`.
 
 ## `snu screenshot`
 
-Capture a screenshot through the helper tab. The selected instance must have
-an active `/token` session so the CLI can preflight its `browserDebugger` gate,
-even when targeting the tab by ID or URL pattern.
+Capture a screenshot through the helper tab. A screenshot is a read: like
+SN-Utils, snow-cli applies the `browserDebugger` gate only to debugger-based
+capture, which `snow-cli snu` does not use.
 
 ```bash
 snow-cli snu screenshot --url 'https://dev12345.service-now.com/*' --out incident.png
@@ -287,6 +293,33 @@ snow-cli snu attachment-upload incident <sys_id> --file ./attachment.png
 - `snow-cli snu` commands auto-start a local broker that owns the SN-Utils WebSocket port and idles out when unused.
 - The `g_ck` token is not stored as a reusable credential. The broker keeps live browser-session metadata in memory per instance while it is running.
 - If a command waits for session metadata, run `/token` in a ServiceNow tab.
+- The helper tab's **Agent Access** settings apply per instance: background
+  scripts, record deletes, artifact creation, record updates, REST writes, and
+  the browser debugger can each be off, need approval, or run automatically.
+  snow-cli checks them before sending a command. A command whose setting is
+  "approve" waits until you approve or reject it in the helper tab's Review
+  Queue (SN-Utils 10.3 sets background scripts and deletes to approve by
+  default); approval must happen within `--timeout-secs`. A rejection returns
+  `SNU_REVIEW_REJECTED` with your note. Helper tabs too old to hold commands
+  for review refuse approve-mode commands with `SNU_REVIEW_UNSUPPORTED`.
+- Connections from ordinary web pages are refused, so a page open in your
+  browser cannot act as the helper. Like SN-Utils' own bridge, the bridge
+  cannot authenticate local programs: any process on your machine that
+  connects to `127.0.0.1:1978` can take over as the helper, and the bridge's
+  identity goes to any connection presenting a browser-extension `Origin`,
+  which a local program can fake. SN-Utils also picks the tab for a page action
+  without re-checking it, so a tab that navigates in that moment can receive
+  the action.
+- If an approved command's reply is lost, snow-cli reports
+  `SNU_APPROVED_NO_REPLY`: the command was sent and may have run, so check the
+  instance before retrying. A command that would need a new approval is not
+  retried automatically.
+- snow-cli identifies its bridge to SN-Utils with a private id stored in
+  `snu-bridge-id` next to the config file. After one manual `/token` with
+  snow-cli connected, SN-Utils 10.3+ refreshes session tokens on its own.
+- With helper tabs open in several browser windows or profiles, the tab you
+  opened last holds the connection; the others stand by and take over when it
+  closes, or right away with **Use this tab instead**.
 - Community Agent API calls use correlated responses. Pro-only code search and CDP debugger actions remain intentionally unsupported.
 
 ### Targeting a specific instance

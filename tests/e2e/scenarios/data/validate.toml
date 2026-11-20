@@ -15,7 +15,7 @@ shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --pro
 
 [[setup]]
 description = "Export a small incident artifact to a temp file"
-shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-export.XXXXXX\") && mv \"$f\" \"$f.json\" && f=\"$f.json\" && \"$SNOW_CLI_BIN\" data export incident --limit 2 --profile e2e-scenario --out \"$f\" >/dev/null && printf '%s' \"$f\""
+shell = "f=$(mktemp \"${TMPDIR:-/tmp}/snow-cli-e2e-export.XXXXXX\") && mv \"$f\" \"$f.json\" && f=\"$f.json\" && \"$SNOW_CLI_BIN\" data export incident --limit 2 --import-ready --profile e2e-scenario --out \"$f\" >/dev/null && printf '%s' \"$f\""
 capture = { export_path = "raw" }
 
 [command]
@@ -23,9 +23,10 @@ args = ["data", "validate", "--file", "{{export_path}}", "--profile", "e2e-scena
 
 [expect]
 exit_code = 0
+stdout_contains = ['"ready":true']
 
 [[fuzzy]]
-expectation = "The validation report finds the incident artifact schema-compatible (no blocking errors), since it was just exported from this same instance."
+expectation = "The validation report finds the import-ready incident artifact schema-compatible (no errors), since it was just exported from this same instance with system-managed fields omitted."
 
 [[cleanup]]
 description = "Remove the export artifact"

@@ -76,7 +76,7 @@ async fn fetch_table_definition(
         return Ok(None);
     };
     let name: TableName = record.get_str("name").unwrap_or_default().parse()?;
-    let super_class = reference_value(&record, "super_class").filter(|id| !id.is_empty());
+    let super_class = record.reference_value("super_class").map(str::to_string);
     Ok(Some((name, super_class)))
 }
 
@@ -151,18 +151,6 @@ fn is_not_found(error: &anyhow::Error) -> bool {
         .is_some_and(|api_error| api_error.status == 404)
 }
 
-/// Read a reference field that may be a plain sys_id or a `{"value": ...}` link object.
-fn reference_value(record: &Record, field: &str) -> Option<String> {
-    match record.fields.get(field) {
-        Some(serde_json::Value::String(text)) => Some(text.clone()),
-        Some(serde_json::Value::Object(map)) => map
-            .get("value")
-            .and_then(serde_json::Value::as_str)
-            .map(ToOwned::to_owned),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,23 +205,5 @@ mod tests {
 
         assert_eq!(columns.len(), 1);
         assert_eq!(columns[0].get_str("name"), Some("incident"));
-    }
-
-    #[test]
-    fn reference_value_reads_plain_and_link_objects() {
-        let plain: Record =
-            serde_json::from_value(serde_json::json!({"super_class": "abc"})).unwrap();
-        let link: Record = serde_json::from_value(
-            serde_json::json!({"super_class": {"value": "def", "link": "https://x"}}),
-        )
-        .unwrap();
-        assert_eq!(
-            reference_value(&plain, "super_class").as_deref(),
-            Some("abc")
-        );
-        assert_eq!(
-            reference_value(&link, "super_class").as_deref(),
-            Some("def")
-        );
     }
 }

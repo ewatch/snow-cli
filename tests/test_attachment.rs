@@ -22,7 +22,7 @@ auth_method = "api_key"
 }
 
 #[tokio::test]
-async fn test_attachment_list() {
+async fn test_attachment_list_is_bounded_and_projected_client_side() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
@@ -31,18 +31,75 @@ async fn test_attachment_list() {
             "sysparm_query",
             "table_name=incident^table_sys_id=6816f79cc0a8016401c5a33be04be441",
         ))
+        .and(query_param("sysparm_limit", "20"))
+        .and(query_param("sysparm_offset", "0"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "25")
+                .set_body_json(serde_json::json!({
+                    "result": [
+                        {
+                            "sys_id": "att1",
+                            "file_name": "error.log",
+                            "content_type": "text/plain",
+                            "size_bytes": "42",
+                            "table_name": "incident",
+                            "table_sys_id": "6816f79cc0a8016401c5a33be04be441",
+                            "download_link": "/api/now/attachment/att1/file",
+                            "hash": "abc",
+                            "average_image_color": ""
+                        }
+                    ]
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config(&server.uri());
+
+    let assert = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "attachment",
+            "list",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+        ])
+        .assert()
+        .success();
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests[0]
+            .url
+            .query_pairs()
+            .all(|(key, _)| key != "sysparm_fields"),
+        "the Attachment API ignores sysparm_fields, so it must not be sent"
+    );
+    let stdout: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(stdout["total"], 25);
+    assert_eq!(stdout["returned"], 1);
+    assert_eq!(stdout["truncated"], true);
+    assert_eq!(stdout["next_offset"], 1);
+    let record = &stdout["records"][0];
+    assert_eq!(record["file_name"], "error.log");
+    assert!(record.get("hash").is_none(), "unlisted columns are dropped");
+}
+
+#[tokio::test]
+async fn test_attachment_list_all_and_offset() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/attachment"))
+        .and(query_param("sysparm_limit", "100"))
+        .and(query_param("sysparm_offset", "5"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": [
-                {
-                    "sys_id": "att1",
-                    "file_name": "error.log",
-                    "content_type": "text/plain",
-                    "size_bytes": "42",
-                    "table_name": "incident",
-                    "table_sys_id": "6816f79cc0a8016401c5a33be04be441",
-                    "download_link": "/api/now/attachment/att1/file"
-                }
-            ]
+            "result": [{"sys_id": "att6", "file_name": "six.txt"}]
         })))
         .expect(1)
         .mount(&server)
@@ -60,10 +117,14 @@ async fn test_attachment_list() {
             "list",
             "incident",
             "6816f79cc0a8016401c5a33be04be441",
+            "--all",
+            "--offset",
+            "5",
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("error.log"));
+        .stdout(predicate::str::contains("\"truncated\":false"))
+        .stdout(predicate::str::contains("six.txt"));
 }
 
 #[tokio::test]

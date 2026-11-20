@@ -247,6 +247,6 @@ fn read_only_binary_does_not_advertise_or_parse_graphql() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "unrecognized subcommand 'graphql'",
+            "'graphql' is not a `snow-cli-ro` subcommand",
         ));
 }

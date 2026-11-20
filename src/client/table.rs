@@ -53,6 +53,30 @@ impl SnowClient {
         let path = format!("/api/now/table/{table}");
         let ordered_query = order_by.map(|order| order.apply_to_query(query));
         let query = ordered_query.as_deref().or(query);
+        let mut params: Vec<(&str, &str)> = Vec::new();
+        if query_no_domain {
+            params.push(("sysparm_query_no_domain", "true"));
+        }
+        if let Some(q) = query {
+            params.push(("sysparm_query", q));
+        }
+        if let Some(f) = fields {
+            params.push(("sysparm_fields", f));
+        }
+        self.get_paged_records(&path, &params, pagination).await
+    }
+
+    /// Fetch `sysparm_limit`/`sysparm_offset`-paged records from any
+    /// ServiceNow list endpoint that returns `{"result": [...]}` and reports
+    /// `X-Total-Count` (the Table and Attachment APIs).
+    ///
+    /// `params` are sent on every page after the paging parameters.
+    pub async fn get_paged_records(
+        &mut self,
+        path: &str,
+        params: &[(&str, &str)],
+        pagination: &pagination::PaginationConfig,
+    ) -> anyhow::Result<pagination::TableListResult> {
         let mut all_records = Vec::new();
         let mut offset = pagination.offset;
         let page_size = pagination.page_size;
@@ -67,28 +91,15 @@ impl SnowClient {
                 Some(lim) => page_size.min(lim.saturating_sub(all_records.len())),
                 None => page_size,
             };
-
-            let mut params: Vec<(&str, String)> = vec![
-                ("sysparm_limit", request_size.to_string()),
-                ("sysparm_offset", offset.to_string()),
+            let request_size_param = request_size.to_string();
+            let offset_param = offset.to_string();
+            let mut param_refs: Vec<(&str, &str)> = vec![
+                ("sysparm_limit", request_size_param.as_str()),
+                ("sysparm_offset", offset_param.as_str()),
             ];
+            param_refs.extend_from_slice(params);
 
-            if query_no_domain {
-                params.push(("sysparm_query_no_domain", "true".to_string()));
-            }
-
-            if let Some(q) = query {
-                params.push(("sysparm_query", q.to_string()));
-            }
-            if let Some(f) = fields {
-                params.push(("sysparm_fields", f.to_string()));
-            }
-
-            // Convert to &str pairs for the request
-            let param_refs: Vec<(&str, &str)> =
-                params.iter().map(|(k, v)| (*k, v.as_str())).collect();
-
-            let response = self.get_with_params(&path, &param_refs).await?;
+            let response = self.get_with_params(path, &param_refs).await?;
             if total.is_none() {
                 total = response
                     .headers()
@@ -103,7 +114,7 @@ impl SnowClient {
 
             let count = page.result.len();
             tracing::debug!(
-                table = %table,
+                path = %path,
                 offset = offset,
                 fetched = count,
                 total_so_far = all_records.len() + count,
@@ -139,7 +150,6 @@ impl SnowClient {
         };
 
         Ok(pagination::TableListResult {
-            domains_in_page: None,
             records: all_records,
             offset: pagination.offset,
             total,
@@ -160,11 +170,31 @@ impl SnowClient {
         table: &crate::models::identifiers::TableName,
         query: Option<&str>,
     ) -> anyhow::Result<Option<usize>> {
+        self.count_table_records_with_domain(table, query, false)
+            .await
+    }
+
+    /// Like [`Self::count_table_records`], optionally requesting
+    /// `sysparm_query_no_domain` so the total spans every domain the server
+    /// lets this session read across.
+    pub async fn count_table_records_with_domain(
+        &mut self,
+        table: &crate::models::identifiers::TableName,
+        query: Option<&str>,
+        query_no_domain: bool,
+    ) -> anyhow::Result<Option<usize>> {
         let config = pagination::PaginationConfig::default()
             .with_page_size(1)
             .with_limit(Some(1));
         Ok(self
-            .get_table_records_with_meta(table, query, Some("sys_id"), &config, None)
+            .get_table_records_with_domain(
+                table,
+                query,
+                Some("sys_id"),
+                &config,
+                None,
+                query_no_domain,
+            )
             .await?
             .total)
     }

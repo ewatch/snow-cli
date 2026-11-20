@@ -1,0 +1,27 @@
+name = "table-find"
+description = "Find tables by name or label in sys_db_object (read-only)"
+requires = ["credentials"]
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[command]
+args = ["table", "find", "flow", "--limit", "5", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["\"returned\":5", "\"truncated\":true"]
+json_field_present = [".total", ".records[0].name", ".records[0].label"]
+
+[[fuzzy]]
+expectation = "Records are sorted by name, every name or label contains 'flow' (case-insensitive), and each row has name, label, extends, and scope."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

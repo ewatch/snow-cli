@@ -19,6 +19,18 @@ pub enum AttachmentCommands {
 
         /// Record sys_id
         sys_id: SysId,
+
+        /// Maximum number of attachments to return (default: 20)
+        #[arg(long, conflicts_with = "all")]
+        limit: Option<usize>,
+
+        /// Skip this many attachments (default: 0)
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+
+        /// Fetch every attachment instead of the bounded default
+        #[arg(long)]
+        all: bool,
     },
 
     /// Download an attachment

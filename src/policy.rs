@@ -230,9 +230,10 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
         },
         Commands::Domain(args) => match &args.command {
             crate::cli::args::DomainCommands::Table {
-                via_script: true, ..
+                counts: Some(crate::cli::args::DomainCountScope::All),
+                ..
             } => deny(
-                "domain table --via-script",
+                "domain table --counts all",
                 CommandCapability::RemoteWrite,
                 "read-only policy does not allow background script execution",
             ),
@@ -254,6 +255,8 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             TableCommands::List { .. }
             | TableCommands::Get { .. }
             | TableCommands::Schema { .. }
+            | TableCommands::Find { .. }
+            | TableCommands::Choices { .. }
             | TableCommands::Stats { .. } => PolicyDecision::Allow,
             TableCommands::Create { .. }
             | TableCommands::Update { .. }
@@ -462,8 +465,7 @@ mod tests {
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::List {
                 domain: None,
-                query_no_domain: false,
-                with_domain: false,
+                domain_read: Default::default(),
                 table: "incident".parse().unwrap(),
                 query: None,
                 fields: None,
@@ -477,8 +479,7 @@ mod tests {
         }));
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::Get {
-                query_no_domain: false,
-                with_domain: false,
+                domain_read: Default::default(),
                 table: "incident".parse().unwrap(),
                 sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 fields: None,
@@ -492,6 +493,21 @@ mod tests {
                 extended: false,
                 own_only: false,
                 include_inherited: false,
+            },
+        }));
+        assert_allowed(Commands::Table(TableArgs {
+            command: TableCommands::Find {
+                text: "flow".parse().unwrap(),
+                limit: None,
+                offset: 0,
+                all: false,
+            },
+        }));
+        assert_allowed(Commands::Table(TableArgs {
+            command: TableCommands::Choices {
+                table: "incident".parse().unwrap(),
+                field: None,
+                language: "en".parse().unwrap(),
             },
         }));
         assert_allowed(Commands::Table(TableArgs {
@@ -741,17 +757,18 @@ mod tests {
 
     #[test]
     fn read_only_allows_domain_counts_but_denies_script_counts() {
-        let table = |via_script| {
+        use crate::cli::args::DomainCountScope;
+        let table = |counts| {
             Commands::Domain(crate::cli::args::DomainArgs {
                 command: crate::cli::args::DomainCommands::Table {
                     table: "incident".parse().unwrap(),
-                    counts: true,
-                    via_script,
+                    counts,
                 },
             })
         };
-        assert_allowed(table(false));
-        assert_denied(table(true));
+        assert_allowed(table(None));
+        assert_allowed(table(Some(DomainCountScope::Visible)));
+        assert_denied(table(Some(DomainCountScope::All)));
     }
 
     #[test]

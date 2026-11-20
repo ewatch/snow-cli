@@ -1,5 +1,5 @@
 name = "table-stats"
-description = "Aggregate/count records via the Stats (Aggregate) API (read-only)"
+description = "Aggregate/count records via the Stats (Aggregate) API with a --having filter (read-only)"
 requires = ["credentials"]
 
 [[setup]]
@@ -11,14 +11,15 @@ description = "Store credentials for the scenario profile"
 shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
 
 [command]
-args = ["table", "stats", "incident", "--group-by", "priority", "--profile", "e2e-scenario", "--output", "json"]
+args = ["table", "stats", "incident", "--group-by", "priority", "--having", "count>0", "--profile", "e2e-scenario", "--output", "json"]
 
 [expect]
 exit_code = 0
-stdout_contains = ["count"]
+stdout_contains = ["\"count\":"]
+json_field_present = [".[0].priority", ".[0].count"]
 
 [[fuzzy]]
-expectation = "The output reports a per-priority count of incident records; each group has a numeric count."
+expectation = "The output reports a per-priority count of incident records; each group has a numeric count greater than 0 (the --having count>0 filter was accepted, not rejected with HTTP 400)."
 
 [[cleanup]]
 description = "Remove the scenario profile"

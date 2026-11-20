@@ -810,6 +810,11 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             timeout_secs,
         } => {
             let preflight = preflight_for_dispatch(broker, &payload, timeout_secs).await?;
+            let host_reviewed =
+                match review_before_dispatch(broker, &payload, &preflight, timeout_secs).await? {
+                    ReviewStep::Done(message) => return Ok(message_response(*message)),
+                    ReviewStep::Proceed { host_reviewed } => host_reviewed,
+                };
             let result = send_action_with_refresh(
                 broker,
                 &mut payload,
@@ -818,7 +823,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 preflight.generation,
             )
             .await;
-            let message = explain_approval_timeout(result, &preflight)?;
+            let message = explain_approval_timeout(result, &preflight, host_reviewed)?;
             Ok(message_response(message))
         }
         BrokerRequest::SendActionForAction {
@@ -827,6 +832,11 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             timeout_secs,
         } => {
             let preflight = preflight_for_dispatch(broker, &payload, timeout_secs).await?;
+            let host_reviewed =
+                match review_before_dispatch(broker, &payload, &preflight, timeout_secs).await? {
+                    ReviewStep::Done(message) => return Ok(message_response(*message)),
+                    ReviewStep::Proceed { host_reviewed } => host_reviewed,
+                };
             let result = broker
                 .manager
                 .request_on_generation(
@@ -837,7 +847,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 )
                 .await
                 .map_err(anyhow::Error::from);
-            let message = explain_approval_timeout(result, &preflight)?;
+            let message = explain_approval_timeout(result, &preflight, host_reviewed)?;
             Ok(message_response(message))
         }
         BrokerRequest::SendActionWithLegacyFallback {
@@ -848,6 +858,13 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             timeout_secs,
         } => {
             let preflight = preflight_for_dispatch(broker, &current_payload, timeout_secs).await?;
+            let host_reviewed =
+                match review_before_dispatch(broker, &current_payload, &preflight, timeout_secs)
+                    .await?
+                {
+                    ReviewStep::Done(message) => return Ok(message_response(*message)),
+                    ReviewStep::Proceed { host_reviewed } => host_reviewed,
+                };
             let result = if preflight.decision == GateDecision::LegacyUnrestricted {
                 let _legacy_guard = broker.legacy_action_lock.lock().await;
                 refresh_payload_instance_from_cache(broker, &mut legacy_payload).await?;
@@ -869,7 +886,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 )
                 .await
             };
-            let message = explain_approval_timeout(result, &preflight)?;
+            let message = explain_approval_timeout(result, &preflight, host_reviewed)?;
             Ok(message_response(message))
         }
         BrokerRequest::RefreshSession {
@@ -970,11 +987,86 @@ async fn preflight_for_dispatch(
     Ok(preflight)
 }
 
+/// Result of the review step before a dispatch.
+enum ReviewStep {
+    /// Dispatch now. `host_reviewed` is true when this bridge ran a review
+    /// and the user approved it.
+    Proceed { host_reviewed: bool },
+    /// Approved and already run by the helper; this is its reply.
+    Done(Box<SnuMessage>),
+}
+
+/// Hold an approve-mode action for review in the helper tab.
+async fn review_before_dispatch(
+    broker: &Broker,
+    payload: &Value,
+    preflight: &PreflightResult,
+    timeout_secs: u64,
+) -> anyhow::Result<ReviewStep> {
+    use crate::snu::review::{ReviewOutcome, review_if_required};
+    Ok(
+        match review_if_required(&broker.manager, payload, preflight, timeout_secs).await? {
+            ReviewOutcome::NotRequired => ReviewStep::Proceed {
+                host_reviewed: false,
+            },
+            ReviewOutcome::Dispatch => ReviewStep::Proceed {
+                host_reviewed: true,
+            },
+            ReviewOutcome::Executed(message) => ReviewStep::Done(message),
+        },
+    )
+}
+
+/// Preflight a retry. A retry that would need a fresh host-run review is not
+/// retried automatically: the original failure is returned so the caller
+/// re-runs the command and the user approves it again.
+async fn retry_preflight(
+    broker: &Broker,
+    payload: &Value,
+    timeout_secs: u64,
+    failure: &str,
+) -> anyhow::Result<PreflightResult> {
+    let preflight = preflight_for_dispatch(broker, payload, timeout_secs).await?;
+    if crate::snu::review::needs_host_review(payload, &preflight) {
+        return Err(BridgeError::ActionFailed(failure.to_owned()).into());
+    }
+    Ok(preflight)
+}
+
 fn explain_approval_timeout(
     result: anyhow::Result<SnuMessage>,
     preflight: &PreflightResult,
+    host_reviewed: bool,
 ) -> anyhow::Result<SnuMessage> {
+    let gate = || {
+        preflight
+            .gate
+            .map(|gate| gate.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    };
+    let origin = || {
+        preflight
+            .origin
+            .clone()
+            .unwrap_or_else(|| "unknown instance".to_string())
+    };
     match result {
+        // Approved here and sent: the action may have run, so it must not be
+        // reported as an approval timeout that invites a retry.
+        Err(error)
+            if host_reviewed
+                && error
+                    .downcast_ref::<BridgeError>()
+                    .is_some_and(|error| matches!(error, BridgeError::Timeout { .. })) =>
+        {
+            Err(BridgeError::ApprovedWithoutReply {
+                gate: gate(),
+                origin: origin(),
+            }
+            .into())
+        }
+        // The helper itself holds this action (background scripts) while the
+        // user decides, so a timeout here is an approval timeout.
         Err(error)
             if preflight.decision == GateDecision::ApprovalRequired
                 && error
@@ -1045,7 +1137,7 @@ async fn send_action_with_refresh(
 
     if is_transient_helper_text(&text) {
         sleep(HELPER_SETTLE_DELAY).await;
-        let retry_preflight = preflight_for_dispatch(broker, payload, timeout_secs).await?;
+        let retry_preflight = retry_preflight(broker, payload, timeout_secs, &text).await?;
         let message = broker
             .manager
             .request_on_generation(
@@ -1093,7 +1185,7 @@ async fn send_action_with_refresh(
         object.insert("instance".to_string(), serde_json::to_value(&fresh)?);
     }
     sleep(HELPER_SETTLE_DELAY).await;
-    let retry_preflight = preflight_for_dispatch(broker, payload, timeout_secs).await?;
+    let retry_preflight = retry_preflight(broker, payload, timeout_secs, &text).await?;
     let message = broker
         .manager
         .request_on_generation(
@@ -1657,6 +1749,7 @@ mod tests {
             heartbeat_interval: Duration::from_secs(60),
             connect_timeout: Duration::from_secs(2),
             rebind_delay: Duration::from_millis(50),
+            bridge_id: String::new(),
         };
         let (manager, _sessions) = BridgeManager::start(config);
         let ws_addr = manager
@@ -1713,6 +1806,438 @@ mod tests {
             ))
             .await
             .unwrap();
+    }
+
+    /// Answer the capability check with explicit per-gate modes.
+    async fn answer_capabilities_with(
+        helper: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        gates: Value,
+    ) {
+        let capability_request = helper.next().await.unwrap().unwrap();
+        let capability_request: Value =
+            serde_json::from_str(capability_request.to_text().unwrap()).unwrap();
+        assert_eq!(capability_request["action"], "agentGetCapabilities");
+        helper
+            .send(Message::Text(
+                serde_json::json!({
+                    "action": "agentGetCapabilitiesResponse",
+                    "agentRequestId": capability_request["agentRequestId"],
+                    "success": true,
+                    "capabilities": {"protocolVersion": 1, "instanceSecurityGates": 1},
+                    "instanceGates": {
+                        "https://dev.service-now.com": {"revision": 1, "gates": gates}
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+    }
+
+    type HelperWs = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    async fn answer_capabilities_review(helper: &mut HelperWs, gates: Value, command_review: bool) {
+        let capability_request = helper.next().await.unwrap().unwrap();
+        let capability_request: Value =
+            serde_json::from_str(capability_request.to_text().unwrap()).unwrap();
+        assert_eq!(capability_request["action"], "agentGetCapabilities");
+        let mut capabilities =
+            serde_json::json!({"protocolVersion": 1, "instanceSecurityGates": 1});
+        if command_review {
+            capabilities["commandReview"] = Value::from(1);
+        }
+        helper
+            .send(Message::Text(
+                serde_json::json!({
+                    "action": "agentGetCapabilitiesResponse",
+                    "agentRequestId": capability_request["agentRequestId"],
+                    "success": true,
+                    "capabilities": capabilities,
+                    "instanceGates": {
+                        "https://dev.service-now.com": {"revision": 1, "gates": gates}
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+    }
+
+    async fn next_json(helper: &mut HelperWs) -> Value {
+        let message = tokio::time::timeout(Duration::from_secs(2), helper.next())
+            .await
+            .expect("helper receives a message")
+            .unwrap()
+            .unwrap();
+        serde_json::from_str(message.to_text().unwrap()).unwrap()
+    }
+
+    async fn send_json(helper: &mut HelperWs, value: Value) {
+        helper
+            .send(Message::Text(value.to_string().into()))
+            .await
+            .unwrap();
+    }
+
+    fn approve_gates() -> Value {
+        serde_json::json!({"backgroundScripts": "auto", "deleteRecords": "approve",
+            "createArtifacts": "auto", "updateRecords": "approve",
+            "restRequest": "auto", "browserDebugger": "auto"})
+    }
+
+    fn spawn_dispatch(
+        broker: &Arc<Broker>,
+        payload: Value,
+    ) -> tokio::task::JoinHandle<anyhow::Result<BrokerResponse>> {
+        let broker = Arc::clone(broker);
+        let correlation_id = payload["agentRequestId"].as_str().unwrap().to_string();
+        tokio::spawn(async move {
+            dispatch(
+                BrokerRequest::SendAction {
+                    payload,
+                    correlation_id,
+                    timeout_secs: 3,
+                },
+                &broker,
+            )
+            .await
+        })
+    }
+
+    fn rest_delete() -> Value {
+        serde_json::json!({
+            "action": "agentRestApi", "agentRequestId": "del-1", "method": "DELETE",
+            "endpoint": "/api/now/table/incident/abc",
+            "instance": {"name": "dev", "url": "https://dev.service-now.com", "g_ck": "secret-token"}
+        })
+    }
+
+    /// Answer the reviewRequest, returning it for inspection.
+    async fn answer_review(helper: &mut HelperWs, approved: bool, tamper_nonce: bool) -> Value {
+        let review = next_json(helper).await;
+        assert_eq!(review["action"], "reviewRequest");
+        send_json(
+            helper,
+            serde_json::json!({
+                "action": "reviewResponse",
+                "agentRequestId": review["agentRequestId"],
+                "reviewId": review["reviewId"],
+                "nonce": if tamper_nonce { Value::from("forged") } else { review["nonce"].clone() },
+                "payloadHash": review["payloadHash"],
+                "approved": approved,
+                "userFeedback": if approved { Value::Null } else { Value::from("not today") },
+            }),
+        )
+        .await;
+        review
+    }
+
+    async fn assert_nothing_sent(helper: &mut HelperWs) {
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(200), helper.next()).await
+        {
+            let value: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(
+                value["action"], "cancelReview",
+                "unexpected message: {text}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn gated_page_actions_need_one_exact_instance_url() {
+        let auto = serde_json::json!({"backgroundScripts": "auto", "deleteRecords": "auto",
+            "createArtifacts": "auto", "updateRecords": "auto",
+            "restRequest": "auto", "browserDebugger": "auto"});
+        let mut blocked = auto.clone();
+        blocked["updateRecords"] = Value::from("off");
+        let cases = [
+            // The URL names the permissive instance, but the helper acts on the tab.
+            serde_json::json!({"action": "agentRunUiAction", "agentRequestId": "t-1",
+                "uiAction": "sysverb_update", "tabId": 42,
+                "url": "https://dev.service-now.com/*"}),
+            serde_json::json!({"action": "agentRunUiAction", "agentRequestId": "t-2",
+                "uiAction": "sysverb_update", "tabId": 42}),
+            // A pattern covering both instances.
+            serde_json::json!({"action": "agentRunUiAction", "agentRequestId": "t-3",
+                "uiAction": "sysverb_update", "url": "https://*.service-now.com/*"}),
+        ];
+        for payload in cases {
+            let (broker, mut helper) = gated_test_bridge().await;
+            let request = spawn_dispatch(&broker, payload.clone());
+            let capability_request = next_json(&mut helper).await;
+            send_json(
+                &mut helper,
+                serde_json::json!({
+                    "action": "agentGetCapabilitiesResponse",
+                    "agentRequestId": capability_request["agentRequestId"],
+                    "success": true,
+                    "capabilities": {"protocolVersion": 1, "instanceSecurityGates": 1},
+                    "instanceGates": {
+                        "https://dev.service-now.com": {"revision": 1, "gates": auto},
+                        "https://prod.service-now.com": {"revision": 1, "gates": blocked},
+                    }
+                }),
+            )
+            .await;
+            let error = request.await.unwrap().unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<BridgeError>().unwrap().code(),
+                "SNU_GATE_STATE_UNAVAILABLE",
+                "payload: {payload}"
+            );
+            assert!(
+                format!("{error:#}").contains("exact instance URL"),
+                "{error:#}"
+            );
+            assert_nothing_sent(&mut helper).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn approve_mode_rest_delete_is_reviewed_then_dispatched() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        let request = spawn_dispatch(&broker, rest_delete());
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        let review = answer_review(&mut helper, true, false).await;
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        assert_eq!(review["command"], "rest_request");
+        assert_eq!(review["params"]["method"], "DELETE");
+        assert!(
+            !review.to_string().contains("secret-token"),
+            "no session token on the card"
+        );
+
+        let execute = next_json(&mut helper).await;
+        assert_eq!(execute["action"], "executeApproved");
+        assert_eq!(execute["agentRequestId"], "del-1");
+        assert_eq!(execute["nonce"], review["nonce"]);
+        send_json(&mut helper, serde_json::json!({"agentRequestId": "del-1", "success": true, "approvedNotExecuted": true})).await;
+        // The gate is checked once more right before dispatch.
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+
+        let action = next_json(&mut helper).await;
+        assert_eq!(
+            action["action"], "agentRestApi",
+            "dispatched only after approval"
+        );
+        send_json(&mut helper, serde_json::json!({"action": "agentRestApiResponse", "agentRequestId": "del-1", "success": true})).await;
+        assert!(request.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn approve_mode_ui_action_is_run_by_the_helper_after_approval() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        let payload = serde_json::json!({
+            "action": "agentRunUiAction", "agentRequestId": "ui-1", "uiAction": "sysverb_update",
+            "url": "https://dev.service-now.com/*",
+        });
+        let request = spawn_dispatch(&broker, payload);
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        let review = answer_review(&mut helper, true, false).await;
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        assert_eq!(review["command"], "run_ui_action");
+        assert_eq!(review["params"]["uiAction"], "sysverb_update");
+        let execute = next_json(&mut helper).await;
+        assert_eq!(execute["action"], "executeApproved");
+        send_json(&mut helper, serde_json::json!({"action": "agentRunUiActionResponse", "agentRequestId": "ui-1", "success": true})).await;
+        assert!(request.await.unwrap().is_ok());
+        assert_nothing_sent(&mut helper).await;
+    }
+
+    #[tokio::test]
+    async fn rejected_or_forged_reviews_run_nothing() {
+        for (approved, tamper, code) in [
+            (false, false, "SNU_REVIEW_REJECTED"),
+            (true, true, "SNU_REVIEW_MISMATCH"),
+        ] {
+            let (broker, mut helper) = gated_test_bridge().await;
+            let request = spawn_dispatch(&broker, rest_delete());
+            answer_capabilities_review(&mut helper, approve_gates(), true).await;
+            answer_review(&mut helper, approved, tamper).await;
+            let error = request.await.unwrap().unwrap_err();
+            let bridge = error.downcast_ref::<BridgeError>().expect("bridge error");
+            assert_eq!(bridge.code(), code);
+            if !approved {
+                assert!(error.to_string().contains("not today"), "{error}");
+            }
+            assert_nothing_sent(&mut helper).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_gate_switched_off_during_review_runs_nothing() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        let request = spawn_dispatch(&broker, rest_delete());
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        answer_review(&mut helper, true, false).await;
+        let mut off = approve_gates();
+        off["deleteRecords"] = Value::from("off");
+        answer_capabilities_review(&mut helper, off, true).await;
+        let error = request.await.unwrap().unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<BridgeError>().unwrap().code(),
+            "SNU_GATE_BLOCKED"
+        );
+        assert_nothing_sent(&mut helper).await;
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_review_is_cancelled_and_a_late_approval_runs_nothing() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        // A Batch API delete: classified by its sub-requests, so it is held.
+        let mut payload = serde_json::json!({
+            "action": "agentRestApi", "method": "POST", "endpoint": "/api/now/v1/batch",
+            "body": {"rest_requests": [{"method": "DELETE", "url": "/api/now/table/incident/abc"}]},
+            "instance": {"name": "dev", "url": "https://dev.service-now.com", "g_ck": "secret-token"}
+        });
+        payload["agentRequestId"] = Value::from("late-1");
+        let request = {
+            let broker = Arc::clone(&broker);
+            tokio::spawn(async move {
+                dispatch(
+                    BrokerRequest::SendAction {
+                        payload,
+                        correlation_id: "late-1".to_string(),
+                        timeout_secs: 1,
+                    },
+                    &broker,
+                )
+                .await
+            })
+        };
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        let review = next_json(&mut helper).await;
+        assert_eq!(review["action"], "reviewRequest");
+        let error = request.await.unwrap().unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<BridgeError>().unwrap().code(),
+            "SNU_APPROVAL_TIMEOUT"
+        );
+        let cancel = next_json(&mut helper).await;
+        assert_eq!(cancel["action"], "cancelReview");
+        assert_eq!(cancel["reviewId"], review["reviewId"]);
+        // A late approval finds no waiter: nothing is executed or dispatched.
+        send_json(
+            &mut helper,
+            serde_json::json!({"action": "reviewResponse", "agentRequestId": review["agentRequestId"],
+                "reviewId": review["reviewId"], "nonce": review["nonce"],
+                "payloadHash": review["payloadHash"], "approved": true}),
+        )
+        .await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), helper.next())
+                .await
+                .is_err(),
+            "nothing may follow a late approval"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lost_reply_after_approval_is_not_called_an_approval_timeout() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        let request = spawn_dispatch(&broker, rest_delete());
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        answer_review(&mut helper, true, false).await;
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        let execute = next_json(&mut helper).await;
+        assert_eq!(execute["action"], "executeApproved");
+        send_json(&mut helper, serde_json::json!({"agentRequestId": "del-1", "success": true, "approvedNotExecuted": true})).await;
+        // The gate is checked once more right before dispatch.
+        answer_capabilities_review(&mut helper, approve_gates(), true).await;
+        let action = next_json(&mut helper).await;
+        assert_eq!(action["action"], "agentRestApi");
+        // The helper never answers the dispatched delete.
+        let error = request.await.unwrap().unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<BridgeError>().unwrap().code(),
+            "SNU_APPROVED_NO_REPLY"
+        );
+    }
+
+    #[tokio::test]
+    async fn approve_mode_fails_closed_without_review_support() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        let request = spawn_dispatch(&broker, rest_delete());
+        answer_capabilities_review(&mut helper, approve_gates(), false).await;
+        let error = request.await.unwrap().unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<BridgeError>().unwrap().code(),
+            "SNU_REVIEW_UNSUPPORTED"
+        );
+        assert_nothing_sent(&mut helper).await;
+    }
+
+    #[tokio::test]
+    async fn user_gate_settings_block_form_commits_and_batch_deletes() {
+        let instance = serde_json::json!({
+            "name": "dev", "url": "https://dev.service-now.com", "g_ck": "token"
+        });
+        let cases = [
+            (
+                serde_json::json!({"action": "agentRunUiAction", "uiAction": "sysverb_update",
+                    "url": "https://dev.service-now.com/incident.do*"}),
+                serde_json::json!({"backgroundScripts": "auto", "deleteRecords": "auto",
+                    "createArtifacts": "auto", "updateRecords": "off",
+                    "restRequest": "auto", "browserDebugger": "auto"}),
+                "updateRecords",
+            ),
+            (
+                // An older helper without updateRecords: it follows createArtifacts.
+                serde_json::json!({"action": "agentRunUiAction", "uiAction": "sysverb_update",
+                    "url": "https://dev.service-now.com/incident.do*"}),
+                serde_json::json!({"backgroundScripts": "auto", "deleteRecords": "auto",
+                    "createArtifacts": "off", "restRequest": "auto", "browserDebugger": "auto"}),
+                "updateRecords",
+            ),
+            (
+                serde_json::json!({"action": "agentRestApi", "method": "POST",
+                    "endpoint": "/api/now/v1/batch",
+                    "body": {"rest_requests": [{"method": "DELETE", "url": "/api/now/table/incident/x"}]},
+                    "instance": instance}),
+                serde_json::json!({"backgroundScripts": "auto", "deleteRecords": "off",
+                    "createArtifacts": "auto", "restRequest": "auto", "browserDebugger": "auto"}),
+                "deleteRecords",
+            ),
+        ];
+        for (mut payload, gates, blocked_gate) in cases {
+            let (broker, mut helper) = gated_test_bridge().await;
+            payload["agentRequestId"] = Value::String("blocked-1".to_string());
+            let request_broker = Arc::clone(&broker);
+            let request = tokio::spawn(async move {
+                dispatch(
+                    BrokerRequest::SendAction {
+                        payload,
+                        correlation_id: "blocked-1".to_string(),
+                        timeout_secs: 2,
+                    },
+                    &request_broker,
+                )
+                .await
+            });
+            answer_capabilities_with(&mut helper, gates).await;
+            let error = request.await.unwrap().unwrap_err();
+            let message = format!("{error:#}");
+            assert_eq!(
+                error.downcast_ref::<BridgeError>().unwrap().code(),
+                "SNU_GATE_BLOCKED",
+                "{message}"
+            );
+            assert!(message.contains(blocked_gate), "{message}");
+            // Nothing beyond the capability check reached the browser.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), helper.next())
+                    .await
+                    .is_err(),
+                "a blocked action must not be sent"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1801,6 +2326,10 @@ mod tests {
             if action_name == "agentRestApi" {
                 payload["method"] = Value::String("GET".to_string());
             }
+            if action_name == "agentRunUiAction" {
+                // A gated page action names its instance by URL.
+                payload["url"] = Value::String("https://dev.service-now.com/*".to_string());
+            }
             let request_correlation_id = correlation_id.clone();
             let request = tokio::spawn(async move {
                 dispatch(
@@ -1814,6 +2343,10 @@ mod tests {
                 .await
             });
 
+            if action_name == "agentRunUiAction" {
+                // Committing a form is gated on updateRecords.
+                answer_capabilities(&mut helper, "auto").await;
+            }
             let action = helper.next().await.unwrap().unwrap();
             let action: Value = serde_json::from_str(action.to_text().unwrap()).unwrap();
             assert_eq!(action["action"], action_name);
@@ -1840,7 +2373,10 @@ mod tests {
         let payload = serde_json::json!({
             "action": "takeScreenshot",
             "agentRequestId": "screenshot-1",
-            "tabId": 42,
+            // Only debugger-based capture is gated, and a gated page action
+            // names its instance by URL.
+            "cdp": true,
+            "url": "https://dev.service-now.com/*",
             "instance": {
                 "name": "dev",
                 "url": "https://dev.service-now.com",
@@ -1909,7 +2445,13 @@ mod tests {
                 .await
             });
 
-            answer_capabilities(&mut helper, "auto").await;
+            // Every gate on auto: approve mode is covered by the review tests.
+            answer_capabilities_with(
+                &mut helper,
+                serde_json::json!({"backgroundScripts": "auto", "deleteRecords": "auto",
+                    "createArtifacts": "auto", "restRequest": "auto", "browserDebugger": "auto"}),
+            )
+            .await;
             let action = helper.next().await.unwrap().unwrap();
             let action: Value = serde_json::from_str(action.to_text().unwrap()).unwrap();
             assert_eq!(action["action"], "agentRestApi");

@@ -193,36 +193,28 @@ pub(super) async fn handle_export_now_sdk(
     })?;
 
     let alias_name = alias.unwrap_or_else(|| profile_name.clone());
-    let snapshot = now_sdk::snapshot_raw_store()?;
-    let apply_result = (|| -> anyhow::Result<ExportNowSdkResult> {
-        let mut store = now_sdk::load_store()?;
-        now_sdk::upsert_basic_alias(
-            &mut store,
-            &alias_name,
-            &profile.instance,
-            username,
-            &password,
-            set_default,
-        );
-        now_sdk::save_store(&store)?;
+    // The save is the only write and is atomic (temp file, then rename), so a
+    // failure leaves the store as it was; there is nothing to roll back.
+    let mut store = now_sdk::load_store()?;
+    now_sdk::upsert_basic_alias(
+        &mut store,
+        &alias_name,
+        &profile.instance,
+        username,
+        &password,
+        set_default,
+    );
+    now_sdk::save_store(&store)?;
 
-        Ok(ExportNowSdkResult {
-            status: "exported",
-            profile: profile_name.clone(),
-            alias: alias_name.clone(),
-            instance: profile.instance.clone(),
-            auth_method: "basic",
-            set_default,
-        })
-    })();
-
-    match apply_result {
-        Ok(result) => output::print_output(&result, output_format),
-        Err(error) => {
-            now_sdk::restore_raw_store(snapshot.as_deref())?;
-            Err(error)
-        }
-    }
+    let result = ExportNowSdkResult {
+        status: "exported",
+        profile: profile_name.clone(),
+        alias: alias_name.clone(),
+        instance: profile.instance.clone(),
+        auth_method: "basic",
+        set_default,
+    };
+    output::print_output(&result, output_format)
 }
 
 pub(super) fn validate_now_sdk_selector(alias: Option<&String>, all: bool) -> anyhow::Result<()> {
@@ -298,7 +290,7 @@ pub(super) fn restore_profiles_after_failed_import(
                     .insert(profile_name.clone(), profile.clone());
             }
             None => {
-                config.profiles.remove(profile_name);
+                config.profiles.shift_remove(profile_name);
             }
         }
         credentials::restore_stored_credential(

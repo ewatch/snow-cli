@@ -787,12 +787,8 @@ fn store_basic_login(
     })?;
 
     let existing_password = credentials::snapshot_stored_credential(profile_name, "password")?;
-    let now_sdk_snapshot = if also_now_sdk {
-        Some(now_sdk::snapshot_raw_store()?)
-    } else {
-        None
-    };
-
+    // The now-sdk save is the last step and atomic, so it never needs a
+    // rollback; a failure there only restores snow-cli's own credential.
     let write_result = (|| -> anyhow::Result<()> {
         credentials::store_credential(profile_name, "password", password)?;
 
@@ -821,9 +817,6 @@ fn store_basic_login(
                 "password",
                 existing_password.as_deref(),
             )?;
-            if let Some(snapshot) = now_sdk_snapshot.as_ref() {
-                now_sdk::restore_raw_store(snapshot.as_deref())?;
-            }
             Err(error)
         }
     }

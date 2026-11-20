@@ -7,19 +7,42 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ## [Unreleased]
 
+### Security
+
+- The `snu` bridge refuses WebSocket connections from web pages. It accepted any origin, so a page open in the browser could connect to `ws://127.0.0.1:1978`, replace the SN-Utils helper tab, and receive agent requests including session tokens. Only extension pages (`chrome-extension://`, `moz-extension://`, `safari-web-extension://`) and native clients without an `Origin` are accepted, and only extension pages receive the bridge's `bridgeId`. As with SN-Utils' own bridge, local programs cannot be authenticated and can still connect.
+- SN-Utils security gates set to "approve" now hold the action until it is approved in the helper tab's Review Queue. snow-cli ran such actions (REST deletes, batch deletes, UI actions) without approval; only background scripts, which SN-Utils reviews itself, were held. snow-cli now uses SN-Utils' review protocol (`reviewRequest`, `executeApproved`); a rejection returns `SNU_REVIEW_REJECTED` with the reviewer's note, and a helper that cannot hold commands fails with `SNU_REVIEW_UNSUPPORTED` instead of running the action. The gate is checked again after approval, so turning it off while a card is open stops the action; a reply lost after approval is reported as `SNU_APPROVED_NO_REPLY` (it may have run), and a retry that would need a new approval is not sent. **Breaking:** `snu page run-ui-action` needs `--url` for one exact instance; `--tab-id` and wildcard patterns are refused, because SN-Utils cannot tell which instance they select.
+- `snu` commands enforce the SN-Utils Agent Access settings the way SN-Utils' own bridge (`@snutils/snu` 0.6.6) does. snow-cli ignored the `updateRecords` gate (SN-Utils 10.2+), so `snu page run-ui-action` could commit a form the user had set to off or approve; it now requires `updateRecords` (falling back to `createArtifacts` on older helpers), or `deleteRecords` when the action name mentions delete or destroy. A Batch API call (`POST /api/now/v1/batch`) is classified by its sub-requests, so a batched DELETE needs `deleteRecords`. A command that targets tabs by pattern must be allowed on every authorized instance the pattern matches.
+
 ### Added
 
 - Windows users can install with Scoop: `scoop bucket add ewatch https://github.com/ewatch/scoop-bucket`, then `scoop install ewatch/snow-cli`. Releases notify the bucket, which updates its manifest from the release's `SHA256SUMS`.
 - `domain table <table> --counts` counts records per domain from one Aggregate API request, with names and display paths, scoped to the session's visible domains. For admin or `query_no_domain_table_api` sessions it also reports `hidden` records from two Table API totals. The Aggregate API ignores `sysparm_query_no_domain` even with the role.
-- `domain table --counts --via-script` counts across all domains with one read-only `GlideAggregate` background script. It is admin-only and denied in `snow-cli-ro`.
+- `domain table --counts all` counts across all domains with one read-only `GlideAggregate` background script. It is admin-only and denied in `snow-cli-ro`. `--counts` without a value (or `--counts visible`) keeps the Aggregate API counts for visible domains.
 - `table list` and `table get --with-domain` add `sys_domain`, `sys_domain_path`, and a resolved `sys_domain_name` to records; lists add a `domains_in_page` summary.
 - `domain status` reports `separation_in_use: true` when the user's home domain is not `global`, which works without access to `sys_properties`.
+- `table find <text>` finds tables whose name or label contains the text, from `sys_db_object`. Rows have `name`, `label`, `extends` (the parent table), and `scope`, use the `table list` envelope, and are bounded to 20 by default. Available in `snow-cli-ro`.
+- `table choices <table> [field]` lists active choice values and labels from `sys_choice`. It walks the table hierarchy, so `incident.priority` returns the choices defined on `task`, and each row names the table that defines it. `--language` defaults to `en`. Available in `snow-cli-ro`.
+- Usage errors now say what to do next. An unknown subcommand lists the valid ones and suggests the likely call (`snow-cli table incident` suggests `table list incident`; `snow-cli codesearch foo` suggests `codesearch search 'foo'`). An unknown option lists the command's options instead of clap's misleading "use '-- --x'" tip. `snow-cli-ro` explains when a command is missing because it writes. Exit code stays 2.
 
 ### Changed
 
 - TOON output follows TOON spec v4.4 (toon-format 0.7). Empty arrays now encode as `key: []` instead of `key[0]:`. Other shapes are unchanged.
 - `domain table` reports `has_sys_domain: false` when the dictionary is readable and the table has no `sys_domain` field; `null` now only means the dictionary could not be read.
 - `--query-no-domain` prints a warning when the session has neither `admin` nor `query_no_domain_table_api`, because ServiceNow silently ignores the option in that case.
+- **Breaking:** `attachment list` returns the `table list` envelope (`total`, `returned`, `offset`, `next_offset`, `truncated`, `records`) instead of a bare array, and is bounded to 20 attachments by default. Use `--limit`, `--offset`, or `--all`.
+- `profile add`, `edit`, `default`, and `remove` honor `--output` instead of always printing JSON. `profile current` and `profile show` print compact JSON for `--output json`.
+- `api` and `script run` on custom endpoints print compact JSON for `--output json`, like every other command. Previously they pretty-printed it.
+
+### Fixed
+
+- Commands that print one object (for example `profile default`, `profile remove`) work with `--output csv`: a header row and one value row. Previously the change was saved and then printing failed.
+- Command-line arguments that are not valid UTF-8 (for example a file path on Linux) reach the command unchanged again.
+- `snu` works with SN-Utils 10.3. The bridge sends a private `bridgeId` (kept in `snu-bridge-id` beside the config file), so after one manual `/token` SN-Utils refreshes session tokens automatically, including the automatic `/token` that `snu wait-token` relies on. A replaced helper tab is closed with code 4001 and an automatic reconnect (`?resume=1`) is told to stand by with 4002 while another helper is live, so two helper tabs no longer take the connection from each other every second. `snu screenshot` needs the `browserDebugger` gate only for debugger capture, as in SN-Utils.
+- `profile sdk list`, `import`, and `export` and `auth login --also-now-sdk` work with now-sdk 4.14+, which moved aliases from the `ServiceNow` / `now-sdk` keychain entry into an encrypted `~/.now-sdk/credentials.enc`. snow-cli read a stale pre-migration copy and exported aliases now-sdk never saw. It now uses the encrypted file whenever it or its key exists, honoring `SN_SDK_CREDENTIALS_DIR`, `SN_SDK_KEY_SOURCE`, and `SN_SDK_ENCRYPTION_KEY`, and keeps writing the keychain entry only when no encrypted store exists. A file whose key is missing or wrong is reported as `NOW_SDK_CREDENTIALS_UNREADABLE` and never modified. Writes are atomic and are never rolled back, so another tool's concurrent change cannot be overwritten by a restore; snow-cli restricts the permissions only of a credentials directory it created. Temporary files use unpredictable names, and with no home directory snow-cli never writes credentials into the current directory.
+- `table stats --having` works. The Aggregate API rejected the raw clause with HTTP 400 ("Invalid HAVING clause"); `count>5` is now sent as `count^*^>^5` and `avg(priority)>=2` as `avg^priority^>=^2`. Comma-separated clauses must all match, and native `aggregate^field^operator^value` clauses are sent unchanged.
+- `attachment list` no longer sends `sysparm_fields`, which the Attachment API ignores, and keeps only the seven metadata fields client-side instead of about 20 columns.
+- `profile list` prints profiles sorted by name instead of in a different order on every run, and saving the config keeps the `[profiles.*]` sections in file order instead of reshuffling them.
+- `session switch application` accepts the id `session show` reports for the current application. Live instances report Global as a sys_id while the picker lists it as `global`, so switching to the already-current application failed. An unknown or ambiguous context is now a `VALIDATION_ERROR` (exit 2) instead of `INTERNAL_ERROR`.
 
 ## [0.10.0] - 2026-10-15
 

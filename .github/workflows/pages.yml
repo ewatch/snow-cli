@@ -7,6 +7,7 @@ on:
     paths:
       - docs/site/**
       - .github/workflows/pages.yml
+      - .github/actions/build-docs/**
       # The docs read the displayed version from Cargo.toml at build time, so a
       # version bump must redeploy the site even when no docs/site file changed.
       - Cargo.toml
@@ -29,22 +30,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: docs/site/package-lock.json
-
       - name: Build documentation
-        working-directory: docs/site
-        env:
-          # Project site is served at https://ewatch.github.io/snow-cli/, so the
-          # build must emit assets and links under that base (see astro.config.mjs).
-          BASE_PATH: /snow-cli/
-        run: |
-          npm ci
-          npm run build
+        uses: ./.github/actions/build-docs
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6

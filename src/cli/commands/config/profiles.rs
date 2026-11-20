@@ -27,7 +27,7 @@ pub(super) async fn handle_init(
     username: Option<String>,
     oauth_grant_type: Option<CliOAuthGrantType>,
     name: String,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<serde_json::Value> {
     handle_init_with_oauth_options(
         config_path,
         instance,
@@ -57,7 +57,7 @@ pub(super) async fn handle_init_with_oauth_options(
     oauth_redirect_port: Option<u16>,
     oauth_redirect_path: Option<String>,
     name: String,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<serde_json::Value> {
     if config_path.exists() {
         anyhow::bail!(
             "Configuration already exists at {}. Use `snow-cli profile add <name>` to create another profile or `snow-cli profile edit <name>` to modify one.",
@@ -109,9 +109,7 @@ pub(super) async fn handle_init_with_oauth_options(
         "profile": name,
         "instance": instance,
     });
-    println!("{}", serde_json::to_string(&result)?);
-
-    Ok(())
+    Ok(result)
 }
 
 /// `profile set <name>` — Create or update a named profile (legacy upsert).
@@ -128,7 +126,7 @@ pub(super) async fn handle_set_profile(
     cert_path: Option<String>,
     key_path: Option<String>,
     sso_login_url: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<serde_json::Value> {
     handle_set_profile_with_oauth_options(
         config_path,
         name,
@@ -164,7 +162,7 @@ pub(super) async fn handle_add_profile_with_oauth_options(
     cert_path: Option<String>,
     key_path: Option<String>,
     sso_login_url: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<serde_json::Value> {
     let config = AppConfig::load_from(config_path)?;
     if config.profiles.contains_key(&name) {
         anyhow::bail!(
@@ -209,7 +207,7 @@ pub(super) async fn handle_edit_profile_with_oauth_options(
     cert_path: Option<String>,
     key_path: Option<String>,
     sso_login_url: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<serde_json::Value> {
     let config = AppConfig::load_from(config_path)?;
     if !config.profiles.contains_key(&name) {
         anyhow::bail!(
@@ -254,7 +252,7 @@ pub(super) async fn handle_set_profile_with_oauth_options(
     cert_path: Option<String>,
     key_path: Option<String>,
     sso_login_url: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<serde_json::Value> {
     let mut config = AppConfig::load_from(config_path)?;
     let instance = instance
         .map(|value| validate_instance_url(&value))
@@ -333,9 +331,7 @@ pub(super) async fn handle_set_profile_with_oauth_options(
         "status": action,
         "profile": name,
     });
-    println!("{}", serde_json::to_string(&result)?);
-
-    Ok(())
+    Ok(result)
 }
 
 /// `profile list` — List all configured profiles.
@@ -351,70 +347,44 @@ pub(super) async fn handle_list_profiles(
         );
     }
 
-    match output_format {
-        OutputFormat::Json => {
-            let profiles: Vec<serde_json::Value> = config
-                .profiles
-                .iter()
-                .map(|(name, profile)| {
-                    serde_json::json!({
-                        "name": name,
-                        "instance": profile.instance,
-                        "auth_method": profile.auth_method,
-                        "default": name == &config.default_profile,
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string(&profiles)?);
+    let mut names: Vec<&String> = config.profiles.keys().collect();
+    names.sort();
+
+    if matches!(output_format, OutputFormat::Csv) {
+        let mut writer = csv::Writer::from_writer(std::io::stdout());
+        writer.write_record(["name", "instance", "auth_method", "default"])?;
+        for name in names {
+            let profile = &config.profiles[name];
+            let auth_str = serde_json::to_string(&profile.auth_method)?;
+            let is_default = if name == &config.default_profile {
+                "true"
+            } else {
+                "false"
+            };
+            writer.write_record([
+                name.as_str(),
+                &profile.instance,
+                auth_str.trim_matches('"'),
+                is_default,
+            ])?;
         }
-        OutputFormat::Csv => {
-            let mut writer = csv::Writer::from_writer(std::io::stdout());
-            writer.write_record(["name", "instance", "auth_method", "default"])?;
-            for (name, profile) in &config.profiles {
-                let auth_str = serde_json::to_string(&profile.auth_method)?;
-                let auth_str = auth_str.trim_matches('"');
-                let is_default = if name == &config.default_profile {
-                    "true"
-                } else {
-                    "false"
-                };
-                writer.write_record([name.as_str(), &profile.instance, auth_str, is_default])?;
-            }
-            writer.flush()?;
-        }
-        OutputFormat::Jsonl | OutputFormat::Toon | OutputFormat::Auto => {
-            let profiles: Vec<serde_json::Value> = config
-                .profiles
-                .iter()
-                .map(|(name, profile)| {
-                    serde_json::json!({
-                        "name": name,
-                        "instance": profile.instance,
-                        "auth_method": profile.auth_method,
-                        "default": name == &config.default_profile,
-                    })
-                })
-                .collect();
-            output::print_output(&profiles, output_format)?;
-        }
-        OutputFormat::Text => {
-            let profiles: Vec<serde_json::Value> = config
-                .profiles
-                .iter()
-                .map(|(name, profile)| {
-                    serde_json::json!({
-                        "name": name,
-                        "instance": profile.instance,
-                        "auth_method": profile.auth_method,
-                        "default": name == &config.default_profile,
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&profiles)?);
-        }
+        writer.flush()?;
+        return Ok(());
     }
 
-    Ok(())
+    let profiles: Vec<serde_json::Value> = names
+        .into_iter()
+        .map(|name| {
+            let profile = &config.profiles[name];
+            serde_json::json!({
+                "name": name,
+                "instance": profile.instance,
+                "auth_method": profile.auth_method,
+                "default": name == &config.default_profile,
+            })
+        })
+        .collect();
+    output::print_output(&profiles, output_format)
 }
 
 pub(super) async fn handle_find_profile(
@@ -516,7 +486,10 @@ pub(super) fn profile_matches_instance(
 }
 
 /// `profile default <name>` — Set the default profile.
-pub(super) async fn handle_default_profile(config_path: &Path, name: String) -> anyhow::Result<()> {
+pub(super) async fn handle_default_profile(
+    config_path: &Path,
+    name: String,
+) -> anyhow::Result<serde_json::Value> {
     let mut config = AppConfig::load_from(config_path)?;
 
     if !config.profiles.contains_key(&name) {
@@ -532,9 +505,7 @@ pub(super) async fn handle_default_profile(config_path: &Path, name: String) -> 
         "status": "updated",
         "default_profile": name,
     });
-    println!("{}", serde_json::to_string(&result)?);
-
-    Ok(())
+    Ok(result)
 }
 /// `profile current` — Show the currently selected profile summary.
 pub(super) async fn handle_current(
@@ -556,7 +527,7 @@ pub(super) async fn handle_current(
                     "auth_method": p.auth_method,
                 })),
             });
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            output::print_output(&output, output_format)?;
         }
         OutputFormat::Csv => {
             let mut writer = csv::Writer::from_writer(std::io::stdout());
@@ -594,7 +565,7 @@ pub(super) async fn handle_current(
                     "auth_method": p.auth_method,
                 })),
             });
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            output::print_output(&output, output_format)?;
         }
     }
 
@@ -620,7 +591,7 @@ pub(super) async fn handle_show(
                 "profile": profile,
                 "total_profiles": config.profiles.len(),
             });
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            output::print_output(&output, output_format)?;
         }
         OutputFormat::Csv => {
             // CSV doesn't make sense for nested config, output key-value pairs
@@ -659,7 +630,7 @@ pub(super) async fn handle_show(
                 "profile": profile,
                 "total_profiles": config.profiles.len(),
             });
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            output::print_output(&output, output_format)?;
         }
     }
 
@@ -672,7 +643,7 @@ pub(super) async fn handle_delete_profile(
     name: String,
     yes: bool,
     new_default: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<serde_json::Value> {
     let mut config = AppConfig::load_from(config_path)?;
 
     if !config.profiles.contains_key(&name) {
@@ -703,7 +674,7 @@ pub(super) async fn handle_delete_profile(
         config.default_profile = replacement;
     }
 
-    config.profiles.remove(&name);
+    config.profiles.shift_remove(&name);
 
     if config.profiles.is_empty() {
         config.default_profile.clear();
@@ -721,7 +692,5 @@ pub(super) async fn handle_delete_profile(
         "profile": name,
         "default_profile": config.default_profile,
     });
-    println!("{}", serde_json::to_string(&result)?);
-
-    Ok(())
+    Ok(result)
 }

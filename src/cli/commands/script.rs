@@ -236,31 +236,7 @@ async fn handle_run(
         };
     }
 
-    match format {
-        OutputFormat::Json => match serde_json::from_str::<serde_json::Value>(&response_body) {
-            Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
-            Err(_) => println!("{}", response_body),
-        },
-        OutputFormat::Csv => {
-            println!("{}", response_body);
-        }
-        OutputFormat::Jsonl => match serde_json::from_str::<serde_json::Value>(&response_body) {
-            Ok(json) => output::write_jsonl_value(&json, &mut std::io::stdout())?,
-            Err(_) => println!("{}", response_body),
-        },
-        OutputFormat::Toon => match serde_json::from_str::<serde_json::Value>(&response_body) {
-            Ok(json) => output::write_toon(&json, &mut std::io::stdout())?,
-            Err(_) => println!("{}", response_body),
-        },
-        OutputFormat::Text => match serde_json::from_str::<serde_json::Value>(&response_body) {
-            Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
-            Err(_) => println!("{}", response_body),
-        },
-        OutputFormat::Auto => match serde_json::from_str::<serde_json::Value>(&response_body) {
-            Ok(json) => output::emit_auto(&json, &mut std::io::stdout())?,
-            Err(_) => println!("{}", response_body),
-        },
-    }
+    output::print_passthrough(&response_body, format)?;
 
     Ok(())
 }

@@ -1,13 +1,17 @@
 use std::io::IsTerminal;
 
-use crate::cli::args::{OutputFormat, TableArgs, TableCommands};
+use crate::cli::args::{DomainReadArgs, OutputFormat, TableArgs, TableCommands};
+use crate::cli::commands::domain;
 use crate::cli::io::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::cli::output;
 use crate::cli::truncation;
-use crate::client::pagination::PaginationConfig;
+use crate::client::{AggregateResult, pagination::PaginationConfig};
 use crate::models::identifiers::TableName;
 use crate::models::record::SingleRecordResponse;
 use crate::models::validation::ValidationError;
+
+mod discovery;
+mod having;
 
 pub async fn handle(
     args: TableArgs,
@@ -28,8 +32,7 @@ pub async fn handle(
             order_by,
             full: _,
             preview,
-            query_no_domain,
-            with_domain,
+            domain_read,
         } => {
             tracing::info!("Listing records from table: {}", table);
             output::ensure_preview_supported(preview, format)?;
@@ -39,27 +42,18 @@ pub async fn handle(
             } else {
                 Some(limit.unwrap_or(DEFAULT_LIST_LIMIT))
             };
-            let mut effective_fields = resolve_list_fields(table.as_str(), fields.as_deref());
-            if let Some(projection) = &mut effective_fields {
-                if with_domain {
-                    add_domain_fields(projection);
-                } else if fields.is_none() && (domain.is_some() || query_no_domain) {
-                    projection.push_str(",sys_domain");
-                }
-            }
+            let effective_fields = sysparm_fields(
+                fields.as_deref(),
+                resolve_list_fields(table.as_str(), fields.as_deref()),
+                domain.is_some(),
+                domain_read,
+            );
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
-            let query = crate::cli::commands::domain::constrain_query(
-                &mut client,
-                &table,
-                domain.as_ref(),
-                query,
-            )
-            .await?;
-            if query_no_domain {
-                crate::cli::commands::domain::warn_if_query_no_domain_ignored(&mut client).await;
-            }
+            let query =
+                domain::constrain_query(&mut client, &table, domain.as_ref(), query).await?;
+            domain::warn_if_query_no_domain_ignored(&mut client, domain_read.query_no_domain).await;
             let pagination = PaginationConfig::default()
                 .with_limit(effective_limit)
                 .with_offset(offset);
@@ -71,19 +65,21 @@ pub async fn handle(
                     effective_fields.as_deref(),
                     &pagination,
                     order_by.as_ref(),
-                    query_no_domain,
+                    domain_read.query_no_domain,
                 )
                 .await?;
-            if with_domain {
-                result.domains_in_page = Some(
-                    crate::cli::commands::domain::annotate_record_domains(
+            let domains_in_page = if domain_read.with_domain {
+                Some(
+                    domain::annotate_record_domains(
                         &mut client,
                         &mut result.records,
-                        query_no_domain,
+                        domain_read.query_no_domain,
                     )
                     .await,
-                );
-            }
+                )
+            } else {
+                None
+            };
 
             let preview_report = if preview {
                 truncation::preview_record_fields(
@@ -96,7 +92,12 @@ pub async fn handle(
                 truncation::PreviewReport::default()
             };
 
-            output::print_table_list_preview(&result, format, &preview_report)?;
+            output::print_table_list_preview(
+                &result,
+                format,
+                &preview_report,
+                domains_in_page.as_ref(),
+            )?;
             Ok(())
         }
 
@@ -106,8 +107,7 @@ pub async fn handle(
             fields,
             full: _,
             preview,
-            query_no_domain,
-            with_domain,
+            domain_read,
         } => {
             tracing::info!("Getting record {} from table: {}", sys_id, table);
             output::ensure_preview_supported(preview, format)?;
@@ -115,19 +115,12 @@ pub async fn handle(
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
-            if query_no_domain {
-                crate::cli::commands::domain::warn_if_query_no_domain_ignored(&mut client).await;
-            }
+            domain::warn_if_query_no_domain_ignored(&mut client, domain_read.query_no_domain).await;
             let path = format!("/api/now/table/{table}/{sys_id}");
             // Without --fields every field is returned, including the domain ones.
-            let fields = fields.map(|mut projection| {
-                if with_domain {
-                    add_domain_fields(&mut projection);
-                }
-                projection
-            });
+            let fields = sysparm_fields(fields.as_deref(), fields.clone(), false, domain_read);
             let mut params = Vec::new();
-            if query_no_domain {
+            if domain_read.query_no_domain {
                 params.push(("sysparm_query_no_domain", "true"));
             }
             if let Some(ref f) = fields {
@@ -139,6 +132,14 @@ pub async fn handle(
             } else {
                 client.get_json_with_params(&path, &params).await?
             };
+            if domain_read.with_domain {
+                domain::annotate_record_domains(
+                    &mut client,
+                    std::slice::from_mut(&mut response.result),
+                    domain_read.query_no_domain,
+                )
+                .await;
+            }
 
             let preview_report = if preview {
                 truncation::preview_record_fields(
@@ -150,14 +151,6 @@ pub async fn handle(
             } else {
                 truncation::PreviewReport::default()
             };
-            if with_domain {
-                crate::cli::commands::domain::annotate_record_domains(
-                    &mut client,
-                    std::slice::from_mut(&mut response.result),
-                    query_no_domain,
-                )
-                .await;
-            }
 
             output::print_record_preview(&response.result, format, &preview_report)?;
             Ok(())
@@ -252,6 +245,30 @@ pub async fn handle(
             .await
         }
 
+        TableCommands::Find {
+            text,
+            limit,
+            offset,
+            all,
+        } => {
+            tracing::info!(text = %text, "Finding tables");
+            let mut client =
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+            let window = discovery::FindWindow { limit, offset, all };
+            discovery::handle_find(&mut client, &text, window, format).await
+        }
+
+        TableCommands::Choices {
+            table,
+            field,
+            language,
+        } => {
+            tracing::info!(table = %table, "Listing choices");
+            let mut client =
+                crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+            discovery::handle_choices(&mut client, &table, field.as_ref(), &language, format).await
+        }
+
         TableCommands::Stats {
             table,
             query,
@@ -264,18 +281,16 @@ pub async fn handle(
             having,
         } => {
             tracing::info!("Fetching aggregate stats for table: {}", table);
+            let having = having
+                .as_deref()
+                .map(having::to_sysparm_having)
+                .transpose()?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
-            let query = crate::cli::commands::domain::constrain_query(
-                &mut client,
-                &table,
-                domain.as_ref(),
-                query,
-            )
-            .await?;
-            let path = format!("/api/now/stats/{table}");
+            let query =
+                domain::constrain_query(&mut client, &table, domain.as_ref(), query).await?;
             let mut params: Vec<(&str, &str)> = vec![("sysparm_count", "true")];
             for (key, value) in [
                 ("sysparm_query", &query),
@@ -291,9 +306,7 @@ pub async fn handle(
                 }
             }
 
-            let response: serde_json::Value = client.get_json_with_params(&path, &params).await?;
-
-            match flatten_stats_response(&response)? {
+            match flatten_stats_response(client.aggregate(&table, &params).await?) {
                 StatsOutput::Single(record) => output::print_record(&record, format)?,
                 StatsOutput::Grouped(records) => output::print_records(&records, format)?,
             }
@@ -340,6 +353,29 @@ fn add_domain_fields(projection: &mut String) {
     }
 }
 
+/// The `sysparm_fields` a record read sends, given the caller's `--fields`,
+/// the projection resolved without domain flags (`None` requests every
+/// field), whether a `--domain` filter applies, and the domain read flags.
+///
+/// `--with-domain` appends `sys_domain` and `sys_domain_path` unless already
+/// requested. Otherwise a domain-sensitive read on the default projection
+/// (`--domain` or `--query-no-domain`) appends `sys_domain` so each record
+/// shows where it lives; explicit `--fields` stay authoritative.
+fn sysparm_fields(
+    user_fields: Option<&str>,
+    resolved: Option<String>,
+    domain_filter: bool,
+    domain_read: DomainReadArgs,
+) -> Option<String> {
+    let mut projection = resolved?;
+    if domain_read.with_domain {
+        add_domain_fields(&mut projection);
+    } else if user_fields.is_none() && (domain_filter || domain_read.query_no_domain) {
+        projection.push_str(",sys_domain");
+    }
+    Some(projection)
+}
+
 /// Resolve the effective `sysparm_fields` for `table list`.
 ///
 /// Caller-supplied `--fields` is authoritative; `"*"` requests every field
@@ -359,26 +395,19 @@ enum StatsOutput {
     Grouped(Vec<crate::models::record::Record>),
 }
 
-/// Flatten an Aggregate API response (`GET /api/now/stats/{table}`).
+/// Flatten an Aggregate API result (`GET /api/now/stats/{table}`).
 ///
-/// ServiceNow returns `result` as an object for ungrouped queries and as an
-/// array for grouped queries. Each entry is flattened into a single-level row:
+/// Each entry is flattened into a single-level row:
 /// groupby field values keep their field names, `stats.count` becomes `count`,
 /// and per-field aggregates become `avg_<field>`, `min_<field>`, `max_<field>`,
 /// and `sum_<field>`. Numeric strings are converted to JSON numbers where they
 /// parse cleanly.
-fn flatten_stats_response(response: &serde_json::Value) -> anyhow::Result<StatsOutput> {
-    match response.get("result") {
-        Some(serde_json::Value::Object(_)) => Ok(StatsOutput::Single(flatten_stats_entry(
-            &response["result"],
-        ))),
-        Some(serde_json::Value::Array(entries)) => Ok(StatsOutput::Grouped(
-            entries.iter().map(flatten_stats_entry).collect(),
-        )),
-        _ => Err(crate::client::error::TransportError::InvalidEnvelope(
-            "Unexpected Aggregate API response: missing 'result' object or array",
-        )
-        .into()),
+fn flatten_stats_response(result: AggregateResult) -> StatsOutput {
+    match result {
+        AggregateResult::Single(entry) => StatsOutput::Single(flatten_stats_entry(&entry)),
+        AggregateResult::Grouped(entries) => {
+            StatsOutput::Grouped(entries.iter().map(flatten_stats_entry).collect())
+        }
     }
 }
 
@@ -555,27 +584,7 @@ struct SchemaEntry {
 
 /// Print schema entries in the requested format.
 fn print_schema(entries: &[SchemaEntry], format: &OutputFormat) -> anyhow::Result<()> {
-    match format {
-        OutputFormat::Json => {
-            let json = serde_json::to_string(entries)?;
-            println!("{json}");
-        }
-        OutputFormat::Csv => {
-            let mut writer = csv::Writer::from_writer(std::io::stdout());
-            for entry in entries {
-                writer.serialize(entry)?;
-            }
-            writer.flush()?;
-        }
-        OutputFormat::Jsonl | OutputFormat::Toon | OutputFormat::Auto => {
-            output::print_list(entries, format)?
-        }
-        OutputFormat::Text => {
-            let json = serde_json::to_string_pretty(entries)?;
-            println!("{json}");
-        }
-    }
-    Ok(())
+    output::print_list(entries, format)
 }
 
 fn field_value_as_text(record: &crate::models::record::Record, field: &str) -> Option<String> {
@@ -704,6 +713,72 @@ mod tests {
     }
 
     #[test]
+    fn test_sysparm_fields_domain_projection_rules() {
+        let flags = |query_no_domain, with_domain| DomainReadArgs {
+            query_no_domain,
+            with_domain,
+        };
+        let list = |fields: Option<&str>, domain_filter, read| {
+            sysparm_fields(
+                fields,
+                resolve_list_fields("sys_user", fields),
+                domain_filter,
+                read,
+            )
+        };
+        let default = default_list_fields("sys_user");
+
+        assert_eq!(list(None, false, flags(false, false)).unwrap(), default);
+        // --with-domain deduplicates against what is already requested.
+        assert_eq!(
+            list(None, false, flags(false, true)).unwrap(),
+            format!("{default},sys_domain,sys_domain_path")
+        );
+        assert_eq!(
+            list(Some("sys_id,sys_domain"), false, flags(true, true)).as_deref(),
+            Some("sys_id,sys_domain,sys_domain_path")
+        );
+        // Domain-sensitive reads add sys_domain to the default projection only.
+        assert_eq!(
+            list(None, true, flags(false, false)).unwrap(),
+            format!("{default},sys_domain")
+        );
+        assert_eq!(
+            list(None, false, flags(true, false)).unwrap(),
+            format!("{default},sys_domain")
+        );
+        assert_eq!(
+            list(Some("sys_id"), true, flags(true, false)).as_deref(),
+            Some("sys_id")
+        );
+        // "*" sends no projection at all.
+        assert_eq!(list(Some("*"), true, flags(true, true)), None);
+
+        // table get: no projection unless --fields was given.
+        assert_eq!(sysparm_fields(None, None, false, flags(true, true)), None);
+        assert_eq!(
+            sysparm_fields(
+                Some("number"),
+                Some("number".into()),
+                false,
+                flags(true, true)
+            )
+            .as_deref(),
+            Some("number,sys_domain,sys_domain_path")
+        );
+        assert_eq!(
+            sysparm_fields(
+                Some("number"),
+                Some("number".into()),
+                false,
+                flags(true, false)
+            )
+            .as_deref(),
+            Some("number")
+        );
+    }
+
+    #[test]
     fn test_resolve_list_fields_explicit_fields_are_authoritative() {
         assert_eq!(
             resolve_list_fields("incident", Some("sys_id,number")),
@@ -744,7 +819,7 @@ mod tests {
             }
         });
 
-        match flatten_stats_response(&response).unwrap() {
+        match flatten_stats_response(AggregateResult::from_envelope(response).unwrap()) {
             StatsOutput::Single(record) => {
                 assert_eq!(
                     serde_json::to_value(&record).unwrap(),
@@ -778,7 +853,7 @@ mod tests {
             ]
         });
 
-        match flatten_stats_response(&response).unwrap() {
+        match flatten_stats_response(AggregateResult::from_envelope(response).unwrap()) {
             StatsOutput::Grouped(records) => {
                 assert_eq!(records.len(), 2);
                 assert_eq!(
@@ -818,7 +893,7 @@ mod tests {
             ]
         });
 
-        match flatten_stats_response(&response).unwrap() {
+        match flatten_stats_response(AggregateResult::from_envelope(response).unwrap()) {
             StatsOutput::Grouped(records) => {
                 assert_eq!(
                     serde_json::to_value(&records[0]).unwrap(),
@@ -827,15 +902,6 @@ mod tests {
             }
             StatsOutput::Single(_) => panic!("Expected grouped stats rows"),
         }
-    }
-
-    #[test]
-    fn test_flatten_stats_response_rejects_missing_result() {
-        let err = flatten_stats_response(&serde_json::json!({"error": "boom"}))
-            .err()
-            .expect("missing result should be an error")
-            .to_string();
-        assert!(err.contains("Unexpected Aggregate API response"));
     }
 
     #[test]

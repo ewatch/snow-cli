@@ -1,14 +1,18 @@
 use clap::{Args, Subcommand};
 
-use crate::models::identifiers::{SysId, TableName};
+use crate::models::identifiers::{EncodedQueryValue, SysId, TableName};
 use crate::models::order_by::OrderBy;
 
-const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended\n  snow-cli table stats incident --group-by state";
+const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended\n  snow-cli table find flow\n  snow-cli table choices incident priority\n  snow-cli table stats incident --group-by state";
 const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --order-by -sys_created_on --limit 3 --offset 3   # second page\n  snow-cli table list incident --all --fields '*' --full   # everything, uncapped\n  snow-cli table list incident --preview   # opt in to shortening oversized fields\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - Output is lossless by default. Pass --preview to shorten long field values in JSON, JSONL, TOON, text, or auto output; preview metadata reports the field path, original size, shown size, and --full escape hatch.\n  - --preview is not supported with CSV output because CSV has no metadata channel; CSV remains lossless.\n  - Responses include offset/next_offset and returned/truncated metadata plus the server-reported total.\n  - For complete data set extraction prefer `data export`.";
 
 const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incident --data '{\"short_description\":\"VPN down\"}'\n  echo '{\"short_description\":\"From stdin\"}' | snow-cli table create incident";
 
 const TABLE_STATS_AFTER_HELP: &str = "Examples:\n  snow-cli table stats incident\n  snow-cli table stats incident --query 'active=true'\n  snow-cli table stats incident --group-by state,priority\n  snow-cli table stats incident --group-by state --avg priority --having 'count>5'";
+pub(crate) const TABLE_FIND_AFTER_HELP: &str = "Examples:\n  snow-cli table find flow\n  snow-cli table find 'service catalog' --limit 50\n\nNotes:\n  - Matches name or label (case-insensitive contains), sorted by name.\n  - Each row has name, label, extends (parent table), and scope.\n  - Output is bounded to 20 tables; use --limit, --offset, or --all.";
+
+pub(crate) const TABLE_CHOICES_AFTER_HELP: &str = "Examples:\n  snow-cli table choices incident priority\n  snow-cli table choices incident\n  snow-cli table choices change_request state --language de\n\nNotes:\n  - Choices are taken from the most specific table in the hierarchy that defines them\n    (incident.priority choices live on task); each row names that table.\n  - Rows have element, value, label, sequence, table, and dependent_value when set.";
+
 // --- Table ---
 
 #[derive(Args, Debug)]
@@ -56,14 +60,8 @@ pub enum TableCommands {
         #[arg(long, allow_hyphen_values = true)]
         order_by: Option<OrderBy>,
 
-        /// Request cross-domain Table API reads (admin or query_no_domain_table_api required)
-        #[arg(long)]
-        query_no_domain: bool,
-
-        /// Add each record's domain (sys_domain, sys_domain_path, and a resolved
-        /// sys_domain_name) and, for lists, a per-domain summary of the page
-        #[arg(long)]
-        with_domain: bool,
+        #[command(flatten)]
+        domain_read: crate::cli::args::DomainReadArgs,
 
         /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
@@ -87,14 +85,8 @@ pub enum TableCommands {
         #[arg(long)]
         fields: Option<String>,
 
-        /// Request cross-domain Table API reads (admin or query_no_domain_table_api required)
-        #[arg(long)]
-        query_no_domain: bool,
-
-        /// Add each record's domain (sys_domain, sys_domain_path, and a resolved
-        /// sys_domain_name) and, for lists, a per-domain summary of the page
-        #[arg(long)]
-        with_domain: bool,
+        #[command(flatten)]
+        domain_read: crate::cli::args::DomainReadArgs,
 
         /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
@@ -161,6 +153,39 @@ pub enum TableCommands {
         include_inherited: bool,
     },
 
+    /// Find tables whose name or label contains text (searches sys_db_object)
+    #[command(after_help = TABLE_FIND_AFTER_HELP)]
+    Find {
+        /// Text to look for in table names and labels (e.g., flow)
+        text: EncodedQueryValue,
+
+        /// Maximum number of tables to return (default: 20)
+        #[arg(long, conflicts_with = "all")]
+        limit: Option<usize>,
+
+        /// Skip this many matching tables (default: 0)
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+
+        /// Return every matching table instead of the bounded default
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// List active choice values and labels for a table's fields (from sys_choice)
+    #[command(after_help = TABLE_CHOICES_AFTER_HELP)]
+    Choices {
+        /// Table name (e.g., incident); parent tables are searched too
+        table: TableName,
+
+        /// Only this field's choices (e.g., priority)
+        field: Option<EncodedQueryValue>,
+
+        /// Choice label language
+        #[arg(long, default_value = "en")]
+        language: EncodedQueryValue,
+    },
+
     /// Count and aggregate records via the Aggregate API (Stats endpoint)
     #[command(after_help = TABLE_STATS_AFTER_HELP)]
     Stats {
@@ -195,7 +220,8 @@ pub enum TableCommands {
         #[arg(long)]
         sum: Option<String>,
 
-        /// Aggregate filter clause (e.g., 'count>5')
+        /// Filter groups by aggregate: count>5, avg(priority)>=2; comma-separated clauses are ANDed
+        /// (native aggregate^field^operator^value also accepted)
         #[arg(long)]
         having: Option<String>,
     },

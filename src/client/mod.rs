@@ -7,6 +7,7 @@
 pub mod error;
 pub mod pagination;
 
+mod aggregate;
 mod core;
 mod debug;
 mod identity;
@@ -19,6 +20,7 @@ mod table;
 mod test_support;
 mod transport;
 
+pub use aggregate::AggregateResult;
 pub use core::{
     BackgroundScriptOptions, ClientConfig, ClientResponse, ExternalResponse, FormSession,
     SnowClient,

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -32,9 +32,10 @@ pub struct AppConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_output: Option<String>,
 
-    /// Map of profile name to profile configuration.
+    /// Map of profile name to profile configuration, in file order so a
+    /// save rewrites only what changed.
     #[serde(default)]
-    pub profiles: HashMap<String, Profile>,
+    pub profiles: IndexMap<String, Profile>,
 }
 
 /// A single ServiceNow instance profile.
@@ -384,7 +385,7 @@ fn dirs_config_path() -> PathBuf {
     }
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         std::env::var("USERPROFILE").ok().map(PathBuf::from)
@@ -398,6 +399,42 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_preserves_profile_section_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let names = ["d", "f", "a", "e", "b", "c"];
+        let mut source = String::from("default_profile = \"d\"\n");
+        for name in names {
+            source.push_str(&format!(
+                "\n[profiles.{name}]\ninstance = \"https://{name}.service-now.com\"\nauth_method = \"basic\"\n"
+            ));
+        }
+        std::fs::write(&path, &source).unwrap();
+
+        let mut config = AppConfig::load_from(&path).unwrap();
+        assert_eq!(
+            config
+                .profiles
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            names
+        );
+        config.default_profile = "c".to_string();
+        config.save_to(&path).unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let positions: Vec<usize> = names
+            .iter()
+            .map(|name| saved.find(&format!("[profiles.{name}]")).unwrap())
+            .collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{saved}"
+        );
+    }
 
     #[test]
     fn default_output_is_stored_as_raw_string_and_tolerant() {
@@ -453,7 +490,7 @@ mod tests {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
             default_output: None,
-            profiles: HashMap::new(),
+            profiles: IndexMap::new(),
         };
         config.profiles.insert(
             "dev".to_string(),
@@ -488,7 +525,7 @@ mod tests {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
             default_output: None,
-            profiles: HashMap::new(),
+            profiles: IndexMap::new(),
         };
         config.profiles.insert(
             "dev".to_string(),
@@ -558,7 +595,7 @@ mod tests {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
             default_output: None,
-            profiles: HashMap::new(),
+            profiles: IndexMap::new(),
         };
         config.profiles.insert(
             "dev".to_string(),
@@ -587,7 +624,7 @@ mod tests {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
             default_output: None,
-            profiles: HashMap::new(),
+            profiles: IndexMap::new(),
         };
         config.profiles.insert(
             "dev".to_string(),
@@ -619,7 +656,7 @@ mod tests {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
             default_output: None,
-            profiles: HashMap::new(),
+            profiles: IndexMap::new(),
         };
         config.profiles.insert(
             "dev".to_string(),

@@ -225,14 +225,8 @@ pub enum ReadOnlyTableCommands {
         #[arg(long, allow_hyphen_values = true)]
         order_by: Option<OrderBy>,
 
-        /// Request cross-domain Table API reads (admin or query_no_domain_table_api required)
-        #[arg(long)]
-        query_no_domain: bool,
-
-        /// Add each record's domain (sys_domain, sys_domain_path, and a resolved
-        /// sys_domain_name) and, for lists, a per-domain summary of the page
-        #[arg(long)]
-        with_domain: bool,
+        #[command(flatten)]
+        domain_read: crate::cli::args::DomainReadArgs,
 
         /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
@@ -256,14 +250,8 @@ pub enum ReadOnlyTableCommands {
         #[arg(long)]
         fields: Option<String>,
 
-        /// Request cross-domain Table API reads (admin or query_no_domain_table_api required)
-        #[arg(long)]
-        query_no_domain: bool,
-
-        /// Add each record's domain (sys_domain, sys_domain_path, and a resolved
-        /// sys_domain_name) and, for lists, a per-domain summary of the page
-        #[arg(long)]
-        with_domain: bool,
+        #[command(flatten)]
+        domain_read: crate::cli::args::DomainReadArgs,
 
         /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
@@ -291,6 +279,39 @@ pub enum ReadOnlyTableCommands {
         /// Deprecated: inherited columns are now included by default
         #[arg(long, hide = true, conflicts_with = "own_only")]
         include_inherited: bool,
+    },
+
+    /// Find tables whose name or label contains text (searches sys_db_object)
+    #[command(after_help = crate::cli::args::TABLE_FIND_AFTER_HELP)]
+    Find {
+        /// Text to look for in table names and labels (e.g., flow)
+        text: EncodedQueryValue,
+
+        /// Maximum number of tables to return (default: 20)
+        #[arg(long, conflicts_with = "all")]
+        limit: Option<usize>,
+
+        /// Skip this many matching tables (default: 0)
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+
+        /// Return every matching table instead of the bounded default
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// List active choice values and labels for a table's fields (from sys_choice)
+    #[command(after_help = crate::cli::args::TABLE_CHOICES_AFTER_HELP)]
+    Choices {
+        /// Table name (e.g., incident); parent tables are searched too
+        table: TableName,
+
+        /// Only this field's choices (e.g., priority)
+        field: Option<EncodedQueryValue>,
+
+        /// Choice label language
+        #[arg(long, default_value = "en")]
+        language: EncodedQueryValue,
     },
 
     /// Count and aggregate records via the Aggregate API (Stats endpoint)
@@ -326,7 +347,8 @@ pub enum ReadOnlyTableCommands {
         #[arg(long)]
         sum: Option<String>,
 
-        /// Aggregate filter clause (e.g., 'count>5')
+        /// Filter groups by aggregate: count>5, avg(priority)>=2; comma-separated clauses are ANDed
+        /// (native aggregate^field^operator^value also accepted)
         #[arg(long)]
         having: Option<String>,
     },
@@ -471,6 +493,18 @@ pub enum ReadOnlyAttachmentCommands {
 
         /// Record sys_id
         sys_id: SysId,
+
+        /// Maximum number of attachments to return (default: 20)
+        #[arg(long, conflicts_with = "all")]
+        limit: Option<usize>,
+
+        /// Skip this many attachments (default: 0)
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+
+        /// Fetch every attachment instead of the bounded default
+        #[arg(long)]
+        all: bool,
     },
 
     /// Download an attachment
@@ -855,8 +889,7 @@ impl ReadOnlyTableCommands {
                 order_by,
                 full,
                 preview,
-                query_no_domain,
-                with_domain,
+                domain_read,
             } => TableCommands::List {
                 table,
                 query,
@@ -868,8 +901,7 @@ impl ReadOnlyTableCommands {
                 order_by,
                 full,
                 preview,
-                query_no_domain,
-                with_domain,
+                domain_read,
             },
             Self::Get {
                 table,
@@ -877,16 +909,14 @@ impl ReadOnlyTableCommands {
                 fields,
                 full,
                 preview,
-                query_no_domain,
-                with_domain,
+                domain_read,
             } => TableCommands::Get {
                 table,
                 sys_id,
                 fields,
                 full,
                 preview,
-                query_no_domain,
-                with_domain,
+                domain_read,
             },
             Self::Schema {
                 table,
@@ -898,6 +928,26 @@ impl ReadOnlyTableCommands {
                 extended,
                 own_only,
                 include_inherited,
+            },
+            Self::Find {
+                text,
+                limit,
+                offset,
+                all,
+            } => TableCommands::Find {
+                text,
+                limit,
+                offset,
+                all,
+            },
+            Self::Choices {
+                table,
+                field,
+                language,
+            } => TableCommands::Choices {
+                table,
+                field,
+                language,
             },
             Self::Stats {
                 table,
@@ -987,7 +1037,19 @@ impl ReadOnlyScopeCommands {
 impl ReadOnlyAttachmentCommands {
     fn into_full_command(self) -> AttachmentCommands {
         match self {
-            Self::List { table, sys_id } => AttachmentCommands::List { table, sys_id },
+            Self::List {
+                table,
+                sys_id,
+                limit,
+                offset,
+                all,
+            } => AttachmentCommands::List {
+                table,
+                sys_id,
+                limit,
+                offset,
+                all,
+            },
             Self::Download { sys_id, out_path } => {
                 AttachmentCommands::Download { sys_id, out_path }
             }

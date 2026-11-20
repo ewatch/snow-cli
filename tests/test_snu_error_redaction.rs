@@ -8,6 +8,18 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
+/// Config path in a temporary directory shared by this test binary, so a
+/// spawned broker never creates `snu-bridge-id` in the real `~/.servicenow`.
+fn isolated_config() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    static PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        DIR.get_or_init(|| tempfile::tempdir().unwrap())
+            .path()
+            .join("config.toml")
+    })
+}
+
 const PRIVATE_ERROR: &str =
     "g_ck=csrf-secret Cookie: JSESSIONID=cookie-secret private customer data\u{1b}[31m";
 
@@ -42,6 +54,7 @@ async fn exercise_failure(scenario: &str) {
     // enabled. ACL diagnostic details follow the existing opt-in HTTP contract.
     let sensitive = if scenario == "plain" { "1" } else { "0" };
     let mut broker = tokio::process::Command::new(cargo_bin!("snow-cli"))
+        .env("SNOW_CLI_CONFIG", isolated_config())
         .args(["snu", "broker", "serve"])
         .env("SNOW_CLI_SNU_BROKER_ADDR", ipc_addr.to_string())
         .env("SNOW_CLI_SNU_WS_ADDR", ws_addr.to_string())
@@ -65,6 +78,7 @@ async fn exercise_failure(scenario: &str) {
         helper.send(Message::Text(session_push("session-token").to_string().into())).await.unwrap();
 
         let cli = tokio::process::Command::new(cargo_bin!("snow-cli"))
+            .env("SNOW_CLI_CONFIG", isolated_config())
             .args(["snu", "query", "incident", "--timeout-secs", "5"])
             .env("SNOW_CLI_SNU_BROKER_ADDR", ipc_addr.to_string())
             .env("SNOW_CLI_DEBUG_HTTP_INCLUDE_SENSITIVE", sensitive)
@@ -148,6 +162,7 @@ async fn exercise_failure(scenario: &str) {
             assert!(!stderr.contains(secret), "{scenario}: {stderr}");
         }
         let status = tokio::process::Command::new(cargo_bin!("snow-cli"))
+            .env("SNOW_CLI_CONFIG", isolated_config())
             .args(["snu", "broker", "status"])
             .env("SNOW_CLI_SNU_BROKER_ADDR", ipc_addr.to_string())
             .kill_on_drop(true)

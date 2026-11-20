@@ -329,6 +329,16 @@ impl SnowClient {
                 "Cannot switch: all three picker contexts must be available. This UI may be unsupported, including instances without a domain picker; use session show. No mutation was attempted."
             )
         );
+        // The current application can report a different id than the picker
+        // lists for the same scope (Global is `global` in the picker), so a
+        // request for the current context is resolved before the picker.
+        if let Some(current) = before.selection(kind)
+            && (current.id == value
+                || (matches!(kind, SessionSwitchType::Application)
+                    && current.scope.as_deref() == Some(value)))
+        {
+            return Ok((before.clone(), before));
+        }
         let options = self.native_session_options(kind).await?;
         // Resolve application scope names only through the actual accessible picker.
         let candidates = options
@@ -341,7 +351,9 @@ impl SnowClient {
             .collect::<Vec<_>>();
         anyhow::ensure!(
             candidates.len() == 1,
-            "Requested context is unavailable or ambiguous in this session's picker; use session options"
+            ValidationError::new(
+                "Requested context is unavailable or ambiguous in this session's picker; use session options"
+            )
         );
         let selected = candidates[0];
         let current = before.selection(kind);

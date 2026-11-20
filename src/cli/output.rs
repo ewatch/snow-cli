@@ -8,7 +8,7 @@ use std::io::Write;
 mod preview;
 pub use preview::print_table_list;
 pub(crate) use preview::{
-    ensure_preview_supported, print_record_preview, print_table_list_preview,
+    DomainSummary, ensure_preview_supported, print_record_preview, print_table_list_preview,
 };
 
 /// Write a value to stdout in the requested output format.
@@ -27,11 +27,16 @@ pub(crate) fn write_output<T: Serialize + ?Sized, W: Write>(
             let json = serde_json::to_string(value)?;
             writeln!(writer, "{json}")?;
         }
-        OutputFormat::Csv => {
-            let mut writer = csv::Writer::from_writer(writer);
-            writer.serialize(value)?;
-            writer.flush()?;
-        }
+        OutputFormat::Csv => match serde_json::to_value(value)? {
+            // The csv crate cannot serialize maps: a single object becomes a
+            // header row and one value row.
+            Value::Object(object) => write_object_csv(&object, writer)?,
+            _ => {
+                let mut writer = csv::Writer::from_writer(writer);
+                writer.serialize(value)?;
+                writer.flush()?;
+            }
+        },
         OutputFormat::Jsonl => {
             write_jsonl_value(&serde_json::to_value(value)?, writer)?;
         }
@@ -46,6 +51,23 @@ pub(crate) fn write_output<T: Serialize + ?Sized, W: Write>(
             emit_auto(&serde_json::to_value(value)?, writer)?;
         }
     }
+    Ok(())
+}
+
+/// One JSON object as CSV: its keys as the header, its values as one row.
+/// Nested values are written as compact JSON.
+fn write_object_csv<W: Write>(
+    object: &serde_json::Map<String, Value>,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    let mut csv = csv::Writer::from_writer(writer);
+    csv.write_record(object.keys())?;
+    csv.write_record(object.values().map(|value| match value {
+        Value::Null => String::new(),
+        Value::String(text) => neutralize_csv_formula(text),
+        other => other.to_string(),
+    }))?;
+    csv.flush()?;
     Ok(())
 }
 
@@ -78,6 +100,26 @@ pub fn print_list<T: Serialize>(values: &[T], format: &OutputFormat) -> anyhow::
         }
     }
     Ok(())
+}
+
+/// Write a raw response body from a passthrough command (`api`, `script run`
+/// on custom endpoints).
+///
+/// A JSON body is re-encoded in the requested format, so explicit JSON stays
+/// compact. A body that is not JSON, or any body with `--output csv` (raw
+/// responses are not tabular), is written unchanged.
+pub fn print_passthrough(body: &str, format: &OutputFormat) -> anyhow::Result<()> {
+    let json = match format {
+        OutputFormat::Csv => None,
+        _ => serde_json::from_str::<Value>(body).ok(),
+    };
+    match json {
+        Some(json) => print_output(&json, format),
+        None => {
+            println!("{body}");
+            Ok(())
+        }
+    }
 }
 
 /// Write a single Record to stdout.
@@ -619,6 +661,29 @@ mod tests {
             best = String::from_utf8(toon).unwrap();
         }
         best
+    }
+
+    #[test]
+    fn csv_writes_a_single_object_as_header_and_row() {
+        let mut out = Vec::new();
+        write_output(
+            &serde_json::json!({"status": "updated", "default_profile": "=cmd", "n": 2, "x": null}),
+            &OutputFormat::Csv,
+            &mut out,
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let mut lines = text.lines();
+        let header = lines.next().unwrap();
+        assert!(
+            header.contains("status") && header.contains("default_profile"),
+            "{text}"
+        );
+        let row = lines.next().unwrap();
+        assert!(
+            row.contains("updated") && row.contains("'=cmd") && row.contains('2'),
+            "{text}"
+        );
     }
 
     #[test]

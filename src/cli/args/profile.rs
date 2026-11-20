@@ -262,6 +262,8 @@ pub enum ConfigCommands {
     #[command(name = "export-now-sdk", hide = true)]
     ExportNowSdk {
         /// snow-cli profile name to export
+        // A distinct id keeps the global `--profile` flag usable here.
+        #[arg(id = "export_profile", value_name = "PROFILE")]
         profile: String,
 
         /// Override the destination now-sdk alias name
@@ -343,6 +345,8 @@ pub enum ProfileSdkCommands {
     /// Export a basic snow-cli profile into the now-sdk alias store
     Export {
         /// snow-cli profile name to export
+        // A distinct id keeps the global `--profile` flag usable here.
+        #[arg(id = "export_profile", value_name = "PROFILE")]
         profile: String,
 
         /// Override the destination now-sdk alias name

@@ -1583,7 +1583,7 @@ async fn test_table_stats_grouped_with_aggregates() {
         .and(query_param("sysparm_count", "true"))
         .and(query_param("sysparm_group_by", "state"))
         .and(query_param("sysparm_avg_fields", "priority"))
-        .and(query_param("sysparm_having", "count>2"))
+        .and(query_param("sysparm_having", "count^*^>^2"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
                 {
@@ -1675,6 +1675,29 @@ async fn test_table_stats_grouped_csv_output() {
 }
 
 #[tokio::test]
+async fn test_table_stats_rejects_invalid_having_before_request() {
+    let (_dir, config_path) = api_key_config("http://localhost:1");
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            "http://localhost:1",
+            "table",
+            "stats",
+            "incident",
+            "--group-by",
+            "state",
+            "--having",
+            "median(priority)>2",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("Invalid --having clause"));
+}
+
+#[tokio::test]
 async fn test_table_stats_invalid_table_name() {
     let (_dir, config_path) = api_key_config("http://localhost:1");
 
@@ -1742,4 +1765,128 @@ async fn test_instance_override_to_foreign_origin_never_receives_credentials() {
         .code(2)
         .stderr(predicate::str::contains("INSTANCE_MISMATCH"))
         .stderr(predicate::str::contains("test-api-token").not());
+}
+
+// --- table find / choices ---
+
+#[tokio::test]
+async fn test_table_find_searches_name_and_label_bounded() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_db_object"))
+        .and(query_param(
+            "sysparm_query",
+            "nameLIKEflow^ORlabelLIKEflow^ORDERBYname",
+        ))
+        .and(query_param(
+            "sysparm_fields",
+            "name,label,super_class.name,sys_scope.scope",
+        ))
+        .and(query_param("sysparm_limit", "20"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "42")
+                .set_body_json(serde_json::json!({
+                    "result": [{
+                        "name": "sys_hub_flow", "label": "Flow",
+                        "super_class.name": "sys_hub_flow_base", "sys_scope.scope": "global"
+                    }]
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config(&server.uri());
+
+    let assert = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args(["--instance", &server.uri(), "table", "find", "flow"])
+        .assert()
+        .success();
+    let stdout: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(stdout["total"], 42);
+    assert_eq!(stdout["truncated"], true);
+    assert_eq!(
+        stdout["records"][0],
+        serde_json::json!({
+            "name": "sys_hub_flow", "label": "Flow",
+            "extends": "sys_hub_flow_base", "scope": "global"
+        })
+    );
+}
+
+#[test]
+fn test_table_find_rejects_query_operators() {
+    let (_dir, config_path) = api_key_config("http://localhost:1");
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            "http://localhost:1",
+            "table",
+            "find",
+            "a^ORactive=true",
+        ])
+        .assert()
+        .code(2);
+}
+
+#[tokio::test]
+async fn test_table_choices_walks_hierarchy_and_prefers_most_specific_table() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_db_object"))
+        .and(query_param("sysparm_query", "name=incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"name": "incident", "super_class": {"value": "taskid", "link": "x"}}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_db_object"))
+        .and(query_param("sysparm_query", "sys_id=taskid"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"name": "task", "super_class": ""}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_choice"))
+        .and(query_param(
+            "sysparm_query",
+            "nameINincident,task^inactive=false^language=en^ORDERBYelement^ORDERBYsequence",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"name": "task", "element": "priority", "value": "1", "label": "1 - Critical", "sequence": "1", "dependent_value": ""},
+                {"name": "incident", "element": "state", "value": "1", "label": "New", "sequence": "1", "dependent_value": ""},
+                {"name": "task", "element": "state", "value": "-5", "label": "Pending", "sequence": "1", "dependent_value": ""}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config(&server.uri());
+
+    let assert = cargo_bin_cmd!("snow-cli-ro")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args(["--instance", &server.uri(), "table", "choices", "incident"])
+        .assert()
+        .success();
+    let rows: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(
+        rows,
+        serde_json::json!([
+            {"table": "task", "element": "priority", "value": "1", "label": "1 - Critical", "sequence": "1"},
+            {"table": "incident", "element": "state", "value": "1", "label": "New", "sequence": "1"}
+        ])
+    );
 }

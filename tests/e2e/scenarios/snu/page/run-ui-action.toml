@@ -12,7 +12,9 @@ args = ["snu", "page", "navigate", "$SNOW_E2E_INSTANCE_URL/incident.do?sys_id={{
 capture = { tab_id = ".tabId" }
 
 [command]
-args = ["snu", "page", "run-ui-action", "save", "--tab-id", "{{tab_id}}", "--profile", "e2e-scenario", "--output", "json"]
+# A gated page action must name one exact instance; the form tab opened above is
+# the only incident.do tab, so this URL selects it.
+args = ["snu", "page", "run-ui-action", "save", "--url", "$SNOW_E2E_INSTANCE_URL/incident.do*", "--profile", "e2e-scenario", "--output", "json"]
 
 [expect]
 exit_code = 0

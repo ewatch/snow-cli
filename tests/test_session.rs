@@ -722,6 +722,47 @@ async fn already_current_update_set_is_verified_without_a_put() {
 }
 
 #[tokio::test]
+async fn current_application_id_that_the_picker_names_differently_is_a_no_op() {
+    // Live PDIs report Global's current-application sysId as a real sys_id
+    // while the application picker lists it as `global`.
+    const GLOBAL_APP_ID: &str = "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1";
+    let server = MockServer::start().await;
+    base(&server).await;
+    let mut current = pickers("global");
+    current["result"]["currentApplication"]["sysId"] = json!(GLOBAL_APP_ID);
+    Mock::given(method("GET"))
+        .and(path("/api/now/ui/concoursepicker/current"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(current))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/ui/concoursepicker/application"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"result":{"list":[{"sysId":"global","scopeName":"global","name":"Global"}]}}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(400))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let (_dir, config, store) = config(&server.uri());
+    for requested in [GLOBAL_APP_ID, "global"] {
+        command("full", &config, &store)
+            .args(["session", "switch", "application", requested])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("\"changed\":false"));
+    }
+    command("full", &config, &store)
+        .args(["session", "switch", "application", "x_missing_app"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("VALIDATION_ERROR"));
+}
+
+#[tokio::test]
 async fn update_set_switch_uses_native_body_and_verifies_result() {
     use std::sync::{
         Arc,

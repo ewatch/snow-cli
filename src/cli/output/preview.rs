@@ -8,8 +8,11 @@ use std::io::Write;
 mod tests;
 use crate::client::pagination::TableListResult;
 
+/// Records per domain name on one printed page (`table list --with-domain`).
+pub(crate) type DomainSummary = std::collections::BTreeMap<String, usize>;
+
 #[derive(Serialize)]
-struct TableListMeta {
+struct TableListMeta<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     total: Option<usize>,
     returned: usize,
@@ -19,11 +22,15 @@ struct TableListMeta {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     fields_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    domains_in_page: Option<std::collections::BTreeMap<String, usize>>,
+    domains_in_page: Option<&'a DomainSummary>,
 }
 
-impl TableListMeta {
-    fn from_result(result: &TableListResult, preview: &PreviewReport) -> Self {
+impl<'a> TableListMeta<'a> {
+    fn from_result(
+        result: &TableListResult,
+        preview: &PreviewReport,
+        domains_in_page: Option<&'a DomainSummary>,
+    ) -> Self {
         Self {
             total: result.total,
             returned: result.returned(),
@@ -31,7 +38,7 @@ impl TableListMeta {
             next_offset: result.next_offset(),
             truncated: result.truncated,
             fields_truncated: result.fields_truncated || !preview.is_empty(),
-            domains_in_page: result.domains_in_page.clone(),
+            domains_in_page,
         }
     }
 }
@@ -39,7 +46,7 @@ impl TableListMeta {
 #[derive(Serialize)]
 struct TableListEnvelope<'a> {
     #[serde(flatten)]
-    meta: TableListMeta,
+    meta: TableListMeta<'a>,
     #[serde(skip_serializing_if = "PreviewReport::is_empty")]
     preview: &'a PreviewReport,
     records: &'a [Record],
@@ -66,16 +73,26 @@ pub fn print_table_list(result: &TableListResult, format: &OutputFormat) -> anyh
         result,
         format,
         &PreviewReport::default(),
+        None,
         &mut std::io::stdout(),
     )
 }
 
+/// Print a `table list` page with its preview report and, for
+/// `--with-domain`, the per-domain summary reported as `domains_in_page`.
 pub(crate) fn print_table_list_preview(
     result: &TableListResult,
     format: &OutputFormat,
     preview: &PreviewReport,
+    domains_in_page: Option<&DomainSummary>,
 ) -> anyhow::Result<()> {
-    write_table_list_with_preview(result, format, preview, &mut std::io::stdout())
+    write_table_list_with_preview(
+        result,
+        format,
+        preview,
+        domains_in_page,
+        &mut std::io::stdout(),
+    )
 }
 
 pub(crate) fn print_record_preview(
@@ -97,17 +114,20 @@ pub(crate) fn write_table_list_with_preview<W: Write>(
     result: &TableListResult,
     format: &OutputFormat,
     preview: &PreviewReport,
+    domains_in_page: Option<&DomainSummary>,
     writer: &mut W,
 ) -> anyhow::Result<()> {
     let envelope = TableListEnvelope {
-        meta: TableListMeta::from_result(result, preview),
+        meta: TableListMeta::from_result(result, preview, domains_in_page),
         preview,
         records: &result.records,
     };
     match format {
         OutputFormat::Csv => write_records_csv(&result.records, writer)?,
         OutputFormat::Jsonl if preview.is_empty() => {
-            let meta = serde_json::json!({ "meta": TableListMeta::from_result(result, preview) });
+            let meta = serde_json::json!({
+                "meta": TableListMeta::from_result(result, preview, domains_in_page)
+            });
             writeln!(writer, "{}", serde_json::to_string(&meta)?)?;
             for record in &result.records {
                 writeln!(writer, "{}", serde_json::to_string(record)?)?;
