@@ -53,7 +53,8 @@ usage() {
     '      and skips scenarios tagged requires = ["isolated-keychain"]' \
     '      (now-sdk alias store writes that cannot be undone).' \
     '  SNOW_E2E_REDACT_IDENTITY=1' \
-    '      Also replace the instance URL with <instance> and the username' \
+    '      Also replace the instance URL with <instance> (its host and short' \
+    '      name with <instance-host> and <instance-name>) and the username' \
     '      (as a whole value or word) with <user> in artifacts. Use when' \
     '      publishing artifacts, e.g. under artifacts/release/. By default' \
     '      both stay visible; credentials are always redacted.' \
@@ -295,6 +296,14 @@ sanitize_artifact_json() {
       if $strict != "1" then .
       else
         (if $url == "" then . else split($url | rtrimstr("/")) | join("<instance>") end)
+        # The URL also appears as a normalized origin (https://host:443) and as
+        # the bare instance name SN-Utils reports (dev12345).
+        | ($url | sub("^[A-Za-z][A-Za-z0-9+.-]*://"; "") | sub("[/:?#].*$"; "")) as $host
+        | (if $host == "" then . else split($host) | join("<instance-host>") end)
+        | ($host | split(".")[0]) as $short
+        | (if ($short | length) < 4 then .
+           else gsub("(?<![A-Za-z0-9_.@-])" + ($short | regex_escape) + "(?![A-Za-z0-9_@-])"; "<instance-name>")
+           end)
         | (if $un == "" then .
            else gsub("(?<![A-Za-z0-9_.@-])" + ($un | regex_escape) + "(?![A-Za-z0-9_.@-])"; "<user>")
            end)
@@ -311,9 +320,11 @@ sanitize_artifact_json() {
     def scrub($secrets):
       if type == "object" then
         with_entries(
-          if (.key | sensitive_key) then .value = "[REDACTED]"
-          else .value |= scrub($secrets)
-          end
+          (if (.key | sensitive_key) then .value = "[REDACTED]"
+           else .value |= scrub($secrets)
+           end)
+          # Keys can carry identity too (for example gate maps keyed by origin).
+          | .key |= (replace_literals($secrets) | redact_identity)
         )
       elif type == "array" then map(scrub($secrets))
       elif type == "string" then
