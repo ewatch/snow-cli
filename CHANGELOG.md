@@ -7,6 +7,8 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-20
+
 ### Security
 
 - The `snu` bridge refuses WebSocket connections from web pages. It accepted any origin, so a page open in the browser could connect to `ws://127.0.0.1:1978`, replace the SN-Utils helper tab, and receive agent requests including session tokens. Only extension pages (`chrome-extension://`, `moz-extension://`, `safari-web-extension://`) and native clients without an `Origin` are accepted, and only extension pages receive the bridge's `bridgeId`. As with SN-Utils' own bridge, local programs cannot be authenticated and can still connect.
@@ -26,6 +28,7 @@ and this project follows semantic versioning conventions while it is pre-1.0.
 
 ### Changed
 
+- Dependencies are updated to their latest compatible versions, including the 2026-11 RustSec fixes for `quinn-proto` and `quinn-udp`.
 - TOON output follows TOON spec v4.4 (toon-format 0.7). Empty arrays now encode as `key: []` instead of `key[0]:`. Other shapes are unchanged.
 - `domain table` reports `has_sys_domain: false` when the dictionary is readable and the table has no `sys_domain` field; `null` now only means the dictionary could not be read.
 - `--query-no-domain` prints a warning when the session has neither `admin` nor `query_no_domain_table_api`, because ServiceNow silently ignores the option in that case.
