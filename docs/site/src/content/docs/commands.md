@@ -76,6 +76,7 @@ changing or resetting that default.
 | [`codesearch`](/commands/codesearch/) | Search code and metadata on an instance |
 | [`include`](/commands/include/) | Read script includes by name: `extends` chain, member outline, `--source-of`, `--grep` |
 | [`flow`](/commands/flow/) | Show a Flow Designer flow as a compact step tree |
+| [`skill`](/commands/skill/) | Install the bundled or hosted agent skill and optional domain packs |
 | [`completions`](/commands/completions/) | Generate shell completion scripts |
 
 ## Common patterns

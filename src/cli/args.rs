@@ -174,10 +174,7 @@ pub enum Commands {
     /// Use the SN-Utils browser extension helper tab directly (without sn-scriptsync)
     Snu(SnuArgs),
 
-    /// Install agent skills from local bundles or URL-hosted manifests
-    // Hidden for now: the feature is not ready to be advertised yet. Still
-    // parses/runs if invoked explicitly; remove `hide = true` to surface it.
-    #[command(hide = true)]
+    /// Install agent skills from the embedded bundle, local paths, or URL-hosted manifests
     Skill(SkillArgs),
 
     /// Generate shell completions
