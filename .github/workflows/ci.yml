@@ -44,6 +44,11 @@ jobs:
       - name: Run tests
         run: cargo test
 
+      - name: Check skill command examples parse
+        # Offline: runs every `snow-cli` example in skills/ against a profile
+        # with no network or credentials and fails on argument-parser errors.
+        run: cargo build --bins && python3 scripts/check-skill-examples.py
+
   docs:
     # Runs on every PR (not path-filtered) so it can be a required check and
     # docs-site dependency bumps are built before they merge.
