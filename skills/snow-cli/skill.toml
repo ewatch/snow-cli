@@ -1,0 +1,48 @@
+name = "snow/snow-cli"
+version = "0.11.0"
+description = "Agent guidance for reading and inspecting ServiceNow with snow-cli and snow-cli-ro."
+entrypoint = "SKILL.md"
+
+[[packs]]
+name = "itsm"
+description = "ITSM workflows: Change State Models, SLAs, Approvals, Assignment and Data Lookup rules."
+
+[[packs]]
+name = "catalog"
+description = "Service Catalog workflows: catalog items, variables, variable sets, catalog scripts/policies, and REQ/RITM/SCTASK."
+
+[[packs]]
+name = "cmdb"
+description = "CMDB & CSDM workflows: CI hierarchy, relationships, IRE identification/reconciliation rules, and duplicate audits."
+
+[[packs]]
+name = "workflows"
+description = "Flow Designer & Legacy Workflow deep dive: step inputs, execution contexts/logs, and wf_workflow tracing."
+
+[[packs]]
+name = "knowledge"
+description = "Knowledge Management & User Criteria: articles, versions, Can/Cannot Read User Criteria, and KB health."
+
+[[packs]]
+name = "snu"
+description = "SN-Utils browser bridge workflows: live SSO/MFA sessions, form state, screenshots, and broker diagnostics."
+
+[[packs]]
+name = "reporting"
+description = "Reports, Dashboards & Performance Analytics: sys_report sharing, pa_indicators, cubes, scores, and PA jobs."
+
+[[packs]]
+name = "csm"
+description = "Customer Service Management: Cases, Accounts, Contacts, Entitlements, and external visibility diagnosis."
+
+[[packs]]
+name = "hrsd"
+description = "HR Service Delivery: COE cases, HR Services, HR Profiles, COE Security Policies, and RCA access blocks."
+
+[[packs]]
+name = "secops"
+description = "Security Operations: Security Incident Response (SIR), observables, Vulnerability Response (VR), and RCA blocks."
+
+[[packs]]
+name = "plugins"
+description = "Plugin & Store app management: pre-flight checks, CI/CD REST API activation/install/rollback, progress tracking, and GlidePluginManagerWorker fallback."

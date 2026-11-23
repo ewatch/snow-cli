@@ -1,5 +1,6 @@
 use super::{print_output, print_record, write_output, write_records_csv};
 use crate::cli::{args::OutputFormat, truncation::PreviewReport};
+use crate::models::field_warning::FieldWarning;
 use crate::models::record::Record;
 use serde::Serialize;
 use std::io::Write;
@@ -23,13 +24,32 @@ struct TableListMeta<'a> {
     fields_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     domains_in_page: Option<&'a DomainSummary>,
+    /// Non-fatal warnings (e.g. unknown fields); omitted when there are none.
+    #[serde(skip_serializing_if = "<[FieldWarning]>::is_empty")]
+    warnings: &'a [FieldWarning],
 }
 
 impl<'a> TableListMeta<'a> {
+    #[cfg(test)]
     fn from_result(
         result: &TableListResult,
         preview: &PreviewReport,
         domains_in_page: Option<&'a DomainSummary>,
+    ) -> Self {
+        Self::with_extras(
+            result,
+            preview,
+            &TableListExtras {
+                domains_in_page,
+                warnings: &[],
+            },
+        )
+    }
+
+    fn with_extras(
+        result: &TableListResult,
+        preview: &PreviewReport,
+        extras: &TableListExtras<'a>,
     ) -> Self {
         Self {
             total: result.total,
@@ -38,9 +58,19 @@ impl<'a> TableListMeta<'a> {
             next_offset: result.next_offset(),
             truncated: result.truncated,
             fields_truncated: result.fields_truncated || !preview.is_empty(),
-            domains_in_page,
+            domains_in_page: extras.domains_in_page,
+            warnings: extras.warnings,
         }
     }
+}
+
+/// Optional `table list` metadata beyond the paging fields.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct TableListExtras<'a> {
+    /// `--with-domain` per-domain summary, reported as `domains_in_page`.
+    pub domains_in_page: Option<&'a DomainSummary>,
+    /// Structured warnings, reported as `warnings` when non-empty.
+    pub warnings: &'a [FieldWarning],
 }
 
 #[derive(Serialize)]
@@ -78,21 +108,15 @@ pub fn print_table_list(result: &TableListResult, format: &OutputFormat) -> anyh
     )
 }
 
-/// Print a `table list` page with its preview report and, for
-/// `--with-domain`, the per-domain summary reported as `domains_in_page`.
+/// Print a `table list` page with its preview report and extra metadata
+/// (`domains_in_page`, `warnings`).
 pub(crate) fn print_table_list_preview(
     result: &TableListResult,
     format: &OutputFormat,
     preview: &PreviewReport,
-    domains_in_page: Option<&DomainSummary>,
+    extras: &TableListExtras<'_>,
 ) -> anyhow::Result<()> {
-    write_table_list_with_preview(
-        result,
-        format,
-        preview,
-        domains_in_page,
-        &mut std::io::stdout(),
-    )
+    write_table_list_page(result, format, preview, extras, &mut std::io::stdout())
 }
 
 pub(crate) fn print_record_preview(
@@ -117,8 +141,22 @@ pub(crate) fn write_table_list_with_preview<W: Write>(
     domains_in_page: Option<&DomainSummary>,
     writer: &mut W,
 ) -> anyhow::Result<()> {
+    let extras = TableListExtras {
+        domains_in_page,
+        warnings: &[],
+    };
+    write_table_list_page(result, format, preview, &extras, writer)
+}
+
+pub(crate) fn write_table_list_page<W: Write>(
+    result: &TableListResult,
+    format: &OutputFormat,
+    preview: &PreviewReport,
+    extras: &TableListExtras<'_>,
+    writer: &mut W,
+) -> anyhow::Result<()> {
     let envelope = TableListEnvelope {
-        meta: TableListMeta::from_result(result, preview, domains_in_page),
+        meta: TableListMeta::with_extras(result, preview, extras),
         preview,
         records: &result.records,
     };
@@ -126,7 +164,7 @@ pub(crate) fn write_table_list_with_preview<W: Write>(
         OutputFormat::Csv => write_records_csv(&result.records, writer)?,
         OutputFormat::Jsonl if preview.is_empty() => {
             let meta = serde_json::json!({
-                "meta": TableListMeta::from_result(result, preview, domains_in_page)
+                "meta": TableListMeta::with_extras(result, preview, extras)
             });
             writeln!(writer, "{}", serde_json::to_string(&meta)?)?;
             for record in &result.records {
@@ -135,5 +173,22 @@ pub(crate) fn write_table_list_with_preview<W: Write>(
         }
         _ => write_output(&envelope, format, writer)?,
     }
+    Ok(())
+}
+
+/// Print one field value verbatim (`table get --raw`): strings unescaped,
+/// other JSON values compact, always ending with a newline.
+pub(crate) fn print_raw_value(value: &serde_json::Value) -> anyhow::Result<()> {
+    let text = match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Null => String::new(),
+        other => serde_json::to_string(other)?,
+    };
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(text.as_bytes())?;
+    if !text.ends_with('\n') {
+        stdout.write_all(b"\n")?;
+    }
+    stdout.flush()?;
     Ok(())
 }

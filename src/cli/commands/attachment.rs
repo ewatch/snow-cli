@@ -150,9 +150,7 @@ pub async fn handle(
                 eprintln!("Uploading '{}' ({} bytes)...", file_name, bytes);
             }
 
-            let file_bytes = tokio::fs::read(&path)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to read file '{}': {}", file, e))?;
+            let file_bytes = crate::cli::io::read_input_file(&path, "Attachment file", "--file")?;
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;

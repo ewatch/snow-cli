@@ -28,6 +28,7 @@ pub use core::{
 pub use identity::CurrentUser;
 pub use native_session::NativeSessionSwitchError;
 pub use script_response::BackgroundScriptResponse;
+pub use table::{TableReadOptions, display_value_params};
 pub use transport::{fetch_skill_resource, post_oauth_token_form};
 
 pub(crate) use core::resolve_authenticated_url;

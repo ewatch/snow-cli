@@ -246,6 +246,26 @@ async fn run_parsed_cli(cli: Cli, policy: ExecutionPolicy) -> anyhow::Result<()>
             )
             .await
         }
+        cli::args::Commands::Include(args) => {
+            cli::commands::include::handle(
+                args,
+                &active_profile,
+                &effective_output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
+        }
+        cli::args::Commands::Flow(args) => {
+            cli::commands::flow::handle(
+                args,
+                &active_profile,
+                &effective_output,
+                cli.instance.as_deref(),
+                cli.timeout_secs,
+            )
+            .await
+        }
         cli::args::Commands::Snu(args) => {
             cli::commands::snu::handle(args, cli.instance.as_deref(), &effective_output).await
         }
@@ -272,6 +292,8 @@ pub fn command_uses_connection(command: &cli::args::Commands) -> bool {
             | cli::args::Commands::Graphql(_)
             | cli::args::Commands::Script(_)
             | cli::args::Commands::Codesearch(_)
+            | cli::args::Commands::Include(_)
+            | cli::args::Commands::Flow(_)
             | cli::args::Commands::Snu(_)
     )
 }
@@ -314,6 +336,7 @@ mod tests {
                 order_by: None,
                 full: false,
                 preview: false,
+                read: Default::default(),
             },
         })));
         assert!(command_uses_connection(&Commands::Graphql(GraphqlArgs {

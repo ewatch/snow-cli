@@ -665,7 +665,7 @@ async fn test_data_import_flat_import_set_fail_on_error_returns_explicit_error()
         .failure()
         .stdout(predicate::str::contains("\"strategy\":\"import_set\""))
         .stderr(predicate::str::contains(
-            "Import Set-backed data import completed with 1 failed record",
+            "\"code\":\"IMPORT_SET_ROW_ERRORS\"",
         ));
 }
 

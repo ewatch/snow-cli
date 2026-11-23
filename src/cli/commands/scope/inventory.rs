@@ -372,7 +372,11 @@ pub(super) async fn resolve_scope(
 
     let scope_record = scopes
         .first()
-        .ok_or_else(|| anyhow::anyhow!("Scope '{scope_input}' was not found in sys_scope"))?;
+        .ok_or_else(|| {
+            crate::models::validation::ValidationError::new(format!(
+                "Scope '{scope_input}' was not found in sys_scope; run `snow-cli scope list <search>` to find the scope name or sys_id"
+            ))
+        })?;
 
     Ok(ScopeInfo {
         sys_id: field_text(scope_record, "sys_id"),
@@ -466,10 +470,11 @@ pub(super) async fn collect_scope_data(
     // Enumerating every artifact in the platform scope means downloading much
     // of the instance. Require an explicit cap rather than trying.
     if is_platform_scope(&scope.scope) && limit.is_none() {
-        anyhow::bail!(
+        return Err(crate::models::validation::ValidationError::new(format!(
             "Refusing to enumerate platform scope '{}' unbounded; pass --limit N to cap records per table",
             scope.scope
-        );
+        ))
+        .into());
     }
     let per_table_limit = Some(limit.unwrap_or(DEFAULT_ENUMERATION_LIMIT));
 

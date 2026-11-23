@@ -77,6 +77,20 @@ pub(super) struct ImportReport {
     pub(super) skipped: usize,
     pub(super) validation: ImportValidationSummary,
     pub(super) failures: Vec<ImportFailure>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) hint: Option<&'static str>,
+}
+
+/// Explains Table API create rejections, which ServiceNow reports only as a
+/// bare `403 Operation Failed` from an ACL, data policy, or business rule.
+pub(super) const FORBIDDEN_CREATE_HINT: &str = "ServiceNow rejected the creates (ACL, data policy, or business rule). Records exported in a closed or final lifecycle state (for example task state/active) usually cannot be created directly; re-export with --query 'active=true' or drop lifecycle fields, or load through --import-set-table so a transform map applies the state";
+
+/// Returns [`FORBIDDEN_CREATE_HINT`] when any failure was a 403 rejection.
+pub(super) fn forbidden_create_hint(failures: &[ImportFailure]) -> Option<&'static str> {
+    failures
+        .iter()
+        .any(|failure| failure.message.contains("FORBIDDEN"))
+        .then_some(FORBIDDEN_CREATE_HINT)
 }
 
 #[derive(Debug, Deserialize)]

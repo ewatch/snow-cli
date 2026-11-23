@@ -29,6 +29,18 @@ snow-cli --output csv table list incident --fields number,short_description,prio
 # Get a single record
 snow-cli table get incident <sys_id> --fields number,short_description,state
 
+# Labels instead of codes (priority "4 - Low"); both keeps the raw values too
+snow-cli table list incident --fields number,priority,state --order-by -sys_created_on --limit 5 --display-value
+
+# Fetch a script include by name and print its source verbatim
+snow-cli table get sys_script_include ChangeRequestStateHandler --fields script --raw
+
+# Script include extends chain: member outlines plus two method bodies, one call
+snow-cli include show ChangeRequestStateHandler --chain --source-of canMoveTo,_resetModel
+
+# Flow Designer flow as a compact tree: trigger, parallel branches, every step
+snow-cli flow show 'Change - Normal - Authorize'
+
 # Inspect table schema before building a query
 snow-cli table schema incident --extended | head -20
 
@@ -68,6 +80,16 @@ its original and shown character counts, and the `--full` escape hatch. CSV
 remains lossless and does not support preview metadata. Without `--preview`,
 field values are returned in full; `--full` is accepted as an explicit
 lossless option for commands copied from preview workflows.
+
+ServiceNow silently ignores unknown or unreadable field names in `--query`,
+`--fields`, and `--order-by`. `table list` reports them under `warnings` (and
+on stderr), so an ignored filter term is visible in the first call:
+
+```json
+{ "total": 48, "warnings": [ { "code": "UNKNOWN_FIELD", "field": "assigned_two.name", "in": "query", "message": "..." } ], "records": [ ... ] }
+```
+
+Use `--check-fields error` to fail instead, or `off` to skip the check.
 
 ## Agent-safe read-only access
 

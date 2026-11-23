@@ -9,7 +9,7 @@ use crate::cli::args::{
     SnuPageTargetArgs, SnuRecordsArgs, SnuRestArgs, SnuRestCommands, SnuRestReadArgs, TableArgs,
     TableCommands,
 };
-use crate::models::identifiers::{EncodedQueryValue, SysId, TableName};
+use crate::models::identifiers::{EncodedQueryValue, RecordKey, SysId, TableName};
 use crate::models::order_by::OrderBy;
 
 const READ_ONLY_AFTER_HELP: &str = "First-time setup (standalone):\n  1) Create a profile\n     snow-cli-ro profile add default --instance https://dev123.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli-ro auth login --password '<password>'\n\n  3) Verify credentials and connectivity\n     snow-cli-ro auth status --verify\n\nRead-only workflows:\n  1) List recent incidents\n     snow-cli-ro table list incident --query 'active=true' --limit 20\n\n  2) Fetch a record\n     snow-cli-ro table get incident <sys_id>\n\n  3) Inspect schema or app metadata\n     snow-cli-ro table schema incident --extended\n     snow-cli-ro scope inspect x_my_app\n\n  4) Call a read-oriented custom API\n     snow-cli-ro api get /api/x_myapp/status\n\nNotes:\n  - snow-cli-ro runs with a locked read-only policy for remote access.\n  - Local profile and credential management is allowed so it can be used standalone.\n  - Remote write commands and `auth token` (credential export) are blocked.\n  - Raw API access is limited to GET.\n  - GET is allowed by HTTP convention; use read-only ServiceNow credentials for stronger guarantees.";
@@ -81,6 +81,12 @@ pub enum ReadOnlyCommands {
 
     /// Search code across ServiceNow instance
     Codesearch(ReadOnlyCodesearchArgs),
+
+    /// Read script include source by name, with parsed extends chain and grep
+    Include(crate::cli::args::IncludeArgs),
+
+    /// Show a Flow Designer flow as a compact step tree
+    Flow(crate::cli::args::FlowArgs),
 
     /// Read-only SN-Utils browser-session operations
     Snu(ReadOnlySnuArgs),
@@ -183,6 +189,7 @@ pub enum ReadOnlyAuthCommands {
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = crate::cli::args::READ_ONLY_TABLE_AFTER_HELP)]
 pub struct ReadOnlyTableArgs {
     #[command(subcommand)]
     pub command: ReadOnlyTableCommands,
@@ -191,6 +198,7 @@ pub struct ReadOnlyTableArgs {
 #[derive(Subcommand, Debug)]
 pub enum ReadOnlyTableCommands {
     /// List records from a table (auto-paginated)
+    #[command(after_help = crate::cli::args::TABLE_LIST_AFTER_HELP)]
     List {
         /// Table name (e.g., incident, sys_user, cmdb_ci)
         table: TableName,
@@ -228,6 +236,9 @@ pub enum ReadOnlyTableCommands {
         #[command(flatten)]
         domain_read: crate::cli::args::DomainReadArgs,
 
+        #[command(flatten)]
+        read: crate::cli::args::RecordReadArgs,
+
         /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
         full: bool,
@@ -238,20 +249,28 @@ pub enum ReadOnlyTableCommands {
         preview: bool,
     },
 
-    /// Get a single record by sys_id
+    /// Get a single record by sys_id or by name
+    #[command(after_help = crate::cli::args::TABLE_GET_AFTER_HELP)]
     Get {
         /// Table name
         table: TableName,
 
-        /// Record sys_id
-        sys_id: SysId,
+        /// Record sys_id, or a value of --key-field (e.g. a script include name)
+        #[arg(value_name = "SYS_ID|NAME")]
+        record: RecordKey,
 
         /// Comma-separated list of fields to return
         #[arg(long)]
         fields: Option<String>,
 
         #[command(flatten)]
+        lookup: crate::cli::args::RecordLookupArgs,
+
+        #[command(flatten)]
         domain_read: crate::cli::args::DomainReadArgs,
+
+        #[command(flatten)]
+        read: crate::cli::args::RecordReadArgs,
 
         /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
@@ -351,6 +370,11 @@ pub enum ReadOnlyTableCommands {
         /// (native aggregate^field^operator^value also accepted)
         #[arg(long)]
         having: Option<String>,
+
+        /// Check --query/--group-by field names: warn (default), error, or off
+        /// (env SNOW_CLI_CHECK_FIELDS). Costs one row read when either is set.
+        #[arg(long, value_enum, value_name = "MODE")]
+        check_fields: Option<crate::cli::args::CheckFields>,
     },
 }
 
@@ -825,6 +849,8 @@ impl ReadOnlyCommands {
             Self::Codesearch(args) => Commands::Codesearch(CodesearchArgs {
                 command: args.command.into_full_command(),
             }),
+            Self::Include(args) => Commands::Include(args),
+            Self::Flow(args) => Commands::Flow(args),
             Self::Snu(args) => Commands::Snu(SnuArgs {
                 command: args.command.into_full_command(),
             }),
@@ -890,6 +916,7 @@ impl ReadOnlyTableCommands {
                 full,
                 preview,
                 domain_read,
+                read,
             } => TableCommands::List {
                 table,
                 query,
@@ -902,21 +929,26 @@ impl ReadOnlyTableCommands {
                 full,
                 preview,
                 domain_read,
+                read,
             },
             Self::Get {
                 table,
-                sys_id,
+                record,
                 fields,
+                lookup,
                 full,
                 preview,
                 domain_read,
+                read,
             } => TableCommands::Get {
                 table,
-                sys_id,
+                record,
                 fields,
+                lookup,
                 full,
                 preview,
                 domain_read,
+                read,
             },
             Self::Schema {
                 table,
@@ -959,6 +991,7 @@ impl ReadOnlyTableCommands {
                 max,
                 sum,
                 having,
+                check_fields,
             } => TableCommands::Stats {
                 table,
                 query,
@@ -969,6 +1002,7 @@ impl ReadOnlyTableCommands {
                 max,
                 sum,
                 having,
+                check_fields,
             },
         }
     }
@@ -1225,6 +1259,7 @@ mod tests {
             max: None,
             sum: None,
             having: None,
+            check_fields: None,
         }
         .into_full_command();
         match mapped {

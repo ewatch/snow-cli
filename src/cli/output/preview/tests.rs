@@ -378,3 +378,44 @@ fn domain_summary_is_reported_in_list_metadata_only_when_given() {
     let value: serde_json::Value = serde_json::from_slice(&plain).unwrap();
     assert!(value.get("domains_in_page").is_none());
 }
+
+#[test]
+fn warnings_appear_in_envelope_and_jsonl_meta_only_when_present() {
+    use crate::models::field_warning::{FieldSource, FieldWarning};
+    let result = sample_list_result(Some(2), false);
+    let preview = PreviewReport::default();
+    let warnings = [FieldWarning::unknown_field(
+        "incident",
+        "assigned_two.name",
+        FieldSource::Query,
+    )];
+    let extras = TableListExtras {
+        domains_in_page: None,
+        warnings: &warnings,
+    };
+
+    let mut json = Vec::new();
+    write_table_list_page(&result, &OutputFormat::Json, &preview, &extras, &mut json).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
+    assert_eq!(value["warnings"][0]["code"], "UNKNOWN_FIELD");
+    assert_eq!(value["warnings"][0]["in"], "query");
+    assert_eq!(value["records"].as_array().unwrap().len(), 2);
+
+    let mut jsonl = Vec::new();
+    write_table_list_page(&result, &OutputFormat::Jsonl, &preview, &extras, &mut jsonl).unwrap();
+    let meta: serde_json::Value =
+        serde_json::from_str(std::str::from_utf8(&jsonl).unwrap().lines().next().unwrap()).unwrap();
+    assert_eq!(meta["meta"]["warnings"][0]["field"], "assigned_two.name");
+
+    let mut plain = Vec::new();
+    write_table_list_page(
+        &result,
+        &OutputFormat::Json,
+        &preview,
+        &TableListExtras::default(),
+        &mut plain,
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+    assert!(value.get("warnings").is_none());
+}

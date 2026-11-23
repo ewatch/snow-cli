@@ -88,6 +88,89 @@ async fn list_states_formats_and_binaries() {
 }
 
 #[tokio::test]
+async fn list_display_values_and_checked_query_keep_the_envelope() {
+    // `--display-value both` plus a verified `--query` adds no envelope keys
+    // when nothing is unknown; tabular formats split the label column.
+    let server = MockServer::start().await;
+    let (_dir, config) = config(&server.uri());
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "1")
+                .set_body_json(json!({"result": [{
+                    "number": {"display_value": "INC1", "value": "INC1"},
+                    "priority": {"display_value": "4 - Low", "value": "4"},
+                    "active": {"display_value": "true", "value": "true"}
+                }]})),
+        )
+        .expect((BINARIES.len() * FORMATS.len()) as u64)
+        .mount(&server)
+        .await;
+    for binary in BINARIES {
+        for format in FORMATS {
+            let output = command(binary, &config, &server.uri(), format)
+                .env_remove("SNOW_CLI_CHECK_FIELDS")
+                .args([
+                    "table",
+                    "list",
+                    "incident",
+                    "--fields",
+                    "number,priority",
+                    "--query",
+                    "active=true",
+                    "--display-value",
+                    "both",
+                ])
+                .assert()
+                .success()
+                .get_output()
+                .clone();
+            assert!(output.stderr.is_empty(), "{binary}/{format}");
+            if format == "csv" {
+                assert_eq!(
+                    csv_rows(&output.stdout),
+                    vec![json!({"number": "INC1", "priority": "4", "priority.display": "4 - Low"})],
+                    "{binary}"
+                );
+                continue;
+            }
+            let value = structured(format, &output.stdout);
+            let mut keys: Vec<&str> = value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                [
+                    "next_offset",
+                    "offset",
+                    "records",
+                    "returned",
+                    "total",
+                    "truncated"
+                ],
+                "{binary}/{format}"
+            );
+            let priority = &value["records"][0]["priority"];
+            if format == "toon" {
+                assert_eq!(value["records"][0]["priority.display"], "4 - Low");
+            } else {
+                assert_eq!(
+                    priority,
+                    &json!({"value": "4", "display": "4 - Low"}),
+                    "{binary}/{format}"
+                );
+            }
+            assert!(value["records"][0].get("active").is_none());
+        }
+    }
+}
+
+#[tokio::test]
 async fn detail_aggregate_and_mutation_formats() {
     // These classes all produce a single record, unlike the list envelope.
     for (class, verb, endpoint, args, response, expected) in [

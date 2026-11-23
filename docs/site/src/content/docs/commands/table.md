@@ -24,6 +24,8 @@ Important options:
 - `--offset <n>`: skip the first `n` matching records (default: 0); works with `--limit` or `--all`
 - `--all`: fetch every matching record instead of the bounded default
 - `--order-by <spec>`: sort results. `field` sorts ascending, `-field` or `field:desc` descending; comma-separate several keys (`-priority,number`). Sent as `ORDERBY`/`ORDERBYDESC` clauses appended to `--query`, because the Table API has no separate sort parameter
+- `--display-value [raw|display|both]`: return labels instead of stored codes. A bare `--display-value` means `display`; `false`, `true`, and `all` are accepted as aliases. See [Display values](#display-values)
+- `--check-fields warn|error|off`: how to treat names in `--fields`, `--query`, and `--order-by` that ServiceNow does not return (default `warn`, or `SNOW_CLI_CHECK_FIELDS`). See [Unknown-field warnings](#unknown-field-warnings)
 - `--preview`: opt in to shortening oversized string fields and emitting separate preview metadata (JSON, JSONL, TOON, text, and auto output only)
 - `--full`: explicit lossless escape hatch for commands copied from preview workflows; conflicts with `--preview`
 
@@ -31,6 +33,8 @@ Examples:
 
 ```bash
 snow-cli table list incident --query 'active=true' --limit 20
+snow-cli table list incident --query 'active=true' --fields number,priority,state,assignment_group --order-by -sys_created_on --limit 5 --display-value
+snow-cli table list incident --fields number,priority,state --display-value both --output csv
 snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name
 snow-cli table list incident --fields number,sys_created_on --order-by -sys_created_on --limit 5  # newest first
 snow-cli table list incident --order-by -sys_created_on --limit 3 --offset 3  # second page
@@ -51,27 +55,93 @@ Notes:
 - For complete data set extraction prefer `data export`, which keeps full-export semantics.
 - Use `--output csv` when you want tabular export. CSV output is lossless and does not carry preview metadata.
 
-## `table get <table> <sys_id>`
+## `table get <table> <sys_id|name>`
 
-Fetch a single record.
+Fetch a single record by `sys_id`, or by name.
 
 ```bash
-snow-cli table get <table> <sys_id> [options]
+snow-cli table get <table> <sys_id|name> [options]
 ```
 
 Important options:
 
 - `--fields <a,b,c>`: restrict the returned fields
+- `--key-field <field>`: field matched when the record is not a 32-character hex `sys_id`. The default is `number` for task-style numbers such as `INC0010001`, and `name` otherwise
+- `--raw`: print the single `--fields` value verbatim, without JSON escaping, followed by a newline. Requires exactly one field
+- `--display-value [raw|display|both]` and `--check-fields warn|error|off`: as on `table list`. Unknown `--fields` names are reported on stderr only, because `table get` prints the bare record
 - `--preview`: opt in to shortening oversized string fields and wrapping the record as `{ "preview": ..., "record": ... }` (JSON, JSONL, TOON, text, and auto output only)
 - `--full`: explicit lossless escape hatch for commands copied from preview workflows; conflicts with `--preview`
 
 `table get` is lossless by default. With `--preview`, preview-capable formats wrap a shortened record as `{ "preview": ..., "record": ... }`. Replace `--preview` with `--full`, or omit `--preview`, to return the record as the exact Table API value. `--preview` is rejected with CSV output.
 
-Example:
+A name lookup is one Table API read. No match fails with `RECORD_NOT_FOUND`
+(exit 4, like a missing `sys_id`). Several matches fail with
+`VALIDATION_ERROR` (exit 2) and list up to five candidates' `sys_id` and scope
+in `issues`; pass one of those `sys_id` values instead.
+
+Examples:
 
 ```bash
 snow-cli table get incident 46d44a4b2f13000044e0bfc8fb99b6fd --fields number,short_description,state
+snow-cli table get incident INC0010001 --display-value both
+snow-cli table get sys_script_include ChangeRequestStateHandler --fields name,api_name,script
+snow-cli table get sys_script_include ChangeRequestStateHandler --fields script --raw
 ```
+
+`--raw` output can be piped straight into line tools, for example
+`snow-cli table get sys_script_include MyUtil --fields script --raw | grep -n initialize`.
+For script includes, [`include show`](/commands/include/) adds the parsed
+`extends` chain and client-side `--grep`.
+
+## Display values
+
+By default the Table API returns stored values: `priority` is `"4"`, `state`
+is `"1"`, and references are sys_ids. `--display-value` on `table list` and
+`table get` asks ServiceNow for labels instead:
+
+| Mode | Sent | Field value |
+|---|---|---|
+| (flag absent) | nothing | stored value; references as `{"link","value"}` objects (unchanged behaviour) |
+| `raw` | `sysparm_display_value=false` | stored value |
+| `display` (bare flag) | `sysparm_display_value=true` | label, such as `"4 - Low"` |
+| `both` | `sysparm_display_value=all` | `{"value":"4","display":"4 - Low"}` where they differ; a plain string where they are equal |
+
+Every mode also sends `sysparm_exclude_reference_link=true`, so references
+never carry `link` URLs. `display` renders dates in the session user's timezone
+and format (`sys_created_on` may differ by hours from the stored UTC value);
+use `both` when you need raw values as well. In CSV and TOON output, `both`
+adds a `<field>.display` column next to `<field>` instead of a nested object.
+The list envelope (`total`, `returned`, `offset`, `next_offset`, `truncated`,
+`records`) is the same in every mode.
+
+## Unknown-field warnings
+
+ServiceNow silently drops unknown or unreadable names from `sysparm_fields`
+and silently ignores encoded-query terms on them, so
+`--query 'active=true^assigned_two.name=Abel Tuter'` returns the unfiltered
+`active=true` result. `table list` checks the names in `--fields`, `--query`,
+and `--order-by`, and `table stats` the names in `--query` and `--group-by`:
+
+- `warn` (default): each missing name is reported under `warnings` in the
+  list envelope (and the JSONL meta line), and as one
+  `{"warning":{...}}` JSON line on stderr. CSV output carries it on stderr only.
+- `error`: the command fails with `VALIDATION_ERROR` (exit 2) and one
+  `unknown_field` issue per name. For `table list` the main query is not sent.
+- `off`: no check.
+
+```json
+"warnings":[{"code":"UNKNOWN_FIELD","field":"assigned_two.name","in":"query","message":"incident returned no field 'assigned_two.name' (unknown or not readable) from --query; ServiceNow ignores that term, so the result is NOT filtered by it"}]
+```
+
+The check is cheap. For `table list` the query and sort fields are added to
+the request's field list and removed from the output again, so a non-empty
+page costs no extra request. An empty page whose query or sort names a field
+costs one `sysparm_limit=1` read without the query. `table stats` always needs
+that one read when `--query` or `--group-by` is set. If that read fails, or the
+table has no readable row, the names stay unverified and the command continues.
+Fields hidden by ACLs are reported too, because ServiceNow ignores them in the
+same way. `--fields '*'` (no projection) verifies only the first segment of
+dot-walked names. The `warnings` key is absent when there is nothing to report.
 
 ## `table create <table>`
 
@@ -214,6 +284,7 @@ Important options:
 - `--avg <a,b>` / `--min <a,b>` / `--max <a,b>` / `--sum <a,b>`: per-field aggregates
 - `--having <clause>`: keep only groups whose aggregate matches, such as `count>5` or
   `avg(priority)>=2`. Separate clauses with commas to require all of them.
+- `--check-fields warn|error|off`: verify `--query` and `--group-by` field names with one extra row read (see [Unknown-field warnings](#unknown-field-warnings)); warnings go to stderr
 
 Without aggregate flags, the command returns the matching record count — a
 cheap way to answer "how many rows match?" without fetching records:
@@ -298,7 +369,21 @@ snow-cli table create incident --data {"short_description":"VPN issue"}
 Prefer single quotes for everyday use — they need no escaping — and reach for
 the double-quoted form only when the value must interpolate a shell variable.
 
+## Recipes for agents
+
+`snow-cli table --help` ends with these recipes:
+
+```bash
+snow-cli table list incident --fields number,priority,state --display-value
+snow-cli table list incident --order-by -sys_created_on --limit 10 --offset 10
+snow-cli table list incident --query 'active=true^assigned_to.name=Abel Tuter' --check-fields error
+snow-cli include show ChangeRequestStateHandler --chain --grep 'canMoveTo' --context 10
+snow-cli table get sys_script_include ChangeRequestStateHandler --fields script --raw
+```
+
 ## Related pages
+
+- [`include` command reference](/commands/include/)
 
 - [`data` command reference](/commands/data/)
 - [`attachment` command reference](/commands/attachment/)

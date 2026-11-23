@@ -1,4 +1,28 @@
 use super::{SnowClient, pagination};
+use crate::models::display_value::DisplayValue;
+
+/// Optional Table API read modifiers. The default sends neither parameter.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TableReadOptions {
+    /// Request `sysparm_query_no_domain=true` (authorized by ServiceNow).
+    pub query_no_domain: bool,
+    /// Request display values; `None` leaves ServiceNow's default (raw values
+    /// with reference links) untouched.
+    pub display_value: Option<DisplayValue>,
+}
+
+/// `sysparm_display_value` plus `sysparm_exclude_reference_link=true` for an
+/// explicit display-value mode, or nothing when the mode is unset. Reference
+/// links are excluded so every mode yields uniform, compact field values.
+pub fn display_value_params(mode: Option<DisplayValue>) -> Vec<(&'static str, &'static str)> {
+    match mode {
+        Some(mode) => vec![
+            ("sysparm_display_value", mode.sysparm_value()),
+            ("sysparm_exclude_reference_link", "true"),
+        ],
+        None => Vec::new(),
+    }
+}
 
 impl SnowClient {
     /// Fetch paginated records from the Table API.
@@ -50,11 +74,31 @@ impl SnowClient {
         order_by: Option<&crate::models::order_by::OrderBy>,
         query_no_domain: bool,
     ) -> anyhow::Result<pagination::TableListResult> {
+        let options = TableReadOptions {
+            query_no_domain,
+            ..TableReadOptions::default()
+        };
+        self.get_table_records_with_options(table, query, fields, pagination, order_by, &options)
+            .await
+    }
+
+    /// Table API read with optional read modifiers (domain bypass, display
+    /// values). With default options the request is identical to
+    /// [`Self::get_table_records_with_meta`].
+    pub async fn get_table_records_with_options(
+        &mut self,
+        table: &crate::models::identifiers::TableName,
+        query: Option<&str>,
+        fields: Option<&str>,
+        pagination: &pagination::PaginationConfig,
+        order_by: Option<&crate::models::order_by::OrderBy>,
+        options: &TableReadOptions,
+    ) -> anyhow::Result<pagination::TableListResult> {
         let path = format!("/api/now/table/{table}");
         let ordered_query = order_by.map(|order| order.apply_to_query(query));
         let query = ordered_query.as_deref().or(query);
         let mut params: Vec<(&str, &str)> = Vec::new();
-        if query_no_domain {
+        if options.query_no_domain {
             params.push(("sysparm_query_no_domain", "true"));
         }
         if let Some(q) = query {
@@ -63,6 +107,7 @@ impl SnowClient {
         if let Some(f) = fields {
             params.push(("sysparm_fields", f));
         }
+        params.extend(display_value_params(options.display_value));
         self.get_paged_records(&path, &params, pagination).await
     }
 
@@ -263,6 +308,68 @@ mod tests {
             .unwrap();
 
         assert_eq!(records.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_table_records_with_options_sends_display_value_params() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .and(query_param("sysparm_display_value", "all"))
+            .and(query_param("sysparm_exclude_reference_link", "true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [{"priority": {"display_value": "4 - Low", "value": "4"}}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let options = TableReadOptions {
+            display_value: Some(DisplayValue::Both),
+            ..TableReadOptions::default()
+        };
+        let result = client
+            .get_table_records_with_options(
+                &incident_table(),
+                None,
+                None,
+                &pagination::PaginationConfig::default(),
+                None,
+                &options,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.returned(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_default_options_send_no_display_value_params() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .and(query_param_is_missing("sysparm_display_value"))
+            .and(query_param_is_missing("sysparm_exclude_reference_link"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        client
+            .get_table_records_with_meta(
+                &incident_table(),
+                None,
+                None,
+                &pagination::PaginationConfig::default(),
+                None,
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

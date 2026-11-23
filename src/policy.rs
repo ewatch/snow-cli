@@ -336,6 +336,14 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
         Commands::Codesearch(args) => match &args.command {
             CodesearchCommands::Search { .. } => PolicyDecision::Allow,
         },
+        // Reads sys_script_include through the Table API only.
+        Commands::Include(args) => match &args.command {
+            crate::cli::args::IncludeCommands::Show { .. } => PolicyDecision::Allow,
+        },
+        // Reads sys_hub_flow and its component tables through the Table API only.
+        Commands::Flow(args) => match &args.command {
+            crate::cli::args::FlowCommands::Show { .. } => PolicyDecision::Allow,
+        },
         Commands::Snu(args) => match &args.command {
             SnuCommands::CheckConnection { .. }
             | SnuCommands::GetInstanceInfo { .. }
@@ -475,16 +483,19 @@ mod tests {
                 order_by: None,
                 full: false,
                 preview: false,
+                read: Default::default(),
             },
         }));
         assert_allowed(Commands::Table(TableArgs {
             command: TableCommands::Get {
                 domain_read: Default::default(),
                 table: "incident".parse().unwrap(),
-                sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
+                record: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 fields: None,
+                lookup: Default::default(),
                 full: false,
                 preview: false,
+                read: Default::default(),
             },
         }));
         assert_allowed(Commands::Table(TableArgs {
@@ -521,6 +532,7 @@ mod tests {
                 max: None,
                 sum: None,
                 having: None,
+                check_fields: None,
             },
         }));
         assert_allowed(Commands::Api(ApiArgs {
@@ -539,6 +551,11 @@ mod tests {
                 search_group: "sn_devstudio.Studio Search Group".to_string(),
                 full: false,
                 preview: false,
+            },
+        }));
+        assert_allowed(Commands::Flow(crate::cli::args::FlowArgs {
+            command: crate::cli::args::FlowCommands::Show {
+                flow: "change__normal__authorize".parse().unwrap(),
             },
         }));
         assert_allowed(Commands::Completions { shell: Shell::Bash });

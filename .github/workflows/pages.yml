@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - docs/site/**
+      - skills/**
+      - scripts/stage-skill-bundle.py
       - .github/workflows/pages.yml
       - .github/actions/build-docs/**
       # The docs read the displayed version from Cargo.toml at build time, so a
@@ -32,6 +34,9 @@ jobs:
 
       - name: Build documentation
         uses: ./.github/actions/build-docs
+
+      - name: Stage hosted skill bundle
+        run: python3 scripts/stage-skill-bundle.py --source skills/snow-cli --out docs/site/dist/skills/snow-cli
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6

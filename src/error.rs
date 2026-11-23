@@ -45,6 +45,27 @@ pub enum ScriptExecutionError {
     JavaException,
 }
 
+/// A user-supplied input file could not be read. Names the argument, never
+/// the path: paths may contain private data and are kept out of error output.
+#[derive(Debug, Error)]
+#[error("{label} could not be read ({kind:?}); check the path passed to {argument}")]
+pub struct InputFileError {
+    pub label: &'static str,
+    pub argument: &'static str,
+    pub kind: std::io::ErrorKind,
+}
+
+/// Some records in a `data import` were rejected by ServiceNow; the
+/// structured per-record report has already been printed to stdout.
+#[derive(Error, Debug)]
+#[error(
+    "Import completed with {count} failed record(s) for table '{table}'; see the failures and hint in the import report"
+)]
+pub struct ImportRecordErrors {
+    pub count: usize,
+    pub table: String,
+}
+
 /// Row failures retain only a count; result rows remain on stdout for inspection.
 #[derive(Debug, Error)]
 #[error(
@@ -248,6 +269,28 @@ fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutpu
                 RetryAdvice::Never,
             ),
             2,
+        ));
+    }
+    if let Some(error) = error.downcast_ref::<InputFileError>() {
+        return Some((
+            ErrorOutput::new(
+                "IO_ERROR",
+                &error.to_string(),
+                ErrorClass::Io,
+                RetryAdvice::Unknown,
+            ),
+            6,
+        ));
+    }
+    if let Some(error) = error.downcast_ref::<ImportRecordErrors>() {
+        return Some((
+            ErrorOutput::new(
+                "IMPORT_RECORD_ERRORS",
+                &error.to_string(),
+                ErrorClass::Command,
+                RetryAdvice::ManualReview,
+            ),
+            1,
         ));
     }
     if let Some(error) = error.downcast_ref::<ImportSetRowError>() {
@@ -667,5 +710,158 @@ mod tests {
         let (output, exit) = error_output_and_exit_code(&error);
         assert_eq!(output.error.code, "SNU_GATE_BLOCKED");
         assert_eq!(exit, 1);
+    }
+
+    /// The bundled agent skill documents the error contract in `SKILL.md` §10.
+    /// Agents act on that text, so it must track the real classification.
+    mod skill_contract {
+        use super::*;
+        use std::collections::BTreeMap;
+
+        const SKILL_MD: &str = include_str!("../skills/snow-cli/SKILL.md");
+
+        fn errors_section() -> &'static str {
+            let start = SKILL_MD
+                .find("## 10. Errors")
+                .expect("SKILL.md has a `## 10. Errors` section");
+            let rest = &SKILL_MD[start..];
+            let end = rest[3..].find("\n## ").map_or(rest.len(), |i| i + 3);
+            &rest[..end]
+        }
+
+        /// `Exit: 0 ok · 1 command/script failure · …` as exit code → label.
+        fn documented_exit_codes() -> BTreeMap<i32, &'static str> {
+            let line = errors_section()
+                .lines()
+                .find_map(|line| line.strip_prefix("Exit: "))
+                .expect("§10 has an `Exit: ` line");
+            line.trim_end_matches('.')
+                .split(" · ")
+                .map(|entry| {
+                    let (code, label) = entry.split_once(' ').expect("`<code> <label>`");
+                    (code.parse().expect("numeric exit code"), label)
+                })
+                .collect()
+        }
+
+        fn retry_name(retry: RetryAdvice) -> String {
+            // Exhaustive on purpose: a new variant must be documented in §10.
+            match retry {
+                RetryAdvice::Never
+                | RetryAdvice::SafeReadsOnly
+                | RetryAdvice::ManualReview
+                | RetryAdvice::Unknown => {}
+            }
+            serde_json::to_value(retry)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+
+        #[test]
+        fn every_retry_advice_is_documented() {
+            let section = errors_section();
+            for retry in [
+                RetryAdvice::Never,
+                RetryAdvice::SafeReadsOnly,
+                RetryAdvice::ManualReview,
+                RetryAdvice::Unknown,
+            ] {
+                let name = retry_name(retry);
+                assert!(
+                    section.contains(&format!("`{name}`"))
+                        || section.contains(&format!("`retry: {name}`")),
+                    "SKILL.md §10 does not document retry `{name}`"
+                );
+            }
+        }
+
+        #[test]
+        fn manual_review_codes_are_listed() {
+            let section = errors_section();
+            let manual_review_errors = [
+                anyhow::Error::new(ScriptExecutionError::Evaluation),
+                anyhow::Error::new(ImportRecordErrors {
+                    count: 1,
+                    table: "incident".into(),
+                }),
+                anyhow::Error::new(ImportSetRowError { count: 1 }),
+                anyhow::Error::new(crate::client::NativeSessionSwitchError::Mismatch),
+                anyhow::Error::new(GraphqlError { detail: None }),
+            ];
+            for error in manual_review_errors {
+                let (output, _) = error_output_and_exit_code(&error);
+                assert_eq!(output.error.retry, RetryAdvice::ManualReview);
+                let code = output.error.code;
+                assert!(
+                    section.contains(&format!("`{code}`")),
+                    "SKILL.md §10 must list `{code}` under `manual_review`"
+                );
+            }
+        }
+
+        #[test]
+        fn exit_codes_match_their_documented_labels() {
+            let documented = documented_exit_codes();
+            assert_eq!(
+                documented.keys().copied().collect::<Vec<_>>(),
+                (0..=7).collect::<Vec<_>>(),
+                "SKILL.md §10 should list exit codes 0 through 7"
+            );
+            let policy = anyhow::Error::new(crate::policy::PolicyError {
+                operation: "table create".into(),
+                mode: crate::policy::PolicyMode::ReadOnly,
+                capability: crate::policy::CommandCapability::RemoteWrite,
+                reason: "read-only".into(),
+            });
+            let validation =
+                anyhow::Error::new(crate::models::validation::ValidationError::new("bad input"));
+            // (exit code the CLI returns, word the documented label must contain)
+            let cases = [
+                (
+                    error_output_and_exit_code(&anyhow::Error::new(
+                        ScriptExecutionError::Evaluation,
+                    ))
+                    .1,
+                    "script",
+                ),
+                (error_output_and_exit_code(&validation).1, "validation"),
+                (
+                    CliError::Config {
+                        code: "CONFIG_NOT_FOUND",
+                        message: String::new(),
+                    }
+                    .exit_code(),
+                    "config",
+                ),
+                (
+                    CliError::Auth {
+                        code: "AUTH_FAILED",
+                        message: String::new(),
+                        status: None,
+                    }
+                    .exit_code(),
+                    "credentials",
+                ),
+                (api_exit_code(404), "404"),
+                (api_exit_code(403), "403"),
+                (api_exit_code(400), "400"),
+                (
+                    CliError::Io(std::io::Error::other("disk")).exit_code(),
+                    "I/O",
+                ),
+                (error_output_and_exit_code(&policy).1, "read-only"),
+            ];
+            for (exit, word) in cases {
+                let label = documented
+                    .get(&exit)
+                    .unwrap_or_else(|| panic!("exit {exit} is not documented in SKILL.md §10"));
+                assert!(
+                    label.contains(word),
+                    "SKILL.md §10 labels exit {exit} as `{label}`, expected it to mention `{word}`"
+                );
+            }
+        }
     }
 }

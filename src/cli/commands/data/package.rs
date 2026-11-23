@@ -451,7 +451,8 @@ pub(super) async fn fetch_table_schema(
 }
 
 pub(super) fn read_dataset_input(file: &str) -> anyhow::Result<DatasetInput> {
-    let body = std::fs::read_to_string(file)?;
+    let body =
+        crate::cli::io::read_input_file_to_string(Path::new(file), "Dataset file", "--file")?;
     let value: serde_json::Value = serde_json::from_str(&body)
         .map_err(|_| ValidationError::new("Invalid dataset file; provide valid JSON."))?;
     let kind = value
@@ -470,7 +471,11 @@ pub(super) fn read_dataset_input(file: &str) -> anyhow::Result<DatasetInput> {
 }
 
 pub(super) fn read_dataset_export_spec(file: &str) -> anyhow::Result<DatasetExportSpec> {
-    let body = std::fs::read_to_string(file)?;
+    let body = crate::cli::io::read_input_file_to_string(
+        Path::new(file),
+        "Dataset export spec",
+        "--file",
+    )?;
     let spec: DatasetExportSpec = serde_json::from_str(&body).map_err(|_| {
         ValidationError::new("Invalid dataset export spec; check JSON syntax and required fields.")
     })?;
@@ -478,7 +483,11 @@ pub(super) fn read_dataset_export_spec(file: &str) -> anyhow::Result<DatasetExpo
 }
 
 pub(super) fn read_dataset_table_artifact(path: &Path) -> anyhow::Result<DatasetTableArtifact> {
-    let body = std::fs::read_to_string(path)?;
+    let body = crate::cli::io::read_input_file_to_string(
+        path,
+        "Dataset table artifact",
+        "the dataset manifest",
+    )?;
     let artifact: DatasetTableArtifact = serde_json::from_str(&body).map_err(|_| {
         ValidationError::new(
             "Invalid dataset table artifact; check JSON syntax and required fields.",

@@ -24,3 +24,4 @@ video/
 # (only when SNOW_E2E_SN_UTILS=1) — package-lock.json is committed, the
 # installed tree is not.
 scripts/e2e-snu-harness/node_modules/
+__pycache__/

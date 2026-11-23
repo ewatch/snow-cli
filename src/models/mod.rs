@@ -1,9 +1,15 @@
 pub mod attachment;
+pub mod display_value;
 pub mod domain;
+pub mod encoded_query;
+pub mod field_warning;
+pub mod flow;
 pub mod identifiers;
 pub mod incident;
 pub mod order_by;
 pub mod record;
+pub mod script_outline;
+pub mod script_source;
 pub mod secret;
 pub mod session;
 pub mod validation;
