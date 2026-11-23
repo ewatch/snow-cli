@@ -7,8 +7,10 @@ mod auth;
 mod codesearch;
 mod data;
 mod domain;
+mod flow;
 mod graphql;
 mod import_set;
+mod include;
 mod profile;
 mod scope;
 mod script;
@@ -24,8 +26,10 @@ pub use auth::*;
 pub use codesearch::*;
 pub use data::*;
 pub use domain::*;
+pub use flow::*;
 pub use graphql::*;
 pub use import_set::*;
+pub use include::*;
 pub use profile::*;
 pub use scope::*;
 pub use script::*;
@@ -160,6 +164,12 @@ pub enum Commands {
 
     /// Search code across ServiceNow instance (scripts, business rules, etc.)
     Codesearch(CodesearchArgs),
+
+    /// Read script include source by name, with parsed extends chain and grep
+    Include(IncludeArgs),
+
+    /// Show a Flow Designer flow as a compact step tree
+    Flow(FlowArgs),
 
     /// Use the SN-Utils browser extension helper tab directly (without sn-scriptsync)
     Snu(SnuArgs),

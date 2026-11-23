@@ -74,6 +74,8 @@ changing or resetting that default.
 | [`script`](/commands/script/) | Run background scripts |
 | [`snu`](/commands/snu/) | Drive the SN-Utils browser helper tab |
 | [`codesearch`](/commands/codesearch/) | Search code and metadata on an instance |
+| [`include`](/commands/include/) | Read script includes by name: `extends` chain, member outline, `--source-of`, `--grep` |
+| [`flow`](/commands/flow/) | Show a Flow Designer flow as a compact step tree |
 | [`completions`](/commands/completions/) | Generate shell completion scripts |
 
 ## Common patterns

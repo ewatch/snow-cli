@@ -53,7 +53,8 @@ pub async fn handle(
                     Some(&"name".parse()?),
                     query_no_domain,
                 )
-                .await?;
+                .await
+                .map_err(domain_table_missing)?;
             output::print_table_list(&result, format)
         }
         DomainCommands::Inspect {
@@ -233,7 +234,8 @@ async fn inspect(
                 None,
                 query_no_domain,
             )
-            .await?;
+            .await
+            .map_err(domain_table_missing)?;
         relationships.insert(table.to_string(), serde_json::json!({
             "records": result.records,
             "meta": {"returned": result.returned(), "total": result.total,
@@ -258,4 +260,53 @@ async fn inspect(
         },
         format,
     )
+}
+
+/// Rewrites `INVALID_TABLE` from the domain tables into an actionable error:
+/// those tables exist only when domain separation is installed.
+fn domain_table_missing(error: anyhow::Error) -> anyhow::Error {
+    match error.downcast::<crate::client::error::ApiError>() {
+        Ok(api) if api.code == "INVALID_TABLE" => crate::client::error::ApiError {
+            code: "DOMAIN_SEPARATION_INACTIVE".to_string(),
+            message: "Domain separation is not active on this instance (the domain tables do not exist); run `snow-cli domain status` to confirm".to_string(),
+            ..api
+        }
+        .into(),
+        Ok(api) => api.into(),
+        Err(other) => other,
+    }
+}
+
+#[cfg(test)]
+mod domain_missing_tests {
+    use super::domain_table_missing;
+    use crate::client::error::ApiError;
+
+    fn api(code: &str) -> anyhow::Error {
+        ApiError {
+            code: code.to_string(),
+            message: "Invalid table domain".to_string(),
+            status: 400,
+            detail: None,
+            instance: "https://example.service-now.com".to_string(),
+        }
+        .into()
+    }
+
+    #[test]
+    fn invalid_domain_table_maps_to_inactive_domain_separation() {
+        let mapped = domain_table_missing(api("INVALID_TABLE"));
+        let api = mapped.downcast_ref::<ApiError>().expect("api error");
+        assert_eq!(api.code, "DOMAIN_SEPARATION_INACTIVE");
+        assert_eq!(api.status, 400);
+    }
+
+    #[test]
+    fn other_api_errors_pass_through() {
+        let mapped = domain_table_missing(api("SERVER_ERROR"));
+        assert_eq!(
+            mapped.downcast_ref::<ApiError>().unwrap().code,
+            "SERVER_ERROR"
+        );
+    }
 }

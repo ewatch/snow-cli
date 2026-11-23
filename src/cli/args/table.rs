@@ -1,10 +1,17 @@
 use clap::{Args, Subcommand};
 
-use crate::models::identifiers::{EncodedQueryValue, SysId, TableName};
+use crate::models::display_value::DisplayValue;
+use crate::models::identifiers::{EncodedQueryValue, RecordKey, SysId, TableName};
 use crate::models::order_by::OrderBy;
 
-const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended\n  snow-cli table find flow\n  snow-cli table choices incident priority\n  snow-cli table stats incident --group-by state";
-const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --order-by -sys_created_on --limit 3 --offset 3   # second page\n  snow-cli table list incident --all --fields '*' --full   # everything, uncapped\n  snow-cli table list incident --preview   # opt in to shortening oversized fields\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - Output is lossless by default. Pass --preview to shorten long field values in JSON, JSONL, TOON, text, or auto output; preview metadata reports the field path, original size, shown size, and --full escape hatch.\n  - --preview is not supported with CSV output because CSV has no metadata channel; CSV remains lossless.\n  - Responses include offset/next_offset and returned/truncated metadata plus the server-reported total.\n  - For complete data set extraction prefer `data export`.";
+const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended\n  snow-cli table find flow\n  snow-cli table choices incident priority\n  snow-cli table stats incident --group-by state\n\nRecipes for agents:\n  Labels, not codes:   snow-cli table list incident --fields number,priority,state --display-value\n  Newest first, paged: snow-cli table list incident --order-by -sys_created_on --limit 10 --offset 10\n  Verify a filter:     unknown --query/--fields names appear under \"warnings\" (ServiceNow ignores them);\n                       add --check-fields error to fail instead, or compare table stats counts\n  Script by name:      snow-cli include show <name> --chain --source-of canMoveTo\n  Flow steps:          snow-cli flow show '<flow name>'\n  One field verbatim:  snow-cli table get sys_script_include <name> --fields script --raw";
+
+/// `table --help` recipes for `snow-cli-ro` (read-only commands only).
+pub(crate) const READ_ONLY_TABLE_AFTER_HELP: &str = "Recipes for agents:\n  Labels, not codes:   snow-cli-ro table list incident --fields number,priority,state --display-value\n  Newest first, paged: snow-cli-ro table list incident --order-by -sys_created_on --limit 10 --offset 10\n  Verify a filter:     unknown --query/--fields names appear under \"warnings\" (ServiceNow ignores them);\n                       add --check-fields error to fail instead, or compare table stats counts\n  Script by name:      snow-cli-ro include show <name> --chain --source-of canMoveTo\n  Flow steps:          snow-cli-ro flow show '<flow name>'\n  One field verbatim:  snow-cli-ro table get sys_script_include <name> --fields script --raw";
+
+pub(crate) const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list incident --query 'active=true' --fields number,priority,state,assignment_group --order-by -sys_created_on --limit 5 --display-value\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --order-by -sys_created_on --limit 3 --offset 3   # second page\n  snow-cli table list incident --all --fields '*' --full   # everything, uncapped\n  snow-cli table list incident --preview   # opt in to shortening oversized fields\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - --display-value (bare = display) returns labels (priority \"4 - Low\"); display renders dates in your user's timezone and format. both keeps raw values: {\"value\":..,\"display\":..} only where they differ (CSV/TOON: extra <field>.display column).\n  - Fields in --fields/--query/--order-by that ServiceNow does not return (unknown or not readable) are listed under \"warnings\" and on stderr, because ServiceNow silently ignores such query terms. --check-fields error fails instead; off skips the check (env SNOW_CLI_CHECK_FIELDS).\n  - Output is lossless by default. Pass --preview to shorten long field values in JSON, JSONL, TOON, text, or auto output; preview metadata reports the field path, original size, shown size, and --full escape hatch.\n  - --preview is not supported with CSV output because CSV has no metadata channel; CSV remains lossless.\n  - Responses include offset/next_offset and returned/truncated metadata plus the server-reported total.\n  - For complete data set extraction prefer `data export`.";
+
+pub(crate) const TABLE_GET_AFTER_HELP: &str = "Examples:\n  snow-cli table get incident <sys_id> --display-value both\n  snow-cli table get sys_script_include ChangeRequestStateHandler --fields name,api_name,script\n  snow-cli table get sys_script_include ChangeRequestStateHandler --fields script --raw | grep -n canMoveTo\n  snow-cli table get incident INC0010001 --key-field number\n\nNotes:\n  - A record that is not a 32-hex sys_id is looked up by --key-field (default: number for values like INC0010001, otherwise name); several matches fail with the candidates' sys_ids.\n  - --raw prints the single --fields value verbatim (no JSON escaping).";
 
 const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incident --data '{\"short_description\":\"VPN down\"}'\n  echo '{\"short_description\":\"From stdin\"}' | snow-cli table create incident";
 
@@ -63,6 +70,9 @@ pub enum TableCommands {
         #[command(flatten)]
         domain_read: crate::cli::args::DomainReadArgs,
 
+        #[command(flatten)]
+        read: RecordReadArgs,
+
         /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
         full: bool,
@@ -73,20 +83,28 @@ pub enum TableCommands {
         preview: bool,
     },
 
-    /// Get a single record by sys_id
+    /// Get a single record by sys_id or by name
+    #[command(after_help = TABLE_GET_AFTER_HELP)]
     Get {
         /// Table name
         table: TableName,
 
-        /// Record sys_id
-        sys_id: SysId,
+        /// Record sys_id, or a value of --key-field (e.g. a script include name)
+        #[arg(value_name = "SYS_ID|NAME")]
+        record: RecordKey,
 
         /// Comma-separated list of fields to return
         #[arg(long)]
         fields: Option<String>,
 
         #[command(flatten)]
+        lookup: RecordLookupArgs,
+
+        #[command(flatten)]
         domain_read: crate::cli::args::DomainReadArgs,
+
+        #[command(flatten)]
+        read: RecordReadArgs,
 
         /// Explicit lossless option (the default); conflicts with --preview
         #[arg(long, conflicts_with = "preview")]
@@ -224,7 +242,85 @@ pub enum TableCommands {
         /// (native aggregate^field^operator^value also accepted)
         #[arg(long)]
         having: Option<String>,
+
+        /// Check --query/--group-by field names: warn (default), error, or off
+        /// (env SNOW_CLI_CHECK_FIELDS). Costs one row read when either is set.
+        #[arg(long, value_enum, value_name = "MODE")]
+        check_fields: Option<CheckFields>,
     },
+}
+
+/// How to treat field names ServiceNow does not return (unknown or not
+/// readable): ServiceNow silently ignores them in queries and projections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum CheckFields {
+    /// Report them under "warnings" and on stderr (default)
+    #[default]
+    Warn,
+    /// Fail with a validation error before printing results
+    Error,
+    /// Skip the check
+    Off,
+}
+
+impl CheckFields {
+    /// Environment variable consulted when `--check-fields` is omitted.
+    pub const ENV: &'static str = "SNOW_CLI_CHECK_FIELDS";
+
+    /// Resolve the effective mode: flag > `SNOW_CLI_CHECK_FIELDS` > warn.
+    /// An unknown env value is ignored with a warning, never fatal.
+    pub fn resolve(flag: Option<Self>) -> Self {
+        Self::resolve_from(flag, std::env::var(Self::ENV).ok().as_deref())
+    }
+
+    fn resolve_from(flag: Option<Self>, env: Option<&str>) -> Self {
+        if let Some(mode) = flag {
+            return mode;
+        }
+        match env
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("") => Self::default(),
+            Some("warn") => Self::Warn,
+            Some("error") => Self::Error,
+            Some("off") => Self::Off,
+            Some(other) => {
+                tracing::warn!(
+                    value = other,
+                    "ignoring unknown SNOW_CLI_CHECK_FIELDS value"
+                );
+                Self::default()
+            }
+        }
+    }
+}
+
+/// Read modifiers shared by `table list` and `table get`.
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub struct RecordReadArgs {
+    /// Field values: raw (stored codes), display (labels; dates in your
+    /// timezone/format), or both. Bare --display-value means display
+    #[arg(long, value_name = "MODE", num_args = 0..=1, default_missing_value = "display")]
+    pub display_value: Option<DisplayValue>,
+
+    /// Check field names in --fields/--query/--order-by: warn (default),
+    /// error, or off (env SNOW_CLI_CHECK_FIELDS)
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub check_fields: Option<CheckFields>,
+}
+
+/// Name lookup and raw output options for `table get`.
+#[derive(Args, Debug, Clone, Default)]
+pub struct RecordLookupArgs {
+    /// Field matched when the record is not a sys_id (default: number for
+    /// values like INC0010001, otherwise name)
+    #[arg(long, value_name = "FIELD")]
+    pub key_field: Option<EncodedQueryValue>,
+
+    /// Print the single --fields value verbatim (unescaped), e.g. script source
+    #[arg(long, requires = "fields", conflicts_with = "preview")]
+    pub raw: bool,
 }
 
 #[cfg(test)]
@@ -287,9 +383,15 @@ mod tests {
         ]);
         match cli.command {
             Commands::Table(args) => match args.command {
-                TableCommands::Get { full, preview, .. } => {
+                TableCommands::Get {
+                    full,
+                    preview,
+                    record,
+                    ..
+                } => {
                     assert!(!full);
                     assert!(preview);
+                    assert!(matches!(record, RecordKey::SysId(_)));
                 }
                 _ => panic!("Expected Table Get command"),
             },
@@ -309,6 +411,91 @@ mod tests {
         ])
         .unwrap_err();
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn test_parse_display_value_bare_and_explicit() {
+        let parse = |extra: &[&str]| {
+            let mut argv = vec!["snow-cli", "table", "list", "incident"];
+            argv.extend_from_slice(extra);
+            match Cli::parse_from(argv).command {
+                Commands::Table(args) => match args.command {
+                    TableCommands::List { read, .. } => read,
+                    _ => panic!("Expected Table List command"),
+                },
+                _ => panic!("Expected Table command"),
+            }
+        };
+        assert_eq!(parse(&[]).display_value, None);
+        assert_eq!(
+            parse(&["--display-value"]).display_value,
+            Some(DisplayValue::Display)
+        );
+        assert_eq!(
+            parse(&["--display-value", "both", "--limit", "5"]).display_value,
+            Some(DisplayValue::Both)
+        );
+        assert_eq!(
+            parse(&["--display-value=all"]).display_value,
+            Some(DisplayValue::Both)
+        );
+        assert_eq!(
+            parse(&["--check-fields", "error"]).check_fields,
+            Some(CheckFields::Error)
+        );
+    }
+
+    #[test]
+    fn test_parse_table_get_by_name_with_raw() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "table",
+            "get",
+            "sys_script_include",
+            "ChangeRequestStateHandler",
+            "--fields",
+            "script",
+            "--raw",
+        ]);
+        match cli.command {
+            Commands::Table(args) => match args.command {
+                TableCommands::Get { record, lookup, .. } => {
+                    assert!(matches!(record, RecordKey::Name(_)));
+                    assert!(lookup.raw);
+                }
+                _ => panic!("Expected Table Get command"),
+            },
+            _ => panic!("Expected Table command"),
+        }
+        // --raw needs --fields.
+        assert!(
+            Cli::try_parse_from([
+                "snow-cli",
+                "table",
+                "get",
+                "sys_script_include",
+                "X",
+                "--raw"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_check_fields_resolution_order() {
+        assert_eq!(
+            CheckFields::resolve_from(Some(CheckFields::Off), Some("error")),
+            CheckFields::Off
+        );
+        assert_eq!(
+            CheckFields::resolve_from(None, Some(" ERROR ")),
+            CheckFields::Error
+        );
+        assert_eq!(
+            CheckFields::resolve_from(None, Some("bogus")),
+            CheckFields::Warn
+        );
+        assert_eq!(CheckFields::resolve_from(None, None), CheckFields::Warn);
     }
 
     #[test]

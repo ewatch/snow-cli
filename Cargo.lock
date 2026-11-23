@@ -1651,6 +1651,7 @@ dependencies = [
  "open",
  "predicates",
  "rand",
+ "regex",
  "reqwest",
  "ring",
  "rpassword",

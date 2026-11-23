@@ -67,6 +67,8 @@ sha2 = "0.11"
 futures-util = "0.3"
 tokio-tungstenite = "0.30"
 url = "2"
+# Client-side slicing of script sources (`include show --grep`).
+regex = "1"
 urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 

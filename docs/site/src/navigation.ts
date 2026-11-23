@@ -56,6 +56,8 @@ export const sidebar: NavGroup[] = [
           { label: 'script', href: '/commands/script/' },
           { label: 'snu', href: '/commands/snu/' },
           { label: 'codesearch', href: '/commands/codesearch/' },
+          { label: 'include', href: '/commands/include/' },
+          { label: 'flow', href: '/commands/flow/' },
           { label: 'completions', href: '/commands/completions/' },
         ],
       },

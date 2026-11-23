@@ -422,12 +422,13 @@ async fn test_table_list_with_query_params() {
     Mock::given(method("GET"))
         .and(path("/api/now/table/incident"))
         .and(query_param("sysparm_query", "active=true^ORDERBYnumber"))
-        .and(query_param("sysparm_fields", "sys_id,number"))
+        // The query field is added to verify it exists, then removed from output.
+        .and(query_param("sysparm_fields", "sys_id,number,active"))
         .and(query_param_is_missing("sysparm_orderby"))
         .and(query_param("sysparm_offset", "0"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [
-                {"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC001"}
+                {"sys_id": "6816f79cc0a8016401c5a33be04be441", "number": "INC001", "active": "true"}
             ]
         })))
         .expect(1)
@@ -456,7 +457,9 @@ async fn test_table_list_with_query_params() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("INC001"));
+        .stdout(predicate::str::contains("INC001"))
+        .stdout(predicate::str::contains("\"active\"").not())
+        .stderr(predicate::str::is_empty());
 }
 
 #[tokio::test]
@@ -1889,4 +1892,543 @@ async fn test_table_choices_walks_hierarchy_and_prefers_most_specific_table() {
             {"table": "incident", "element": "state", "value": "1", "label": "New", "sequence": "1"}
         ])
     );
+}
+
+// --- display values, field checks, name lookup (agent ergonomics) ---
+
+fn bin_cmd(binary: &str) -> assert_cmd::Command {
+    match binary {
+        "snow-cli-ro" => cargo_bin_cmd!("snow-cli-ro"),
+        _ => cargo_bin_cmd!("snow-cli"),
+    }
+}
+
+fn run_ok(
+    binary: &str,
+    server: &MockServer,
+    config: &std::path::Path,
+    args: &[&str],
+) -> std::process::Output {
+    bin_cmd(binary)
+        .env("SNOW_CLI_CONFIG", config)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .env_remove("SNOW_CLI_CHECK_FIELDS")
+        .env_remove("SNOW_CLI_OUTPUT")
+        .arg("--instance")
+        .arg(server.uri())
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_table_list_display_value_both_compacts_pairs_in_json_and_splits_in_csv() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_display_value", "all"))
+        .and(query_param("sysparm_exclude_reference_link", "true"))
+        .and(query_param(
+            "sysparm_fields",
+            "number,priority,assignment_group",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "1")
+                .set_body_json(serde_json::json!({"result": [{
+                    "number": {"display_value": "INC0010025", "value": "INC0010025"},
+                    "priority": {"display_value": "4 - Low", "value": "4"},
+                    "assignment_group": {"display_value": "", "value": ""}
+                }]})),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+    let list = [
+        "table",
+        "list",
+        "incident",
+        "--fields",
+        "number,priority,assignment_group",
+        "--display-value",
+        "both",
+    ];
+
+    let output = run_ok("snow-cli", &server, &config, &list);
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["total"], 1);
+    assert_eq!(
+        value["records"][0],
+        serde_json::json!({
+            "assignment_group": "",
+            "number": "INC0010025",
+            "priority": {"value": "4", "display": "4 - Low"}
+        })
+    );
+    assert!(value.get("warnings").is_none());
+
+    let mut csv_args = list.to_vec();
+    csv_args.extend(["--output", "csv"]);
+    let output = run_ok("snow-cli-ro", &server, &config, &csv_args);
+    assert!(output.status.success(), "{output:?}");
+    let csv = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        csv.starts_with("assignment_group,number,priority,priority.display\n"),
+        "{csv}"
+    );
+    assert!(csv.contains(",INC0010025,4,4 - Low"), "{csv}");
+}
+
+#[tokio::test]
+async fn test_table_list_bare_display_value_sends_true_and_default_sends_nothing() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_display_value", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"number": "INC1", "priority": "4 - Low"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param_is_missing("sysparm_display_value"))
+        .and(query_param_is_missing("sysparm_exclude_reference_link"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"number": "INC1", "priority": "4"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &[
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            "number,priority",
+            "--display-value",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["records"][0]["priority"], "4 - Low");
+
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &["table", "list", "incident", "--fields", "number,priority"],
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["records"][0]["priority"], "4");
+}
+
+#[tokio::test]
+async fn test_table_list_warns_on_unknown_query_and_fields_without_extra_request() {
+    let server = MockServer::start().await;
+    // Query fields are added to the projection, so one request verifies them.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param(
+            "sysparm_fields",
+            "number,extends,active,assigned_two.name",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "48")
+                .set_body_json(serde_json::json!({"result": [
+                    {"number": "INC1", "active": "true"}
+                ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli-ro",
+        &server,
+        &config,
+        &[
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            "number,extends",
+            "--query",
+            "active=true^assigned_two.name=Abel Tuter",
+            "--limit",
+            "1",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Fields added only for checking are not printed.
+    assert_eq!(value["records"][0], serde_json::json!({"number": "INC1"}));
+    let warnings = value["warnings"].as_array().unwrap();
+    let fields: Vec<_> = warnings
+        .iter()
+        .map(|w| w["field"].as_str().unwrap())
+        .collect();
+    assert_eq!(fields, ["extends", "assigned_two.name"]);
+    assert_eq!(warnings[1]["in"], "query");
+    assert_eq!(warnings[1]["code"], "UNKNOWN_FIELD");
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let lines: Vec<serde_json::Value> = stderr
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    assert_eq!(lines[1]["warning"]["field"], "assigned_two.name");
+    // The query value never appears in diagnostics.
+    assert!(!stderr.contains("Abel Tuter"));
+}
+
+#[tokio::test]
+async fn test_table_list_check_fields_error_fails_before_main_query() {
+    let server = MockServer::start().await;
+    // Probe: one row, no query, projected to the checked fields.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param_is_missing("sysparm_query"))
+        .and(query_param("sysparm_limit", "1"))
+        .and(query_param("sysparm_fields", "active,assigned_two.name"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"active": "true"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param(
+            "sysparm_query",
+            "active=true^assigned_two.name=Abel Tuter",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &[
+            "table",
+            "list",
+            "incident",
+            "--query",
+            "active=true^assigned_two.name=Abel Tuter",
+            "--check-fields",
+            "error",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "VALIDATION_ERROR");
+    assert_eq!(error["error"]["issues"][0]["kind"], "unknown_field");
+    assert_eq!(error["error"]["issues"][0]["field"], "assigned_two.name");
+}
+
+#[tokio::test]
+async fn test_table_list_check_fields_off_and_empty_result_probe() {
+    let server = MockServer::start().await;
+    // Main query returns nothing, so warn mode probes one unfiltered row.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_query", "bogus_field=1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param_is_missing("sysparm_query"))
+        .and(query_param("sysparm_fields", "bogus_field"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+    let args = [
+        "table",
+        "list",
+        "incident",
+        "--fields",
+        "*",
+        "--query",
+        "bogus_field=1",
+    ];
+
+    let output = run_ok("snow-cli", &server, &config, &args);
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["warnings"][0]["field"], "bogus_field");
+
+    let mut off = args.to_vec();
+    off.extend(["--check-fields", "off"]);
+    let output = run_ok("snow-cli", &server, &config, &off);
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(value.get("warnings").is_none());
+}
+
+#[tokio::test]
+async fn test_table_list_probe_failure_never_blocks_the_read() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_query", "active=true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param_is_missing("sysparm_query"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("<html>gateway</html>"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &["table", "list", "incident", "--query", "active=true"],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["returned"], 0);
+    assert!(value.get("warnings").is_none());
+}
+
+#[tokio::test]
+async fn test_table_get_by_name_raw_prints_unescaped_field() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_script_include"))
+        .and(query_param(
+            "sysparm_query",
+            "name=ChangeRequestStateHandler",
+        ))
+        .and(query_param("sysparm_fields", "script,sys_id,sys_scope"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{
+                "script": "var A = Class.create();\n\tA.prototype = {\"q\": 1};",
+                "sys_id": "7d12a0e0c0a8016401c5a33be04be441",
+                "sys_scope": {"link": "x", "value": "global"}
+            }]
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+    let args = [
+        "table",
+        "get",
+        "sys_script_include",
+        "ChangeRequestStateHandler",
+        "--fields",
+        "script",
+    ];
+
+    let mut raw = args.to_vec();
+    raw.push("--raw");
+    let output = run_ok("snow-cli-ro", &server, &config, &raw);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "var A = Class.create();\n\tA.prototype = {\"q\": 1};\n"
+    );
+
+    // Without --raw the record holds only the requested field.
+    let output = run_ok("snow-cli", &server, &config, &args);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value.as_object().unwrap().len(), 1, "{value}");
+}
+
+#[tokio::test]
+async fn test_table_get_by_name_not_found_and_ambiguous() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_script_include"))
+        .and(query_param("sysparm_query", "name=Missing"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_script_include"))
+        .and(query_param("sysparm_query", "name=Twice"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": [
+            {"sys_id": "11111111111111111111111111111111", "sys_scope": "global"},
+            {"sys_id": "22222222222222222222222222222222", "sys_scope": {"value": "x_app", "link": "l"}}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_query", "number=INC0010001"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": [
+                {"sys_id": "33333333333333333333333333333333", "number": "INC0010001"}
+            ]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &["table", "get", "sys_script_include", "Missing"],
+    );
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "RECORD_NOT_FOUND");
+
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &["table", "get", "sys_script_include", "Twice"],
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["issues"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        error["error"]["issues"][1]["field"],
+        "22222222222222222222222222222222"
+    );
+
+    // Task numbers are matched on `number` by default.
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &["table", "get", "incident", "INC0010001"],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["number"], "INC0010001");
+}
+
+#[tokio::test]
+async fn test_table_get_by_sys_id_display_value_and_field_warning() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/api/now/table/incident/6816f79cc0a8016401c5a33be04be441",
+        ))
+        .and(query_param("sysparm_display_value", "true"))
+        .and(query_param("sysparm_exclude_reference_link", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"number": "INC1", "priority": "4 - Low"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &[
+            "table",
+            "get",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--fields",
+            "number,priority,bogus",
+            "--display-value",
+            "display",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["priority"], "4 - Low");
+    let warning: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(warning["warning"]["field"], "bogus");
+    assert_eq!(warning["warning"]["in"], "fields");
+}
+
+#[tokio::test]
+async fn test_table_stats_warns_on_unknown_group_by() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_fields", "active,stat"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"active": "true"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/stats/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"stats": {"count": "48"}}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli-ro",
+        &server,
+        &config,
+        &[
+            "table",
+            "stats",
+            "incident",
+            "--query",
+            "active=true",
+            "--group-by",
+            "stat",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let warning: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(warning["warning"]["field"], "stat");
+    assert_eq!(warning["warning"]["in"], "group_by");
+}
+
+#[test]
+fn test_table_help_lists_agent_recipes() {
+    for binary in ["snow-cli", "snow-cli-ro"] {
+        let output = bin_cmd(binary).args(["table", "--help"]).output().unwrap();
+        let help = String::from_utf8(output.stdout).unwrap();
+        assert!(help.contains("Recipes for agents"), "{binary}: {help}");
+        assert!(help.contains("--display-value"), "{binary}");
+        assert!(help.contains("include show"), "{binary}");
+        let output = bin_cmd(binary)
+            .args(["table", "list", "--help"])
+            .output()
+            .unwrap();
+        let help = String::from_utf8(output.stdout).unwrap();
+        assert!(help.contains("--display-value"), "{binary}");
+        assert!(help.contains("--check-fields"), "{binary}");
+    }
 }

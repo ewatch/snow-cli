@@ -45,6 +45,27 @@ pub enum ScriptExecutionError {
     JavaException,
 }
 
+/// A user-supplied input file could not be read. Names the argument, never
+/// the path: paths may contain private data and are kept out of error output.
+#[derive(Debug, Error)]
+#[error("{label} could not be read ({kind:?}); check the path passed to {argument}")]
+pub struct InputFileError {
+    pub label: &'static str,
+    pub argument: &'static str,
+    pub kind: std::io::ErrorKind,
+}
+
+/// Some records in a `data import` were rejected by ServiceNow; the
+/// structured per-record report has already been printed to stdout.
+#[derive(Error, Debug)]
+#[error(
+    "Import completed with {count} failed record(s) for table '{table}'; see the failures and hint in the import report"
+)]
+pub struct ImportRecordErrors {
+    pub count: usize,
+    pub table: String,
+}
+
 /// Row failures retain only a count; result rows remain on stdout for inspection.
 #[derive(Debug, Error)]
 #[error(
@@ -248,6 +269,28 @@ fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutpu
                 RetryAdvice::Never,
             ),
             2,
+        ));
+    }
+    if let Some(error) = error.downcast_ref::<InputFileError>() {
+        return Some((
+            ErrorOutput::new(
+                "IO_ERROR",
+                &error.to_string(),
+                ErrorClass::Io,
+                RetryAdvice::Unknown,
+            ),
+            6,
+        ));
+    }
+    if let Some(error) = error.downcast_ref::<ImportRecordErrors>() {
+        return Some((
+            ErrorOutput::new(
+                "IMPORT_RECORD_ERRORS",
+                &error.to_string(),
+                ErrorClass::Command,
+                RetryAdvice::ManualReview,
+            ),
+            1,
         ));
     }
     if let Some(error) = error.downcast_ref::<ImportSetRowError>() {

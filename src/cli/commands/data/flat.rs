@@ -381,6 +381,7 @@ pub(super) async fn handle_import_flat(
                 warning_count: report.warnings.len(),
             },
             failures: Vec::new(),
+            hint: None,
         };
 
         return output::print_output(&import_report, format);
@@ -472,24 +473,25 @@ pub(super) async fn handle_import_flat(
             error_count: report.errors.len(),
             warning_count: report.warnings.len(),
         },
+        hint: forbidden_create_hint(&failures),
         failures,
     };
 
     output::print_output(&import_report, format)?;
 
     if use_import_set && options.fail_on_error && import_report.failed > 0 {
-        anyhow::bail!(
-            "Import Set-backed data import completed with {} failed record(s). Re-run without --fail-on-error to inspect the structured response without failing the command.",
-            import_report.failed
-        );
+        return Err(crate::error::ImportSetRowError {
+            count: import_report.failed,
+        }
+        .into());
     }
 
     if import_report.failed > 0 {
-        anyhow::bail!(
-            "Import completed with {} failed record(s) for table '{}'",
-            import_report.failed,
-            import_report.table
-        );
+        return Err(crate::error::ImportRecordErrors {
+            count: import_report.failed,
+            table: import_report.table.clone(),
+        }
+        .into());
     }
 
     Ok(())

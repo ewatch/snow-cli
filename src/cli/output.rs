@@ -8,7 +8,8 @@ use std::io::Write;
 mod preview;
 pub use preview::print_table_list;
 pub(crate) use preview::{
-    DomainSummary, ensure_preview_supported, print_record_preview, print_table_list_preview,
+    DomainSummary, TableListExtras, ensure_preview_supported, print_raw_value,
+    print_record_preview, print_table_list_preview,
 };
 
 /// Write a value to stdout in the requested output format.

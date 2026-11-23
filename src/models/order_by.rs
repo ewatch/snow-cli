@@ -48,6 +48,11 @@ impl OrderBy {
             .join("^")
     }
 
+    /// The sort field paths, in order (e.g. `sys_created_on`, `caller_id.name`).
+    pub fn fields(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(|key| key.field.as_str())
+    }
+
     /// Append the sort clauses to an optional encoded query.
     ///
     /// Clauses go after the existing query, including any `ORDERBY` it already

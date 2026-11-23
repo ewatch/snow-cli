@@ -87,6 +87,8 @@ by `snow-cli-ro`:
 - `attachment download`
 - `api get`
 - `codesearch search`
+- `include show`
+- `flow show`
 - `completions`
 
 ## Denied command surface

@@ -195,9 +195,57 @@ impl TryFrom<String> for EncodedQueryValue {
     }
 }
 
+/// A record addressed either by `sys_id` or by a human key such as a
+/// script include's `name` (`table get sys_script_include MyUtil`).
+///
+/// A 32-hex value is always a sys_id. Anything else must be safe to embed in
+/// an encoded query (no `^ = < > !` or control characters).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordKey {
+    SysId(SysId),
+    Name(EncodedQueryValue),
+}
+
+impl FromStr for RecordKey {
+    type Err = IdentifierError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.parse::<SysId>() {
+            Ok(sys_id) => Ok(Self::SysId(sys_id)),
+            Err(_) => value.parse::<EncodedQueryValue>().map(Self::Name).map_err(|_| {
+                err(format!(
+                    "Invalid record '{value}'. Pass a 32-character hex sys_id or a name without ServiceNow query operator characters (^ = < > !)."
+                ))
+            }),
+        }
+    }
+}
+
+impl fmt::Display for RecordKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SysId(sys_id) => sys_id.fmt(f),
+            Self::Name(name) => name.fmt(f),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn record_keys_distinguish_sys_ids_from_names() {
+        assert!(matches!(
+            "6816f79cc0a8016401c5a33be04be441".parse::<RecordKey>(),
+            Ok(RecordKey::SysId(_))
+        ));
+        assert!(matches!(
+            "ChangeRequestStateHandler".parse::<RecordKey>(),
+            Ok(RecordKey::Name(_))
+        ));
+        assert!("name^ORactive=true".parse::<RecordKey>().is_err());
+    }
 
     #[test]
     fn table_names_allow_servicenow_identifiers() {

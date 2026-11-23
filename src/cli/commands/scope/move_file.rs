@@ -38,7 +38,12 @@ pub(super) async fn handle_move_file(
             message.push_str(" Warnings: ");
             message.push_str(&payload.warnings.join(" | "));
         }
-        anyhow::bail!(message);
+        if payload.exception {
+            anyhow::bail!(message);
+        }
+        // Precondition failures (unknown target scope, missing --yes, same
+        // scope) are caller-fixable, so classify them as validation errors.
+        return Err(crate::models::validation::ValidationError::new(message).into());
     }
 
     output::print_output(&payload, format)
@@ -373,6 +378,7 @@ try {{
   output.ok = true;
   gs.print(JSON.stringify(output));
 }} catch (error) {{
+  output.exception = true;
   output.error = text(error);
   gs.print(JSON.stringify(output));
 }}

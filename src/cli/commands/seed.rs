@@ -147,8 +147,7 @@ fn ensure_json_output(format: &OutputFormat) -> anyhow::Result<()> {
 }
 
 fn read_seed_spec(path: &str) -> anyhow::Result<SeedSpec> {
-    let bytes =
-        fs::read(path).map_err(|error| anyhow::anyhow!("Cannot read seed spec: {error}"))?;
+    let bytes = crate::cli::io::read_input_file(std::path::Path::new(path), "Seed spec", "--file")?;
     let spec: SeedSpec = serde_json::from_slice(&bytes)
         .map_err(|error| anyhow::anyhow!("Invalid seed spec JSON: {error}"))?;
     if spec.version != 1 {
@@ -299,7 +298,11 @@ fn run_path(run_id: &str) -> anyhow::Result<PathBuf> {
 fn read_run(run_id: &str) -> anyhow::Result<SeedRun> {
     let path = run_path(run_id)?;
     let bytes =
-        fs::read(&path).map_err(|_| anyhow::anyhow!("Seed run `{run_id}` was not found"))?;
+        fs::read(&path).map_err(|_| {
+            crate::models::validation::ValidationError::new(format!(
+                "Seed run `{run_id}` was not found; tracked runs live in the seed-runs directory under the snow-cli config home"
+            ))
+        })?;
     let run: SeedRun = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow::anyhow!("Seed run `{run_id}` has an invalid tracking file"))?;
     if run.run_id != run_id || run.kind != "seed-run" || run.version != 1 {
@@ -337,6 +340,43 @@ fn cleanup_preview(run: &SeedRun) -> serde_json::Value {
         "record_count": run.records.len(),
         "records": run.records.iter().rev().collect::<Vec<_>>(),
     })
+}
+
+/// Classifies a failed create during `seed apply` without hiding the cause.
+///
+/// API failures keep their code, status, and retry advice so agents can tell
+/// transient instance errors from bad specs; the cleanup command goes in
+/// `detail`. When nothing was created yet, the empty tracking file is removed.
+fn seed_apply_failure(
+    error: anyhow::Error,
+    run: &SeedRun,
+    tracking_path: &std::path::Path,
+) -> anyhow::Error {
+    let hint = if run.records.is_empty() {
+        let _ = fs::remove_file(tracking_path);
+        format!(
+            "Seed run {} created no records; nothing to clean up",
+            run.run_id
+        )
+    } else {
+        format!(
+            "Seed run {} partially applied ({} records created); remove them with `snow-cli seed cleanup {} --yes`",
+            run.run_id,
+            run.records.len(),
+            run.run_id
+        )
+    };
+    match error.downcast::<crate::client::error::ApiError>() {
+        Ok(api) => crate::client::error::ApiError {
+            detail: Some(match api.detail.as_deref() {
+                Some(detail) => format!("{hint}. {detail}"),
+                None => hint,
+            }),
+            ..api
+        }
+        .into(),
+        Err(other) => other.context(hint),
+    }
 }
 
 async fn apply_seed(
@@ -406,14 +446,10 @@ async fn apply_seed(
             let body = serde_json::to_string(&record)?;
             let path = format!("/api/now/table/{}", planned.table);
             let tracking_path = run_path(&run.run_id)?;
-            let response: CreatedRecordResponse =
-                client.post_json(&path, &body).await.map_err(|error| {
-                    anyhow::anyhow!(
-                        "Seed run {} partially applied; cleanup tracking is at {}: {error}",
-                        run.run_id,
-                        tracking_path.display()
-                    )
-                })?;
+            let response: CreatedRecordResponse = client
+                .post_json(&path, &body)
+                .await
+                .map_err(|error| seed_apply_failure(error, &run, &tracking_path))?;
             let sys_id = response.result.get("sys_id").and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("ServiceNow created a record in `{}` without returning sys_id; run {} may need manual cleanup", planned.table, run.run_id))?.to_string();
             run.records.push(SeedRunRecord {

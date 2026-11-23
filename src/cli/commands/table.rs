@@ -1,17 +1,21 @@
 use std::io::IsTerminal;
 
-use crate::cli::args::{DomainReadArgs, OutputFormat, TableArgs, TableCommands};
+use crate::cli::args::{CheckFields, DomainReadArgs, OutputFormat, TableArgs, TableCommands};
 use crate::cli::commands::domain;
 use crate::cli::io::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::cli::output;
 use crate::cli::truncation;
-use crate::client::{AggregateResult, pagination::PaginationConfig};
-use crate::models::identifiers::TableName;
-use crate::models::record::SingleRecordResponse;
+use crate::client::{AggregateResult, SnowClient, TableReadOptions, pagination::PaginationConfig};
+use crate::models::display_value::{self, DisplayValue};
+use crate::models::identifiers::{RecordKey, SysId, TableName};
+use crate::models::record::{Record, SingleRecordResponse};
 use crate::models::validation::ValidationError;
+use field_check::{CheckInputs, FieldChecks};
 
 mod discovery;
+mod field_check;
 mod having;
+mod lookup;
 
 pub async fn handle(
     args: TableArgs,
@@ -33,6 +37,7 @@ pub async fn handle(
             full: _,
             preview,
             domain_read,
+            read,
         } => {
             tracing::info!("Listing records from table: {}", table);
             output::ensure_preview_supported(preview, format)?;
@@ -48,26 +53,69 @@ pub async fn handle(
                 domain.is_some(),
                 domain_read,
             );
+            let check_mode = CheckFields::resolve(read.check_fields);
+            let checks = FieldChecks::collect(
+                check_mode,
+                CheckInputs {
+                    fields: fields.as_deref(),
+                    query: query.as_deref(),
+                    order_by: order_by.as_ref(),
+                    group_by: None,
+                },
+            );
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+            if check_mode == CheckFields::Error
+                && let Some(warnings) = checks
+                    .probe(&mut client, &table, domain_read.query_no_domain)
+                    .await
+                && !warnings.is_empty()
+            {
+                return Err(field_check::into_error(&table, &warnings));
+            }
+            let all_fields = effective_fields.is_none();
+            let (projection, injected) = if check_mode == CheckFields::Warn {
+                checks.augment_projection(effective_fields)
+            } else {
+                (effective_fields, Vec::new())
+            };
+
             let query =
                 domain::constrain_query(&mut client, &table, domain.as_ref(), query).await?;
             domain::warn_if_query_no_domain_ignored(&mut client, domain_read.query_no_domain).await;
             let pagination = PaginationConfig::default()
                 .with_limit(effective_limit)
                 .with_offset(offset);
+            let options = TableReadOptions {
+                query_no_domain: domain_read.query_no_domain,
+                display_value: read.display_value,
+            };
 
             let mut result = client
-                .get_table_records_with_domain(
+                .get_table_records_with_options(
                     &table,
                     query.as_deref(),
-                    effective_fields.as_deref(),
+                    projection.as_deref(),
                     &pagination,
                     order_by.as_ref(),
-                    domain_read.query_no_domain,
+                    &options,
                 )
                 .await?;
+            let warnings = if check_mode == CheckFields::Warn && !checks.is_empty() {
+                if result.records.is_empty() && checks.needs_probe_on_empty() {
+                    checks
+                        .probe(&mut client, &table, domain_read.query_no_domain)
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    checks.missing(&table, &result.records, all_fields)
+                }
+            } else {
+                Vec::new()
+            };
+            field_check::strip_injected(&mut result.records, &injected);
+            apply_display_mode(&mut result.records, read.display_value, format);
             let domains_in_page = if domain_read.with_domain {
                 Some(
                     domain::annotate_record_domains(
@@ -92,50 +140,106 @@ pub async fn handle(
                 truncation::PreviewReport::default()
             };
 
+            field_check::emit_stderr(&warnings);
             output::print_table_list_preview(
                 &result,
                 format,
                 &preview_report,
-                domains_in_page.as_ref(),
+                &output::TableListExtras {
+                    domains_in_page: domains_in_page.as_ref(),
+                    warnings: &warnings,
+                },
             )?;
             Ok(())
         }
 
         TableCommands::Get {
             table,
-            sys_id,
+            record,
             fields,
+            lookup,
             full: _,
             preview,
             domain_read,
+            read,
         } => {
-            tracing::info!("Getting record {} from table: {}", sys_id, table);
+            tracing::info!("Getting record {} from table: {}", record, table);
             output::ensure_preview_supported(preview, format)?;
+            let raw_field = if lookup.raw {
+                Some(single_raw_field(fields.as_deref())?)
+            } else {
+                None
+            };
+            let check_mode = CheckFields::resolve(read.check_fields);
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
             domain::warn_if_query_no_domain_ignored(&mut client, domain_read.query_no_domain).await;
-            let path = format!("/api/now/table/{table}/{sys_id}");
             // Without --fields every field is returned, including the domain ones.
-            let fields = sysparm_fields(fields.as_deref(), fields.clone(), false, domain_read);
-            let mut params = Vec::new();
-            if domain_read.query_no_domain {
-                params.push(("sysparm_query_no_domain", "true"));
+            let projection = sysparm_fields(fields.as_deref(), fields.clone(), false, domain_read);
+            let options = TableReadOptions {
+                query_no_domain: domain_read.query_no_domain,
+                display_value: read.display_value,
+            };
+            let mut response = match &record {
+                RecordKey::SysId(sys_id) => {
+                    get_record_by_sys_id(
+                        &mut client,
+                        &table,
+                        sys_id,
+                        projection.as_deref(),
+                        &options,
+                    )
+                    .await?
+                }
+                RecordKey::Name(name) => {
+                    lookup::get_record_by_key(
+                        &mut client,
+                        &table,
+                        name,
+                        lookup.key_field.as_ref(),
+                        projection.as_deref(),
+                        &options,
+                    )
+                    .await?
+                }
+            };
+
+            let checks = FieldChecks::collect(
+                check_mode,
+                CheckInputs {
+                    fields: fields.as_deref(),
+                    ..CheckInputs::default()
+                },
+            );
+            let warnings = checks.missing(&table, std::slice::from_ref(&response), false);
+            if !warnings.is_empty() && check_mode == CheckFields::Error {
+                return Err(field_check::into_error(&table, &warnings));
             }
-            if let Some(ref f) = fields {
-                params.push(("sysparm_fields", f.as_str()));
+            field_check::emit_stderr(&warnings);
+
+            if let Some(field) = raw_field {
+                if let Some(DisplayValue::Both) = read.display_value {
+                    display_value::compact_both(&mut response);
+                }
+                let value = response.fields.get(field).ok_or_else(|| {
+                    ValidationError::new(format!(
+                        "{table} returned no field '{field}' (unknown or not readable); --raw prints exactly one returned field"
+                    ))
+                })?;
+                return output::print_raw_value(value);
             }
 
-            let mut response: SingleRecordResponse = if params.is_empty() {
-                client.get_json(&path).await?
-            } else {
-                client.get_json_with_params(&path, &params).await?
-            };
+            apply_display_mode(
+                std::slice::from_mut(&mut response),
+                read.display_value,
+                format,
+            );
             if domain_read.with_domain {
                 domain::annotate_record_domains(
                     &mut client,
-                    std::slice::from_mut(&mut response.result),
+                    std::slice::from_mut(&mut response),
                     domain_read.query_no_domain,
                 )
                 .await;
@@ -143,7 +247,7 @@ pub async fn handle(
 
             let preview_report = if preview {
                 truncation::preview_record_fields(
-                    std::slice::from_mut(&mut response.result),
+                    std::slice::from_mut(&mut response),
                     truncation::DEFAULT_FIELD_CHAR_LIMIT,
                     truncation::RecordPreviewRoot::Record,
                     "rerun this command with --full",
@@ -152,7 +256,7 @@ pub async fn handle(
                 truncation::PreviewReport::default()
             };
 
-            output::print_record_preview(&response.result, format, &preview_report)?;
+            output::print_record_preview(&response, format, &preview_report)?;
             Ok(())
         }
 
@@ -279,15 +383,33 @@ pub async fn handle(
             max,
             sum,
             having,
+            check_fields,
         } => {
             tracing::info!("Fetching aggregate stats for table: {}", table);
             let having = having
                 .as_deref()
                 .map(having::to_sysparm_having)
                 .transpose()?;
+            let check_mode = CheckFields::resolve(check_fields);
+            let checks = FieldChecks::collect(
+                check_mode,
+                CheckInputs {
+                    query: query.as_deref(),
+                    group_by: group_by.as_deref(),
+                    ..CheckInputs::default()
+                },
+            );
 
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
+            // The Aggregate API returns no field names, so one row read verifies them.
+            let warnings = checks
+                .probe(&mut client, &table, false)
+                .await
+                .unwrap_or_default();
+            if !warnings.is_empty() && check_mode == CheckFields::Error {
+                return Err(field_check::into_error(&table, &warnings));
+            }
 
             let query =
                 domain::constrain_query(&mut client, &table, domain.as_ref(), query).await?;
@@ -306,12 +428,72 @@ pub async fn handle(
                 }
             }
 
-            match flatten_stats_response(client.aggregate(&table, &params).await?) {
+            let response = client.aggregate(&table, &params).await?;
+            field_check::emit_stderr(&warnings);
+            match flatten_stats_response(response) {
                 StatsOutput::Single(record) => output::print_record(&record, format)?,
                 StatsOutput::Grouped(records) => output::print_records(&records, format)?,
             }
             Ok(())
         }
+    }
+}
+
+/// Fetch one record by sys_id (`GET /api/now/table/{table}/{sys_id}`).
+async fn get_record_by_sys_id(
+    client: &mut SnowClient,
+    table: &TableName,
+    sys_id: &SysId,
+    projection: Option<&str>,
+    options: &TableReadOptions,
+) -> anyhow::Result<Record> {
+    let path = format!("/api/now/table/{table}/{sys_id}");
+    let mut params = Vec::new();
+    if options.query_no_domain {
+        params.push(("sysparm_query_no_domain", "true"));
+    }
+    if let Some(fields) = projection {
+        params.push(("sysparm_fields", fields));
+    }
+    params.extend(crate::client::display_value_params(options.display_value));
+
+    let response: SingleRecordResponse = if params.is_empty() {
+        client.get_json(&path).await?
+    } else {
+        client.get_json_with_params(&path, &params).await?
+    };
+    Ok(response.result)
+}
+
+/// Shape `--display-value both` output: compact `{value, display}` pairs,
+/// split into `<field>.display` columns for the tabular CSV and TOON formats.
+fn apply_display_mode(records: &mut [Record], mode: Option<DisplayValue>, format: &OutputFormat) {
+    if mode != Some(DisplayValue::Both) {
+        return;
+    }
+    let tabular = matches!(format, OutputFormat::Csv | OutputFormat::Toon);
+    for record in records {
+        display_value::compact_both(record);
+        if tabular {
+            display_value::split_both_columns(record);
+        }
+    }
+}
+
+/// The one field `--raw` prints; `--fields` must name exactly one field.
+fn single_raw_field(fields: Option<&str>) -> anyhow::Result<&str> {
+    let names: Vec<&str> = fields
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    match names.as_slice() {
+        [name] if *name != "*" => Ok(name),
+        _ => Err(ValidationError::new(
+            "--raw prints one field; pass exactly one name in --fields (e.g. --fields script)",
+        )
+        .into()),
     }
 }
 
