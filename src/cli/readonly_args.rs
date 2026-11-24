@@ -160,18 +160,6 @@ pub enum ReadOnlyAuthCommands {
         )]
         code_stdin: bool,
 
-        /// Also write the successful basic login into now-sdk
-        #[arg(long)]
-        also_now_sdk: bool,
-
-        /// Destination alias name for now-sdk
-        #[arg(long, requires = "also_now_sdk")]
-        now_sdk_alias: Option<String>,
-
-        /// Mark the now-sdk alias as default
-        #[arg(long, requires = "also_now_sdk")]
-        set_now_sdk_default: bool,
-
         /// Store the credentials without making a verification request (offline setup)
         #[arg(long)]
         no_verify: bool,
@@ -874,9 +862,6 @@ impl ReadOnlyAuthCommands {
                 no_browser,
                 sdk_oauth,
                 code_stdin,
-                also_now_sdk,
-                now_sdk_alias,
-                set_now_sdk_default,
                 no_verify,
             } => AuthCommands::Login {
                 password,
@@ -890,9 +875,9 @@ impl ReadOnlyAuthCommands {
                 no_browser,
                 sdk_oauth,
                 code_stdin,
-                also_now_sdk,
-                now_sdk_alias,
-                set_now_sdk_default,
+                also_now_sdk: false,
+                now_sdk_alias: None,
+                set_now_sdk_default: false,
                 no_verify,
             },
             Self::Logout => AuthCommands::Logout,
@@ -1329,6 +1314,25 @@ mod tests {
         assert!(page_help.contains("form-state"));
         assert!(!page_help.contains("set-field"));
         assert!(!page_help.contains("run-ui-action"));
+    }
+
+    #[test]
+    fn auth_login_omits_now_sdk_export_flags_in_read_only_cli() {
+        let login_help = ReadOnlyCli::command()
+            .find_subcommand("auth")
+            .and_then(|auth| auth.find_subcommand("login"))
+            .expect("read-only auth login subcommand exists")
+            .clone()
+            .render_long_help()
+            .to_string();
+        assert!(!login_help.contains("--also-now-sdk"));
+        assert!(!login_help.contains("--now-sdk-alias"));
+        assert!(!login_help.contains("--set-now-sdk-default"));
+
+        assert!(
+            ReadOnlyCli::try_parse_from(["snow-cli-ro", "auth", "login", "--also-now-sdk"])
+                .is_err()
+        );
     }
 
     #[test]

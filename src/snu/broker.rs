@@ -6,13 +6,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow};
+use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use sha2::{Digest, Sha256};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout};
 
+use crate::models::secret::Secret;
 use crate::snu::bridge::{
     BridgeConfig, BridgeError, BridgeManager, Matcher, env_loopback_socket_addr,
 };
@@ -22,11 +27,329 @@ use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 pub const DEFAULT_SNU_BROKER_ADDR: SocketAddr =
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1979);
 
-/// Resolves the broker's CLI-facing IPC address, honoring `SNOW_CLI_SNU_BROKER_ADDR`
-/// when set (see [`crate::snu::bridge::ws_addr`] for the matching browser-facing
-/// override and why one is needed).
-fn broker_addr() -> anyhow::Result<SocketAddr> {
-    env_loopback_socket_addr("SNOW_CLI_SNU_BROKER_ADDR", DEFAULT_SNU_BROKER_ADDR)
+const BROKER_IPC_TOKEN_FILE_NAME: &str = "snu-broker-token";
+const BROKER_IPC_TOKEN_BYTES: usize = 32;
+#[cfg(unix)]
+const BROKER_UNIX_DIR_NAME: &str = "run";
+#[cfg(unix)]
+const BROKER_UNIX_SOCKET_NAME: &str = "snu.sock";
+/// Conservative cap below macOS's 104-byte `sockaddr_un.sun_path` limit.
+#[cfg(unix)]
+const MAX_UNIX_SOCKET_PATH_BYTES: usize = 100;
+
+#[derive(Debug, Clone)]
+enum BrokerEndpoint {
+    #[cfg(unix)]
+    Unix(PathBuf),
+    Tcp(SocketAddr),
+}
+
+impl BrokerEndpoint {
+    fn display_addr(&self) -> String {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(path) => format!("unix://{}", path.display()),
+            Self::Tcp(addr) => addr.to_string(),
+        }
+    }
+}
+
+/// Resolves the broker's CLI-facing IPC endpoint.
+///
+/// On Unix, defaults to a `0o600` Unix domain socket inside a `0o700`
+/// directory (peer UID checked via `peer_cred()`). Setting
+/// `SNOW_CLI_SNU_BROKER_ADDR` selects the loopback TCP fallback (which is also
+/// the default on Windows); TCP IPC always authenticates requests with a
+/// per-user random secret token.
+fn broker_endpoint() -> anyhow::Result<BrokerEndpoint> {
+    if let Ok(value) = std::env::var("SNOW_CLI_SNU_BROKER_ADDR")
+        && !value.trim().is_empty()
+    {
+        return Ok(BrokerEndpoint::Tcp(env_loopback_socket_addr(
+            "SNOW_CLI_SNU_BROKER_ADDR",
+            DEFAULT_SNU_BROKER_ADDR,
+        )?));
+    }
+
+    #[cfg(unix)]
+    {
+        if let Some(socket) = std::env::var_os("SNOW_CLI_SNU_BROKER_SOCKET")
+            && !socket.is_empty()
+        {
+            return Ok(BrokerEndpoint::Unix(PathBuf::from(socket)));
+        }
+        Ok(BrokerEndpoint::Unix(default_unix_socket_path()))
+    }
+
+    #[cfg(not(unix))]
+    {
+        Ok(BrokerEndpoint::Tcp(env_loopback_socket_addr(
+            "SNOW_CLI_SNU_BROKER_ADDR",
+            DEFAULT_SNU_BROKER_ADDR,
+        )?))
+    }
+}
+
+fn broker_config_dir() -> PathBuf {
+    let config_path = crate::config::profile::AppConfig::config_path();
+    config_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".servicenow"))
+}
+
+#[cfg(unix)]
+fn default_unix_socket_path() -> PathBuf {
+    let config_dir = broker_config_dir();
+    let preferred = config_dir
+        .join(BROKER_UNIX_DIR_NAME)
+        .join(BROKER_UNIX_SOCKET_NAME);
+    if preferred.as_os_str().len() <= MAX_UNIX_SOCKET_PATH_BYTES {
+        return preferred;
+    }
+
+    // Fall back to a short, per-UID, config-dir-scoped directory when the
+    // config directory path exceeds `sockaddr_un.sun_path` limits.
+    let mut hasher = Sha256::new();
+    hasher.update(config_dir.to_string_lossy().as_bytes());
+    let digest = hasher.finalize();
+    let short_hash: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let dir_name = format!("snow-cli-{}-{short_hash}", current_euid());
+    let temp_candidate = std::env::temp_dir()
+        .join(&dir_name)
+        .join(BROKER_UNIX_SOCKET_NAME);
+    if temp_candidate.as_os_str().len() <= MAX_UNIX_SOCKET_PATH_BYTES {
+        return temp_candidate;
+    }
+    PathBuf::from("/tmp")
+        .join(dir_name)
+        .join(BROKER_UNIX_SOCKET_NAME)
+}
+
+#[cfg(unix)]
+#[allow(
+    unsafe_code,
+    reason = "geteuid is a standard POSIX query with no preconditions"
+)]
+fn current_euid() -> u32 {
+    // SAFETY: `geteuid()` is always safe to call and has no preconditions.
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(unix)]
+fn verify_peer_uid_matches(peer_uid: u32, expected_uid: u32) -> anyhow::Result<()> {
+    if peer_uid != expected_uid {
+        return Err(anyhow!(
+            "unauthorized SN-Utils broker IPC peer (uid {peer_uid} does not match broker uid {expected_uid})"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn verify_unix_peer_uid(stream: &UnixStream) -> anyhow::Result<()> {
+    let cred = stream
+        .peer_cred()
+        .context("failed to read SN-Utils broker Unix socket peer credentials")?;
+    verify_peer_uid_matches(cred.uid(), current_euid())
+}
+
+#[cfg(unix)]
+fn ensure_private_socket_dir(dir: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    if let Ok(meta) = std::fs::symlink_metadata(dir) {
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            return Err(anyhow!(
+                "SN-Utils broker socket directory {} is not a real directory",
+                dir.display()
+            ));
+        }
+        if meta.uid() != current_euid() {
+            return Err(anyhow!(
+                "SN-Utils broker socket directory {} is not owned by the current user",
+                dir.display()
+            ));
+        }
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("failed to set 0o700 permissions on {}", dir.display()))?;
+        return Ok(());
+    }
+
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to create socket directory {}", dir.display()));
+        }
+    }
+    let meta = std::fs::symlink_metadata(dir)
+        .with_context(|| format!("failed to stat socket directory {}", dir.display()))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() || meta.uid() != current_euid() {
+        return Err(anyhow!(
+            "SN-Utils broker socket directory {} failed ownership/type check",
+            dir.display()
+        ));
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("failed to set 0o700 permissions on {}", dir.display()))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn bind_unix_ipc_socket(path: &Path) -> anyhow::Result<UnixListener> {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+
+    let parent = path.parent().ok_or_else(|| {
+        anyhow!(
+            "SN-Utils broker Unix socket path {} has no parent directory",
+            path.display()
+        )
+    })?;
+    ensure_private_socket_dir(parent)?;
+
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() || !meta.file_type().is_socket() {
+            return Err(anyhow!(
+                "refusing to replace non-socket path {} for SN-Utils broker IPC",
+                path.display()
+            ));
+        }
+        if std::os::unix::net::UnixStream::connect(path).is_ok() {
+            return Err(anyhow!(
+                "SN-Utils broker IPC socket {} is already in use",
+                path.display()
+            ));
+        }
+        std::fs::remove_file(path)
+            .with_context(|| format!("failed to remove stale socket {}", path.display()))?;
+    }
+
+    let listener = UnixListener::bind(path)
+        .with_context(|| format!("failed to bind SN-Utils broker IPC on {}", path.display()))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("failed to set 0o600 permissions on {}", path.display()))?;
+    Ok(listener)
+}
+
+fn ipc_token_file_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("SNOW_CLI_SNU_BROKER_TOKEN_FILE")
+        && !path.is_empty()
+    {
+        return PathBuf::from(path);
+    }
+    broker_config_dir().join(BROKER_IPC_TOKEN_FILE_NAME)
+}
+
+fn is_valid_ipc_token(token: &str) -> bool {
+    token.len() == BROKER_IPC_TOKEN_BYTES * 2
+        && token
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn read_ipc_token(file: &Path) -> std::io::Result<Secret> {
+    let meta = std::fs::symlink_metadata(file)?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "SN-Utils broker IPC token path is not a regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let token = std::fs::read_to_string(file)?.trim().to_owned();
+    if !is_valid_ipc_token(&token) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "SN-Utils broker IPC token file is invalid",
+        ));
+    }
+    Ok(Secret::new(token))
+}
+
+fn load_or_create_ipc_token_at(file: &Path) -> anyhow::Result<Secret> {
+    match read_ipc_token(file) {
+        Ok(token) => return Ok(token),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read IPC token at {}", file.display()));
+        }
+    }
+
+    let dir = file.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("failed to create directory {}", dir.display()))?;
+
+    let mut token_bytes = [0u8; BROKER_IPC_TOKEN_BYTES];
+    SystemRandom::new()
+        .fill(&mut token_bytes)
+        .map_err(|_| anyhow!("CSPRNG failure while generating SN-Utils broker IPC token"))?;
+    let token: String = token_bytes.iter().map(|b| format!("{b:02x}")).collect();
+
+    let mut suffix = [0u8; 8];
+    SystemRandom::new().fill(&mut suffix).map_err(|_| {
+        anyhow!("CSPRNG failure while creating SN-Utils broker IPC token temp file")
+    })?;
+    let temp_name = format!(
+        ".{BROKER_IPC_TOKEN_FILE_NAME}-{}",
+        suffix
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    let temporary = dir.join(temp_name);
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let publish_result = (|| -> std::io::Result<()> {
+        use std::io::Write as _;
+        options
+            .open(&temporary)?
+            .write_all(format!("{token}\n").as_bytes())?;
+        match std::fs::hard_link(&temporary, file) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(error) => Err(error),
+        }
+    })();
+    let _ = std::fs::remove_file(&temporary);
+    publish_result.with_context(|| format!("failed to persist IPC token at {}", file.display()))?;
+
+    read_ipc_token(file)
+        .with_context(|| format!("failed to reload IPC token at {}", file.display()))
+}
+
+fn load_or_create_ipc_token() -> anyhow::Result<Secret> {
+    load_or_create_ipc_token_at(&ipc_token_file_path())
+}
+
+fn verify_ipc_token(provided: Option<&str>, expected: &Secret) -> bool {
+    let Some(provided) = provided else {
+        return false;
+    };
+    let lhs = Sha256::digest(provided.as_bytes());
+    let rhs = Sha256::digest(expected.expose_secret().as_bytes());
+    let mut diff = 0u8;
+    for (a, b) in lhs.iter().zip(rhs.iter()) {
+        diff |= a ^ b;
+    }
+    diff == 0 && provided.len() == expected.expose_secret().len()
 }
 const BROKER_READY_TIMEOUT_SECS: u64 = 5;
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 1800;
@@ -39,6 +362,14 @@ const PERSISTED_SESSION_MAX_AGE_SECS: u64 = 12 * 60 * 60;
 /// Banner shown in the SN-Utils helper tab when ServiceNow rejects the cached
 /// `g_ck`, telling the user how to mint a fresh one.
 const TOKEN_EXPIRED_BANNER: &str = "snow-cli: ServiceNow rejected the saved session token. Run /token in a ServiceNow tab to refresh it.";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BrokerEnvelope {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth_token: Option<String>,
+    #[serde(flatten)]
+    request: BrokerRequest,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -177,7 +508,7 @@ struct Broker {
 }
 
 impl Broker {
-    fn new(idle_timeout: Duration, manager: BridgeManager, ipc_addr: SocketAddr) -> Self {
+    fn new(idle_timeout: Duration, manager: BridgeManager, ipc_addr: String) -> Self {
         Self {
             state: Mutex::new(BrokerState::new(idle_timeout, ipc_addr)),
             manager,
@@ -195,11 +526,11 @@ struct BrokerState {
     in_flight: usize,
     shutdown: bool,
     idle_timeout: Duration,
-    ipc_addr: SocketAddr,
+    ipc_addr: String,
 }
 
 impl BrokerState {
-    fn new(idle_timeout: Duration, ipc_addr: SocketAddr) -> Self {
+    fn new(idle_timeout: Duration, ipc_addr: String) -> Self {
         Self {
             sessions_by_origin: HashMap::new(),
             meta_by_origin: HashMap::new(),
@@ -343,25 +674,42 @@ impl BrokerState {
 }
 
 pub struct BrokerBridge {
-    addr: SocketAddr,
+    endpoint: BrokerEndpoint,
+    auth_token: Option<Secret>,
 }
 
 impl BrokerBridge {
     pub async fn connect_or_spawn() -> anyhow::Result<Self> {
-        let addr = broker_addr()?;
-        if connect_once(addr).await.is_err() {
+        let endpoint = broker_endpoint()?;
+        let auth_token = match &endpoint {
+            BrokerEndpoint::Tcp(_) => Some(load_or_create_ipc_token()?),
+            #[cfg(unix)]
+            BrokerEndpoint::Unix(_) => None,
+        };
+        if connect_once(&endpoint, auth_token.as_ref()).await.is_err() {
             BridgeConfig::from_env()?;
             spawn_broker()?;
-            wait_until_ready(addr).await?;
+            wait_until_ready(&endpoint, auth_token.as_ref()).await?;
         }
 
-        Ok(Self { addr })
+        Ok(Self {
+            endpoint,
+            auth_token,
+        })
     }
 
     pub async fn connect_existing() -> anyhow::Result<Self> {
-        let addr = broker_addr()?;
-        connect_once(addr).await?;
-        Ok(Self { addr })
+        let endpoint = broker_endpoint()?;
+        let auth_token = match &endpoint {
+            BrokerEndpoint::Tcp(_) => Some(load_or_create_ipc_token()?),
+            #[cfg(unix)]
+            BrokerEndpoint::Unix(_) => None,
+        };
+        connect_once(&endpoint, auth_token.as_ref()).await?;
+        Ok(Self {
+            endpoint,
+            auth_token,
+        })
     }
 
     pub async fn refresh_helper_capabilities(
@@ -502,27 +850,14 @@ impl BrokerBridge {
     }
 
     async fn request(&self, request: BrokerRequest) -> anyhow::Result<BrokerResponse> {
-        let stream = TcpStream::connect(&self.addr)
-            .await
-            .with_context(|| format!("failed to connect to SN-Utils broker at {}", self.addr))?;
-        let (read_half, mut write_half) = stream.into_split();
-        let mut reader = BufReader::new(read_half);
-
-        let raw = serde_json::to_string(&request)?;
-        write_half.write_all(raw.as_bytes()).await?;
-        write_half.write_all(b"\n").await?;
-        write_half.flush().await?;
-
-        let mut line = String::new();
-        reader.read_line(&mut line).await?;
-        if line.trim().is_empty() {
-            return Err(anyhow!(
-                "SN-Utils broker closed the connection without a response"
-            ));
-        }
-
-        let response: BrokerResponse =
-            serde_json::from_str(&line).context("invalid JSON response from SN-Utils broker")?;
+        let envelope = BrokerEnvelope {
+            auth_token: self
+                .auth_token
+                .as_ref()
+                .map(|secret| secret.expose_secret().to_string()),
+            request,
+        };
+        let response = send_ipc_envelope(&self.endpoint, &envelope).await?;
         if response.ok {
             Ok(response)
         } else {
@@ -537,6 +872,56 @@ impl BrokerBridge {
             .into())
         }
     }
+}
+
+async fn send_ipc_envelope(
+    endpoint: &BrokerEndpoint,
+    envelope: &BrokerEnvelope,
+) -> anyhow::Result<BrokerResponse> {
+    match endpoint {
+        #[cfg(unix)]
+        BrokerEndpoint::Unix(path) => {
+            let stream = UnixStream::connect(path).await.with_context(|| {
+                format!(
+                    "failed to connect to SN-Utils broker at unix://{}",
+                    path.display()
+                )
+            })?;
+            send_ipc_envelope_on_stream(stream, envelope).await
+        }
+        BrokerEndpoint::Tcp(addr) => {
+            let stream = TcpStream::connect(addr)
+                .await
+                .with_context(|| format!("failed to connect to SN-Utils broker at {addr}"))?;
+            send_ipc_envelope_on_stream(stream, envelope).await
+        }
+    }
+}
+
+async fn send_ipc_envelope_on_stream<S>(
+    stream: S,
+    envelope: &BrokerEnvelope,
+) -> anyhow::Result<BrokerResponse>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (read_half, mut write_half) = tokio::io::split(stream);
+    let mut reader = BufReader::new(read_half);
+
+    let raw = serde_json::to_string(envelope)?;
+    write_half.write_all(raw.as_bytes()).await?;
+    write_half.write_all(b"\n").await?;
+    write_half.flush().await?;
+
+    let mut line = String::new();
+    reader.read_line(&mut line).await?;
+    if line.trim().is_empty() {
+        return Err(anyhow!(
+            "SN-Utils broker closed the connection without a response"
+        ));
+    }
+
+    serde_json::from_str(&line).context("invalid JSON response from SN-Utils broker")
 }
 
 pub async fn broker_status() -> anyhow::Result<BrokerStatus> {
@@ -559,7 +944,7 @@ pub async fn stop_broker() -> anyhow::Result<()> {
 /// Clear cached browser sessions from a running broker. Returns the cleared
 /// origins, or an empty list when no broker is running (nothing to clear).
 pub async fn clear_broker_sessions(origin: Option<String>) -> anyhow::Result<Vec<String>> {
-    broker_addr()?;
+    broker_endpoint()?;
     match BrokerBridge::connect_existing().await {
         Ok(bridge) => bridge.clear_sessions(origin).await,
         Err(_) => Ok(Vec::new()),
@@ -568,13 +953,38 @@ pub async fn clear_broker_sessions(origin: Option<String>) -> anyhow::Result<Vec
 
 pub async fn run_broker_server() -> anyhow::Result<()> {
     let idle_timeout = idle_timeout();
-    let ipc_addr = broker_addr()?;
+    let endpoint = broker_endpoint()?;
     let bridge_config = BridgeConfig::from_env()?;
-    let listener = TcpListener::bind(ipc_addr)
-        .await
-        .with_context(|| format!("failed to bind SN-Utils broker IPC on {ipc_addr}"))?;
+
+    enum BoundListener {
+        #[cfg(unix)]
+        Unix {
+            listener: UnixListener,
+            socket_path: PathBuf,
+        },
+        Tcp {
+            listener: TcpListener,
+            token: Arc<Secret>,
+        },
+    }
+
+    let bound = match &endpoint {
+        #[cfg(unix)]
+        BrokerEndpoint::Unix(path) => BoundListener::Unix {
+            listener: bind_unix_ipc_socket(path)?,
+            socket_path: path.clone(),
+        },
+        BrokerEndpoint::Tcp(addr) => {
+            let token = Arc::new(load_or_create_ipc_token()?);
+            let listener = TcpListener::bind(addr)
+                .await
+                .with_context(|| format!("failed to bind SN-Utils broker IPC on {addr}"))?;
+            BoundListener::Tcp { listener, token }
+        }
+    };
+
     let (manager, mut sessions_rx) = BridgeManager::start(bridge_config);
-    let broker = Arc::new(Broker::new(idle_timeout, manager, ipc_addr));
+    let broker = Arc::new(Broker::new(idle_timeout, manager, endpoint.display_addr()));
 
     // Reload any persisted browser sessions so a freshly (re)spawned broker
     // doesn't force a new `/token` for instances that already authenticated.
@@ -620,34 +1030,71 @@ pub async fn run_broker_server() -> anyhow::Result<()> {
         }
     });
 
-    loop {
-        if broker.state.lock().await.shutdown {
-            break;
-        }
+    match bound {
+        #[cfg(unix)]
+        BoundListener::Unix {
+            listener,
+            socket_path,
+        } => {
+            loop {
+                if broker.state.lock().await.shutdown {
+                    break;
+                }
 
-        let accept = timeout(Duration::from_secs(1), listener.accept()).await;
-        let Ok(Ok((stream, _peer_addr))) = accept else {
-            continue;
-        };
-        let client_broker = Arc::clone(&broker);
-        tokio::spawn(async move {
-            if let Err(error) = handle_client(stream, client_broker).await {
-                tracing::debug!(%error, "SN-Utils broker client failed");
+                let accept = timeout(Duration::from_secs(1), listener.accept()).await;
+                let Ok(Ok((stream, _peer_addr))) = accept else {
+                    continue;
+                };
+                if let Err(error) = verify_unix_peer_uid(&stream) {
+                    tracing::warn!(%error, "Rejected unauthorized SN-Utils broker IPC peer");
+                    continue;
+                }
+                let client_broker = Arc::clone(&broker);
+                tokio::spawn(async move {
+                    if let Err(error) = handle_client(stream, client_broker, None).await {
+                        tracing::debug!(%error, "SN-Utils broker client failed");
+                    }
+                });
             }
-        });
+            let _ = std::fs::remove_file(&socket_path);
+        }
+        BoundListener::Tcp { listener, token } => loop {
+            if broker.state.lock().await.shutdown {
+                break;
+            }
+
+            let accept = timeout(Duration::from_secs(1), listener.accept()).await;
+            let Ok(Ok((stream, _peer_addr))) = accept else {
+                continue;
+            };
+            let client_broker = Arc::clone(&broker);
+            let client_token = Arc::clone(&token);
+            tokio::spawn(async move {
+                if let Err(error) = handle_client(stream, client_broker, Some(client_token)).await {
+                    tracing::debug!(%error, "SN-Utils broker client failed");
+                }
+            });
+        },
     }
 
     Ok(())
 }
 
-async fn handle_client(stream: TcpStream, broker: Arc<Broker>) -> anyhow::Result<()> {
+async fn handle_client<S>(
+    stream: S,
+    broker: Arc<Broker>,
+    expected_token: Option<Arc<Secret>>,
+) -> anyhow::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     {
         let mut state = broker.state.lock().await;
         state.active_clients += 1;
         state.touch();
     }
 
-    let result = handle_client_inner(stream, Arc::clone(&broker)).await;
+    let result = handle_client_inner(stream, Arc::clone(&broker), expected_token.as_deref()).await;
 
     {
         let mut state = broker.state.lock().await;
@@ -658,8 +1105,15 @@ async fn handle_client(stream: TcpStream, broker: Arc<Broker>) -> anyhow::Result
     result
 }
 
-async fn handle_client_inner(stream: TcpStream, broker: Arc<Broker>) -> anyhow::Result<()> {
-    let (read_half, mut write_half) = stream.into_split();
+async fn handle_client_inner<S>(
+    stream: S,
+    broker: Arc<Broker>,
+    expected_token: Option<&Secret>,
+) -> anyhow::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (read_half, mut write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
     reader.read_line(&mut line).await?;
@@ -667,26 +1121,43 @@ async fn handle_client_inner(stream: TcpStream, broker: Arc<Broker>) -> anyhow::
         return Ok(());
     }
 
-    let request: BrokerRequest =
+    let envelope: BrokerEnvelope =
         serde_json::from_str(&line).context("invalid SN-Utils broker request")?;
-    let response = process_request(request, &broker).await;
-    let response = match response {
-        Ok(response) => response,
-        Err(error) => BrokerResponse {
+    let response = if let Some(expected) = expected_token
+        && !verify_ipc_token(envelope.auth_token.as_deref(), expected)
+    {
+        BrokerResponse {
             ok: false,
-            error_code: Some(
-                error
-                    .downcast_ref::<BridgeError>()
-                    .map_or("SNU_BROKER_ERROR", BridgeError::code)
+            error_code: Some("SNU_BROKER_UNAUTHORIZED".to_string()),
+            error: Some(
+                "SN-Utils broker IPC request rejected: invalid or missing authentication token"
                     .to_string(),
             ),
-            error: Some(error.to_string()),
             message: None,
             instance: None,
             status: None,
             cleared: None,
             token_valid: None,
-        },
+        }
+    } else {
+        match process_request(envelope.request, &broker).await {
+            Ok(response) => response,
+            Err(error) => BrokerResponse {
+                ok: false,
+                error_code: Some(
+                    error
+                        .downcast_ref::<BridgeError>()
+                        .map_or("SNU_BROKER_ERROR", BridgeError::code)
+                        .to_string(),
+                ),
+                error: Some(error.to_string()),
+                message: None,
+                instance: None,
+                status: None,
+                cleared: None,
+                token_valid: None,
+            },
+        }
     };
 
     write_half
@@ -1462,22 +1933,20 @@ fn message_response(message: SnuMessage) -> BrokerResponse {
 /// foreign listener as a live broker would make every subsequent request fail
 /// confusingly. Requiring a parseable `ok` response also flushes out a stale
 /// broker that accepts but no longer answers.
-async fn connect_once(addr: SocketAddr) -> anyhow::Result<()> {
-    let stream = TcpStream::connect(addr).await?;
-    let (read_half, mut write_half) = stream.into_split();
-    let mut reader = BufReader::new(read_half);
-
-    let request = serde_json::to_string(&BrokerRequest::Ping)?;
-    write_half.write_all(request.as_bytes()).await?;
-    write_half.write_all(b"\n").await?;
-    write_half.flush().await?;
-
-    let mut line = String::new();
-    timeout(Duration::from_secs(2), reader.read_line(&mut line))
-        .await
-        .map_err(|_| anyhow!("SN-Utils broker did not answer ping"))??;
-    let response: BrokerResponse = serde_json::from_str(&line)
-        .context("unexpected ping response on the SN-Utils broker port")?;
+async fn connect_once(
+    endpoint: &BrokerEndpoint,
+    auth_token: Option<&Secret>,
+) -> anyhow::Result<()> {
+    let envelope = BrokerEnvelope {
+        auth_token: auth_token.map(|secret| secret.expose_secret().to_string()),
+        request: BrokerRequest::Ping,
+    };
+    let response = timeout(
+        Duration::from_secs(2),
+        send_ipc_envelope(endpoint, &envelope),
+    )
+    .await
+    .map_err(|_| anyhow!("SN-Utils broker did not answer ping"))??;
     if response.ok {
         Ok(())
     } else {
@@ -1554,14 +2023,20 @@ fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()> {
     command.spawn().map(|_| ())
 }
 
-async fn wait_until_ready(addr: SocketAddr) -> anyhow::Result<()> {
+async fn wait_until_ready(
+    endpoint: &BrokerEndpoint,
+    auth_token: Option<&Secret>,
+) -> anyhow::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(BROKER_READY_TIMEOUT_SECS);
     loop {
-        if connect_once(addr).await.is_ok() {
+        if connect_once(endpoint, auth_token).await.is_ok() {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err(anyhow!("timed out waiting for SN-Utils broker on {}", addr));
+            return Err(anyhow!(
+                "timed out waiting for SN-Utils broker on {}",
+                endpoint.display_addr()
+            ));
         }
         sleep(Duration::from_millis(100)).await;
     }
@@ -1750,22 +2225,30 @@ mod tests {
             connect_timeout: Duration::from_secs(2),
             rebind_delay: Duration::from_millis(50),
             bridge_id: String::new(),
+            allowed_origins: crate::snu::bridge::default_allowed_origins(),
+            allow_native_peers: false,
         };
         let (manager, _sessions) = BridgeManager::start(config);
         let ws_addr = manager
             .wait_bound(Duration::from_secs(2))
             .await
             .expect("bridge bound");
-        let (mut helper, _) = tokio_tungstenite::connect_async(format!("ws://{ws_addr}"))
-            .await
-            .unwrap();
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://{ws_addr}").into_client_request().unwrap();
+        request.headers_mut().insert(
+            "origin",
+            crate::snu::bridge::DEFAULT_ALLOWED_EXTENSION_ORIGINS[0]
+                .parse()
+                .unwrap(),
+        );
+        let (mut helper, _) = tokio_tungstenite::connect_async(request).await.unwrap();
         let hello = helper.next().await.unwrap().unwrap();
         assert!(hello.to_text().unwrap().contains("hostHello"));
         (
             Arc::new(Broker::new(
                 Duration::from_secs(300),
                 manager,
-                SocketAddr::from(([127, 0, 0, 1], 1979)),
+                "127.0.0.1:1979".to_string(),
             )),
             helper,
         )
@@ -2623,10 +3106,7 @@ mod tests {
     }
 
     fn state() -> BrokerState {
-        BrokerState::new(
-            Duration::from_secs(300),
-            SocketAddr::from(([127, 0, 0, 1], 1979)),
-        )
+        BrokerState::new(Duration::from_secs(300), "127.0.0.1:1979".to_string())
     }
 
     fn instance_with_token(url: &str, token: &str) -> SnuInstance {
@@ -2887,5 +3367,134 @@ mod tests {
             now - PERSISTED_SESSION_MAX_AGE_SECS - 1,
             now
         ));
+    }
+
+    #[tokio::test]
+    async fn tcp_ipc_rejects_missing_or_wrong_auth_token_and_accepts_valid_token() {
+        let (broker, _helper) = gated_test_bridge().await;
+        let expected_token = Arc::new(Secret::new("a".repeat(64)));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_broker = Arc::clone(&broker);
+        let server_token = Arc::clone(&expected_token);
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (stream, _) = listener.accept().await.unwrap();
+                handle_client(
+                    stream,
+                    Arc::clone(&server_broker),
+                    Some(Arc::clone(&server_token)),
+                )
+                .await
+                .unwrap();
+            }
+        });
+
+        let endpoint = BrokerEndpoint::Tcp(addr);
+
+        let missing = send_ipc_envelope(
+            &endpoint,
+            &BrokerEnvelope {
+                auth_token: None,
+                request: BrokerRequest::Status,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!missing.ok);
+        assert_eq!(
+            missing.error_code.as_deref(),
+            Some("SNU_BROKER_UNAUTHORIZED")
+        );
+
+        let wrong = send_ipc_envelope(
+            &endpoint,
+            &BrokerEnvelope {
+                auth_token: Some("b".repeat(64)),
+                request: BrokerRequest::Status,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!wrong.ok);
+        assert_eq!(wrong.error_code.as_deref(), Some("SNU_BROKER_UNAUTHORIZED"));
+
+        let valid = send_ipc_envelope(
+            &endpoint,
+            &BrokerEnvelope {
+                auth_token: Some(expected_token.expose_secret().to_string()),
+                request: BrokerRequest::Status,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(valid.ok);
+        assert!(valid.status.is_some());
+
+        server.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_ipc_uses_private_dir_and_socket_and_checks_peer_uid() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let sock_dir = dir.path().join("run");
+        let sock_path = sock_dir.join("snu.sock");
+        let listener = bind_unix_ipc_socket(&sock_path).unwrap();
+
+        let dir_mode = std::fs::metadata(&sock_dir).unwrap().permissions().mode() & 0o777;
+        let sock_mode = std::fs::metadata(&sock_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(sock_mode, 0o600);
+
+        let uid = current_euid();
+        assert!(verify_peer_uid_matches(uid, uid).is_ok());
+        assert!(verify_peer_uid_matches(uid.wrapping_add(1), uid).is_err());
+
+        let (broker, _helper) = gated_test_bridge().await;
+        let server_broker = Arc::clone(&broker);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            verify_unix_peer_uid(&stream).unwrap();
+            handle_client(stream, server_broker, None).await.unwrap();
+        });
+
+        let response = send_ipc_envelope(
+            &BrokerEndpoint::Unix(sock_path.clone()),
+            &BrokerEnvelope {
+                auth_token: None,
+                request: BrokerRequest::Ping,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(response.ok);
+
+        server.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ipc_token_file_is_owner_only_and_refuses_symlinks() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let token_path = dir.path().join(BROKER_IPC_TOKEN_FILE_NAME);
+        let first = load_or_create_ipc_token_at(&token_path).unwrap();
+        let second = load_or_create_ipc_token_at(&token_path).unwrap();
+        assert_eq!(first.expose_secret(), second.expose_secret());
+        assert!(is_valid_ipc_token(first.expose_secret()));
+
+        let mode = std::fs::metadata(&token_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let target = dir.path().join("other");
+        std::fs::write(&target, format!("{}\n", "c".repeat(64))).unwrap();
+        let symlink_path = dir.path().join("symlink-token");
+        std::os::unix::fs::symlink(&target, &symlink_path).unwrap();
+        assert!(load_or_create_ipc_token_at(&symlink_path).is_err());
     }
 }

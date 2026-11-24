@@ -6,8 +6,8 @@ use thiserror::Error;
 use crate::cli::args::{
     ApiCommands, AttachmentCommands, AuthCommands, CodesearchCommands, Commands, ConfigCommands,
     DataCommands, ImportSetCommands, ProfileSdkCommands, ProfileStorageCommands, ScopeCommands,
-    ScriptCommands, SeedCommands, SkillCommands, SnuCommands, SnuContextCommands, SnuPageCommands,
-    SnuRestCommands, TableCommands,
+    ScriptCommands, SeedCommands, SkillCommands, SnuBrokerCommands, SnuCommands,
+    SnuContextCommands, SnuPageCommands, SnuRestCommands, TableCommands,
 };
 
 static ACTIVE_POLICY_MODE: AtomicU8 = AtomicU8::new(PolicyMode::FullAccess as u8);
@@ -226,13 +226,26 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             _ => PolicyDecision::Allow,
         },
         Commands::Auth(args) => match &args.command {
+            // Exporting a login credential into the on-disk now-sdk store
+            // materializes a reusable, write-capable credential just like
+            // `profile export-now-sdk`, so it is denied under read-only policy.
+            AuthCommands::Login {
+                also_now_sdk: true, ..
+            } => deny(
+                "auth login --also-now-sdk",
+                CommandCapability::CredentialExport,
+                "read-only policy does not allow exporting reusable credentials to the now-sdk store",
+            ),
             // login/logout only write local credentials (OS keychain / config) and do
             // not grant any additional remote access beyond what the credentials' own
             // ServiceNow ACLs allow. They are permitted so snow-cli-ro can bootstrap
             // authentication on its own.
-            AuthCommands::Status { .. } | AuthCommands::Login { .. } | AuthCommands::Logout => {
-                PolicyDecision::Allow
+            AuthCommands::Status { .. }
+            | AuthCommands::Login {
+                also_now_sdk: false,
+                ..
             }
+            | AuthCommands::Logout => PolicyDecision::Allow,
             // `auth token` exports a reusable credential/bearer token that could be
             // replayed by a full client to perform writes, so it stays denied.
             AuthCommands::Token { .. } => deny(
@@ -367,10 +380,27 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             | SnuCommands::Query { .. }
             | SnuCommands::Schema { .. }
             | SnuCommands::Records(_)
-            | SnuCommands::Slash { .. }
-            | SnuCommands::Tab(_)
-            | SnuCommands::Screenshot { .. }
-            | SnuCommands::Broker(_) => PolicyDecision::Allow,
+            | SnuCommands::Screenshot { .. } => PolicyDecision::Allow,
+            SnuCommands::Slash { .. } => deny(
+                "snu slash",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow executing SN-Utils slash commands",
+            ),
+            SnuCommands::Tab(_) => deny(
+                "snu tab",
+                CommandCapability::RemoteWrite,
+                "read-only policy does not allow browser tab manipulation through SN-Utils",
+            ),
+            SnuCommands::Broker(broker_args) => match &broker_args.command {
+                SnuBrokerCommands::Status => PolicyDecision::Allow,
+                SnuBrokerCommands::Stop
+                | SnuBrokerCommands::Clear { .. }
+                | SnuBrokerCommands::Serve => deny(
+                    "snu broker mutation",
+                    CommandCapability::LocalConfigWrite,
+                    "read-only policy allows SN-Utils broker status only",
+                ),
+            },
             SnuCommands::Rest(rest_args) => match &rest_args.command {
                 SnuRestCommands::Get(_) => PolicyDecision::Allow,
                 SnuRestCommands::Post(_)
@@ -711,6 +741,46 @@ mod tests {
                 },
             }),
         }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::Slash {
+                command: "/tn".to_string(),
+                url: "https://*.service-now.com/*".to_string(),
+                tab_id: None,
+                no_auto_run: false,
+                timeout_secs: 1,
+            },
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::Tab(SnuTabArgs {
+                command: SnuTabCommands::Activate {
+                    url: "https://dev.service-now.com/".to_string(),
+                    reload: true,
+                    wait_for_load: false,
+                    open_if_not_found: true,
+                    timeout_secs: 1,
+                },
+            }),
+        }));
+        assert_allowed(Commands::Snu(SnuArgs {
+            command: SnuCommands::Broker(SnuBrokerArgs {
+                command: SnuBrokerCommands::Status,
+            }),
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::Broker(SnuBrokerArgs {
+                command: SnuBrokerCommands::Stop,
+            }),
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::Broker(SnuBrokerArgs {
+                command: SnuBrokerCommands::Clear { instance: None },
+            }),
+        }));
+        assert_denied(Commands::Snu(SnuArgs {
+            command: SnuCommands::Broker(SnuBrokerArgs {
+                command: SnuBrokerCommands::Serve,
+            }),
+        }));
     }
 
     #[test]
@@ -804,6 +874,32 @@ mod tests {
         assert_allowed(Commands::Auth(AuthArgs {
             command: AuthCommands::Logout,
         }));
+        assert_eq!(
+            policy().decision_for_command(&Commands::Auth(AuthArgs {
+                command: AuthCommands::Login {
+                    password: Some("secret".to_string()),
+                    password_stdin: false,
+                    token: None,
+                    token_stdin: false,
+                    client_secret: None,
+                    client_secret_stdin: false,
+                    session_cookie: None,
+                    session_cookie_stdin: false,
+                    no_browser: false,
+                    sdk_oauth: false,
+                    code_stdin: false,
+                    also_now_sdk: true,
+                    now_sdk_alias: Some("dev".to_string()),
+                    set_now_sdk_default: false,
+                    no_verify: false,
+                },
+            })),
+            PolicyDecision::Deny {
+                command: "auth login --also-now-sdk",
+                capability: CommandCapability::CredentialExport,
+                reason: "read-only policy does not allow exporting reusable credentials to the now-sdk store",
+            }
+        );
     }
 
     #[test]

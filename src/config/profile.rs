@@ -367,7 +367,7 @@ pub fn validate_instance_url(input: &str) -> anyhow::Result<String> {
     }
     match url.scheme() {
         "https" => Ok(trimmed.to_string()),
-        "http" if url.host_str().map(is_loopback_host).unwrap_or(false) => Ok(trimmed.to_string()),
+        "http" if is_loopback_url(&url) => Ok(trimmed.to_string()),
         "http" => Err(invalid(
             "Invalid instance URL: HTTP is only allowed for loopback test instances.",
         )
@@ -376,11 +376,33 @@ pub fn validate_instance_url(input: &str) -> anyhow::Result<String> {
     }
 }
 
-fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host.starts_with("127.")
+fn is_loopback_parsed_host<S: AsRef<str>>(host: &url::Host<S>) -> bool {
+    match host {
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+        url::Host::Domain(domain) => domain.as_ref().eq_ignore_ascii_case("localhost"),
+    }
+}
+
+/// Returns `true` when `url` targets a loopback host (`localhost`, `127.0.0.0/8`, or `::1`).
+pub fn is_loopback_url(url: &url::Url) -> bool {
+    url.host()
+        .is_some_and(|host| is_loopback_parsed_host(&host))
+}
+
+/// Returns `true` when a host string (`localhost`, IPv4 loopback, or bracketed/unbracketed `::1`)
+/// targets a loopback address.
+pub fn is_loopback_host(host: &str) -> bool {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    url::Host::parse(trimmed)
+        .map(|parsed| is_loopback_parsed_host(&parsed))
+        .unwrap_or(false)
 }
 
 fn dirs_config_path() -> PathBuf {
@@ -440,6 +462,43 @@ mod tests {
             positions.windows(2).all(|pair| pair[0] < pair[1]),
             "{saved}"
         );
+    }
+
+    #[test]
+    fn validate_instance_url_enforces_strict_loopback_and_ipv6() {
+        for accepted in [
+            "http://127.0.0.1:8080",
+            "http://127.0.0.2:8080",
+            "http://localhost:8080",
+            "http://LOCALHOST:8080",
+            "http://[::1]:8080",
+            "https://dev12345.service-now.com",
+        ] {
+            assert!(
+                validate_instance_url(accepted).is_ok(),
+                "expected loopback/HTTPS URL to be accepted: {accepted}"
+            );
+        }
+
+        for rejected in [
+            "http://127.attacker.example",
+            "http://127.0.0.1.nip.io",
+            "http://127.0.0.1.nip.io:8080",
+            "http://localhost.attacker.example",
+            "http://example.com",
+        ] {
+            assert!(
+                validate_instance_url(rejected).is_err(),
+                "expected non-loopback HTTP URL to be rejected: {rejected}"
+            );
+        }
+
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("::1"));
+        assert!(is_loopback_host("[::1]"));
+        assert!(is_loopback_host("localhost"));
+        assert!(!is_loopback_host("127.attacker.example"));
+        assert!(!is_loopback_host("127.0.0.1.nip.io"));
     }
 
     #[test]

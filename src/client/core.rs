@@ -140,17 +140,16 @@ impl Default for ClientConfig {
     }
 }
 
-pub(super) fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host.starts_with("127.")
-}
+/// Maximum number of same-origin redirects allowed for authenticated non-native requests.
+const MAX_REDIRECT_HOPS: usize = 10;
 
 pub(super) fn is_safe_authenticated_url(url: &Url) -> bool {
+    if !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
     match url.scheme() {
         "https" => true,
-        "http" => url.host_str().map(is_loopback_host).unwrap_or(false),
+        "http" => crate::config::profile::is_loopback_url(url),
         _ => false,
     }
 }
@@ -172,9 +171,7 @@ pub(super) fn endpoint_requires_form_session(endpoint: &str) -> bool {
 }
 
 pub(super) fn same_origin(left: &Url, right: &Url) -> bool {
-    left.scheme() == right.scheme()
-        && left.host_str() == right.host_str()
-        && left.port_or_known_default() == right.port_or_known_default()
+    left.origin() == right.origin()
 }
 
 pub(super) fn validate_external_url(url: &Url, operation: &str) -> anyhow::Result<()> {
@@ -253,13 +250,26 @@ impl SnowClient {
         if let Some(session) = authenticator.native_session_credentials() {
             session.ensure_instance(&base_url)?;
         }
-        let builder = Client::builder();
-        let builder = if authenticator.auth_type() == crate::config::AuthMethod::NativeSession {
-            builder.redirect(reqwest::redirect::Policy::none())
-        } else {
-            builder
-        };
-        let http = builder
+        let redirect_policy =
+            if authenticator.auth_type() == crate::config::AuthMethod::NativeSession {
+                reqwest::redirect::Policy::none()
+            } else {
+                let expected_base = parsed_base.clone();
+                reqwest::redirect::Policy::custom(move |attempt| {
+                    if attempt.previous().len() >= MAX_REDIRECT_HOPS {
+                        return attempt.error("Too many redirects");
+                    }
+                    if !is_safe_authenticated_url(attempt.url())
+                        || !same_origin(&expected_base, attempt.url())
+                    {
+                        return attempt
+                            .error("Refusing to follow redirect to unsafe or cross-origin URL");
+                    }
+                    attempt.follow()
+                })
+            };
+        let http = Client::builder()
+            .redirect(redirect_policy)
             .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()?;
@@ -346,5 +356,33 @@ mod tests {
     fn test_default_client_config() {
         let config = ClientConfig::default();
         assert_eq!(config.timeout_secs, DEFAULT_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn test_is_safe_authenticated_url_loopback_and_ipv6() {
+        for safe in [
+            "https://dev12345.service-now.com/api/now/table/incident",
+            "http://127.0.0.1:8080/api",
+            "http://127.0.0.2:8080/api",
+            "http://localhost:8080/api",
+            "http://[::1]:8080/api",
+        ] {
+            let url = Url::parse(safe).unwrap();
+            assert!(is_safe_authenticated_url(&url), "expected safe URL: {safe}");
+        }
+
+        for unsafe_url in [
+            "http://127.attacker.example/api",
+            "http://127.0.0.1.nip.io/api",
+            "http://localhost.attacker.example/api",
+            "http://dev12345.service-now.com/api",
+            "https://user:pass@dev12345.service-now.com/api",
+        ] {
+            let url = Url::parse(unsafe_url).unwrap();
+            assert!(
+                !is_safe_authenticated_url(&url),
+                "expected unsafe URL to be rejected: {unsafe_url}"
+            );
+        }
     }
 }

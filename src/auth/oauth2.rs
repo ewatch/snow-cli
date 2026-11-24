@@ -481,7 +481,11 @@ pub fn oauth_redirect_host(profile: &Profile) -> &str {
 }
 
 pub fn validate_oauth_redirect_host(host: &str) -> anyhow::Result<()> {
-    if matches!(host, "127.0.0.1" | "::1") || host.eq_ignore_ascii_case("localhost") {
+    if host == host.trim()
+        && !host.starts_with('[')
+        && !host.ends_with(']')
+        && crate::config::profile::is_loopback_host(host)
+    {
         return Ok(());
     }
 

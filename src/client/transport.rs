@@ -6,10 +6,14 @@ use reqwest::{Client, Response as TransportResponse, Url};
 use crate::cli::spinner::SnowflakeSpinner;
 use crate::client::error::{ApiError, GraphqlError};
 
-use super::core::{endpoint_requires_form_session, validate_external_url};
+use super::core::{
+    endpoint_requires_form_session, is_safe_authenticated_url, validate_external_url,
+};
+use super::debug::redact_url_str_for_http_debug;
 use super::*;
 
 const MAX_AUTH_RETRIES: u32 = 1;
+const MAX_EXTERNAL_REDIRECT_HOPS: usize = 10;
 
 async fn buffered_external_response(
     response: TransportResponse,
@@ -31,6 +35,7 @@ pub async fn post_oauth_token_form(url: &str, body: &str) -> anyhow::Result<Exte
     let url = Url::parse(url)?;
     validate_external_url(&url, "request OAuth tokens")?;
     let http = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         .build()?;
@@ -46,7 +51,19 @@ pub async fn post_oauth_token_form(url: &str, body: &str) -> anyhow::Result<Exte
 /// Fetch one unauthenticated remote skill resource from a validated URL.
 pub async fn fetch_skill_resource(url: &url::Url) -> anyhow::Result<ExternalResponse> {
     validate_external_url(url, "fetch a skill resource")?;
+    let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_EXTERNAL_REDIRECT_HOPS {
+            return attempt.error("Too many redirects");
+        }
+        if !is_safe_authenticated_url(attempt.url()) {
+            return attempt.error(
+                "Refusing to follow redirect to unsafe URL; external HTTP requires HTTPS except loopback HTTP",
+            );
+        }
+        attempt.follow()
+    });
     let http = Client::builder()
+        .redirect(redirect_policy)
         .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         .build()?;
@@ -115,9 +132,12 @@ impl SnowClient {
             .build()?;
         log_raw_http_request(&request);
         let response = self.http.execute(request).await?;
-        log_raw_http_response(&url, response.status(), response.headers());
-        self.authenticator
-            .observe_response_headers(response.headers())
+        log_raw_http_response(
+            response.url().as_str(),
+            response.status(),
+            response.headers(),
+        );
+        self.observe_session_response_headers(response.url(), response.headers())
             .await?;
         Ok(ClientResponse { inner: response })
     }
@@ -138,9 +158,12 @@ impl SnowClient {
             .build()?;
         log_raw_http_request(&request);
         let response = self.http.execute(request).await?;
-        log_raw_http_response(&url, response.status(), response.headers());
-        self.authenticator
-            .observe_response_headers(response.headers())
+        log_raw_http_response(
+            response.url().as_str(),
+            response.status(),
+            response.headers(),
+        );
+        self.observe_session_response_headers(response.url(), response.headers())
             .await?;
         Ok(ClientResponse { inner: response })
     }
@@ -216,7 +239,7 @@ impl SnowClient {
             response.headers(),
         );
         redactions.observe_response(response.headers());
-        self.observe_session_response_headers(response.headers())
+        self.observe_session_response_headers(response.url(), response.headers())
             .await?;
         let status = response.status().as_u16();
         let final_url = response.url().to_string();
@@ -340,9 +363,10 @@ impl SnowClient {
                 request = request.body(body.to_string());
             }
 
+            let redacted_url = redact_url_str_for_http_debug(&url);
             tracing::debug!(
                 method = %method,
-                url = %url,
+                url = %redacted_url,
                 attempt = attempt + 1,
                 "Sending request"
             );
@@ -354,21 +378,23 @@ impl SnowClient {
             let response = self.http.execute(request).await?;
             drop(spinner);
 
-            self.observe_session_response_headers(response.headers())
+            let same_origin_response = self.is_same_origin_url(response.url());
+            self.observe_session_response_headers(response.url(), response.headers())
                 .await?;
-            if extract_jsessionid_from_headers(response.headers()).is_some() {
+            if same_origin_response && extract_jsessionid_from_headers(response.headers()).is_some()
+            {
                 tracing::debug!(
-                    url = %url,
+                    url = %redacted_url,
                     has_jsessionid = true,
                     "Captured JSESSIONID from response"
                 );
             }
 
             let status = response.status();
-            log_raw_http_response(&url, status, response.headers());
+            log_raw_http_response(response.url().as_str(), status, response.headers());
             tracing::debug!(
                 status = status.as_u16(),
-                url = %url,
+                url = %redacted_url,
                 "Received response"
             );
 
@@ -1137,5 +1163,158 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), 204);
+    }
+
+    #[tokio::test]
+    async fn post_oauth_token_form_does_not_follow_307_or_308_redirects() {
+        let origin = MockServer::start().await;
+        let attacker = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/steal"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("stolen"))
+            .expect(0)
+            .mount(&attacker)
+            .await;
+
+        for (status, endpoint) in [(307, "/oauth_token_307.do"), (308, "/oauth_token_308.do")] {
+            Mock::given(method("POST"))
+                .and(path(endpoint))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("Location", format!("{}/steal", attacker.uri())),
+                )
+                .expect(1)
+                .mount(&origin)
+                .await;
+
+            let response = post_oauth_token_form(
+                &format!("{}{endpoint}", origin.uri()),
+                "grant_type=client_credentials&client_secret=super-secret",
+            )
+            .await
+            .unwrap();
+            assert_eq!(response.status, status);
+            assert_eq!(response.final_url, format!("{}{endpoint}", origin.uri()));
+        }
+    }
+
+    #[tokio::test]
+    async fn snow_client_blocks_cross_origin_307_308_and_downgrade_redirects_pre_hop() {
+        let origin = MockServer::start().await;
+        let foreign = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/capture"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(0)
+            .mount(&foreign)
+            .await;
+
+        for (status, endpoint) in [(307, "/api/307"), (308, "/api/308")] {
+            Mock::given(method("POST"))
+                .and(path(endpoint))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("Location", format!("{}/capture", foreign.uri())),
+                )
+                .expect(1)
+                .mount(&origin)
+                .await;
+
+            let mut client = test_client(&origin.uri(), MockAuth::new("secret-token"));
+            let headers = vec![("X-UserToken".to_string(), "csrf-secret".to_string())];
+            let err = client
+                .request_with_headers(
+                    Method::POST,
+                    endpoint,
+                    Some(r#"{"sysparm_ck":"csrf-secret"}"#),
+                    &[],
+                    &headers,
+                )
+                .await
+                .expect_err("cross-origin 307/308 redirect must be rejected before hop");
+            assert!(
+                err.to_string().contains("error sending request")
+                    || err.to_string().contains("redirect")
+                    || format!("{err:?}").contains("cross-origin"),
+                "unexpected error: {err:?}"
+            );
+        }
+
+        // Non-loopback plaintext HTTP redirect target (HTTPS-to-HTTP / unsafe downgrade)
+        Mock::given(method("GET"))
+            .and(path("/api/downgrade"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("Location", "http://127.attacker.example/steal"),
+            )
+            .expect(1)
+            .mount(&origin)
+            .await;
+
+        let mut client = test_client(&origin.uri(), MockAuth::new("secret-token"));
+        let err = client
+            .get("/api/downgrade")
+            .await
+            .expect_err("unsafe HTTP redirect target must be rejected before hop");
+        assert!(
+            format!("{err:?}").contains("unsafe") || format!("{err:?}").contains("cross-origin"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_skill_resource_blocks_unsafe_redirect_before_hop() {
+        let origin = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/skill.md"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("Location", "http://127.attacker.example/evil.md"),
+            )
+            .expect(1)
+            .mount(&origin)
+            .await;
+
+        let url = Url::parse(&format!("{}/skill.md", origin.uri())).unwrap();
+        let err = fetch_skill_resource(&url)
+            .await
+            .expect_err("redirect to non-loopback HTTP must fail before hop");
+        assert!(
+            format!("{err:?}").contains("unsafe URL"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_session_response_headers_ignores_foreign_origin() {
+        let mut client = test_client("https://dev1.service-now.com", MockAuth::new("token"));
+        client.session.jsessionid = Some("original-session".to_string());
+        client.session.form_cookie_header = Some("JSESSIONID=original-session".to_string());
+
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            reqwest::header::SET_COOKIE,
+            http::HeaderValue::from_static("JSESSIONID=attacker-session; Path=/"),
+        );
+
+        let foreign = Url::parse("https://attacker.example/callback").unwrap();
+        client
+            .observe_session_response_headers(&foreign, &headers)
+            .await
+            .unwrap();
+        assert_eq!(client.jsessionid(), Some("original-session"));
+        assert_eq!(
+            client.session.form_cookie_header.as_deref(),
+            Some("JSESSIONID=original-session")
+        );
+
+        let same = Url::parse("https://dev1.service-now.com/api/now/table/incident").unwrap();
+        client
+            .observe_session_response_headers(&same, &headers)
+            .await
+            .unwrap();
+        assert_eq!(client.jsessionid(), Some("attacker-session"));
     }
 }

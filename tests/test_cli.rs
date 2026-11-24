@@ -319,6 +319,69 @@ fn test_snow_cli_ro_rejects_snu_update_record_at_parse_time() {
 }
 
 #[test]
+fn test_read_only_blocks_auth_login_also_now_sdk_and_snu_slash_tab_broker() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+username = "admin"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args([
+            "--read-only",
+            "auth",
+            "login",
+            "--password",
+            "secret",
+            "--also-now-sdk",
+            "--no-verify",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("POLICY_DENIED"))
+        .stderr(predicate::str::contains("auth login --also-now-sdk"));
+
+    cargo_bin_cmd!("snow-cli-ro")
+        .args(["auth", "login", "--also-now-sdk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--also-now-sdk"));
+
+    for args in [
+        vec!["--read-only", "snu", "slash", "/tn"],
+        vec![
+            "--read-only",
+            "snu",
+            "tab",
+            "activate",
+            "https://dev.service-now.com/",
+        ],
+        vec!["--read-only", "snu", "broker", "stop"],
+        vec!["--read-only", "snu", "broker", "clear"],
+    ] {
+        cargo_bin_cmd!("snow-cli")
+            .env("SNOW_CLI_CONFIG", &config_path)
+            .args(&args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("POLICY_DENIED"));
+    }
+
+    for sub in ["slash", "tab", "broker"] {
+        cargo_bin_cmd!("snow-cli-ro")
+            .args(["snu", sub])
+            .assert()
+            .failure();
+    }
+}
+
+#[test]
 fn test_read_only_api_get_denies_method_override_header() {
     let (_dir, config_path) = common::create_temp_config(
         r#"

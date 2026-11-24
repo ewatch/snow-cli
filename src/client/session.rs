@@ -141,10 +141,26 @@ pub(crate) fn extract_g_ck_from_body(body: &str) -> Option<String> {
 }
 
 impl SnowClient {
+    pub(super) fn is_same_origin_url(&self, url: &reqwest::Url) -> bool {
+        reqwest::Url::parse(&self.base_url)
+            .map(|base| {
+                super::core::is_safe_authenticated_url(url) && super::core::same_origin(&base, url)
+            })
+            .unwrap_or(false)
+    }
+
     pub(super) async fn observe_session_response_headers(
         &mut self,
+        response_url: &reqwest::Url,
         headers: &http::HeaderMap,
     ) -> anyhow::Result<()> {
+        if !self.is_same_origin_url(response_url) {
+            tracing::warn!(
+                url = %super::debug::redact_url_for_http_debug(response_url),
+                "Ignoring session response headers from non-instance origin"
+            );
+            return Ok(());
+        }
         self.authenticator.observe_response_headers(headers).await?;
         if self.authenticator.native_session_credentials().is_none() {
             if let Some(cookie_header) = self.session.form_cookie_header.as_mut() {
@@ -200,7 +216,8 @@ impl SnowClient {
 
         let auth_headers = self.authenticator.authenticate().await?;
 
-        tracing::debug!(url = %url, "Bootstrapping form session context");
+        let redacted_url = super::debug::redact_url_str_for_http_debug(&url);
+        tracing::debug!(url = %redacted_url, "Bootstrapping form session context");
 
         let request = self
             .http
@@ -214,9 +231,10 @@ impl SnowClient {
         let response = self.http.execute(request).await?;
 
         let status = response.status();
-        log_raw_http_response(&url, status, response.headers());
+        let response_url = response.url().clone();
+        log_raw_http_response(response_url.as_str(), status, response.headers());
         let response_headers = response.headers().clone();
-        self.observe_session_response_headers(&response_headers)
+        self.observe_session_response_headers(&response_url, &response_headers)
             .await?;
         let body = response.text().await.unwrap_or_default();
 
@@ -231,7 +249,7 @@ impl SnowClient {
 
         if matches!(logged_in_header_value(&response_headers), Some(false)) {
             if let Some((username, password)) = parse_basic_credentials(&auth_headers) {
-                tracing::info!(url = %url, "Form bootstrap returned x-is-logged-in=false; attempting explicit login.do form login");
+                tracing::info!(url = %redacted_url, "Form bootstrap returned x-is-logged-in=false; attempting explicit login.do form login");
 
                 let cookie_header = match self.form_login_cookie_header(&username, &password).await
                 {
@@ -303,7 +321,10 @@ impl SnowClient {
     ) -> anyhow::Result<String> {
         let login_url = reqwest::Url::parse(&self.url("/login.do")?)?;
 
-        tracing::debug!(url = %login_url, "Performing login.do form login");
+        tracing::debug!(
+            url = %super::debug::redact_url_for_http_debug(&login_url),
+            "Performing login.do form login"
+        );
 
         let no_redirect_client = reqwest::Client::builder()
             .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
