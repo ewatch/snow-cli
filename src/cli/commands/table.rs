@@ -738,7 +738,7 @@ async fn handle_schema(
         })
         .collect();
 
-    print_schema(&entries, format)?;
+    print_schema(&entries, extended, format)?;
     Ok(())
 }
 
@@ -765,8 +765,49 @@ struct SchemaEntry {
 }
 
 /// Print schema entries in the requested format.
-fn print_schema(entries: &[SchemaEntry], format: &OutputFormat) -> anyhow::Result<()> {
-    output::print_list(entries, format)
+///
+/// For CSV output, builds a fixed column set (including all extended columns
+/// whenever `--extended` is requested, and `table` whenever any entry carries
+/// an inherited table name) so every row aligns cleanly even when optional
+/// fields such as `reference` or `default_value` are absent on some rows.
+fn print_schema(
+    entries: &[SchemaEntry],
+    extended: bool,
+    format: &OutputFormat,
+) -> anyhow::Result<()> {
+    if !matches!(format, OutputFormat::Csv) {
+        return output::print_list(entries, format);
+    }
+
+    let include_table = entries.iter().any(|entry| entry.table.is_some());
+    let rows: Vec<indexmap::IndexMap<String, serde_json::Value>> = entries
+        .iter()
+        .map(|entry| {
+            let mut row = indexmap::IndexMap::new();
+            row.insert("column".to_string(), serde_json::json!(entry.column));
+            row.insert("type".to_string(), serde_json::json!(entry.r#type));
+            row.insert("label".to_string(), serde_json::json!(entry.label));
+            if include_table {
+                row.insert("table".to_string(), serde_json::json!(entry.table));
+            }
+            if extended {
+                row.insert("required".to_string(), serde_json::json!(entry.required));
+                row.insert("read_only".to_string(), serde_json::json!(entry.read_only));
+                row.insert("display".to_string(), serde_json::json!(entry.display));
+                row.insert(
+                    "max_length".to_string(),
+                    serde_json::json!(entry.max_length),
+                );
+                row.insert(
+                    "default_value".to_string(),
+                    serde_json::json!(entry.default_value),
+                );
+                row.insert("reference".to_string(), serde_json::json!(entry.reference));
+            }
+            row
+        })
+        .collect();
+    output::write_ordered_objects_csv(&rows, &mut std::io::stdout())
 }
 
 fn field_value_as_text(record: &crate::models::record::Record, field: &str) -> Option<String> {

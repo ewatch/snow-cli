@@ -1,5 +1,8 @@
+use std::collections::HashSet;
+
 use super::{SnowClient, pagination};
 use crate::models::display_value::DisplayValue;
+use crate::models::validation::ValidationError;
 
 /// Optional Table API read modifiers. The default sends neither parameter.
 #[derive(Debug, Clone, Copy, Default)]
@@ -113,15 +116,29 @@ impl SnowClient {
 
     /// Fetch `sysparm_limit`/`sysparm_offset`-paged records from any
     /// ServiceNow list endpoint that returns `{"result": [...]}` and reports
-    /// `X-Total-Count` (the Table and Attachment APIs).
+    /// `X-Total-Count` and/or RFC 8288 `Link` headers (the Table and Attachment APIs).
     ///
-    /// `params` are sent on every page after the paging parameters.
+    /// `params` are sent on the initial page after the paging parameters, and on
+    /// subsequent offset-paged requests when the server omits `Link` headers.
     pub async fn get_paged_records(
         &mut self,
         path: &str,
         params: &[(&str, &str)],
         pagination: &pagination::PaginationConfig,
     ) -> anyhow::Result<pagination::TableListResult> {
+        if pagination.page_size == 0 {
+            return Err(ValidationError::new("Pagination page_size must be at least 1").into());
+        }
+        if pagination.limit == Some(0) {
+            return Ok(pagination::TableListResult {
+                records: Vec::new(),
+                offset: pagination.offset,
+                total: None,
+                truncated: false,
+                fields_truncated: false,
+            });
+        }
+
         let mut all_records = Vec::new();
         let mut offset = pagination.offset;
         let page_size = pagination.page_size;
@@ -129,6 +146,8 @@ impl SnowClient {
         let mut total: Option<usize> = None;
         // Set when we stop at the limit and the server may hold more rows.
         let mut maybe_more = false;
+        let mut next_link_url: Option<String> = None;
+        let mut visited_next_urls: HashSet<String> = HashSet::new();
 
         loop {
             // Never request more records than the remaining limit allows.
@@ -136,15 +155,20 @@ impl SnowClient {
                 Some(lim) => page_size.min(lim.saturating_sub(all_records.len())),
                 None => page_size,
             };
-            let request_size_param = request_size.to_string();
-            let offset_param = offset.to_string();
-            let mut param_refs: Vec<(&str, &str)> = vec![
-                ("sysparm_limit", request_size_param.as_str()),
-                ("sysparm_offset", offset_param.as_str()),
-            ];
-            param_refs.extend_from_slice(params);
 
-            let response = self.get_with_params(path, &param_refs).await?;
+            let response = if let Some(next_url) = next_link_url.take() {
+                self.get(&next_url).await?
+            } else {
+                let request_size_param = request_size.to_string();
+                let offset_param = offset.to_string();
+                let mut param_refs: Vec<(&str, &str)> = vec![
+                    ("sysparm_limit", request_size_param.as_str()),
+                    ("sysparm_offset", offset_param.as_str()),
+                ];
+                param_refs.extend_from_slice(params);
+                self.get_with_params(path, &param_refs).await?
+            };
+
             if total.is_none() {
                 total = response
                     .headers()
@@ -152,6 +176,7 @@ impl SnowClient {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.trim().parse().ok());
             }
+            let link_info = parse_link_header(response.headers());
             let body = response.text().await?;
             tracing::debug!(body_len = body.len(), "Parsing JSON response");
             let page: crate::models::record::TableResponse = serde_json::from_str(&body)
@@ -163,6 +188,7 @@ impl SnowClient {
                 offset = offset,
                 fetched = count,
                 total_so_far = all_records.len() + count,
+                has_next_link = link_info.next_url.is_some(),
                 "Fetched page"
             );
 
@@ -172,24 +198,48 @@ impl SnowClient {
             if let Some(lim) = limit
                 && all_records.len() >= lim
             {
-                maybe_more = all_records.len() > lim || count == request_size;
+                maybe_more = all_records.len() > lim
+                    || link_info.next_url.is_some()
+                    || (!link_info.has_any_link && count == request_size);
                 all_records.truncate(lim);
                 break;
             }
 
-            // If we got fewer records than requested, we've fetched everything
-            if count < request_size {
+            // Follow server-provided Link rel="next" when present, even if
+            // count < request_size (ACL-filtered or server-capped pages).
+            if let Some(next_href) = link_info.next_url {
+                let validated = self.authenticated_url(&next_href)?;
+                if !visited_next_urls.insert(validated.clone()) {
+                    tracing::warn!(
+                        "Table pagination received duplicate Link rel=\"next\" URL; stopping"
+                    );
+                    break;
+                }
+                next_link_url = Some(validated);
+                continue;
+            }
+            if link_info.has_any_link {
+                // Server emitted Link headers without rel="next": definitive final page.
+                break;
+            }
+
+            if count == 0 || count < request_size {
                 break;
             }
 
             offset = offset
-                .checked_add(request_size)
+                .checked_add(count)
                 .ok_or_else(|| anyhow::anyhow!("Table pagination offset overflow"))?;
         }
 
         let truncated = match total {
             Some(t) => {
-                !all_records.is_empty() && pagination.offset.saturating_add(all_records.len()) < t
+                if limit.is_some() {
+                    !all_records.is_empty()
+                        && pagination.offset.saturating_add(all_records.len()) < t
+                } else {
+                    maybe_more
+                }
             }
             None => maybe_more,
         };
@@ -243,6 +293,89 @@ impl SnowClient {
             .await?
             .total)
     }
+}
+
+#[derive(Debug, Default)]
+struct ParsedLinkHeader {
+    has_any_link: bool,
+    next_url: Option<String>,
+}
+
+/// Split a `Link` header value on commas outside `<...>` angle brackets and `"..."` quotes.
+fn split_link_entries(header: &str) -> Vec<&str> {
+    let mut entries = Vec::new();
+    let mut start = 0;
+    let mut in_angles = false;
+    let mut in_quotes = false;
+    let mut escaped = false;
+
+    for (idx, ch) in header.char_indices() {
+        if in_quotes {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_quotes = false;
+            }
+            continue;
+        }
+        match ch {
+            '<' => in_angles = true,
+            '>' => in_angles = false,
+            '"' if !in_angles => in_quotes = true,
+            ',' if !in_angles => {
+                entries.push(&header[start..idx]);
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    if start <= header.len() {
+        entries.push(&header[start..]);
+    }
+    entries
+}
+
+/// Parse RFC 8288 `Link` headers to detect whether any link header was present
+/// and extract the `rel="next"` target URL when provided.
+fn parse_link_header(headers: &http::HeaderMap) -> ParsedLinkHeader {
+    let mut parsed = ParsedLinkHeader::default();
+    for header_value in headers.get_all(http::header::LINK) {
+        let Ok(raw) = header_value.to_str() else {
+            continue;
+        };
+        for entry in split_link_entries(raw) {
+            let trimmed = entry.trim();
+            let Some(rest) = trimmed.strip_prefix('<') else {
+                continue;
+            };
+            let Some((href, params)) = rest.split_once('>') else {
+                continue;
+            };
+            let href = href.trim();
+            if href.is_empty() {
+                continue;
+            }
+            parsed.has_any_link = true;
+            let is_next = params.split(';').skip(1).any(|param| {
+                let Some((key, value)) = param.split_once('=') else {
+                    return false;
+                };
+                if !key.trim().eq_ignore_ascii_case("rel") {
+                    return false;
+                }
+                let value = value.trim().trim_matches('"');
+                value
+                    .split_whitespace()
+                    .any(|rel| rel.eq_ignore_ascii_case("next"))
+            });
+            if is_next && parsed.next_url.is_none() {
+                parsed.next_url = Some(href.to_string());
+            }
+        }
+    }
+    parsed
 }
 #[cfg(test)]
 mod tests {
@@ -752,5 +885,195 @@ mod tests {
         assert_eq!(result.next_offset(), None);
         assert!(!result.truncated);
         assert_eq!(result.records[2].sys_id(), Some("6"));
+    }
+
+    #[tokio::test]
+    async fn test_get_paged_records_rejects_zero_page_size() {
+        let mut client = test_client("https://test.service-now.com", MockAuth::new("token"));
+        let pagination = pagination::PaginationConfig::default().with_page_size(0);
+        let err = client
+            .get_table_records_with_meta(&incident_table(), None, None, &pagination, None)
+            .await
+            .expect_err("page_size=0 must return an error instead of looping");
+        assert!(err.to_string().contains("page_size"));
+    }
+
+    #[tokio::test]
+    async fn test_get_paged_records_limit_zero_short_circuits_without_network_io() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [{"sys_id": "1"}]
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let pagination = pagination::PaginationConfig::default().with_limit(Some(0));
+        let result = client
+            .get_table_records_with_meta(&incident_table(), None, None, &pagination, None)
+            .await
+            .unwrap();
+        assert!(result.records.is_empty());
+        assert_eq!(result.total, None);
+        assert!(!result.truncated);
+    }
+
+    #[tokio::test]
+    async fn test_get_paged_records_follows_link_next_across_acl_filtered_short_pages() {
+        let server = MockServer::start().await;
+
+        // Page 1 requested 10 rows, but row-level ACLs left only 1 visible row.
+        // Link rel="next" (including a comma inside sysparm_fields) points to offset=10.
+        let next_url = format!(
+            "{}/api/now/table/incident?sysparm_limit=10&sysparm_offset=10&sysparm_fields=sys_id,number",
+            server.uri()
+        );
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .and(query_param("sysparm_offset", "0"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("X-Total-Count", "15")
+                    .insert_header(
+                        "Link",
+                        format!(
+                            "<{next_url}>;rel=\"next\", <{}/api/now/table/incident?sysparm_offset=0>;rel=\"first\"",
+                            server.uri()
+                        ),
+                    )
+                    .set_body_json(serde_json::json!({
+                        "result": [{"sys_id": "1", "number": "INC001"}]
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // Page 2 is the final page (Link has rel="prev" only, no rel="next").
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .and(query_param("sysparm_offset", "10"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("X-Total-Count", "15")
+                    .insert_header(
+                        "Link",
+                        format!(
+                            "<{}/api/now/table/incident?sysparm_offset=0>;rel=\"prev\"",
+                            server.uri()
+                        ),
+                    )
+                    .set_body_json(serde_json::json!({
+                        "result": [{"sys_id": "2", "number": "INC002"}]
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let pagination = pagination::PaginationConfig::default().with_page_size(10);
+        let result = client
+            .get_table_records_with_meta(
+                &incident_table(),
+                None,
+                Some("sys_id,number"),
+                &pagination,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.returned(), 2);
+        assert_eq!(result.records[0].sys_id(), Some("1"));
+        assert_eq!(result.records[1].sys_id(), Some("2"));
+        assert!(!result.truncated);
+    }
+
+    #[tokio::test]
+    async fn test_get_paged_records_continues_on_server_capped_pages_via_link_next() {
+        let server = MockServer::start().await;
+
+        // Client asks for page_size=10; server caps page size to 2 (glide.rest.max_limit)
+        // and emits Link rel="next" for offset=2.
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .and(query_param("sysparm_limit", "10"))
+            .and(query_param("sysparm_offset", "0"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("X-Total-Count", "3")
+                    .insert_header(
+                        "Link",
+                        format!(
+                            "<{}/api/now/table/incident?sysparm_limit=2&sysparm_offset=2>;rel=\"next\"",
+                            server.uri()
+                        ),
+                    )
+                    .set_body_json(serde_json::json!({
+                        "result": [{"sys_id": "1"}, {"sys_id": "2"}]
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .and(query_param("sysparm_limit", "2"))
+            .and(query_param("sysparm_offset", "2"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("X-Total-Count", "3")
+                    .set_body_json(serde_json::json!({
+                        "result": [{"sys_id": "3"}]
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let pagination = pagination::PaginationConfig::default().with_page_size(10);
+        let result = client
+            .get_table_records_with_meta(&incident_table(), None, None, &pagination, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.returned(), 3);
+        assert_eq!(result.records[2].sys_id(), Some("3"));
+        assert!(!result.truncated);
+    }
+
+    #[tokio::test]
+    async fn test_get_paged_records_rejects_cross_origin_link_next() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header(
+                        "Link",
+                        "<https://attacker.example/api/now/table/incident?sysparm_offset=10>;rel=\"next\"",
+                    )
+                    .set_body_json(serde_json::json!({
+                        "result": [{"sys_id": "1"}]
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let pagination = pagination::PaginationConfig::default().with_page_size(10);
+        let err = client
+            .get_table_records_with_meta(&incident_table(), None, None, &pagination, None)
+            .await
+            .expect_err("cross-origin Link rel=\"next\" must be refused");
+        assert!(err.to_string().contains("non-instance URL"), "{err}");
     }
 }

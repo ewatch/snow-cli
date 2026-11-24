@@ -1,5 +1,6 @@
 use crate::cli::args::OutputFormat;
 use crate::models::record::Record;
+use indexmap::{IndexMap, IndexSet};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -28,16 +29,7 @@ pub(crate) fn write_output<T: Serialize + ?Sized, W: Write>(
             let json = serde_json::to_string(value)?;
             writeln!(writer, "{json}")?;
         }
-        OutputFormat::Csv => match serde_json::to_value(value)? {
-            // The csv crate cannot serialize maps: a single object becomes a
-            // header row and one value row.
-            Value::Object(object) => write_object_csv(&object, writer)?,
-            _ => {
-                let mut writer = csv::Writer::from_writer(writer);
-                writer.serialize(value)?;
-                writer.flush()?;
-            }
-        },
+        OutputFormat::Csv => write_serializable_csv(value, writer)?,
         OutputFormat::Jsonl => {
             write_jsonl_value(&serde_json::to_value(value)?, writer)?;
         }
@@ -55,21 +47,110 @@ pub(crate) fn write_output<T: Serialize + ?Sized, W: Write>(
     Ok(())
 }
 
-/// One JSON object as CSV: its keys as the header, its values as one row.
-/// Nested values are written as compact JSON.
-fn write_object_csv<W: Write>(
-    object: &serde_json::Map<String, Value>,
+/// Format a JSON value as a CSV cell.
+///
+/// String values are neutralized against spreadsheet formula injection;
+/// non-string JSON values (such as negative numbers `-4` or `-12.5` and
+/// booleans) are preserved verbatim.
+fn format_csv_cell(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => neutralize_csv_formula(text),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    }
+}
+
+/// Serialize an arbitrary value as CSV while preserving struct field order,
+/// tolerating optional/omitted fields across rows, and neutralizing formula
+/// prefixes on string cells only.
+fn write_serializable_csv<T: Serialize + ?Sized, W: Write>(
+    value: &T,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    // Round-trip through JSON text + IndexMap so struct field declaration order
+    // is preserved (serde_json::Value's default Map sorts keys alphabetically).
+    let raw = serde_json::to_string(value)?;
+    if let Ok(object) = serde_json::from_str::<IndexMap<String, Value>>(&raw) {
+        return write_ordered_object_csv(&object, writer);
+    }
+    if let Ok(rows) = serde_json::from_str::<Vec<IndexMap<String, Value>>>(&raw) {
+        return write_ordered_objects_csv(&rows, writer);
+    }
+    match serde_json::from_str::<Value>(&raw)? {
+        Value::Array(items) => {
+            if items.is_empty() {
+                return Ok(());
+            }
+            let mut csv = csv::Writer::from_writer(writer);
+            for item in &items {
+                csv.write_record([format_csv_cell(Some(item))])?;
+            }
+            csv.flush()?;
+            Ok(())
+        }
+        Value::Null => Ok(()),
+        other => {
+            let mut csv = csv::Writer::from_writer(writer);
+            csv.write_record([format_csv_cell(Some(&other))])?;
+            csv.flush()?;
+            Ok(())
+        }
+    }
+}
+
+/// One JSON object as CSV: its keys in declaration order as the header, its
+/// values as one row.
+fn write_ordered_object_csv<W: Write>(
+    object: &IndexMap<String, Value>,
     writer: &mut W,
 ) -> anyhow::Result<()> {
     let mut csv = csv::Writer::from_writer(writer);
     csv.write_record(object.keys())?;
-    csv.write_record(object.values().map(|value| match value {
-        Value::Null => String::new(),
-        Value::String(text) => neutralize_csv_formula(text),
-        other => other.to_string(),
-    }))?;
+    csv.write_record(object.values().map(|value| format_csv_cell(Some(value))))?;
     csv.flush()?;
     Ok(())
+}
+
+/// A list of JSON objects as CSV: union of keys across all rows in first-seen
+/// declaration order as a fixed header, with empty cells for omitted keys and
+/// formula neutralization on string cells only.
+pub(crate) fn write_ordered_objects_csv<W: Write>(
+    rows: &[IndexMap<String, Value>],
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut columns = IndexSet::new();
+    for row in rows {
+        for key in row.keys() {
+            columns.insert(key.as_str());
+        }
+    }
+    let columns: Vec<&str> = columns.into_iter().collect();
+
+    let mut csv = csv::Writer::from_writer(writer);
+    csv.write_record(&columns)?;
+    for row in rows {
+        let cells: Vec<String> = columns
+            .iter()
+            .map(|col| format_csv_cell(row.get(*col)))
+            .collect();
+        csv.write_record(&cells)?;
+    }
+    csv.flush()?;
+    Ok(())
+}
+
+/// Write a list of values as CSV to the given writer.
+pub(crate) fn write_list_csv<T: Serialize, W: Write>(
+    values: &[T],
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    if values.is_empty() {
+        return Ok(());
+    }
+    write_serializable_csv(values, writer)
 }
 
 /// Write a list of values to stdout in the requested output format.
@@ -80,11 +161,7 @@ pub fn print_list<T: Serialize>(values: &[T], format: &OutputFormat) -> anyhow::
             println!("{json}");
         }
         OutputFormat::Csv => {
-            let mut writer = csv::Writer::from_writer(std::io::stdout());
-            for value in values {
-                writer.serialize(value)?;
-            }
-            writer.flush()?;
+            write_list_csv(values, &mut std::io::stdout())?;
         }
         OutputFormat::Jsonl => {
             write_jsonl_value(&serde_json::to_value(values)?, &mut std::io::stdout())?;
@@ -387,11 +464,7 @@ pub(crate) fn write_records_csv<W: Write>(
     for record in records {
         let row: Vec<String> = columns
             .iter()
-            .map(|col| match record.fields.get(col) {
-                Some(serde_json::Value::String(s)) => neutralize_csv_formula(s),
-                Some(serde_json::Value::Null) | None => String::new(),
-                Some(v) => neutralize_csv_formula(&v.to_string()),
-            })
+            .map(|col| format_csv_cell(record.fields.get(col)))
             .collect();
         csv_writer.write_record(&row)?;
     }
@@ -625,6 +698,68 @@ mod tests {
         // Columns sorted: active, count, notes
         assert!(csv_str.starts_with("active,count,notes\n"));
         assert!(csv_str.contains("true,42,"));
+    }
+
+    #[test]
+    fn test_write_records_csv_preserves_negative_numbers_without_formula_prefix() {
+        let records = vec![Record {
+            fields: BTreeMap::from([
+                ("delta".to_string(), serde_json::json!(-4)),
+                ("score".to_string(), serde_json::json!(-12.5)),
+                ("formula".to_string(), serde_json::json!("-12.5")),
+                ("expr".to_string(), serde_json::json!("=1+1")),
+            ]),
+        }];
+
+        let mut output = Vec::new();
+        write_records_csv(&records, &mut output).unwrap();
+        let csv_str = String::from_utf8(output).unwrap();
+
+        assert_eq!(csv_str, "delta,expr,formula,score\n-4,'=1+1,'-12.5,-12.5\n");
+    }
+
+    #[test]
+    fn test_write_list_csv_handles_optional_fields_and_neutralizes_formulas() {
+        #[derive(serde::Serialize)]
+        struct Item {
+            column: String,
+            label: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            reference: Option<String>,
+            offset: i64,
+        }
+
+        let items = vec![
+            Item {
+                column: "short_description".to_string(),
+                label: "=HYPERLINK(\"http://evil\")".to_string(),
+                reference: None,
+                offset: -4,
+            },
+            Item {
+                column: "caller_id".to_string(),
+                label: "+Caller".to_string(),
+                reference: Some("sys_user".to_string()),
+                offset: -12,
+            },
+        ];
+
+        let mut output = Vec::new();
+        write_list_csv(&items, &mut output).unwrap();
+        let csv_str = String::from_utf8(output).unwrap();
+
+        assert!(
+            csv_str.starts_with("column,label,offset,reference\n"),
+            "{csv_str}"
+        );
+        assert!(
+            csv_str.contains("short_description,\"'=HYPERLINK(\"\"http://evil\"\")\",-4,\n"),
+            "{csv_str}"
+        );
+        assert!(
+            csv_str.contains("caller_id,'+Caller,-12,sys_user\n"),
+            "{csv_str}"
+        );
     }
 
     fn run_emit_auto(value: &Value) -> String {

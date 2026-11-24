@@ -1541,6 +1541,85 @@ async fn test_table_schema_csv_output() {
         .stdout(predicate::str::contains("number,string,Number"));
 }
 
+#[tokio::test]
+async fn test_table_schema_extended_csv_output_aligns_optional_columns_and_neutralizes_formulas() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "element": "short_description",
+                    "internal_type": "string",
+                    "column_label": "=HYPERLINK(\"http://evil\")",
+                    "mandatory": "false",
+                    "read_only": "false",
+                    "display": "false",
+                    "max_length": "160",
+                    "default_value": "",
+                    "reference": "",
+                    "name": "incident"
+                },
+                {
+                    "element": "caller_id",
+                    "internal_type": "reference",
+                    "column_label": "Caller",
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "display": "false",
+                    "max_length": "32",
+                    "default_value": "+cmd",
+                    "reference": "sys_user",
+                    "name": "incident"
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config(&server.uri());
+
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "csv",
+            "--instance",
+            &server.uri(),
+            "table",
+            "schema",
+            "incident",
+            "--extended",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "{stdout}");
+    assert_eq!(
+        lines[0],
+        "column,type,label,table,required,read_only,display,max_length,default_value,reference"
+    );
+    assert!(
+        stdout.contains(
+            "short_description,string,\"'=HYPERLINK(\"\"http://evil\"\")\",incident,false,false,false,160,,"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("caller_id,reference,Caller,incident,true,false,false,32,'+cmd,sys_user"),
+        "{stdout}"
+    );
+}
+
 // --- table stats ---
 
 #[tokio::test]
