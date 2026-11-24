@@ -1637,6 +1637,7 @@ dependencies = [
  "assert_cmd",
  "async-trait",
  "base64 0.23.1",
+ "bytes",
  "ciborium",
  "clap",
  "clap_complete",

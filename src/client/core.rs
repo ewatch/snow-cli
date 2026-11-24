@@ -94,6 +94,9 @@ pub struct BackgroundScriptOptions {
 /// pagination, and error mapping.
 pub struct SnowClient {
     pub(super) http: Client,
+    /// Streaming HTTP client configured with connect + idle read timeouts
+    /// (without a fixed total request timeout) for large attachment downloads.
+    pub(super) http_streaming: Client,
     pub(super) base_url: String,
     pub(super) authenticator: Box<dyn crate::auth::Authenticator>,
     pub(super) session: SessionState,
@@ -142,6 +145,31 @@ impl Default for ClientConfig {
 
 /// Maximum number of same-origin redirects allowed for authenticated non-native requests.
 const MAX_REDIRECT_HOPS: usize = 10;
+
+/// Cap TCP/TLS connection setup wait so dead hosts fail quickly instead of
+/// stalling for the full 90s request timeout.
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 15;
+
+fn build_client_redirect_policy(
+    auth_type: crate::config::AuthMethod,
+    expected_base: Url,
+) -> reqwest::redirect::Policy {
+    if auth_type == crate::config::AuthMethod::NativeSession {
+        reqwest::redirect::Policy::none()
+    } else {
+        reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= MAX_REDIRECT_HOPS {
+                return attempt.error("Too many redirects");
+            }
+            if !is_safe_authenticated_url(attempt.url())
+                || !same_origin(&expected_base, attempt.url())
+            {
+                return attempt.error("Refusing to follow redirect to unsafe or cross-origin URL");
+            }
+            attempt.follow()
+        })
+    }
+}
 
 pub(super) fn is_safe_authenticated_url(url: &Url) -> bool {
     if !url.username().is_empty() || url.password().is_some() {
@@ -250,32 +278,34 @@ impl SnowClient {
         if let Some(session) = authenticator.native_session_credentials() {
             session.ensure_instance(&base_url)?;
         }
-        let redirect_policy =
-            if authenticator.auth_type() == crate::config::AuthMethod::NativeSession {
-                reqwest::redirect::Policy::none()
-            } else {
-                let expected_base = parsed_base.clone();
-                reqwest::redirect::Policy::custom(move |attempt| {
-                    if attempt.previous().len() >= MAX_REDIRECT_HOPS {
-                        return attempt.error("Too many redirects");
-                    }
-                    if !is_safe_authenticated_url(attempt.url())
-                        || !same_origin(&expected_base, attempt.url())
-                    {
-                        return attempt
-                            .error("Refusing to follow redirect to unsafe or cross-origin URL");
-                    }
-                    attempt.follow()
-                })
-            };
+        let user_agent = format!("snow-cli/{}", env!("CARGO_PKG_VERSION"));
+        let connect_timeout =
+            Duration::from_secs(config.timeout_secs.clamp(1, DEFAULT_CONNECT_TIMEOUT_SECS));
+        let request_timeout = Duration::from_secs(config.timeout_secs);
+
         let http = Client::builder()
-            .redirect(redirect_policy)
-            .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(config.timeout_secs))
+            .redirect(build_client_redirect_policy(
+                authenticator.auth_type(),
+                parsed_base.clone(),
+            ))
+            .user_agent(&user_agent)
+            .connect_timeout(connect_timeout)
+            .timeout(request_timeout)
+            .build()?;
+
+        let http_streaming = Client::builder()
+            .redirect(build_client_redirect_policy(
+                authenticator.auth_type(),
+                parsed_base,
+            ))
+            .user_agent(&user_agent)
+            .connect_timeout(connect_timeout)
+            .read_timeout(request_timeout)
             .build()?;
 
         Ok(Self {
             http,
+            http_streaming,
             base_url,
             authenticator,
             session: SessionState::default(),

@@ -29,12 +29,18 @@ pub(super) fn parse_bootstrap(body: &str) -> Option<Value> {
             'f' => decoded.push('\u{000c}'),
             'u' => {
                 let digits: String = chars.by_ref().take(4).collect();
+                if digits.len() != 4 {
+                    return None;
+                }
                 let code = u16::from_str_radix(&digits, 16).ok()?;
                 if (0xD800..=0xDBFF).contains(&code) {
                     if chars.next()? != '\\' || chars.next()? != 'u' {
                         return None;
                     }
                     let low: String = chars.by_ref().take(4).collect();
+                    if low.len() != 4 {
+                        return None;
+                    }
                     let low = u16::from_str_radix(&low, 16).ok()?;
                     if !(0xDC00..=0xDFFF).contains(&low) {
                         return None;
@@ -44,6 +50,11 @@ pub(super) fn parse_bootstrap(body: &str) -> Option<Value> {
                     )?);
                 } else {
                     decoded.push(char::from_u32(u32::from(code))?);
+                }
+            }
+            '\r' => {
+                if chars.next() != Some('\n') {
+                    return None;
                 }
             }
             '\n' => {}
@@ -65,5 +76,14 @@ mod tests {
         assert_eq!(data["output"]["user"]["icon"], "😀");
         assert!(parse_bootstrap("login form").is_none());
         assert!(parse_bootstrap("uxGlobals.session = JSON.parse('broken');").is_none());
+        // Truncated \uXXXX escapes must fail closed.
+        assert!(parse_bootstrap("uxGlobals.session = JSON.parse('{\"a\":\"\\u12\"}');").is_none());
+        assert!(
+            parse_bootstrap("uxGlobals.session = JSON.parse('{\"a\":\"\\uD83D\\uDE\"}');")
+                .is_none()
+        );
+        // CRLF line continuations inside JS string literals are supported.
+        let crlf = "uxGlobals.session = JSON.parse('{\\\r\n\"ok\":true}');";
+        assert_eq!(parse_bootstrap(crlf).unwrap()["ok"], true);
     }
 }
