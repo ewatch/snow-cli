@@ -278,21 +278,32 @@ impl OAuth2Auth {
         }
     }
 
+    /// Profile name used in user-facing authentication error guidance.
+    fn profile_label(&self) -> &str {
+        match &self.credential_source {
+            CredentialSource::Keychain { profile_name } => profile_name.as_str(),
+            #[cfg(test)]
+            CredentialSource::Direct { .. } => "<profile>",
+        }
+    }
+
     /// Retrieve the client_secret from the credential source when the grant requires it.
     fn get_required_client_secret(&self) -> anyhow::Result<String> {
         self.get_client_secret_optional()?
             .ok_or_else(|| match &self.credential_source {
-                CredentialSource::Keychain { profile_name } => anyhow::anyhow!(
-                    "No client_secret found for profile '{}'. \
-                 Run `snow-cli auth login --profile {} --client-secret <secret>` first.",
-                    profile_name,
-                    profile_name
-                ),
+                CredentialSource::Keychain { profile_name } => {
+                    crate::auth::AuthenticationError::new(format!(
+                        "No client_secret found for profile '{profile_name}'. \
+                         Run `snow-cli auth login --profile {profile_name} --client-secret <secret>` first."
+                    ))
+                    .into()
+                }
                 #[cfg(test)]
-                CredentialSource::Direct { .. } => anyhow::anyhow!(
+                CredentialSource::Direct { .. } => crate::auth::AuthenticationError::new(format!(
                     "No client_secret provided for OAuth2 {:?} grant.",
                     self.grant_type
-                ),
+                ))
+                .into(),
             })
     }
 
@@ -305,17 +316,18 @@ impl OAuth2Auth {
             #[cfg(test)]
             CredentialSource::Direct { password, .. } => match password {
                 Some(pw) => Ok(Some(pw.clone())),
-                None => anyhow::bail!("No password provided for OAuth2 password grant."),
+                None => Err(crate::auth::AuthenticationError::new(
+                    "No password provided for OAuth2 password grant.",
+                )
+                .into()),
             },
             CredentialSource::Keychain { profile_name } => {
                 let pw =
                     credentials::get_credential(profile_name, "password")?.ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "No password found for profile '{}'. \
-                         Run `snow-cli auth login --profile {} --password <password>` first.",
-                            profile_name,
-                            profile_name
-                        )
+                        crate::auth::AuthenticationError::new(format!(
+                            "No password found for profile '{profile_name}'. \
+                             Run `snow-cli auth login --profile {profile_name} --password <password>` first."
+                        ))
                     })?;
                 Ok(Some(pw))
             }
@@ -331,7 +343,12 @@ impl OAuth2Auth {
                 let Some(raw) = credentials::get_credential(profile_name, "oauth_token")? else {
                     return Ok(None);
                 };
-                let token = serde_json::from_str(&raw)?;
+                let token = serde_json::from_str(&raw).map_err(|_| {
+                    crate::auth::AuthenticationError::new(format!(
+                        "Stored OAuth token for profile '{profile_name}' is invalid. \
+                         Run `snow-cli auth login --profile {profile_name}` again."
+                    ))
+                })?;
                 Ok(Some(token))
             }
         }
@@ -356,9 +373,11 @@ impl OAuth2Auth {
     /// Exchange credentials for an access token via the token endpoint.
     async fn fetch_token(&self) -> anyhow::Result<CachedToken> {
         if self.grant_type == OAuthGrantType::AuthorizationCode {
-            anyhow::bail!(
-                "No OAuth access token is stored for this profile. Run `snow-cli auth login --profile <profile>` to complete the authorization-code browser flow."
-            );
+            let profile = self.profile_label();
+            return Err(crate::auth::AuthenticationError::new(format!(
+                "No OAuth access token is stored for profile '{profile}'. Run `snow-cli auth login --profile {profile}` to complete the authorization-code browser flow."
+            ))
+            .into());
         }
 
         let client_secret = self.get_required_client_secret()?;
@@ -414,9 +433,11 @@ impl OAuth2Auth {
         let _file_lock = self.acquire_refresh_file_lock().await?;
 
         let Some(stored_token) = self.get_stored_oauth_token()? else {
-            anyhow::bail!(
-                "No OAuth token found for this profile. Run `snow-cli auth login --profile <profile>` to complete the authorization-code browser flow."
-            );
+            let profile = self.profile_label();
+            return Err(crate::auth::AuthenticationError::new(format!(
+                "No OAuth token found for profile '{profile}'. Run `snow-cli auth login --profile {profile}` to complete the authorization-code browser flow."
+            ))
+            .into());
         };
 
         let token = if !stored_token.is_expired() {
@@ -431,9 +452,11 @@ impl OAuth2Auth {
             self.store_oauth_token(&refreshed.stored)?;
             refreshed.cached
         } else {
-            anyhow::bail!(
-                "Stored OAuth token is expired and no refresh_token is available. Run `snow-cli auth login --profile <profile>` again."
-            );
+            let profile = self.profile_label();
+            return Err(crate::auth::AuthenticationError::new(format!(
+                "Stored OAuth token for profile '{profile}' is expired and no refresh_token is available. Run `snow-cli auth login --profile {profile}` again."
+            ))
+            .into());
         };
 
         let headers = bearer_headers(token.access_token.expose_secret())?;
@@ -824,9 +847,11 @@ impl Authenticator for OAuth2Auth {
                 Err(e) => return Err(e),
             }
         } else if self.grant_type == OAuthGrantType::AuthorizationCode {
-            anyhow::bail!(
-                "No OAuth refresh_token is available. Run `snow-cli auth login --profile <profile>` again."
-            );
+            let profile = self.profile_label();
+            return Err(crate::auth::AuthenticationError::new(format!(
+                "No OAuth refresh_token is available for profile '{profile}'. Run `snow-cli auth login --profile {profile}` again."
+            ))
+            .into());
         } else {
             tracing::debug!("No refresh token available, re-authenticating");
             self.fetch_token().await?

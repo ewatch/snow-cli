@@ -166,7 +166,7 @@ fn test_write_table_list_preview_metadata_is_outside_records() {
 }
 
 #[test]
-fn test_write_table_list_jsonl_preview_uses_single_envelope_line() {
+fn test_write_table_list_jsonl_preview_stays_streaming_ndjson() {
     let result = sample_list_result(Some(10), true);
     let preview = PreviewReport {
         truncated_fields: vec![crate::cli::truncation::PreviewField {
@@ -181,14 +181,18 @@ fn test_write_table_list_jsonl_preview_uses_single_envelope_line() {
         .unwrap();
     let text = String::from_utf8(output).unwrap();
     let lines: Vec<&str> = text.trim().split('\n').collect();
-    let envelope: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(lines.len(), 3);
 
-    assert_eq!(lines.len(), 1);
+    let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(header["meta"]["fields_truncated"], true);
     assert_eq!(
-        envelope["preview"]["truncated_fields"][0]["shown_chars"],
+        header["meta"]["preview"]["truncated_fields"][0]["shown_chars"],
         2000
     );
-    assert_eq!(envelope["records"][0]["number"], "INC001");
+    let rec0: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(rec0["number"], "INC001");
+    let rec1: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+    assert_eq!(rec1["number"], "INC002");
 }
 
 #[test]

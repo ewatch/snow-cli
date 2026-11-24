@@ -25,8 +25,13 @@ impl AuthenticationError {
 }
 
 pub(crate) fn classify_auth_failure(error: anyhow::Error) -> anyhow::Error {
-    if error.downcast_ref::<AuthenticationError>().is_some() {
+    if error.downcast_ref::<AuthenticationError>().is_some()
+        || crate::client::error::classify_transport_error(&error).is_some()
+    {
         error
+    } else if let Some(api) = error.downcast_ref::<crate::client::error::ApiError>() {
+        let message = api.message.clone();
+        error.context(AuthenticationError::new(message))
     } else {
         error.context(AuthenticationError::new(
             "Authentication failed; check stored credentials or run snow-cli auth login.",

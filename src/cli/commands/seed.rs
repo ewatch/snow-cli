@@ -99,7 +99,7 @@ pub async fn handle(
     timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
-        SeedCommands::Plan { file } => {
+        SeedCommands::Plan(crate::cli::args::SeedPlanArgs { file }) => {
             ensure_json_output(format)?;
             let spec = read_seed_spec(&file)?;
             let plan = build_plan(spec)?;

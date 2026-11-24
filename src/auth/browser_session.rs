@@ -11,7 +11,7 @@ enum CookieSource {
     ///
     /// The token is NOT stored in any profile or keychain; users must set the env
     /// var themselves before each CLI session.
-    EnvVar,
+    EnvVar { profile_name: String },
     /// Directly injected value (for testing).
     #[cfg(test)]
     Direct { cookie_header: String },
@@ -38,9 +38,11 @@ pub struct BrowserSessionAuth {
 }
 
 impl BrowserSessionAuth {
-    pub fn new(_profile_name: &str, _profile: &Profile) -> anyhow::Result<Self> {
+    pub fn new(profile_name: &str, _profile: &Profile) -> anyhow::Result<Self> {
         Ok(Self {
-            cookie_source: CookieSource::EnvVar,
+            cookie_source: CookieSource::EnvVar {
+                profile_name: profile_name.to_string(),
+            },
         })
     }
 
@@ -54,17 +56,18 @@ impl BrowserSessionAuth {
 
     fn get_cookie_header(&self) -> anyhow::Result<String> {
         match &self.cookie_source {
-            CookieSource::EnvVar => std::env::var("SNOW_SESSION_COOKIE")
+            CookieSource::EnvVar { profile_name } => std::env::var("SNOW_SESSION_COOKIE")
                 .ok()
                 .filter(|v| !v.trim().is_empty())
                 .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "No ServiceNow session cookie found. \
-                             Set the SNOW_SESSION_COOKIE environment variable to the full Cookie \
-                             header value from your authenticated browser session, for example:\n\
-                             \n\
-                             export SNOW_SESSION_COOKIE='JSESSIONID=abc123; glide_user_route=xyz'"
-                    )
+                    crate::auth::AuthenticationError::new(format!(
+                        "No ServiceNow session cookie found for profile '{profile_name}'. \
+                         Set the SNOW_SESSION_COOKIE environment variable to the full Cookie \
+                         header value from your authenticated browser session, for example:\n\
+                         \n\
+                         export SNOW_SESSION_COOKIE='JSESSIONID=abc123; glide_user_route=xyz'"
+                    ))
+                    .into()
                 }),
             #[cfg(test)]
             CookieSource::Direct { cookie_header } => Ok(cookie_header.clone()),

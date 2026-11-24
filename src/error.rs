@@ -163,7 +163,7 @@ impl ErrorOutput {
         };
         let mut output = Self::new(code, message, ErrorClass::Api, retry);
         output.error.status = Some(status);
-        output.error.detail = detail.map(safe_message);
+        output.error.detail = detail.map(safe_message).filter(|d| !d.is_empty());
         // Only an origin can be emitted, never URL userinfo, path, query, or fragment.
         output.error.instance = url::Url::parse(instance)
             .ok()
@@ -184,22 +184,54 @@ impl ErrorOutput {
     }
 }
 
+/// Maximum Unicode scalar values retained in structured stderr diagnostics.
+pub(crate) const MAX_DIAGNOSTIC_CHARS: usize = 500;
+
+/// Returns `true` when `lower` contains a structured `query:` / `script:`
+/// key-value dump (for example at the start of a diagnostic or after a
+/// punctuation delimiter like `{`, `,`, `;`, `"`, `'`, or `:`), as opposed to
+/// natural prose such as `"Invalid query: unknown field foo"`.
+fn has_structured_colon_marker(lower: &str, marker: &str) -> bool {
+    let bytes = lower.as_bytes();
+    let mut offset = 0;
+    while let Some(rel) = lower[offset..].find(marker) {
+        let start = offset + rel;
+        let prefix = &lower[..start];
+        let preceded_by_word_char = prefix
+            .trim_end_matches(|ch: char| ch.is_ascii_whitespace())
+            .bytes()
+            .next_back()
+            .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_');
+        let directly_joined_word =
+            start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+        if !directly_joined_word && !preceded_by_word_char {
+            return true;
+        }
+        offset = start + marker.len();
+    }
+    false
+}
+
 /// Bound every diagnostic, including fallback errors; strip controls and known
 /// credential patterns. Input/transport/config errors additionally discard their
 /// source text entirely. Sensitive HTTP debug does not weaken this boundary.
 fn safe_message(message: &str) -> String {
-    const MAX_DIAGNOSTIC_CHARS: usize = 500;
     let lower = message.to_ascii_lowercase();
-    if [
+    let has_param_or_assign = [
         "sysparm_query",
         "sysparm_script",
         "query=",
-        "query:",
         "script=",
-        "script:",
+        "\"query\":",
+        "'query':",
+        "\"script\":",
+        "'script':",
     ]
     .iter()
-    .any(|marker| lower.contains(marker))
+    .any(|marker| lower.contains(marker));
+    if has_param_or_assign
+        || has_structured_colon_marker(&lower, "query:")
+        || has_structured_colon_marker(&lower, "script:")
     {
         return "Diagnostic text withheld because it may contain a query or script".to_string();
     }
@@ -354,6 +386,22 @@ fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutpu
         }
         return Some((output, 1));
     }
+    if let Some(auth_error) = error.downcast_ref::<crate::auth::AuthenticationError>() {
+        let mut output = ErrorOutput::new(
+            "AUTH_FAILED",
+            &auth_error.to_string(),
+            ErrorClass::Auth,
+            RetryAdvice::Never,
+        );
+        if let Some(api) = error.downcast_ref::<ApiError>() {
+            output.error.status = Some(api.status);
+            output.error.instance = url::Url::parse(&api.instance)
+                .ok()
+                .filter(|url| matches!(url.scheme(), "http" | "https"))
+                .map(|url| url.origin().ascii_serialization());
+        }
+        return Some((output, 3));
+    }
     if let Some(error) = error.downcast_ref::<ApiError>() {
         return Some((
             ErrorOutput::api(
@@ -373,7 +421,11 @@ fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutpu
             ErrorClass::Api,
             RetryAdvice::ManualReview,
         );
-        output.error.detail = error.detail.as_deref().map(safe_message);
+        output.error.detail = error
+            .detail
+            .as_deref()
+            .map(safe_message)
+            .filter(|d| !d.is_empty());
         return Some((output, 5));
     }
     if let Some(error) = crate::client::error::classify_transport_error(error) {
@@ -390,17 +442,6 @@ fn known_error_output_and_exit_code(error: &anyhow::Error) -> Option<(ErrorOutpu
                 retry,
             ),
             5,
-        ));
-    }
-    if let Some(error) = error.downcast_ref::<crate::auth::AuthenticationError>() {
-        return Some((
-            ErrorOutput::new(
-                "AUTH_FAILED",
-                &error.to_string(),
-                ErrorClass::Auth,
-                RetryAdvice::Never,
-            ),
-            3,
         ));
     }
     if let Some(error) = error.downcast_ref::<crate::snu::broker::BrokerClientError>() {
@@ -608,11 +649,81 @@ mod tests {
             "sysparm_query=description=private",
             "script: gs.print('private secret');",
             "query: descriptionLIKEprivate",
+            r#"{"query": "descriptionLIKEprivate"}"#,
+            "context, script: gs.print('private')",
         ] {
             let output =
                 ErrorOutput::new("BAD_REQUEST", message, ErrorClass::Api, RetryAdvice::Never);
-            assert!(!output.error.message.contains("private"));
+            assert!(!output.error.message.contains("private"), "{message}");
         }
+    }
+
+    #[test]
+    fn prose_diagnostics_mentioning_query_or_script_are_preserved() {
+        for message in [
+            "Invalid query: unknown field foo",
+            "Invalid script: unexpected token at line 3",
+            "GraphQL query: syntax error",
+        ] {
+            let output =
+                ErrorOutput::new("BAD_REQUEST", message, ErrorClass::Api, RetryAdvice::Never);
+            assert_eq!(output.error.message, message);
+        }
+    }
+
+    #[test]
+    fn authentication_error_wrapping_api_error_keeps_auth_exit_code_and_status() {
+        let api_err = ApiError::from_status(
+            401,
+            "https://user:secret@dev.service-now.com/oauth_token.do",
+            Some(r#"{"error":"invalid_client","error_description":"secret"}"#.into()),
+        );
+        let err = crate::auth::classify_auth_failure(anyhow::Error::new(api_err));
+        let (output, exit) = error_output_and_exit_code(&err);
+        assert_eq!(exit, 3);
+        assert_eq!(output.error.code, "AUTH_FAILED");
+        assert_eq!(output.error.class, ErrorClass::Auth);
+        assert_eq!(output.error.retry, RetryAdvice::Never);
+        assert_eq!(output.error.status, Some(401));
+        assert_eq!(
+            output.error.instance.as_deref(),
+            Some("https://dev.service-now.com")
+        );
+        assert_eq!(
+            output.error.message,
+            "OAuth2 token request failed: invalid_client"
+        );
+    }
+
+    #[test]
+    fn graphql_error_omission_notice_survives_safe_message_bounding() {
+        let errors: Vec<serde_json::Value> = (0..10)
+            .map(|i| serde_json::json!({"message": format!("Error {i}: {}", "a".repeat(120))}))
+            .collect();
+        let error = anyhow::Error::new(GraphqlError::from_errors(&errors));
+        let (output, exit) = error_output_and_exit_code(&error);
+        assert_eq!(exit, 5);
+        let detail = output.error.detail.as_deref().unwrap();
+        assert!(detail.chars().count() <= MAX_DIAGNOSTIC_CHARS, "{detail}");
+        assert!(
+            detail.contains("additional GraphQL errors omitted>"),
+            "{detail}"
+        );
+        assert!(!detail.ends_with("... <truncated>"), "{detail}");
+    }
+
+    #[test]
+    fn blank_api_error_body_omits_detail_from_json() {
+        let error = anyhow::Error::new(ApiError::from_status(
+            500,
+            "https://dev.service-now.com",
+            Some("   \n\t  ".into()),
+        ));
+        let (output, exit) = error_output_and_exit_code(&error);
+        assert_eq!(exit, 5);
+        assert!(output.error.detail.is_none());
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(!json.contains("\"detail\""), "{json}");
     }
 
     #[test]

@@ -34,26 +34,26 @@ pub async fn handle(
         None => None,
     };
     match args.command {
-        SnuCommands::CheckConnection {
+        SnuCommands::CheckConnection(crate::cli::args::SnuCheckConnectionArgs {
             timeout_secs,
             verify,
-        } => handle_check_connection(timeout_secs, verify, target_origin, output_format).await,
-        SnuCommands::GetInstanceInfo { timeout_secs: _ } => {
+        }) => handle_check_connection(timeout_secs, verify, target_origin, output_format).await,
+        SnuCommands::GetInstanceInfo(crate::cli::args::SnuTimeoutArgs { timeout_secs: _ }) => {
             handle_get_instance_info(target_origin, output_format).await
         }
-        SnuCommands::WaitToken { timeout_secs } => {
+        SnuCommands::WaitToken(crate::cli::args::SnuTimeoutArgs { timeout_secs }) => {
             let (_bridge, instance) =
                 connect_and_wait_for_fresh_session(timeout_secs, target_origin).await?;
             print_output(&redact_session_for_output(&instance), output_format)
         }
-        SnuCommands::Query {
+        SnuCommands::Query(crate::cli::args::SnuQueryArgs {
             table,
             query,
             fields,
             limit,
             order_by,
             timeout_secs,
-        } => {
+        }) => {
             let (bridge, instance) =
                 connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let order_by_encoded = order_by.as_ref().map(|spec| spec.to_encoded_query());
@@ -85,10 +85,10 @@ pub async fn handle(
             });
             print_output(&value, output_format)
         }
-        SnuCommands::Schema {
+        SnuCommands::Schema(crate::cli::args::SnuSchemaArgs {
             table,
             timeout_secs,
-        } => {
+        }) => {
             let (bridge, instance) =
                 connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let mut fields = Map::new();
@@ -135,19 +135,19 @@ pub async fn handle(
             )
             .await
         }
-        SnuCommands::AppMeta {
+        SnuCommands::AppMeta(crate::cli::args::SnuAppMetaArgs {
             app_id,
             timeout_secs,
-        } => handle_app_meta(app_id, timeout_secs, target_origin, output_format).await,
-        SnuCommands::ListTables { timeout_secs } => {
+        }) => handle_app_meta(app_id, timeout_secs, target_origin, output_format).await,
+        SnuCommands::ListTables(crate::cli::args::SnuTimeoutArgs { timeout_secs }) => {
             handle_list_tables(timeout_secs, target_origin, output_format).await
         }
-        SnuCommands::GetRecord {
+        SnuCommands::GetRecord(crate::cli::args::SnuGetRecordArgs {
             table,
             sys_id,
             fields,
             timeout_secs,
-        } => {
+        }) => {
             handle_get_record(
                 table,
                 sys_id,
@@ -260,7 +260,7 @@ pub async fn handle(
             }
         },
         SnuCommands::Context(context_args) => match context_args.command {
-            SnuContextCommands::Get { timeout_secs } => {
+            SnuContextCommands::Get(crate::cli::args::SnuTimeoutArgs { timeout_secs }) => {
                 let (bridge, instance) =
                     connect_and_wait_for_session(timeout_secs, target_origin).await?;
                 let mut fields = Map::new();
@@ -304,12 +304,12 @@ pub async fn handle(
                 print_response_value(response, output_format)
             }
         },
-        SnuCommands::Screenshot {
+        SnuCommands::Screenshot(crate::cli::args::SnuScreenshotArgs {
             url,
             tab_id,
             out_path,
             timeout_secs,
-        } => {
+        }) => {
             if url.is_none() && tab_id.is_none() {
                 return Err(anyhow!("missing required option: --url or --tab-id"));
             }
@@ -340,12 +340,15 @@ pub async fn handle(
             let (bridge, instance) =
                 connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let file_path = PathBuf::from(&file);
-            let bytes = std::fs::read(&file_path)
-                .with_context(|| format!("failed to read attachment file: {file}"))?;
+            let bytes = crate::cli::io::read_input_file(&file_path, "Attachment file", "--file")?;
             let file_name = file_path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .ok_or_else(|| anyhow!("attachment file path has no valid file name: {file}"))?;
+                .ok_or_else(|| {
+                    crate::models::validation::ValidationError::new(
+                        "Attachment file path passed to --file has no valid file name.",
+                    )
+                })?;
             let content_type =
                 content_type.unwrap_or_else(|| guess_content_type(&file_path).to_string());
             let image_data = base64::engine::general_purpose::STANDARD.encode(bytes);

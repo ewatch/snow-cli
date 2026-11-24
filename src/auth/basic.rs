@@ -59,11 +59,10 @@ impl BasicAuth {
                 "password",
             )?
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No password found for profile '{}'. Run `snow-cli auth login --profile {}` first.",
-                    profile_name,
-                    profile_name
-                )
+                crate::auth::AuthenticationError::new(format!(
+                    "No password found for profile '{profile_name}'. Run `snow-cli auth login --profile {profile_name}` first."
+                ))
+                .into()
             }),
         }
     }

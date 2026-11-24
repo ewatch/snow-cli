@@ -156,8 +156,12 @@ async fn list_display_values_and_checked_query_keep_the_envelope() {
                 "{binary}/{format}"
             );
             let priority = &value["records"][0]["priority"];
-            if format == "toon" {
-                assert_eq!(value["records"][0]["priority.display"], "4 - Low");
+            if matches!(format, "toon" | "auto") {
+                assert_eq!(priority, "4", "{binary}/{format}");
+                assert_eq!(
+                    value["records"][0]["priority.display"], "4 - Low",
+                    "{binary}/{format}"
+                );
             } else {
                 assert_eq!(
                     priority,

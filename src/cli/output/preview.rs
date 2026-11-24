@@ -119,12 +119,16 @@ pub(crate) fn print_table_list_preview(
     write_table_list_page(result, format, preview, extras, &mut std::io::stdout())
 }
 
+/// Print a single record, wrapping in `RecordPreviewEnvelope` whenever
+/// `--preview` was explicitly requested (even if no field exceeded the limit)
+/// so `--preview` consumers always receive a stable schema.
 pub(crate) fn print_record_preview(
     record: &Record,
     format: &OutputFormat,
+    preview_enabled: bool,
     preview: &PreviewReport,
 ) -> anyhow::Result<()> {
-    if preview.is_empty() {
+    if !preview_enabled && preview.is_empty() {
         return print_record(record, format);
     }
     let envelope = RecordPreviewEnvelope { preview, record };
@@ -148,6 +152,19 @@ pub(crate) fn write_table_list_with_preview<W: Write>(
     write_table_list_page(result, format, preview, &extras, writer)
 }
 
+#[derive(Serialize)]
+struct JsonlMetaBody<'a> {
+    #[serde(flatten)]
+    meta: TableListMeta<'a>,
+    #[serde(skip_serializing_if = "PreviewReport::is_empty")]
+    preview: &'a PreviewReport,
+}
+
+#[derive(Serialize)]
+struct JsonlMetaLine<'a> {
+    meta: JsonlMetaBody<'a>,
+}
+
 pub(crate) fn write_table_list_page<W: Write>(
     result: &TableListResult,
     format: &OutputFormat,
@@ -162,11 +179,14 @@ pub(crate) fn write_table_list_page<W: Write>(
     };
     match format {
         OutputFormat::Csv => write_records_csv(&result.records, writer)?,
-        OutputFormat::Jsonl if preview.is_empty() => {
-            let meta = serde_json::json!({
-                "meta": TableListMeta::with_extras(result, preview, extras)
-            });
-            writeln!(writer, "{}", serde_json::to_string(&meta)?)?;
+        OutputFormat::Jsonl => {
+            let meta_line = JsonlMetaLine {
+                meta: JsonlMetaBody {
+                    meta: TableListMeta::with_extras(result, preview, extras),
+                    preview,
+                },
+            };
+            writeln!(writer, "{}", serde_json::to_string(&meta_line)?)?;
             for record in &result.records {
                 writeln!(writer, "{}", serde_json::to_string(record)?)?;
             }

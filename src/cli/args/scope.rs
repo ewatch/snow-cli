@@ -3,6 +3,7 @@ use clap::{Args, Subcommand};
 use crate::models::identifiers::{EncodedQueryValue, SysId, TableName};
 
 const SCOPE_AFTER_HELP: &str = "Examples:\n  snow-cli scope list\n  snow-cli scope list incident\n  snow-cli scope list sn_ot_incident_mgmt\n  snow-cli scope list --limit 50 --offset 50   # second page; output is bounded to 20 rows by default\n  snow-cli scope inspect x_my_app\n  snow-cli scope inspect 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --details full\n  snow-cli scope move-file sys_script_include 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --target-scope x_target_app --dry-run\n  snow-cli scope move-file sys_script_include 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --target-scope x_target_app --yes";
+pub(crate) const READ_ONLY_SCOPE_AFTER_HELP: &str = "Examples:\n  snow-cli-ro scope list\n  snow-cli-ro scope list incident\n  snow-cli-ro scope list sn_ot_incident_mgmt\n  snow-cli-ro scope list --limit 50 --offset 50   # second page; output is bounded to 20 rows by default\n  snow-cli-ro scope inspect x_my_app\n  snow-cli-ro scope inspect 4f7f9bfe1b2a9010d9f2ed7c2e4bcb12 --details full";
 // --- Scope ---
 
 #[derive(Args, Debug)]
@@ -12,63 +13,72 @@ pub struct ScopeArgs {
     pub command: ScopeCommands,
 }
 
+#[derive(Args, Debug)]
+pub struct ScopeListArgs {
+    /// Optional search term for partial name matches or exact scope names
+    pub search: Option<EncodedQueryValue>,
+
+    /// Restrict results to one or more scope kinds
+    #[arg(long, value_enum)]
+    pub kind: Vec<ScopeListKind>,
+
+    /// Include the source table column in text output
+    #[arg(long)]
+    pub show_source_table: bool,
+
+    /// Include the sys_id column in text output
+    #[arg(long)]
+    pub show_sys_id: bool,
+
+    /// Maximum number of rows to return (default: 20)
+    #[arg(long, conflicts_with = "all")]
+    pub limit: Option<usize>,
+
+    /// Skip this many matching rows (default: 0)
+    #[arg(long, default_value_t = 0)]
+    pub offset: usize,
+
+    /// Return every matching row instead of the bounded default
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ScopeInspectArgs {
+    /// Scope name (e.g., x_my_app) or scope sys_id
+    pub scope: EncodedQueryValue,
+
+    /// Detail level for output payload
+    #[arg(long, value_enum, default_value = "basic")]
+    pub details: ScopeDetailLevel,
+
+    /// Cap the records enumerated per table when `--details full` lists
+    /// artifacts. Required for platform-scale scopes such as `global`.
+    #[arg(long)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Args, Debug)]
+pub struct ScopeInventoryArgs {
+    /// Scope name (e.g., x_my_app) or scope sys_id
+    pub scope: EncodedQueryValue,
+
+    /// Cap the records enumerated per table. Required for platform-scale
+    /// scopes such as `global` to avoid downloading the whole instance.
+    #[arg(long)]
+    pub limit: Option<usize>,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum ScopeCommands {
     /// List scopes and classify them by origin
-    List {
-        /// Optional search term for partial name matches or exact scope names
-        search: Option<EncodedQueryValue>,
-
-        /// Restrict results to one or more scope kinds
-        #[arg(long, value_enum)]
-        kind: Vec<ScopeListKind>,
-
-        /// Include the source table column in text output
-        #[arg(long)]
-        show_source_table: bool,
-
-        /// Include the sys_id column in text output
-        #[arg(long)]
-        show_sys_id: bool,
-
-        /// Maximum number of rows to return (default: 20)
-        #[arg(long, conflicts_with = "all")]
-        limit: Option<usize>,
-
-        /// Skip this many matching rows (default: 0)
-        #[arg(long, default_value_t = 0)]
-        offset: usize,
-
-        /// Return every matching row instead of the bounded default
-        #[arg(long)]
-        all: bool,
-    },
+    List(ScopeListArgs),
 
     /// Inspect scope metadata and artifact counts
-    Inspect {
-        /// Scope name (e.g., x_my_app) or scope sys_id
-        scope: EncodedQueryValue,
-
-        /// Detail level for output payload
-        #[arg(long, value_enum, default_value = "basic")]
-        details: ScopeDetailLevel,
-
-        /// Cap the records enumerated per table when `--details full` lists
-        /// artifacts. Required for platform-scale scopes such as `global`.
-        #[arg(long)]
-        limit: Option<usize>,
-    },
+    Inspect(ScopeInspectArgs),
 
     /// Export normalized scope artifacts for analysis
-    Inventory {
-        /// Scope name (e.g., x_my_app) or scope sys_id
-        scope: EncodedQueryValue,
-
-        /// Cap the records enumerated per table. Required for platform-scale
-        /// scopes such as `global` to avoid downloading the whole instance.
-        #[arg(long)]
-        limit: Option<usize>,
-    },
+    Inventory(ScopeInventoryArgs),
 
     /// Move one application file to a different custom scope without changing sys_id
     MoveFile {
@@ -131,11 +141,11 @@ mod tests {
 
         match cli.command {
             Commands::Scope(args) => match args.command {
-                ScopeCommands::Inspect {
+                ScopeCommands::Inspect(ScopeInspectArgs {
                     scope,
                     details,
                     limit,
-                } => {
+                }) => {
                     assert_eq!(scope.as_str(), "x_my_app");
                     assert!(matches!(details, ScopeDetailLevel::Basic));
                     assert_eq!(limit, None);
@@ -161,13 +171,13 @@ mod tests {
 
         match cli.command {
             Commands::Scope(args) => match args.command {
-                ScopeCommands::List {
+                ScopeCommands::List(ScopeListArgs {
                     search,
                     kind,
                     show_source_table,
                     show_sys_id,
                     ..
-                } => {
+                }) => {
                     assert_eq!(search.map(|v| v.to_string()), Some("global".to_string()));
                     assert_eq!(kind, vec![ScopeListKind::Plugin, ScopeListKind::StoreApp]);
                     assert!(!show_source_table);
@@ -192,12 +202,12 @@ mod tests {
 
         match cli.command {
             Commands::Scope(args) => match args.command {
-                ScopeCommands::List {
+                ScopeCommands::List(ScopeListArgs {
                     search,
                     show_source_table,
                     show_sys_id,
                     ..
-                } => {
+                }) => {
                     assert_eq!(search.map(|v| v.to_string()), Some("incident".to_string()));
                     assert!(show_source_table);
                     assert!(show_sys_id);
@@ -221,7 +231,7 @@ mod tests {
 
         match cli.command {
             Commands::Scope(args) => match args.command {
-                ScopeCommands::Inspect { details, .. } => {
+                ScopeCommands::Inspect(ScopeInspectArgs { details, .. }) => {
                     assert!(matches!(details, ScopeDetailLevel::Full));
                 }
                 _ => panic!("Expected Scope Inspect command"),
@@ -236,7 +246,7 @@ mod tests {
 
         match cli.command {
             Commands::Scope(args) => match args.command {
-                ScopeCommands::Inventory { scope, limit } => {
+                ScopeCommands::Inventory(ScopeInventoryArgs { scope, limit }) => {
                     assert_eq!(scope.as_str(), "x_my_app");
                     assert_eq!(limit, None);
                 }

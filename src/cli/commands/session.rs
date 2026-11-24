@@ -57,10 +57,10 @@ pub async fn handle(
                 format,
             )
         }
-        SessionCommands::Attach {
+        SessionCommands::Attach(crate::cli::args::SessionAttachArgs {
             name,
             cookie_stdin: _,
-        } => {
+        }) => {
             let mut config = AppConfig::load()?;
             let source = config.active_profile(Some(profile)).ok_or_else(|| {
                 ConfigError::new(
@@ -113,7 +113,7 @@ pub async fn handle(
                 SessionCommands::Show => {
                     output::print_output(&client.inspect_native_session().await?, format)
                 }
-                SessionCommands::Options { kind } => {
+                SessionCommands::Options(crate::cli::args::SessionOptionsArgs { kind }) => {
                     output::print_list(&client.native_session_options(kind).await?, format)
                 }
                 SessionCommands::Switch { kind, value } => {

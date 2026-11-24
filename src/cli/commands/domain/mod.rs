@@ -35,10 +35,10 @@ pub async fn handle(
 ) -> anyhow::Result<()> {
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
     match args.command {
-        DomainCommands::List {
+        DomainCommands::List(crate::cli::args::DomainListArgs {
             limit,
             query_no_domain,
-        } => {
+        }) => {
             anyhow::ensure!(
                 limit > 0,
                 ValidationError::new("--limit must be greater than zero")
@@ -57,11 +57,11 @@ pub async fn handle(
                 .map_err(domain_table_missing)?;
             output::print_table_list(&result, format)
         }
-        DomainCommands::Inspect {
+        DomainCommands::Inspect(crate::cli::args::DomainInspectArgs {
             domain,
             limit,
             query_no_domain,
-        } => {
+        }) => {
             warn_if_query_no_domain_ignored(&mut client, query_no_domain).await;
             inspect(&mut client, &domain, limit, query_no_domain, format).await
         }

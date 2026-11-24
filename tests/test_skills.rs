@@ -1005,3 +1005,34 @@ async fn staged_hosted_bundle_installs_over_http_with_verified_digests() {
     assert!(install_dir.join("packs/snu/PACK.md").exists());
     assert!(!install_dir.join("packs/itsm/PACK.md").exists());
 }
+
+#[test]
+fn help_example_local_skill_install_succeeds_in_both_binaries() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for binary in ["snow-cli", "snow-cli-ro"] {
+        let target = tempfile::tempdir().unwrap();
+        let mut cmd = if binary == "snow-cli" {
+            cargo_bin_cmd!("snow-cli")
+        } else {
+            cargo_bin_cmd!("snow-cli-ro")
+        };
+        cmd.current_dir(&manifest_dir)
+            .args([
+                "skill",
+                "install",
+                "./skills/snow-cli",
+                "--target-dir",
+                target.path().to_str().unwrap(),
+            ])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("\"status\":\"success\""));
+
+        let install_dir = target.path().join("snow-cli");
+        assert!(install_dir.join("SKILL.md").exists(), "{binary}");
+        assert!(
+            install_dir.join("snow-cli-skill.lock.toml").exists(),
+            "{binary}"
+        );
+    }
+}

@@ -39,7 +39,7 @@ pub async fn handle(
 ) -> anyhow::Result<()> {
     let config_path = AppConfig::config_path();
     match args.command {
-        ConfigCommands::Init {
+        ConfigCommands::Init(crate::cli::args::ProfileInitArgs {
             instance,
             auth_method,
             username,
@@ -50,7 +50,7 @@ pub async fn handle(
             oauth_redirect_port,
             oauth_redirect_path,
             name,
-        } => handle_init_with_oauth_options(
+        }) => handle_init_with_oauth_options(
             &config_path,
             instance,
             auth_method,
@@ -65,7 +65,7 @@ pub async fn handle(
         )
         .await
         .and_then(|result| output::print_output(&result, output_format)),
-        ConfigCommands::Add {
+        ConfigCommands::Add(crate::cli::args::ProfileUpsertArgs {
             name,
             instance,
             auth_method,
@@ -79,39 +79,7 @@ pub async fn handle(
             cert_path,
             key_path,
             sso_login_url,
-        } => handle_add_profile_with_oauth_options(
-            &config_path,
-            name,
-            instance,
-            auth_method,
-            username,
-            client_id,
-            oauth_grant_type,
-            oauth_scope,
-            oauth_redirect_host,
-            oauth_redirect_port,
-            oauth_redirect_path,
-            cert_path,
-            key_path,
-            sso_login_url,
-        )
-        .await
-        .and_then(|result| output::print_output(&result, output_format)),
-        ConfigCommands::Edit {
-            name,
-            instance,
-            auth_method,
-            username,
-            client_id,
-            oauth_grant_type,
-            oauth_scope,
-            oauth_redirect_host,
-            oauth_redirect_port,
-            oauth_redirect_path,
-            cert_path,
-            key_path,
-            sso_login_url,
-        } => handle_edit_profile_with_oauth_options(
+        }) => handle_add_profile_with_oauth_options(
             &config_path,
             name,
             instance,
@@ -129,7 +97,7 @@ pub async fn handle(
         )
         .await
         .and_then(|result| output::print_output(&result, output_format)),
-        ConfigCommands::SetProfile {
+        ConfigCommands::Edit(crate::cli::args::ProfileUpsertArgs {
             name,
             instance,
             auth_method,
@@ -143,7 +111,39 @@ pub async fn handle(
             cert_path,
             key_path,
             sso_login_url,
-        } => handle_set_profile_with_oauth_options(
+        }) => handle_edit_profile_with_oauth_options(
+            &config_path,
+            name,
+            instance,
+            auth_method,
+            username,
+            client_id,
+            oauth_grant_type,
+            oauth_scope,
+            oauth_redirect_host,
+            oauth_redirect_port,
+            oauth_redirect_path,
+            cert_path,
+            key_path,
+            sso_login_url,
+        )
+        .await
+        .and_then(|result| output::print_output(&result, output_format)),
+        ConfigCommands::SetProfile(crate::cli::args::ProfileUpsertArgs {
+            name,
+            instance,
+            auth_method,
+            username,
+            client_id,
+            oauth_grant_type,
+            oauth_scope,
+            oauth_redirect_host,
+            oauth_redirect_port,
+            oauth_redirect_path,
+            cert_path,
+            key_path,
+            sso_login_url,
+        }) => handle_set_profile_with_oauth_options(
             &config_path,
             name,
             instance,
@@ -162,16 +162,16 @@ pub async fn handle(
         .await
         .and_then(|result| output::print_output(&result, output_format)),
         ConfigCommands::ListProfiles => handle_list_profiles(&config_path, output_format).await,
-        ConfigCommands::FindProfile { instance } => {
+        ConfigCommands::FindProfile(crate::cli::args::ProfileFindArgs { instance }) => {
             handle_find_profile(&config_path, output_format, instance).await
         }
         ConfigCommands::Sdk(sdk_args) => match sdk_args.command {
             ProfileSdkCommands::List => handle_list_now_sdk_profiles(output_format).await,
-            ProfileSdkCommands::Import {
+            ProfileSdkCommands::Import(crate::cli::args::ProfileSdkImportArgs {
                 alias,
                 all,
                 set_default,
-            } => handle_import_now_sdk(&config_path, output_format, alias, all, set_default).await,
+            }) => handle_import_now_sdk(&config_path, output_format, alias, all, set_default).await,
             ProfileSdkCommands::Export {
                 profile,
                 alias,
@@ -196,17 +196,17 @@ pub async fn handle(
             }
         },
         ConfigCommands::ListNowSdkProfiles => handle_list_now_sdk_profiles(output_format).await,
-        ConfigCommands::ImportNowSdk {
+        ConfigCommands::ImportNowSdk(crate::cli::args::ProfileSdkImportArgs {
             alias,
             all,
             set_default,
-        } => handle_import_now_sdk(&config_path, output_format, alias, all, set_default).await,
+        }) => handle_import_now_sdk(&config_path, output_format, alias, all, set_default).await,
         ConfigCommands::ExportNowSdk {
             profile,
             alias,
             set_default,
         } => handle_export_now_sdk(&config_path, output_format, profile, alias, set_default).await,
-        ConfigCommands::UseProfile { name } => {
+        ConfigCommands::UseProfile(crate::cli::args::ProfileUseArgs { name }) => {
             let result = handle_default_profile(&config_path, name).await?;
             output::print_output(&result, output_format)
         }
@@ -214,15 +214,15 @@ pub async fn handle(
             handle_current(&config_path, active_profile, output_format).await
         }
         ConfigCommands::Show => handle_show(&config_path, active_profile, output_format).await,
-        ConfigCommands::DeleteProfile {
+        ConfigCommands::DeleteProfile(crate::cli::args::ProfileDeleteArgs {
             name,
             yes,
             new_default,
-        } => {
+        }) => {
             let result = handle_delete_profile(&config_path, name, yes, new_default).await?;
             output::print_output(&result, output_format)
         }
-        ConfigCommands::Output { format, reset } => {
+        ConfigCommands::Output(crate::cli::args::ProfileOutputArgs { format, reset }) => {
             handle_output_default(&config_path, format, reset).await
         }
     }

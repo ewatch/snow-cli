@@ -95,23 +95,50 @@ pub fn compact_both(record: &mut Record) {
 /// `{"value": v, "display": d}` under `field` becomes `field = v` and
 /// `field.display = d`, so CSV and TOON tables stay one value per cell.
 pub fn split_both_columns(record: &mut Record) {
-    let nested: Vec<String> = record
-        .fields
-        .iter()
-        .filter(|(_, value)| is_compact_pair(value))
-        .map(|(key, _)| key.clone())
-        .collect();
-    for key in nested {
-        if let Some(Value::Object(mut object)) = record.fields.remove(&key) {
-            let raw = object.remove("value").unwrap_or(Value::Null);
-            let display = object.remove("display").unwrap_or(Value::Null);
-            record.fields.insert(format!("{key}.display"), display);
-            record.fields.insert(key, raw);
+    split_both_columns_uniform(std::slice::from_mut(record));
+}
+
+/// Split compacted `both` fields uniformly across every record in a page.
+///
+/// If *any* record in `records` has a differing `{"value": v, "display": d}`
+/// pair for `field`, every record that has `field` receives `<field>.display`
+/// (repeating its plain value when value == display) so all rows share a
+/// uniform key set and TOON/Auto can use compact `[N]{cols}` tabular encoding.
+pub fn split_both_columns_uniform(records: &mut [Record]) {
+    let mut split_keys = std::collections::BTreeSet::new();
+    for record in records.iter() {
+        for (key, value) in &record.fields {
+            if is_compact_pair(value) {
+                split_keys.insert(key.clone());
+            }
+        }
+    }
+    if split_keys.is_empty() {
+        return;
+    }
+    for record in records {
+        for key in &split_keys {
+            let display_key = format!("{key}.display");
+            match record.fields.get(key) {
+                Some(value) if is_compact_pair(value) => {
+                    if let Some(Value::Object(mut object)) = record.fields.remove(key) {
+                        let raw = object.remove("value").unwrap_or(Value::Null);
+                        let display = object.remove("display").unwrap_or(Value::Null);
+                        record.fields.insert(display_key, display);
+                        record.fields.insert(key.clone(), raw);
+                    }
+                }
+                Some(plain) => {
+                    let display = plain.clone();
+                    record.fields.entry(display_key).or_insert(display);
+                }
+                None => {}
+            }
         }
     }
 }
 
-fn is_compact_pair(value: &Value) -> bool {
+pub(crate) fn is_compact_pair(value: &Value) -> bool {
     matches!(value, Value::Object(object)
         if object.len() == 2 && object.contains_key("value") && object.contains_key("display"))
 }
@@ -181,6 +208,41 @@ mod tests {
                 "other": {"value": "1", "link": "x"},
                 "priority": "4",
                 "priority.display": "4 - Low"
+            })
+        );
+    }
+
+    #[test]
+    fn split_both_columns_uniform_keeps_tabular_keys_consistent_across_rows() {
+        let mut records = vec![
+            record(serde_json::json!({
+                "number": {"display_value": "INC1", "value": "INC1"},
+                "assignment_group": {"display_value": "Network", "value": "grp1"},
+                "priority": {"display_value": "4 - Low", "value": "4"}
+            })),
+            record(serde_json::json!({
+                "number": {"display_value": "INC2", "value": "INC2"},
+                "assignment_group": {"display_value": "", "value": ""},
+                "priority": {"display_value": "1 - Critical", "value": "1"}
+            })),
+        ];
+        for r in &mut records {
+            compact_both(r);
+        }
+        split_both_columns_uniform(&mut records);
+        // `number` was equal on every row so it is NOT split; `assignment_group`
+        // differed on row 0 so row 1 also gets `assignment_group.display`.
+        let keys0: Vec<&String> = records[0].fields.keys().collect();
+        let keys1: Vec<&String> = records[1].fields.keys().collect();
+        assert_eq!(keys0, keys1);
+        assert_eq!(
+            serde_json::to_value(&records[1]).unwrap(),
+            serde_json::json!({
+                "assignment_group": "",
+                "assignment_group.display": "",
+                "number": "INC2",
+                "priority": "1",
+                "priority.display": "1 - Critical"
             })
         );
     }

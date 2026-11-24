@@ -1782,7 +1782,8 @@ async fn send_action_with_refresh(
     // on the target table — re-running /token would not help.
     match probe_session(broker, &instance, timeout_secs).await {
         Ok(true) => {
-            let detail = crate::client::error::safe_error_detail(&text);
+            let detail = crate::client::error::safe_error_detail(&text)
+                .unwrap_or_else(|| "<empty response>".to_string());
             return Err(anyhow!(
                 "ServiceNow denied this action, but the browser session is still valid — this is a permissions (ACL) problem on the target table, not an expired token, so re-running /token will not help: {detail}"
             ));
@@ -1904,7 +1905,8 @@ async fn send_legacy_action_with_refresh(
 
     match probe_session(broker, &instance, timeout_secs).await {
         Ok(true) => {
-            let detail = crate::client::error::safe_error_detail(&text);
+            let detail = crate::client::error::safe_error_detail(&text)
+                .unwrap_or_else(|| "<empty response>".to_string());
             return Err(anyhow!(
                 "ServiceNow denied this action, but the browser session is still valid — this is a permissions (ACL) problem, not an expired token, so re-running /token will not help: {detail}"
             ));

@@ -321,10 +321,10 @@ mod tests {
     #[test]
     fn connection_commands_show_profile_hint() {
         assert!(command_uses_connection(&Commands::Auth(AuthArgs {
-            command: AuthCommands::Status { verify: false },
+            command: AuthCommands::Status(cli::args::AuthStatusArgs { verify: false }),
         })));
         assert!(command_uses_connection(&Commands::Table(TableArgs {
-            command: TableCommands::List {
+            command: TableCommands::List(cli::args::TableListArgs {
                 domain: None,
                 domain_read: Default::default(),
                 table: "incident".parse().unwrap(),
@@ -337,7 +337,7 @@ mod tests {
                 full: false,
                 preview: false,
                 read: Default::default(),
-            },
+            }),
         })));
         assert!(command_uses_connection(&Commands::Graphql(GraphqlArgs {
             document: Some("{ incident { number } }".to_string()),
@@ -360,7 +360,9 @@ mod tests {
         }));
         assert!(command_uses_connection(&Commands::Snu(
             crate::cli::args::SnuArgs {
-                command: crate::cli::args::SnuCommands::WaitToken { timeout_secs: 1 },
+                command: crate::cli::args::SnuCommands::WaitToken(
+                    crate::cli::args::SnuTimeoutArgs { timeout_secs: 1 }
+                ),
             }
         )));
     }

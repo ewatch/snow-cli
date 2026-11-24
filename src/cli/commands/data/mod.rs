@@ -24,7 +24,7 @@ pub async fn handle(
     timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
-        DataCommands::Export {
+        DataCommands::Export(crate::cli::args::DataExportArgs {
             table,
             query,
             fields,
@@ -32,7 +32,7 @@ pub async fn handle(
             order_by,
             out_path,
             import_ready,
-        } => {
+        }) => {
             let export = ExportRequest {
                 table,
                 query,
@@ -44,11 +44,11 @@ pub async fn handle(
             };
             handle_export(profile, format, instance, timeout_secs, export).await
         }
-        DataCommands::ExportPackage { file, out_dir } => {
+        DataCommands::ExportPackage(crate::cli::args::DataExportPackageArgs { file, out_dir }) => {
             ensure_json_output(format, "data export-package")?;
             handle_export_package(profile, format, instance, timeout_secs, &file, &out_dir).await
         }
-        DataCommands::Validate { file } => {
+        DataCommands::Validate(crate::cli::args::DataValidateArgs { file }) => {
             ensure_json_output(format, "data validate")?;
             handle_validate(profile, format, instance, timeout_secs, &file).await
         }

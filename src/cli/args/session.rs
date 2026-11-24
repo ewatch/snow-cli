@@ -1,14 +1,29 @@
 use crate::models::session::SessionSwitchType;
 use clap::{Args, Subcommand};
 
+pub(crate) const SESSION_AFTER_HELP: &str = "Native sessions use ServiceNow's own UI endpoints and OS-keychain credentials; SN-Utils is not required. Use a dedicated native_session profile for subsequent session, table, and API commands. UI endpoints are release-dependent; unsupported instances fail explicitly.";
+
 #[derive(Args, Debug)]
-#[command(
-    after_help = "Native sessions use ServiceNow's own UI endpoints and OS-keychain credentials; SN-Utils is not required. Use a dedicated native_session profile for subsequent session, table, and API commands. UI endpoints are release-dependent; unsupported instances fail explicitly."
-)]
+#[command(after_help = SESSION_AFTER_HELP)]
 pub struct SessionArgs {
     #[command(subcommand)]
     pub command: SessionCommands,
 }
+
+#[derive(Args, Debug)]
+pub struct SessionAttachArgs {
+    pub name: String,
+    /// Read the full Cookie header from stdin (never passed as a CLI argument)
+    #[arg(long, required = true)]
+    pub cookie_stdin: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct SessionOptionsArgs {
+    #[arg(value_enum)]
+    pub kind: SessionSwitchType,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum SessionCommands {
     /// Log in using a Basic profile and save a separate native session profile
@@ -20,19 +35,11 @@ pub enum SessionCommands {
         password_stdin: bool,
     },
     /// Validate and securely store an existing cookie session in a separate profile
-    Attach {
-        name: String,
-        /// Read the full Cookie header from stdin (never passed as a CLI argument)
-        #[arg(long, required = true)]
-        cookie_stdin: bool,
-    },
+    Attach(SessionAttachArgs),
     /// Inspect the current native session and all three picker contexts
     Show,
     /// List selectable context values for this session
-    Options {
-        #[arg(value_enum)]
-        kind: SessionSwitchType,
-    },
+    Options(SessionOptionsArgs),
     /// Switch a picker value and verify all resulting contexts in the same session
     Switch {
         #[arg(value_enum)]

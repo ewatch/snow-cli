@@ -29,21 +29,24 @@ pub async fn handle(
 ) -> anyhow::Result<()> {
     match args.command {
         AuthCommands::Login {
-            password,
-            password_stdin,
-            token,
-            token_stdin,
-            client_secret,
-            client_secret_stdin,
-            session_cookie,
-            session_cookie_stdin,
-            no_browser,
-            sdk_oauth,
-            code_stdin,
+            base:
+                crate::cli::args::AuthLoginBaseArgs {
+                    password,
+                    password_stdin,
+                    token,
+                    token_stdin,
+                    client_secret,
+                    client_secret_stdin,
+                    session_cookie,
+                    session_cookie_stdin,
+                    no_browser,
+                    sdk_oauth,
+                    code_stdin,
+                    no_verify,
+                },
             also_now_sdk,
             now_sdk_alias,
             set_now_sdk_default,
-            no_verify,
         } => {
             let callback = if sdk_oauth {
                 AuthorizationCodeCallback::SdkManualCode { code_stdin }
@@ -76,7 +79,7 @@ pub async fn handle(
             .await
         }
         AuthCommands::Logout => handle_logout(profile_name, format).await,
-        AuthCommands::Status { verify } => {
+        AuthCommands::Status(crate::cli::args::AuthStatusArgs { verify }) => {
             handle_status(profile_name, format, instance, timeout_secs, verify).await
         }
         AuthCommands::Token { reveal } => handle_token(profile_name, reveal).await,
@@ -1122,10 +1125,9 @@ async fn handle_token(profile_name: &str, reveal: bool) -> anyhow::Result<()> {
         crate::config::profile::AuthMethod::Basic => {
             let credential =
                 credentials::get_credential(profile_name, "password")?.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "No credentials stored for profile '{}'. Run `snow-cli auth login` first.",
-                        profile_name
-                    )
+                    crate::auth::AuthenticationError::new(format!(
+                        "No credentials stored for profile '{profile_name}'. Run `snow-cli auth login --profile {profile_name}` first."
+                    ))
                 })?;
             let username = profile.username.as_deref().unwrap_or("");
             use base64::Engine;
@@ -1154,10 +1156,9 @@ async fn handle_token(profile_name: &str, reveal: bool) -> anyhow::Result<()> {
         crate::config::profile::AuthMethod::BrowserSession => {
             let credential = credentials::env_fallback(profile_name, "session_cookie")
                 .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "No ServiceNow session cookie found for profile '{}'. Set SNOW_SESSION_COOKIE in your environment.",
-                        profile_name
-                    )
+                    crate::auth::AuthenticationError::new(format!(
+                        "No ServiceNow session cookie found for profile '{profile_name}'. Set SNOW_SESSION_COOKIE in your environment."
+                    ))
                 })?;
             write_token_stdout(&credential)?;
         }
@@ -1165,10 +1166,9 @@ async fn handle_token(profile_name: &str, reveal: bool) -> anyhow::Result<()> {
             let primary_cred_type = credentials::credential_type_for_auth(&profile.auth_method);
             let credential = credentials::get_credential(profile_name, primary_cred_type)?
                 .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "No credentials stored for profile '{}'. Run `snow-cli auth login` first.",
-                        profile_name
-                    )
+                    crate::auth::AuthenticationError::new(format!(
+                        "No credentials stored for profile '{profile_name}'. Run `snow-cli auth login --profile {profile_name}` first."
+                    ))
                 })?;
             write_token_stdout(&credential)?;
         }

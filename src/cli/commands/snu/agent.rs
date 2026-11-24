@@ -176,7 +176,7 @@ pub(super) async fn handle_page(
     output_format: &OutputFormat,
 ) -> anyhow::Result<()> {
     let (action, fields, timeout_secs) = match command {
-        SnuPageCommands::FormState { fields, target } => {
+        SnuPageCommands::FormState(crate::cli::args::SnuPageFormStateArgs { fields, target }) => {
             let mut payload = page_target_fields(&target);
             if !fields.is_empty() {
                 payload.insert(

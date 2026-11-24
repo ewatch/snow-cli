@@ -297,3 +297,166 @@ fn rules_report_path_line_form_and_remediation() {
     assert!(diagnostics.contains("cli/commands/bad.rs:5"));
     assert!(diagnostics.contains("`std::process::exit`"));
 }
+
+// --- ServiceNow sysparm_* allow-list guard (servicenow-cli-120.22) ---
+
+const TABLE_SYSPARMS: &[&str] = &[
+    "sysparm_query",
+    "sysparm_fields",
+    "sysparm_limit",
+    "sysparm_offset",
+    "sysparm_display_value",
+    "sysparm_exclude_reference_link",
+    "sysparm_view",
+    "sysparm_no_count",
+    "sysparm_query_no_domain",
+    "sysparm_input_display_value",
+    "sysparm_suppress_pagination_header",
+    "sysparm_query_category",
+];
+
+const AGGREGATE_SYSPARMS: &[&str] = &[
+    "sysparm_query",
+    "sysparm_count",
+    "sysparm_group_by",
+    "sysparm_avg_fields",
+    "sysparm_min_fields",
+    "sysparm_max_fields",
+    "sysparm_sum_fields",
+    "sysparm_having",
+    "sysparm_order_by",
+    "sysparm_display_value",
+    "sysparm_query_category",
+];
+
+const ATTACHMENT_SYSPARMS: &[&str] = &["sysparm_query", "sysparm_limit", "sysparm_offset"];
+
+const OTHER_ALLOWED_SYSPARMS: &[(&str, &str)] = &[
+    ("sysparm_ck", "client/transport.rs"),
+    ("sysparm_ck", "client/redaction.rs"),
+    ("sysparm_script", "error.rs"),
+    ("sysparm_transaction_scope", "cli/args/snu.rs"),
+    ("sysparm_transaction_scope", "cli/commands/snu/"),
+];
+
+/// Extract `sysparm_*` identifiers appearing inside string literals in
+/// production code (stripping `#[cfg(test)]` tails and line comments).
+fn extract_production_sysparms(source: &str) -> Vec<(usize, String)> {
+    let prod = source.split("#[cfg(test)]").next().unwrap_or(source);
+    let mut found = Vec::new();
+    for (line_idx, raw_line) in prod.lines().enumerate() {
+        let trimmed = raw_line.trim_start();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        // Scan string literals on this line.
+        let bytes = raw_line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                break;
+            }
+            if bytes[i] == b'"' {
+                i += 1;
+                let start = i;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        break;
+                    }
+                    i += 1;
+                }
+                let literal = &raw_line[start..i.min(bytes.len())];
+                let mut offset = 0;
+                while let Some(rel) = literal[offset..].find("sysparm_") {
+                    let s = offset + rel;
+                    let tail = &literal[s..];
+                    let end = tail
+                        .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                        .unwrap_or(tail.len());
+                    found.push((line_idx + 1, tail[..end].to_string()));
+                    offset = s + end;
+                }
+            }
+            i += 1;
+        }
+    }
+    found
+}
+
+fn sysparm_violations_for_file(relative: &str, text: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (line, param) in extract_production_sysparms(text) {
+        let allowed = if relative == "cli/commands/attachment.rs" {
+            ATTACHMENT_SYSPARMS.contains(&param.as_str())
+        } else if relative == "client/aggregate.rs" || relative == "cli/commands/domain/counts.rs" {
+            AGGREGATE_SYSPARMS.contains(&param.as_str())
+        } else if relative == "client/table.rs"
+            || relative == "client/identity.rs"
+            || relative == "client/native_session.rs"
+        {
+            TABLE_SYSPARMS.contains(&param.as_str())
+        } else {
+            TABLE_SYSPARMS.contains(&param.as_str())
+                || AGGREGATE_SYSPARMS.contains(&param.as_str())
+                || OTHER_ALLOWED_SYSPARMS
+                    .iter()
+                    .any(|(name, path_prefix)| *name == param && relative.starts_with(path_prefix))
+        };
+        if !allowed {
+            violations.push(format!(
+                "{relative}:{line}: unsupported or out-of-family ServiceNow parameter `{param}`"
+            ));
+        }
+    }
+    violations
+}
+
+#[test]
+fn sysparm_parameters_match_documented_api_allow_lists() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut violations = Vec::new();
+    for source in rust_sources(&root).unwrap() {
+        let relative = source
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        if relative.ends_with("/tests.rs") || relative.ends_with("_tests.rs") {
+            continue;
+        }
+        let text = fs::read_to_string(&source).unwrap();
+        violations.extend(sysparm_violations_for_file(&relative, &text));
+    }
+    assert!(
+        violations.is_empty(),
+        "unsupported ServiceNow sysparm_* parameter(s):\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn sysparm_allow_list_rejects_unsupported_and_misplaced_params() {
+    let orderby = sysparm_violations_for_file(
+        "client/table.rs",
+        r#"let params = [("sysparm_orderby", "number")];"#,
+    );
+    assert_eq!(orderby.len(), 1, "{orderby:?}");
+    assert!(orderby[0].contains("sysparm_orderby"));
+
+    let attachment_fields = sysparm_violations_for_file(
+        "cli/commands/attachment.rs",
+        r#"let params = [("sysparm_fields", "sys_id")];"#,
+    );
+    assert_eq!(attachment_fields.len(), 1, "{attachment_fields:?}");
+    assert!(attachment_fields[0].contains("sysparm_fields"));
+
+    let valid_attachment = sysparm_violations_for_file(
+        "cli/commands/attachment.rs",
+        r#"let params = [("sysparm_query", "table_name=incident"), ("sysparm_limit", "20")];"#,
+    );
+    assert!(valid_attachment.is_empty(), "{valid_attachment:?}");
+}

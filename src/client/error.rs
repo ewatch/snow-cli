@@ -114,7 +114,7 @@ impl ApiError {
             code: code.to_string(),
             message: message.to_string(),
             status,
-            detail: body.map(|body| safe_error_detail(&body)),
+            detail: body.as_deref().and_then(safe_error_detail),
             instance: instance.to_string(),
         }
     }
@@ -437,9 +437,12 @@ impl GraphqlError {
     const MAX_MESSAGES: usize = 8;
     /// Maximum Unicode scalar values retained from each GraphQL error message.
     const MAX_MESSAGE_CHARS: usize = 256;
+    /// Total detail character budget aligned with `crate::error::MAX_DIAGNOSTIC_CHARS`
+    /// so `safe_message` never chops off later errors or the omission notice.
+    const MAX_DETAIL_CHARS: usize = crate::error::MAX_DIAGNOSTIC_CHARS;
 
     pub fn from_errors(errors: &[serde_json::Value]) -> Self {
-        let mut messages = errors
+        let sanitized: Vec<String> = errors
             .iter()
             .filter_map(|error| error.get("message").and_then(serde_json::Value::as_str))
             .filter_map(|message| {
@@ -451,21 +454,48 @@ impl GraphqlError {
                     Some(truncate_graphql_message(message))
                 }
             })
-            .take(Self::MAX_MESSAGES)
-            .collect::<Vec<_>>();
+            .collect();
 
-        if errors.len() > Self::MAX_MESSAGES {
-            messages.push(format!(
-                "<{} additional GraphQL errors omitted>",
-                errors.len() - Self::MAX_MESSAGES
-            ));
+        let total_sanitized = sanitized.len();
+        let mut kept: Vec<String> = Vec::new();
+        let mut used_chars = 0usize;
+
+        for (index, message) in sanitized.into_iter().take(Self::MAX_MESSAGES).enumerate() {
+            let msg_chars = message.chars().count();
+            let sep_chars = if kept.is_empty() { 0 } else { 2 }; // "; "
+            let remaining_after = total_sanitized.saturating_sub(index + 1);
+            let notice_chars = if remaining_after > 0 {
+                2 + format!("<{remaining_after} additional GraphQL errors omitted>")
+                    .chars()
+                    .count()
+            } else {
+                0
+            };
+
+            if !kept.is_empty()
+                && used_chars + sep_chars + msg_chars + notice_chars > Self::MAX_DETAIL_CHARS
+            {
+                break;
+            }
+
+            used_chars += sep_chars + msg_chars;
+            kept.push(message);
+        }
+
+        let omitted = if kept.len() < total_sanitized {
+            total_sanitized - kept.len()
+        } else {
+            errors.len().saturating_sub(Self::MAX_MESSAGES)
+        };
+        if omitted > 0 {
+            kept.push(format!("<{omitted} additional GraphQL errors omitted>"));
         }
 
         Self {
-            detail: if messages.is_empty() {
+            detail: if kept.is_empty() {
                 None
             } else {
-                Some(messages.join("; "))
+                Some(kept.join("; "))
             },
         }
     }
@@ -501,11 +531,11 @@ fn truncate_graphql_message(message: &str) -> String {
 
 /// Unknown response text is always withheld from runtime errors. Sensitive
 /// HTTP diagnostics are a separate channel and cannot weaken this boundary.
-pub(crate) fn safe_error_detail(body: &str) -> String {
+pub(crate) fn safe_error_detail(body: &str) -> Option<String> {
     if body.trim().is_empty() {
-        String::new()
+        None
     } else {
-        format!("<response body redacted, {} bytes>", body.len())
+        Some(format!("<response body redacted, {} bytes>", body.len()))
     }
 }
 
@@ -518,9 +548,10 @@ mod tests {
         let body = "private credential ".repeat(100);
         assert_eq!(
             safe_error_detail(&body),
-            format!("<response body redacted, {} bytes>", body.len())
+            Some(format!("<response body redacted, {} bytes>", body.len()))
         );
-        assert_eq!(safe_error_detail("  "), "");
+        assert_eq!(safe_error_detail("  "), None);
+        assert_eq!(safe_error_detail(""), None);
     }
 
     #[test]

@@ -247,6 +247,21 @@ fn resolve_script_from_tty_no_input_errors() {
     assert!(err.to_string().contains("No script provided"));
 }
 
+#[test]
+fn resolve_script_from_missing_file_hides_private_path() {
+    let err = resolve_script_from(
+        Some("/private/secret-dir/missing-script.js".into()),
+        None,
+        Cursor::new(b""),
+        false,
+    )
+    .unwrap_err();
+    assert!(err.downcast_ref::<crate::error::InputFileError>().is_some());
+    let msg = err.to_string();
+    assert!(msg.contains("--file"), "{msg}");
+    assert!(!msg.contains("secret-dir"), "{msg}");
+}
+
 fn fields_from(pairs: &[(&str, Value)]) -> Map<String, Value> {
     pairs
         .iter()

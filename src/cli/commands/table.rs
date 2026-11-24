@@ -25,7 +25,7 @@ pub async fn handle(
     timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
-        TableCommands::List {
+        TableCommands::List(crate::cli::args::TableListArgs {
             table,
             query,
             domain,
@@ -38,7 +38,7 @@ pub async fn handle(
             preview,
             domain_read,
             read,
-        } => {
+        }) => {
             tracing::info!("Listing records from table: {}", table);
             output::ensure_preview_supported(preview, format)?;
 
@@ -153,7 +153,7 @@ pub async fn handle(
             Ok(())
         }
 
-        TableCommands::Get {
+        TableCommands::Get(crate::cli::args::TableGetArgs {
             table,
             record,
             fields,
@@ -162,7 +162,7 @@ pub async fn handle(
             preview,
             domain_read,
             read,
-        } => {
+        }) => {
             tracing::info!("Getting record {} from table: {}", record, table);
             output::ensure_preview_supported(preview, format)?;
             let raw_field = if lookup.raw {
@@ -256,14 +256,14 @@ pub async fn handle(
                 truncation::PreviewReport::default()
             };
 
-            output::print_record_preview(&response, format, &preview_report)?;
+            output::print_record_preview(&response, format, preview, &preview_report)?;
             Ok(())
         }
 
         TableCommands::Create { table, data } => {
             tracing::info!("Creating record in table: {}", table);
 
-            let body = read_data(data)?;
+            let body = read_data(data, "table create <table>")?;
             let _: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
                 ValidationError::new("Invalid JSON data; provide a valid JSON record.")
             })?;
@@ -285,7 +285,7 @@ pub async fn handle(
         } => {
             tracing::info!("Updating record {} in table: {}", sys_id, table);
 
-            let body = read_data(data)?;
+            let body = read_data(data, "table update <table> <sys_id>")?;
             let _: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
                 ValidationError::new("Invalid JSON data; provide a valid JSON record.")
             })?;
@@ -331,12 +331,12 @@ pub async fn handle(
             Ok(())
         }
 
-        TableCommands::Schema {
+        TableCommands::Schema(crate::cli::args::TableSchemaArgs {
             table,
             extended,
             own_only,
             include_inherited: _,
-        } => {
+        }) => {
             handle_schema(
                 profile,
                 format,
@@ -349,12 +349,12 @@ pub async fn handle(
             .await
         }
 
-        TableCommands::Find {
+        TableCommands::Find(crate::cli::args::TableFindArgs {
             text,
             limit,
             offset,
             all,
-        } => {
+        }) => {
             tracing::info!(text = %text, "Finding tables");
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -362,18 +362,18 @@ pub async fn handle(
             discovery::handle_find(&mut client, &text, window, format).await
         }
 
-        TableCommands::Choices {
+        TableCommands::Choices(crate::cli::args::TableChoicesArgs {
             table,
             field,
             language,
-        } => {
+        }) => {
             tracing::info!(table = %table, "Listing choices");
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
             discovery::handle_choices(&mut client, &table, field.as_ref(), &language, format).await
         }
 
-        TableCommands::Stats {
+        TableCommands::Stats(crate::cli::args::TableStatsArgs {
             table,
             query,
             domain,
@@ -384,7 +384,7 @@ pub async fn handle(
             sum,
             having,
             check_fields,
-        } => {
+        }) => {
             tracing::info!("Fetching aggregate stats for table: {}", table);
             let having = having
                 .as_deref()
@@ -466,17 +466,20 @@ async fn get_record_by_sys_id(
 }
 
 /// Shape `--display-value both` output: compact `{value, display}` pairs,
-/// split into `<field>.display` columns for the tabular CSV and TOON formats.
+/// split uniformly into `<field>.display` columns for tabular formats (CSV,
+/// TOON, and Auto where TOON competes on tabular layout).
 fn apply_display_mode(records: &mut [Record], mode: Option<DisplayValue>, format: &OutputFormat) {
     if mode != Some(DisplayValue::Both) {
         return;
     }
-    let tabular = matches!(format, OutputFormat::Csv | OutputFormat::Toon);
-    for record in records {
+    for record in records.iter_mut() {
         display_value::compact_both(record);
-        if tabular {
-            display_value::split_both_columns(record);
-        }
+    }
+    if matches!(
+        format,
+        OutputFormat::Csv | OutputFormat::Toon | OutputFormat::Auto
+    ) {
+        display_value::split_both_columns_uniform(records);
     }
 }
 
@@ -826,9 +829,9 @@ fn field_value_as_text(record: &crate::models::record::Record, field: &str) -> O
 /// If `data` is `Some`, use it directly.
 /// If `None`, read from stdin (but only if stdin is not a TTY,
 /// to avoid hanging waiting for interactive input).
-fn read_data(data: Option<String>) -> anyhow::Result<String> {
+fn read_data(data: Option<String>, command_hint: &str) -> anyhow::Result<String> {
     let stdin = std::io::stdin();
-    read_data_from(data, stdin.lock(), stdin.is_terminal())
+    read_data_from(data, stdin.lock(), stdin.is_terminal(), command_hint)
 }
 
 /// Internal implementation that accepts a generic reader and TTY flag.
@@ -838,24 +841,25 @@ fn read_data_from<R: std::io::Read>(
     data: Option<String>,
     reader: R,
     is_tty: bool,
+    command_hint: &str,
 ) -> anyhow::Result<String> {
     if let Some(d) = data {
         return Ok(d);
     }
 
     if is_tty {
-        return Err(ValidationError::new(
-            "No data provided. Use --data or pipe JSON to snow-cli table create <table>.",
-        )
+        return Err(ValidationError::new(format!(
+            "No data provided. Use --data or pipe JSON to snow-cli {command_hint}."
+        ))
         .into());
     }
 
     let buf = read_to_string_limited(reader, DEFAULT_MAX_STDIN_BYTES, "JSON stdin input")?;
 
     if buf.trim().is_empty() {
-        return Err(ValidationError::new(
-            "No data received from stdin. Pipe valid JSON to snow-cli table create <table>.",
-        )
+        return Err(ValidationError::new(format!(
+            "No data received from stdin. Pipe valid JSON to snow-cli {command_hint}."
+        ))
         .into());
     }
 
@@ -873,6 +877,7 @@ mod tests {
             Some(r#"{"key":"value"}"#.to_string()),
             Cursor::new(b""),
             false,
+            "table create <table>",
         )
         .unwrap();
         assert_eq!(data, r#"{"key":"value"}"#);
@@ -885,6 +890,7 @@ mod tests {
             Some(r#"{"flag":"data"}"#.to_string()),
             Cursor::new(b"stdin data"),
             false,
+            "table create <table>",
         )
         .unwrap();
         assert_eq!(data, r#"{"flag":"data"}"#);
@@ -893,20 +899,32 @@ mod tests {
     #[test]
     fn test_read_data_from_stdin_pipe() {
         let input = r#"{"piped":"data"}"#;
-        let data = read_data_from(None, Cursor::new(input.as_bytes()), false).unwrap();
+        let data = read_data_from(
+            None,
+            Cursor::new(input.as_bytes()),
+            false,
+            "table create <table>",
+        )
+        .unwrap();
         assert_eq!(data, r#"{"piped":"data"}"#);
     }
 
     #[test]
     fn test_read_data_from_tty_no_data_errors() {
-        let result = read_data_from(None, Cursor::new(b""), true);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No data provided"));
+        let result = read_data_from(
+            None,
+            Cursor::new(b""),
+            true,
+            "table update <table> <sys_id>",
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("No data provided"));
+        assert!(msg.contains("table update <table> <sys_id>"));
     }
 
     #[test]
     fn test_read_data_from_empty_stdin_errors() {
-        let result = read_data_from(None, Cursor::new(b""), false);
+        let result = read_data_from(None, Cursor::new(b""), false, "table create <table>");
         assert!(result.is_err());
         assert!(
             result
@@ -918,7 +936,12 @@ mod tests {
 
     #[test]
     fn test_read_data_from_whitespace_stdin_errors() {
-        let result = read_data_from(None, Cursor::new(b"   \n  \t  "), false);
+        let result = read_data_from(
+            None,
+            Cursor::new(b"   \n  \t  "),
+            false,
+            "table create <table>",
+        );
         assert!(result.is_err());
         assert!(
             result
@@ -931,7 +954,13 @@ mod tests {
     #[test]
     fn test_read_data_from_stdin_multiline() {
         let input = "{\n  \"key\": \"value\"\n}";
-        let data = read_data_from(None, Cursor::new(input.as_bytes()), false).unwrap();
+        let data = read_data_from(
+            None,
+            Cursor::new(input.as_bytes()),
+            false,
+            "table create <table>",
+        )
+        .unwrap();
         assert_eq!(data, input);
     }
 

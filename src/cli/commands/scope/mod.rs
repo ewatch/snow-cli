@@ -25,7 +25,7 @@ pub async fn handle(
     timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
-        ScopeCommands::List {
+        ScopeCommands::List(crate::cli::args::ScopeListArgs {
             search,
             kind,
             show_source_table,
@@ -33,7 +33,7 @@ pub async fn handle(
             limit,
             offset,
             all,
-        } => {
+        }) => {
             handle_list(
                 profile,
                 format,
@@ -51,11 +51,11 @@ pub async fn handle(
             )
             .await
         }
-        ScopeCommands::Inspect {
+        ScopeCommands::Inspect(crate::cli::args::ScopeInspectArgs {
             scope,
             details,
             limit,
-        } => {
+        }) => {
             handle_inspect(
                 profile,
                 format,
@@ -67,7 +67,7 @@ pub async fn handle(
             )
             .await
         }
-        ScopeCommands::Inventory { scope, limit } => {
+        ScopeCommands::Inventory(crate::cli::args::ScopeInventoryArgs { scope, limit }) => {
             handle_inventory(profile, format, instance, timeout_secs, &scope, limit).await
         }
         ScopeCommands::MoveFile {

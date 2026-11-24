@@ -206,9 +206,7 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                     CommandCapability::CredentialExport,
                     "read-only policy does not allow exporting reusable credentials to the now-sdk store",
                 ),
-                ProfileSdkCommands::List | ProfileSdkCommands::Import { .. } => {
-                    PolicyDecision::Allow
-                }
+                ProfileSdkCommands::List | ProfileSdkCommands::Import(_) => PolicyDecision::Allow,
             },
             ConfigCommands::Storage(storage_args) => match &storage_args.command {
                 ProfileStorageCommands::Status => PolicyDecision::Allow,
@@ -240,7 +238,7 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             // not grant any additional remote access beyond what the credentials' own
             // ServiceNow ACLs allow. They are permitted so snow-cli-ro can bootstrap
             // authentication on its own.
-            AuthCommands::Status { .. }
+            AuthCommands::Status(_)
             | AuthCommands::Login {
                 also_now_sdk: false,
                 ..
@@ -267,8 +265,8 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
         },
         Commands::Session(args) => match &args.command {
             crate::cli::args::SessionCommands::Show
-            | crate::cli::args::SessionCommands::Options { .. }
-            | crate::cli::args::SessionCommands::Attach { .. }
+            | crate::cli::args::SessionCommands::Options(_)
+            | crate::cli::args::SessionCommands::Attach(_)
             | crate::cli::args::SessionCommands::Forget => PolicyDecision::Allow,
             crate::cli::args::SessionCommands::Switch { .. }
             | crate::cli::args::SessionCommands::Login { .. } => deny(
@@ -278,12 +276,12 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             ),
         },
         Commands::Table(args) => match &args.command {
-            TableCommands::List { .. }
-            | TableCommands::Get { .. }
-            | TableCommands::Schema { .. }
-            | TableCommands::Find { .. }
-            | TableCommands::Choices { .. }
-            | TableCommands::Stats { .. } => PolicyDecision::Allow,
+            TableCommands::List(_)
+            | TableCommands::Get(_)
+            | TableCommands::Schema(_)
+            | TableCommands::Find(_)
+            | TableCommands::Choices(_)
+            | TableCommands::Stats(_) => PolicyDecision::Allow,
             TableCommands::Create { .. }
             | TableCommands::Update { .. }
             | TableCommands::Delete { .. } => deny(
@@ -293,9 +291,9 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             ),
         },
         Commands::Data(args) => match &args.command {
-            DataCommands::Export { .. }
-            | DataCommands::ExportPackage { .. }
-            | DataCommands::Validate { .. } => PolicyDecision::Allow,
+            DataCommands::Export(_)
+            | DataCommands::ExportPackage(_)
+            | DataCommands::Validate(_) => PolicyDecision::Allow,
             DataCommands::Import { .. } => deny(
                 "data import",
                 CommandCapability::RemoteWrite,
@@ -303,7 +301,7 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             ),
         },
         Commands::Seed(args) => match &args.command {
-            SeedCommands::Plan { .. } => PolicyDecision::Allow,
+            SeedCommands::Plan(_) => PolicyDecision::Allow,
             SeedCommands::Apply { .. } | SeedCommands::Cleanup { .. } => deny(
                 "seed apply/cleanup",
                 CommandCapability::RemoteWrite,
@@ -311,9 +309,9 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             ),
         },
         Commands::Scope(args) => match &args.command {
-            ScopeCommands::List { .. }
-            | ScopeCommands::Inspect { .. }
-            | ScopeCommands::Inventory { .. } => PolicyDecision::Allow,
+            ScopeCommands::List(_) | ScopeCommands::Inspect(_) | ScopeCommands::Inventory(_) => {
+                PolicyDecision::Allow
+            }
             ScopeCommands::MoveFile { .. } => deny(
                 "scope move-file",
                 CommandCapability::RemoteWrite,
@@ -321,9 +319,7 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             ),
         },
         Commands::Attachment(args) => match &args.command {
-            AttachmentCommands::List { .. } | AttachmentCommands::Download { .. } => {
-                PolicyDecision::Allow
-            }
+            AttachmentCommands::List(_) | AttachmentCommands::Download(_) => PolicyDecision::Allow,
             AttachmentCommands::Upload { .. } => deny(
                 "attachment upload",
                 CommandCapability::RemoteWrite,
@@ -338,7 +334,7 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             ),
         },
         Commands::Api(args) => match &args.command {
-            ApiCommands::Get { .. } => PolicyDecision::Allow,
+            ApiCommands::Get(_) => PolicyDecision::Allow,
             ApiCommands::Post { .. } | ApiCommands::Put { .. } | ApiCommands::Delete { .. } => {
                 deny(
                     "api write",
@@ -371,16 +367,16 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
             crate::cli::args::FlowCommands::Show { .. } => PolicyDecision::Allow,
         },
         Commands::Snu(args) => match &args.command {
-            SnuCommands::CheckConnection { .. }
-            | SnuCommands::GetInstanceInfo { .. }
-            | SnuCommands::WaitToken { .. }
-            | SnuCommands::ListTables { .. }
-            | SnuCommands::GetRecord { .. }
-            | SnuCommands::AppMeta { .. }
-            | SnuCommands::Query { .. }
-            | SnuCommands::Schema { .. }
+            SnuCommands::CheckConnection(_)
+            | SnuCommands::GetInstanceInfo(_)
+            | SnuCommands::WaitToken(_)
+            | SnuCommands::ListTables(_)
+            | SnuCommands::GetRecord(_)
+            | SnuCommands::AppMeta(_)
+            | SnuCommands::Query(_)
+            | SnuCommands::Schema(_)
             | SnuCommands::Records(_)
-            | SnuCommands::Screenshot { .. } => PolicyDecision::Allow,
+            | SnuCommands::Screenshot(_) => PolicyDecision::Allow,
             SnuCommands::Slash { .. } => deny(
                 "snu slash",
                 CommandCapability::RemoteWrite,
@@ -413,7 +409,7 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 ),
             },
             SnuCommands::Page(page_args) => match &page_args.command {
-                SnuPageCommands::FormState { .. } => PolicyDecision::Allow,
+                SnuPageCommands::FormState(_) => PolicyDecision::Allow,
                 SnuPageCommands::SetField { .. }
                 | SnuPageCommands::RunUiAction { .. }
                 | SnuPageCommands::Click { .. }
@@ -444,7 +440,7 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 "read-only policy does not allow background script execution through SN-Utils",
             ),
             SnuCommands::Context(context_args) => match &context_args.command {
-                SnuContextCommands::Get { .. } => PolicyDecision::Allow,
+                SnuContextCommands::Get(_) => PolicyDecision::Allow,
                 SnuContextCommands::Switch { .. } => deny(
                     "snu context switch",
                     CommandCapability::RemoteWrite,
@@ -473,6 +469,111 @@ fn deny(
         command,
         capability,
         reason,
+    }
+}
+
+/// Look up the read-only policy capability and reason for a canonical full-CLI
+/// subcommand path (for example `&["auth", "token"]` or `&["table", "delete"]`).
+///
+/// Used by `cli::parse_error` so `snow-cli-ro` reports the true policy reason
+/// when rejecting a command that exists only in `snow-cli`, and verified for
+/// parity against `ReadOnlyCli` and `Cli`.
+pub fn read_only_denial_for_path(path: &[&str]) -> Option<(CommandCapability, &'static str)> {
+    match path {
+        ["profile", "export-now-sdk"] | ["profile", "sdk", "export"] => Some((
+            CommandCapability::CredentialExport,
+            "exports reusable credentials to the now-sdk store",
+        )),
+        ["profile", "storage", "set"] => Some((
+            CommandCapability::CredentialExport,
+            "changes credential storage backends or exports vault keys",
+        )),
+        ["profile", "storage", "migrate"] => Some((
+            CommandCapability::LocalCredentialWrite,
+            "migrates or deletes legacy keychain credentials",
+        )),
+        ["auth", "token"] => Some((
+            CommandCapability::CredentialExport,
+            "exports reusable credentials",
+        )),
+        ["session", "switch"] | ["session", "login"] => Some((
+            CommandCapability::RemoteWrite,
+            "changes remote session state",
+        )),
+        ["table", "create"] | ["table", "update"] | ["table", "delete"] => Some((
+            CommandCapability::RemoteWrite,
+            "mutates ServiceNow table records",
+        )),
+        ["data", "import"] => Some((
+            CommandCapability::RemoteWrite,
+            "imports data into ServiceNow",
+        )),
+        ["seed", "apply"] | ["seed", "cleanup"] => Some((
+            CommandCapability::RemoteWrite,
+            "creates or deletes seeded records",
+        )),
+        ["scope", "move-file"] => Some((
+            CommandCapability::RemoteWrite,
+            "moves application files between scopes",
+        )),
+        ["attachment", "upload"] => Some((
+            CommandCapability::RemoteWrite,
+            "uploads attachments to ServiceNow",
+        )),
+        ["import-set"] | ["import-set", "load"] | ["import-set", "transform"] => Some((
+            CommandCapability::RemoteWrite,
+            "mutates ServiceNow via import sets",
+        )),
+        ["api", "post"] | ["api", "put"] | ["api", "delete"] => Some((
+            CommandCapability::RawApiWrite,
+            "sends a non-GET raw API request",
+        )),
+        ["graphql"] => Some((
+            CommandCapability::RemoteWrite,
+            "uses POST and may execute GraphQL mutations",
+        )),
+        ["script"] | ["script", "run"] => Some((
+            CommandCapability::RemoteWrite,
+            "executes server-side background scripts",
+        )),
+        ["snu", "slash"] => Some((
+            CommandCapability::RemoteWrite,
+            "executes SN-Utils slash commands",
+        )),
+        ["snu", "tab"] | ["snu", "tab", "activate"] => Some((
+            CommandCapability::RemoteWrite,
+            "manipulates browser tabs through SN-Utils",
+        )),
+        ["snu", "broker", "stop"] | ["snu", "broker", "clear"] | ["snu", "broker", "serve"] => {
+            Some((
+                CommandCapability::LocalConfigWrite,
+                "mutates or controls the local SN-Utils broker",
+            ))
+        }
+        ["snu", "rest", "post"]
+        | ["snu", "rest", "put"]
+        | ["snu", "rest", "patch"]
+        | ["snu", "rest", "delete"] => Some((
+            CommandCapability::RawApiWrite,
+            "sends a non-GET Agent API REST request",
+        )),
+        ["snu", "page", "set-field"]
+        | ["snu", "page", "run-ui-action"]
+        | ["snu", "page", "click"]
+        | ["snu", "page", "navigate"] => Some((
+            CommandCapability::RemoteWrite,
+            "modifies or navigates a live ServiceNow page",
+        )),
+        ["snu", "update-record"]
+        | ["snu", "create-record"]
+        | ["snu", "delete-record"]
+        | ["snu", "execute-bg-script"]
+        | ["snu", "context", "switch"]
+        | ["snu", "attachment-upload"] => Some((
+            CommandCapability::RemoteWrite,
+            "mutates ServiceNow through SN-Utils",
+        )),
+        _ => None,
     }
 }
 
@@ -516,10 +617,10 @@ mod tests {
             }),
         }));
         assert_allowed(Commands::Auth(AuthArgs {
-            command: AuthCommands::Status { verify: true },
+            command: AuthCommands::Status(AuthStatusArgs { verify: true }),
         }));
         assert_allowed(Commands::Table(TableArgs {
-            command: TableCommands::List {
+            command: TableCommands::List(TableListArgs {
                 domain: None,
                 domain_read: Default::default(),
                 table: "incident".parse().unwrap(),
@@ -532,10 +633,10 @@ mod tests {
                 full: false,
                 preview: false,
                 read: Default::default(),
-            },
+            }),
         }));
         assert_allowed(Commands::Table(TableArgs {
-            command: TableCommands::Get {
+            command: TableCommands::Get(TableGetArgs {
                 domain_read: Default::default(),
                 table: "incident".parse().unwrap(),
                 record: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
@@ -544,33 +645,33 @@ mod tests {
                 full: false,
                 preview: false,
                 read: Default::default(),
-            },
+            }),
         }));
         assert_allowed(Commands::Table(TableArgs {
-            command: TableCommands::Schema {
+            command: TableCommands::Schema(TableSchemaArgs {
                 table: "incident".parse().unwrap(),
                 extended: false,
                 own_only: false,
                 include_inherited: false,
-            },
+            }),
         }));
         assert_allowed(Commands::Table(TableArgs {
-            command: TableCommands::Find {
+            command: TableCommands::Find(TableFindArgs {
                 text: "flow".parse().unwrap(),
                 limit: None,
                 offset: 0,
                 all: false,
-            },
+            }),
         }));
         assert_allowed(Commands::Table(TableArgs {
-            command: TableCommands::Choices {
+            command: TableCommands::Choices(TableChoicesArgs {
                 table: "incident".parse().unwrap(),
                 field: None,
                 language: "en".parse().unwrap(),
-            },
+            }),
         }));
         assert_allowed(Commands::Table(TableArgs {
-            command: TableCommands::Stats {
+            command: TableCommands::Stats(TableStatsArgs {
                 domain: None,
                 table: "incident".parse().unwrap(),
                 query: None,
@@ -581,13 +682,13 @@ mod tests {
                 sum: None,
                 having: None,
                 check_fields: None,
-            },
+            }),
         }));
         assert_allowed(Commands::Api(ApiArgs {
-            command: ApiCommands::Get {
+            command: ApiCommands::Get(ApiGetArgs {
                 path: "/api/now/table/incident".to_string(),
                 header: vec![],
-            },
+            }),
         }));
         assert_allowed(Commands::Codesearch(CodesearchArgs {
             command: CodesearchCommands::Search {
@@ -612,55 +713,55 @@ mod tests {
     #[test]
     fn read_only_allows_snu_read_commands() {
         assert_allowed(Commands::Snu(SnuArgs {
-            command: SnuCommands::CheckConnection {
+            command: SnuCommands::CheckConnection(SnuCheckConnectionArgs {
                 timeout_secs: 1,
                 verify: false,
-            },
+            }),
         }));
         assert_allowed(Commands::Snu(SnuArgs {
-            command: SnuCommands::GetInstanceInfo { timeout_secs: 1 },
+            command: SnuCommands::GetInstanceInfo(SnuTimeoutArgs { timeout_secs: 1 }),
         }));
         assert_allowed(Commands::Snu(SnuArgs {
-            command: SnuCommands::WaitToken { timeout_secs: 1 },
+            command: SnuCommands::WaitToken(SnuTimeoutArgs { timeout_secs: 1 }),
         }));
         assert_allowed(Commands::Snu(SnuArgs {
-            command: SnuCommands::ListTables { timeout_secs: 1 },
+            command: SnuCommands::ListTables(SnuTimeoutArgs { timeout_secs: 1 }),
         }));
         assert_allowed(Commands::Snu(SnuArgs {
-            command: SnuCommands::GetRecord {
+            command: SnuCommands::GetRecord(SnuGetRecordArgs {
                 table: "incident".parse().unwrap(),
                 sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 fields: None,
                 timeout_secs: 1,
-            },
+            }),
         }));
         assert_allowed(Commands::Snu(SnuArgs {
-            command: SnuCommands::Query {
+            command: SnuCommands::Query(SnuQueryArgs {
                 table: "incident".parse().unwrap(),
                 query: None,
                 fields: "sys_id".to_string(),
                 limit: 10,
                 order_by: None,
                 timeout_secs: 1,
-            },
+            }),
         }));
         assert_allowed(Commands::Snu(SnuArgs {
-            command: SnuCommands::Schema {
+            command: SnuCommands::Schema(SnuSchemaArgs {
                 table: "incident".parse().unwrap(),
                 timeout_secs: 1,
-            },
+            }),
         }));
         assert_allowed(Commands::Snu(SnuArgs {
-            command: SnuCommands::Screenshot {
+            command: SnuCommands::Screenshot(SnuScreenshotArgs {
                 url: None,
                 tab_id: None,
                 out_path: None,
                 timeout_secs: 1,
-            },
+            }),
         }));
         assert_allowed(Commands::Snu(SnuArgs {
             command: SnuCommands::Context(SnuContextArgs {
-                command: SnuContextCommands::Get { timeout_secs: 1 },
+                command: SnuContextCommands::Get(SnuTimeoutArgs { timeout_secs: 1 }),
             }),
         }));
         assert_allowed(Commands::Snu(SnuArgs {
@@ -674,14 +775,14 @@ mod tests {
         }));
         assert_allowed(Commands::Snu(SnuArgs {
             command: SnuCommands::Page(SnuPageArgs {
-                command: SnuPageCommands::FormState {
+                command: SnuPageCommands::FormState(SnuPageFormStateArgs {
                     fields: vec!["number".to_string()],
                     target: SnuPageTargetArgs {
                         url: "https://*.service-now.com/*".to_string(),
                         tab_id: None,
                         timeout_secs: 1,
                     },
-                },
+                }),
             }),
         }));
     }
@@ -787,7 +888,7 @@ mod tests {
     fn read_only_allows_local_management_but_denies_credential_export() {
         // Profile writes are local-only and now permitted in read-only mode.
         assert_allowed(Commands::Profile(ConfigArgs {
-            command: ConfigCommands::Add {
+            command: ConfigCommands::Add(ProfileUpsertArgs {
                 name: "dev".to_string(),
                 instance: Some("https://dev.service-now.com".to_string()),
                 auth_method: Some(CliAuthMethod::Basic),
@@ -801,20 +902,20 @@ mod tests {
                 cert_path: None,
                 key_path: None,
                 sso_login_url: None,
-            },
+            }),
         }));
         assert_allowed(Commands::Profile(ConfigArgs {
-            command: ConfigCommands::UseProfile {
+            command: ConfigCommands::UseProfile(ProfileUseArgs {
                 name: "dev".to_string(),
-            },
+            }),
         }));
         assert_allowed(Commands::Profile(ConfigArgs {
             command: ConfigCommands::Sdk(ProfileSdkArgs {
-                command: ProfileSdkCommands::Import {
+                command: ProfileSdkCommands::Import(ProfileSdkImportArgs {
                     alias: None,
                     all: true,
                     set_default: false,
-                },
+                }),
             }),
         }));
         // ...but exporting a stored credential into the on-disk now-sdk store is
@@ -854,21 +955,13 @@ mod tests {
         // auth login/logout are local credential writes and now permitted.
         assert_allowed(Commands::Auth(AuthArgs {
             command: AuthCommands::Login {
-                password: Some("secret".to_string()),
-                password_stdin: false,
-                token: None,
-                token_stdin: false,
-                client_secret: None,
-                client_secret_stdin: false,
-                session_cookie: None,
-                session_cookie_stdin: false,
-                no_browser: false,
-                sdk_oauth: false,
-                code_stdin: false,
+                base: AuthLoginBaseArgs {
+                    password: Some("secret".to_string()),
+                    ..Default::default()
+                },
                 also_now_sdk: false,
                 now_sdk_alias: None,
                 set_now_sdk_default: false,
-                no_verify: false,
             },
         }));
         assert_allowed(Commands::Auth(AuthArgs {
@@ -877,21 +970,13 @@ mod tests {
         assert_eq!(
             policy().decision_for_command(&Commands::Auth(AuthArgs {
                 command: AuthCommands::Login {
-                    password: Some("secret".to_string()),
-                    password_stdin: false,
-                    token: None,
-                    token_stdin: false,
-                    client_secret: None,
-                    client_secret_stdin: false,
-                    session_cookie: None,
-                    session_cookie_stdin: false,
-                    no_browser: false,
-                    sdk_oauth: false,
-                    code_stdin: false,
+                    base: AuthLoginBaseArgs {
+                        password: Some("secret".to_string()),
+                        ..Default::default()
+                    },
                     also_now_sdk: true,
                     now_sdk_alias: Some("dev".to_string()),
                     set_now_sdk_default: false,
-                    no_verify: false,
                 },
             })),
             PolicyDecision::Deny {

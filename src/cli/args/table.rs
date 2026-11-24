@@ -15,7 +15,7 @@ pub(crate) const TABLE_GET_AFTER_HELP: &str = "Examples:\n  snow-cli table get i
 
 const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incident --data '{\"short_description\":\"VPN down\"}'\n  echo '{\"short_description\":\"From stdin\"}' | snow-cli table create incident";
 
-const TABLE_STATS_AFTER_HELP: &str = "Examples:\n  snow-cli table stats incident\n  snow-cli table stats incident --query 'active=true'\n  snow-cli table stats incident --group-by state,priority\n  snow-cli table stats incident --group-by state --avg priority --having 'count>5'";
+pub(crate) const TABLE_STATS_AFTER_HELP: &str = "Examples:\n  snow-cli table stats incident\n  snow-cli table stats incident --query 'active=true'\n  snow-cli table stats incident --group-by state,priority\n  snow-cli table stats incident --group-by state --avg priority --having 'count>5'";
 pub(crate) const TABLE_FIND_AFTER_HELP: &str = "Examples:\n  snow-cli table find flow\n  snow-cli table find 'service catalog' --limit 50\n\nNotes:\n  - Matches name or label (case-insensitive contains), sorted by name.\n  - Each row has name, label, extends (parent table), and scope.\n  - Output is bounded to 20 tables; use --limit, --offset, or --all.";
 
 pub(crate) const TABLE_CHOICES_AFTER_HELP: &str = "Examples:\n  snow-cli table choices incident priority\n  snow-cli table choices incident\n  snow-cli table choices change_request state --language de\n\nNotes:\n  - Choices are taken from the most specific table in the hierarchy that defines them\n    (incident.priority choices live on task); each row names that table.\n  - Rows have element, value, label, sequence, table, and dependent_value when set.";
@@ -29,92 +29,191 @@ pub struct TableArgs {
     pub command: TableCommands,
 }
 
+#[derive(Args, Debug)]
+pub struct TableListArgs {
+    /// Table name (e.g., incident, sys_user, cmdb_ci)
+    pub table: TableName,
+
+    /// Exact record domain: global or a domain sys_id (does not grant visibility)
+    #[arg(long)]
+    pub domain: Option<crate::models::domain::DomainId>,
+
+    /// Encoded query string
+    #[arg(long)]
+    pub query: Option<String>,
+
+    /// Comma-separated list of fields to return. Defaults to a compact
+    /// table-aware projection; pass "*" for all fields.
+    #[arg(long)]
+    pub fields: Option<String>,
+
+    /// Maximum number of records to return (default: 20)
+    #[arg(long, conflicts_with = "all")]
+    pub limit: Option<usize>,
+
+    /// Skip this many matching records (default: 0)
+    #[arg(long, default_value_t = 0)]
+    pub offset: usize,
+
+    /// Fetch every matching record instead of the bounded default
+    #[arg(long)]
+    pub all: bool,
+
+    /// Sort order: field (ascending), -field or field:desc (descending);
+    /// comma-separate several keys. Sent as ORDERBY clauses in the query.
+    #[arg(long, allow_hyphen_values = true)]
+    pub order_by: Option<OrderBy>,
+
+    #[command(flatten)]
+    pub domain_read: crate::cli::args::DomainReadArgs,
+
+    #[command(flatten)]
+    pub read: RecordReadArgs,
+
+    /// Explicit lossless option (the default); conflicts with --preview
+    #[arg(long, conflicts_with = "preview")]
+    pub full: bool,
+
+    /// Shorten oversized string fields and emit separate preview metadata
+    /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
+    #[arg(long, conflicts_with = "full")]
+    pub preview: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TableGetArgs {
+    /// Table name
+    pub table: TableName,
+
+    /// Record sys_id, or a value of --key-field (e.g. a script include name)
+    #[arg(value_name = "SYS_ID|NAME")]
+    pub record: RecordKey,
+
+    /// Comma-separated list of fields to return
+    #[arg(long)]
+    pub fields: Option<String>,
+
+    #[command(flatten)]
+    pub lookup: RecordLookupArgs,
+
+    #[command(flatten)]
+    pub domain_read: crate::cli::args::DomainReadArgs,
+
+    #[command(flatten)]
+    pub read: RecordReadArgs,
+
+    /// Explicit lossless option (the default); conflicts with --preview
+    #[arg(long, conflicts_with = "preview")]
+    pub full: bool,
+
+    /// Shorten oversized string fields and emit separate preview metadata
+    /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
+    #[arg(long, conflicts_with = "full")]
+    pub preview: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TableSchemaArgs {
+    /// Table name (e.g., incident, sys_user, cmdb_ci)
+    pub table: TableName,
+
+    /// Show extended field metadata (required, read-only, max length, default, reference table)
+    #[arg(long)]
+    pub extended: bool,
+
+    /// Only show columns defined on this table, not those inherited from parent tables
+    #[arg(long)]
+    pub own_only: bool,
+
+    /// Deprecated: inherited columns are now included by default
+    #[arg(long, hide = true, conflicts_with = "own_only")]
+    pub include_inherited: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TableFindArgs {
+    /// Text to look for in table names and labels (e.g., flow)
+    pub text: EncodedQueryValue,
+
+    /// Maximum number of tables to return (default: 20)
+    #[arg(long, conflicts_with = "all")]
+    pub limit: Option<usize>,
+
+    /// Skip this many matching tables (default: 0)
+    #[arg(long, default_value_t = 0)]
+    pub offset: usize,
+
+    /// Return every matching table instead of the bounded default
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct TableChoicesArgs {
+    /// Table name (e.g., incident); parent tables are searched too
+    pub table: TableName,
+
+    /// Only this field's choices (e.g., priority)
+    pub field: Option<EncodedQueryValue>,
+
+    /// Choice label language
+    #[arg(long, default_value = "en")]
+    pub language: EncodedQueryValue,
+}
+
+#[derive(Args, Debug)]
+pub struct TableStatsArgs {
+    /// Table name (e.g., incident, sys_user, cmdb_ci)
+    pub table: TableName,
+
+    /// Exact record domain: global or a domain sys_id (does not grant visibility)
+    #[arg(long)]
+    pub domain: Option<crate::models::domain::DomainId>,
+
+    /// Encoded query string
+    #[arg(long)]
+    pub query: Option<String>,
+
+    /// Comma-separated fields to group by (one result row per group)
+    #[arg(long)]
+    pub group_by: Option<String>,
+
+    /// Comma-separated fields to average
+    #[arg(long)]
+    pub avg: Option<String>,
+
+    /// Comma-separated fields to take the minimum of
+    #[arg(long)]
+    pub min: Option<String>,
+
+    /// Comma-separated fields to take the maximum of
+    #[arg(long)]
+    pub max: Option<String>,
+
+    /// Comma-separated fields to sum
+    #[arg(long)]
+    pub sum: Option<String>,
+
+    /// Filter groups by aggregate: count>5, avg(priority)>=2; comma-separated clauses are ANDed
+    /// (native aggregate^field^operator^value also accepted)
+    #[arg(long)]
+    pub having: Option<String>,
+
+    /// Check --query/--group-by field names: warn (default), error, or off
+    /// (env SNOW_CLI_CHECK_FIELDS). Costs one row read when either is set.
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub check_fields: Option<CheckFields>,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum TableCommands {
     /// List records from a table (auto-paginated)
     #[command(after_help = TABLE_LIST_AFTER_HELP)]
-    List {
-        /// Table name (e.g., incident, sys_user, cmdb_ci)
-        table: TableName,
-
-        /// Exact record domain: global or a domain sys_id (does not grant visibility)
-        #[arg(long)]
-        domain: Option<crate::models::domain::DomainId>,
-
-        /// Encoded query string
-        #[arg(long)]
-        query: Option<String>,
-
-        /// Comma-separated list of fields to return. Defaults to a compact
-        /// table-aware projection; pass "*" for all fields.
-        #[arg(long)]
-        fields: Option<String>,
-
-        /// Maximum number of records to return (default: 20)
-        #[arg(long, conflicts_with = "all")]
-        limit: Option<usize>,
-
-        /// Skip this many matching records (default: 0)
-        #[arg(long, default_value_t = 0)]
-        offset: usize,
-
-        /// Fetch every matching record instead of the bounded default
-        #[arg(long)]
-        all: bool,
-
-        /// Sort order: field (ascending), -field or field:desc (descending);
-        /// comma-separate several keys. Sent as ORDERBY clauses in the query.
-        #[arg(long, allow_hyphen_values = true)]
-        order_by: Option<OrderBy>,
-
-        #[command(flatten)]
-        domain_read: crate::cli::args::DomainReadArgs,
-
-        #[command(flatten)]
-        read: RecordReadArgs,
-
-        /// Explicit lossless option (the default); conflicts with --preview
-        #[arg(long, conflicts_with = "preview")]
-        full: bool,
-
-        /// Shorten oversized string fields and emit separate preview metadata
-        /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
-        #[arg(long, conflicts_with = "full")]
-        preview: bool,
-    },
+    List(TableListArgs),
 
     /// Get a single record by sys_id or by name
     #[command(after_help = TABLE_GET_AFTER_HELP)]
-    Get {
-        /// Table name
-        table: TableName,
-
-        /// Record sys_id, or a value of --key-field (e.g. a script include name)
-        #[arg(value_name = "SYS_ID|NAME")]
-        record: RecordKey,
-
-        /// Comma-separated list of fields to return
-        #[arg(long)]
-        fields: Option<String>,
-
-        #[command(flatten)]
-        lookup: RecordLookupArgs,
-
-        #[command(flatten)]
-        domain_read: crate::cli::args::DomainReadArgs,
-
-        #[command(flatten)]
-        read: RecordReadArgs,
-
-        /// Explicit lossless option (the default); conflicts with --preview
-        #[arg(long, conflicts_with = "preview")]
-        full: bool,
-
-        /// Shorten oversized string fields and emit separate preview metadata
-        /// (JSON/JSONL/TOON/text/auto only; conflicts with --full)
-        #[arg(long, conflicts_with = "full")]
-        preview: bool,
-    },
+    Get(TableGetArgs),
 
     /// Create a new record
     #[command(after_help = TABLE_CREATE_AFTER_HELP)]
@@ -154,100 +253,19 @@ pub enum TableCommands {
     },
 
     /// Show table schema (columns, types, labels) from sys_dictionary
-    Schema {
-        /// Table name (e.g., incident, sys_user, cmdb_ci)
-        table: TableName,
-
-        /// Show extended field metadata (required, read-only, max length, default, reference table)
-        #[arg(long)]
-        extended: bool,
-
-        /// Only show columns defined on this table, not those inherited from parent tables
-        #[arg(long)]
-        own_only: bool,
-
-        /// Deprecated: inherited columns are now included by default
-        #[arg(long, hide = true, conflicts_with = "own_only")]
-        include_inherited: bool,
-    },
+    Schema(TableSchemaArgs),
 
     /// Find tables whose name or label contains text (searches sys_db_object)
     #[command(after_help = TABLE_FIND_AFTER_HELP)]
-    Find {
-        /// Text to look for in table names and labels (e.g., flow)
-        text: EncodedQueryValue,
-
-        /// Maximum number of tables to return (default: 20)
-        #[arg(long, conflicts_with = "all")]
-        limit: Option<usize>,
-
-        /// Skip this many matching tables (default: 0)
-        #[arg(long, default_value_t = 0)]
-        offset: usize,
-
-        /// Return every matching table instead of the bounded default
-        #[arg(long)]
-        all: bool,
-    },
+    Find(TableFindArgs),
 
     /// List active choice values and labels for a table's fields (from sys_choice)
     #[command(after_help = TABLE_CHOICES_AFTER_HELP)]
-    Choices {
-        /// Table name (e.g., incident); parent tables are searched too
-        table: TableName,
-
-        /// Only this field's choices (e.g., priority)
-        field: Option<EncodedQueryValue>,
-
-        /// Choice label language
-        #[arg(long, default_value = "en")]
-        language: EncodedQueryValue,
-    },
+    Choices(TableChoicesArgs),
 
     /// Count and aggregate records via the Aggregate API (Stats endpoint)
     #[command(after_help = TABLE_STATS_AFTER_HELP)]
-    Stats {
-        /// Table name (e.g., incident, sys_user, cmdb_ci)
-        table: TableName,
-
-        /// Exact record domain: global or a domain sys_id (does not grant visibility)
-        #[arg(long)]
-        domain: Option<crate::models::domain::DomainId>,
-
-        /// Encoded query string
-        #[arg(long)]
-        query: Option<String>,
-
-        /// Comma-separated fields to group by (one result row per group)
-        #[arg(long)]
-        group_by: Option<String>,
-
-        /// Comma-separated fields to average
-        #[arg(long)]
-        avg: Option<String>,
-
-        /// Comma-separated fields to take the minimum of
-        #[arg(long)]
-        min: Option<String>,
-
-        /// Comma-separated fields to take the maximum of
-        #[arg(long)]
-        max: Option<String>,
-
-        /// Comma-separated fields to sum
-        #[arg(long)]
-        sum: Option<String>,
-
-        /// Filter groups by aggregate: count>5, avg(priority)>=2; comma-separated clauses are ANDed
-        /// (native aggregate^field^operator^value also accepted)
-        #[arg(long)]
-        having: Option<String>,
-
-        /// Check --query/--group-by field names: warn (default), error, or off
-        /// (env SNOW_CLI_CHECK_FIELDS). Costs one row read when either is set.
-        #[arg(long, value_enum, value_name = "MODE")]
-        check_fields: Option<CheckFields>,
-    },
+    Stats(TableStatsArgs),
 }
 
 /// How to treat field names ServiceNow does not return (unknown or not
@@ -343,12 +361,12 @@ mod tests {
         ]);
         match cli.command {
             Commands::Table(args) => match args.command {
-                TableCommands::List {
+                TableCommands::List(TableListArgs {
                     table,
                     query,
                     limit,
                     ..
-                } => {
+                }) => {
                     assert_eq!(table.as_str(), "incident");
                     assert_eq!(query, Some("active=true".to_string()));
                     assert_eq!(limit, Some(10));
@@ -364,7 +382,7 @@ mod tests {
         let cli = Cli::parse_from(["snow-cli", "table", "list", "incident", "--full"]);
         match cli.command {
             Commands::Table(args) => match args.command {
-                TableCommands::List { full, preview, .. } => {
+                TableCommands::List(TableListArgs { full, preview, .. }) => {
                     assert!(full);
                     assert!(!preview);
                 }
@@ -383,12 +401,12 @@ mod tests {
         ]);
         match cli.command {
             Commands::Table(args) => match args.command {
-                TableCommands::Get {
+                TableCommands::Get(TableGetArgs {
                     full,
                     preview,
                     record,
                     ..
-                } => {
+                }) => {
                     assert!(!full);
                     assert!(preview);
                     assert!(matches!(record, RecordKey::SysId(_)));
@@ -420,7 +438,7 @@ mod tests {
             argv.extend_from_slice(extra);
             match Cli::parse_from(argv).command {
                 Commands::Table(args) => match args.command {
-                    TableCommands::List { read, .. } => read,
+                    TableCommands::List(TableListArgs { read, .. }) => read,
                     _ => panic!("Expected Table List command"),
                 },
                 _ => panic!("Expected Table command"),
@@ -459,7 +477,7 @@ mod tests {
         ]);
         match cli.command {
             Commands::Table(args) => match args.command {
-                TableCommands::Get { record, lookup, .. } => {
+                TableCommands::Get(TableGetArgs { record, lookup, .. }) => {
                     assert!(matches!(record, RecordKey::Name(_)));
                     assert!(lookup.raw);
                 }
@@ -516,7 +534,7 @@ mod tests {
         ]);
         match cli.command {
             Commands::Table(args) => match args.command {
-                TableCommands::Stats {
+                TableCommands::Stats(TableStatsArgs {
                     table,
                     query,
                     group_by,
@@ -526,7 +544,7 @@ mod tests {
                     sum,
                     having,
                     ..
-                } => {
+                }) => {
                     assert_eq!(table.as_str(), "incident");
                     assert_eq!(query, Some("active=true".to_string()));
                     assert_eq!(group_by, Some("state,priority".to_string()));

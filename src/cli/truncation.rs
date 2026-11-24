@@ -105,7 +105,8 @@ fn preview_object_strings(
 }
 
 /// Apply the per-field character cap to top-level string fields of table
-/// records. Non-string values and nested values stay lossless.
+/// records, plus compacted `--display-value both` `{"value", "display"}`
+/// pairs. Other non-string values and nested values stay lossless.
 pub(crate) fn preview_record_fields(
     records: &mut [Record],
     limit: usize,
@@ -119,17 +120,32 @@ pub(crate) fn preview_record_fields(
         keys.sort();
 
         for key in keys {
-            let Some(serde_json::Value::String(text)) = record.fields.get_mut(&key) else {
-                continue;
-            };
-            if let Some((shortened, total)) = preview_string(text, limit) {
-                *text = shortened;
-                report.push(
-                    record_path(root, record_index, &key),
-                    total,
-                    limit,
-                    escape_hatch,
-                );
+            match record.fields.get_mut(&key) {
+                Some(serde_json::Value::String(text)) => {
+                    if let Some((shortened, total)) = preview_string(text, limit) {
+                        *text = shortened;
+                        report.push(
+                            record_path(root, record_index, &key),
+                            total,
+                            limit,
+                            escape_hatch,
+                        );
+                    }
+                }
+                Some(value) if crate::models::display_value::is_compact_pair(value) => {
+                    let base = record_path(root, record_index, &key);
+                    if let Some(object) = value.as_object_mut() {
+                        for subkey in ["display", "value"] {
+                            if let Some(serde_json::Value::String(text)) = object.get_mut(subkey)
+                                && let Some((shortened, total)) = preview_string(text, limit)
+                            {
+                                *text = shortened;
+                                report.push(format!("{base}/{subkey}"), total, limit, escape_hatch);
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -265,6 +281,51 @@ mod tests {
         let report = preview_record_fields(&mut records, 3, RecordPreviewRoot::Record, "--full");
 
         assert_eq!(report.truncated_fields[0].path, "/record/work~1notes");
+    }
+
+    #[test]
+    fn preview_truncates_compact_display_value_pairs() {
+        let mut records = vec![Record {
+            fields: BTreeMap::from([
+                (
+                    "description".to_string(),
+                    serde_json::json!({
+                        "value": "v".repeat(20),
+                        "display": "d".repeat(25)
+                    }),
+                ),
+                (
+                    "other".to_string(),
+                    serde_json::json!({"nested": "z".repeat(25)}),
+                ),
+            ]),
+        }];
+
+        let report = preview_record_fields(&mut records, 10, RecordPreviewRoot::Records, "--full");
+        assert_eq!(
+            records[0].fields["description"],
+            serde_json::json!({
+                "value": "v".repeat(10),
+                "display": "d".repeat(10)
+            })
+        );
+        // Non-display nested objects stay untouched.
+        assert_eq!(
+            records[0].fields["other"],
+            serde_json::json!({"nested": "z".repeat(25)})
+        );
+        let paths: Vec<&str> = report
+            .truncated_fields
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                "/records/0/description/display",
+                "/records/0/description/value"
+            ]
+        );
     }
 
     #[test]

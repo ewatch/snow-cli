@@ -55,13 +55,13 @@ pub async fn handle(
     timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
-        AttachmentCommands::List {
+        AttachmentCommands::List(crate::cli::args::AttachmentListArgs {
             table,
             sys_id,
             limit,
             offset,
             all,
-        } => {
+        }) => {
             tracing::info!(table = %table, sys_id = %sys_id, "Listing attachments");
             // sys_id is also embedded in an encoded query below, so it must
             // additionally satisfy the (stricter, operator-character-free)
@@ -93,7 +93,10 @@ pub async fn handle(
             output::print_table_list(&result, format)?;
             Ok(())
         }
-        AttachmentCommands::Download { sys_id, out_path } => {
+        AttachmentCommands::Download(crate::cli::args::AttachmentDownloadArgs {
+            sys_id,
+            out_path,
+        }) => {
             tracing::info!("Downloading attachment: {}", sys_id);
 
             let mut client =
