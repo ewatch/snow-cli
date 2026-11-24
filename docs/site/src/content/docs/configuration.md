@@ -20,7 +20,26 @@ The config file contains non-secret settings such as:
 - default profile name,
 - default output format.
 
-Secrets such as passwords, API tokens, OAuth client secrets, and stored OAuth tokens are kept outside the TOML file.
+Secrets such as passwords, API tokens, OAuth client secrets, and stored OAuth tokens are kept outside the TOML file in an AES-256-GCM encrypted vault at `~/.servicenow/credentials.enc`.
+
+## Credential storage modes
+
+By default, `snow-cli` encrypts `~/.servicenow/credentials.enc` under a single 32-byte master key stored in the OS keychain (`service = "snow-cli"`, `account = "credentials-key"`). Because all profiles share one master key, adding profiles and refreshing OAuth tokens never trigger new OS Keychain prompts. Existing per-profile keychain entries from earlier releases continue to work via transparent fallback.
+
+Available storage modes (`credential_store` in `config.toml` or `SNOW_CLI_CREDENTIAL_STORE`):
+
+- `keyring` (default): Encrypted vault with one master key in the OS keychain.
+- `file` (opt-in, zero-popup mode): Encrypted vault with an owner-only key file (`~/.servicenow/credentials.key`, mode `0600` on Unix). Never touches the OS keychain — eliminates macOS Keychain prompts across upgrades and unsigned/local builds. Security relies on OS user-account permissions and full-disk encryption (the same boundary as `~/.aws/credentials` or `~/.ssh/*`).
+- `env` (CI / headless): Encrypted vault keyed by a base64-encoded 32-byte key in `SNOW_CLI_ENCRYPTION_KEY`. Never touches the OS keychain.
+- `legacy-keychain`: Legacy per-profile OS keychain entries (`<profile>:<credential_type>`).
+
+Manage storage modes and migrate legacy keychain entries with:
+
+```bash
+snow-cli profile storage status
+snow-cli profile storage set file
+snow-cli profile storage migrate --delete-legacy
+```
 
 ## Profiles
 

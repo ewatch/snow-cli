@@ -13,12 +13,9 @@
 
 use std::path::{Path, PathBuf};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
-use ring::rand::{SecureRandom, SystemRandom};
-
 use super::NOW_SDK_SERVICE_NAME;
+pub(super) use crate::config::encrypted_store::FileKey;
+use crate::config::encrypted_store::{self, EnvelopeError, FORMAT_VERSION};
 use crate::config::error::ConfigError;
 use crate::config::keychain;
 
@@ -29,25 +26,12 @@ const UNREADABLE_CODE: &str = "NOW_SDK_CREDENTIALS_UNREADABLE";
 const KEY_ACCOUNT: &str = "now-sdk-credentials-key";
 /// File name inside the credentials directory.
 const FILE_NAME: &str = "credentials.enc";
-/// Only file format version now-sdk 4.14.2 reads or writes.
-const FORMAT_VERSION: u64 = 1;
-/// AES-256 key length.
-const KEY_LEN: usize = 32;
 /// Overrides the credentials directory (default `~/.now-sdk`).
 const DIR_ENV: &str = "SN_SDK_CREDENTIALS_DIR";
 /// `keyring` (default) or `env`.
 const KEY_SOURCE_ENV: &str = "SN_SDK_KEY_SOURCE";
 /// Base64 key used when `SN_SDK_KEY_SOURCE=env`.
 const KEY_ENV: &str = "SN_SDK_ENCRYPTION_KEY";
-
-/// A 32-byte AES-256-GCM key. Never printed.
-pub(super) struct FileKey([u8; KEY_LEN]);
-
-impl std::fmt::Debug for FileKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("FileKey(<redacted>)")
-    }
-}
 
 /// Where the active key comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,12 +61,7 @@ impl KeySource {
                 let Some(stored) = keychain::get_secret(NOW_SDK_SERVICE_NAME, KEY_ACCOUNT)? else {
                     return Ok(None);
                 };
-                if let Ok(raw) = <[u8; KEY_LEN]>::try_from(stored.as_slice()) {
-                    return Ok(Some(FileKey(raw)));
-                }
-                Ok(std::str::from_utf8(&stored)
-                    .ok()
-                    .and_then(decode_base64_key))
+                Ok(FileKey::from_stored_bytes(&stored))
             }
             Self::Env => {
                 let value = std::env::var(KEY_ENV).unwrap_or_default();
@@ -90,19 +69,12 @@ impl KeySource {
                 if value.is_empty() {
                     return Ok(None);
                 }
-                decode_base64_key(value).map(Some).ok_or_else(|| {
+                FileKey::decode_base64(value).map(Some).ok_or_else(|| {
                     anyhow::anyhow!("{KEY_ENV} must be a base64-encoded 32-byte key.")
                 })
             }
         }
     }
-}
-
-/// Strict base64 decoding: the value must re-encode to itself.
-fn decode_base64_key(value: &str) -> Option<FileKey> {
-    let bytes = BASE64.decode(value).ok()?;
-    let key = <[u8; KEY_LEN]>::try_from(bytes.as_slice()).ok()?;
-    (BASE64.encode(key) == value).then_some(FileKey(key))
 }
 
 /// The directory holding `credentials.enc`.
@@ -123,38 +95,37 @@ pub(super) fn credentials_path() -> Option<PathBuf> {
 
 /// Raw file bytes, or `None` when the file does not exist.
 pub(super) fn read_raw(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
+    encrypted_store::read_raw(path)
 }
 
 /// Decrypt a `credentials.enc` payload to the alias-store JSON.
 pub(super) fn decrypt(key: &FileKey, file: &[u8], path: &Path) -> anyhow::Result<String> {
-    let (iv, mut data) = decode_envelope(file, path)?;
-    let nonce = Nonce::try_assume_unique_for_key(&iv).map_err(|_| unreadable(path))?;
-    let plaintext = cipher(key)
-        .open_in_place(nonce, Aad::empty(), &mut data)
-        .map_err(|_| unreadable(path))?;
-    String::from_utf8(plaintext.to_vec()).map_err(|_| unreadable(path))
+    encrypted_store::decrypt_envelope(key, file).map_err(|error| match error {
+        EnvelopeError::TruncatedOrCorrupted => ConfigError::new(
+            UNREADABLE_CODE,
+            format!(
+                "now-sdk credentials at {} are truncated or corrupted.",
+                path.display()
+            ),
+        )
+        .into(),
+        EnvelopeError::UnsupportedVersion(version) => ConfigError::new(
+            UNREADABLE_CODE,
+            format!(
+                "now-sdk credentials at {} use format version {}, but snow-cli supports only \
+                 version {FORMAT_VERSION}. Upgrade snow-cli to read them.",
+                path.display(),
+                version.map_or_else(|| "unknown".to_owned(), |v| v.to_string()),
+            ),
+        )
+        .into(),
+        EnvelopeError::DecryptFailed => unreadable(path),
+    })
 }
 
 /// Encrypt alias-store JSON into a `credentials.enc` payload with a fresh IV.
 pub(super) fn encrypt(key: &FileKey, json: &str) -> anyhow::Result<Vec<u8>> {
-    let iv: [u8; NONCE_LEN] = ring::rand::generate(&SystemRandom::new())
-        .map_err(|_| anyhow::anyhow!("could not generate a random IV"))?
-        .expose();
-    let mut data = json.as_bytes().to_vec();
-    cipher(key)
-        .seal_in_place_append_tag(Nonce::assume_unique_for_key(iv), Aad::empty(), &mut data)
-        .map_err(|_| anyhow::anyhow!("could not encrypt now-sdk credentials"))?;
-    encode_envelope(&iv, &data)
-}
-
-fn cipher(key: &FileKey) -> LessSafeKey {
-    // A 32-byte key is always valid for AES-256-GCM.
-    LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &key.0).unwrap_or_else(|_| unreachable!()))
+    encrypted_store::encrypt_envelope(key, json)
 }
 
 fn unreadable(path: &Path) -> anyhow::Error {
@@ -169,113 +140,20 @@ fn unreadable(path: &Path) -> anyhow::Error {
     .into()
 }
 
-fn decode_envelope(file: &[u8], path: &Path) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-    let value: ciborium::Value = ciborium::from_reader(file).map_err(|_| {
-        ConfigError::new(
-            UNREADABLE_CODE,
-            format!(
-                "now-sdk credentials at {} are truncated or corrupted.",
-                path.display()
-            ),
-        )
-    })?;
-    let map = value.as_map().ok_or_else(|| unreadable(path))?;
-    let field = |name: &str| {
-        map.iter()
-            .find(|(key, _)| key.as_text() == Some(name))
-            .map(|(_, value)| value)
-    };
-    let version = field("version")
-        .and_then(ciborium::Value::as_integer)
-        .and_then(|version| u64::try_from(version).ok());
-    if version != Some(FORMAT_VERSION) {
-        return Err(ConfigError::new(
-            UNREADABLE_CODE,
-            format!(
-                "now-sdk credentials at {} use format version {}, but snow-cli supports only \
-                 version {FORMAT_VERSION}. Upgrade snow-cli to read them.",
-                path.display(),
-                version.map_or_else(|| "unknown".to_owned(), |v| v.to_string()),
-            ),
-        )
-        .into());
-    }
-    let bytes = |name: &str| {
-        field(name)
-            .and_then(ciborium::Value::as_bytes)
-            .cloned()
-            .ok_or_else(|| unreadable(path))
-    };
-    Ok((bytes("iv")?, bytes("data")?))
-}
-
-fn encode_envelope(iv: &[u8], data: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let value = ciborium::Value::Map(vec![
-        (
-            "version".into(),
-            ciborium::Value::Integer(FORMAT_VERSION.into()),
-        ),
-        ("iv".into(), ciborium::Value::Bytes(iv.to_vec())),
-        ("data".into(), ciborium::Value::Bytes(data.to_vec())),
-    ]);
-    let mut out = Vec::new();
-    ciborium::into_writer(&value, &mut out)?;
-    Ok(out)
-}
-
 /// Replace `path` atomically with `bytes`: owner-only file in an owner-only
 /// directory, written to a temp file and renamed, as now-sdk does.
 pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("invalid now-sdk credentials path"))?;
-    // Restrict only a directory created here: an existing one (possibly a
-    // symlink to a shared directory) keeps the permissions its owner chose.
-    let existed = dir.exists();
-    std::fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    if !existed {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(error) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
-            tracing::debug!(%error, "could not restrict now-sdk credentials directory");
-        }
-    }
-    // Unpredictable name, created exclusively: a symlink planted in a shared
-    // credentials directory is never followed or truncated.
-    let mut suffix = [0u8; 16];
-    SystemRandom::new()
-        .fill(&mut suffix)
-        .map_err(|_| anyhow::anyhow!("could not generate a temporary file name"))?;
-    let suffix: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
-    let tmp = dir.join(format!(".{FILE_NAME}.tmp-{suffix}"));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let write = || -> std::io::Result<()> {
-        use std::io::Write as _;
-        let mut file = options.open(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&tmp, path)
-    };
-    write().inspect_err(|error| {
-        // Only remove a temp file this call created.
-        if error.kind() != std::io::ErrorKind::AlreadyExists {
-            let _ = std::fs::remove_file(&tmp);
-        }
-    })?;
-    Ok(())
+    encrypted_store::write_atomic(path, bytes, FILE_NAME)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::encrypted_store::KEY_LEN;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
 
-    const KEY: FileKey = FileKey([7u8; KEY_LEN]);
+    const KEY: FileKey = FileKey::from_bytes([7u8; KEY_LEN]);
 
     #[test]
     fn round_trips_through_the_envelope() {
@@ -291,7 +169,7 @@ mod tests {
     fn wrong_key_or_tampering_is_rejected_without_details() {
         let path = Path::new("credentials.enc");
         let mut file = encrypt(&KEY, "{}").unwrap();
-        let error = decrypt(&FileKey([8u8; KEY_LEN]), &file, path).unwrap_err();
+        let error = decrypt(&FileKey::from_bytes([8u8; KEY_LEN]), &file, path).unwrap_err();
         assert!(error.to_string().contains("did not modify"), "{error}");
         let last = file.len() - 1;
         file[last] ^= 1;
@@ -314,10 +192,10 @@ mod tests {
     #[test]
     fn base64_keys_must_round_trip_exactly() {
         let encoded = BASE64.encode([9u8; KEY_LEN]);
-        assert!(decode_base64_key(&encoded).is_some());
-        assert!(decode_base64_key(&encoded[..40]).is_none());
-        assert!(decode_base64_key(&format!("{encoded}x")).is_none());
-        assert!(decode_base64_key(&BASE64.encode([9u8; 16])).is_none());
+        assert!(FileKey::decode_base64(&encoded).is_some());
+        assert!(FileKey::decode_base64(&encoded[..40]).is_none());
+        assert!(FileKey::decode_base64(&format!("{encoded}x")).is_none());
+        assert!(FileKey::decode_base64(&BASE64.encode([9u8; 16])).is_none());
     }
 
     #[test]

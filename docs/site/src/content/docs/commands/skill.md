@@ -43,7 +43,7 @@ and can be overridden with `--name <name>`.
 ### Select optional packs
 
 The bundle always installs its core entrypoint (`SKILL.md`), `skill.toml`, and
-the 12 platform reference guides under `references/`. Vertical domain packs
+the 13 platform reference guides under `references/`. Vertical domain packs
 under `packs/<name>/` are opt-in:
 
 - **Core only (default)**: omit `--pack` and `--all-packs` to install core files
@@ -114,7 +114,7 @@ Example output (`--dry-run`):
 
 ### Core platform references (always installed)
 
-`SKILL.md` stays compact and routes the agent on demand to 12 read-only-first
+`SKILL.md` stays compact and routes the agent on demand to 13 read-only-first
 guides under `references/`:
 
 - `acls.md` — ACL evaluation order, `sys_security_acl`, role inheritance, query Business Rules
@@ -126,6 +126,7 @@ guides under `references/`:
 - `domain-separation.md` — `domain` discovery, `sys_domain`, `sys_overrides`, visibility checks
 - `imports-and-integrations.md` — Import Sets, Transform Maps, REST/SOAP messages, MID Servers, IntegrationHub
 - `notifications.md` — `sysevent_email_action`, `sys_email`, email templates, scripts, and inbound actions
+- `oauth-setup.md` — OAuth 2.0 user login setup: OOB ServiceNow SDK (`--sdk-oauth`) and custom OAuth app with localhost callback
 - `scopes-and-updates.md` — `scope` inspection, `sys_update_set`, `sys_update_xml`, `sys_metadata`
 - `servicenow-docs-lookup.md` — targeted lookup workflow for local ServiceNow documentation repos
 - `ui-and-portal.md` — Service Portal (`sp_*`), UI Actions, UI Pages/Macros, Workspace/UI Builder (`sys_ux_*`)

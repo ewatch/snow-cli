@@ -887,14 +887,12 @@ async fn handle_logout(profile_name: &str, format: &OutputFormat) -> anyhow::Res
         .active_profile(Some(profile_name))
         .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
-    // Delete all credential types for this auth method
-    let cred_types = credential_types_for_auth(profile);
-    for cred_type in &cred_types {
-        credentials::delete_credential(profile_name, cred_type)?;
+    // Delete all credential types for this auth method in one atomic update
+    let mut cred_types = credential_types_for_auth(profile);
+    if uses_authorization_code_grant(profile) && !cred_types.contains(&"client_secret") {
+        cred_types.push("client_secret");
     }
-    if uses_authorization_code_grant(profile) {
-        credentials::delete_credential(profile_name, "client_secret")?;
-    }
+    credentials::delete_credentials(profile_name, &cred_types)?;
 
     tracing::info!("Credentials removed for profile '{}'", profile_name);
 
@@ -953,9 +951,12 @@ async fn handle_status(
         env_set
     } else {
         let cred_types = credential_types_for_auth(profile);
-        let present = cred_types
-            .iter()
-            .all(|ct| credentials::has_credential(profile_name, ct));
+        let mut present = true;
+        for ct in &cred_types {
+            if !credentials::check_credential_present(profile_name, ct)? {
+                present = false;
+            }
+        }
         result.insert(
             "credential_types".into(),
             serde_json::to_value(&cred_types)?,
@@ -1051,7 +1052,7 @@ async fn handle_token(profile_name: &str, reveal: bool) -> anyhow::Result<()> {
             use base64::Engine;
             let encoded = base64::engine::general_purpose::STANDARD
                 .encode(format!("{username}:{credential}"));
-            print!("{encoded}");
+            write_token_stdout(&encoded)?;
         }
         crate::config::profile::AuthMethod::Oauth2 => {
             let auth = OAuth2Auth::new(profile_name, profile)
@@ -1069,7 +1070,7 @@ async fn handle_token(profile_name: &str, reveal: bool) -> anyhow::Result<()> {
             let access_token = authorization
                 .strip_prefix("Bearer ")
                 .unwrap_or(authorization);
-            print!("{access_token}");
+            write_token_stdout(access_token)?;
         }
         _ => {
             let primary_cred_type = credentials::credential_type_for_auth(&profile.auth_method);
@@ -1080,11 +1081,21 @@ async fn handle_token(profile_name: &str, reveal: bool) -> anyhow::Result<()> {
                         profile_name
                     )
                 })?;
-            print!("{credential}");
+            write_token_stdout(&credential)?;
         }
     }
 
     Ok(())
+}
+
+/// Write an explicitly requested token or `--reveal`ed credential directly to
+/// stdout as raw bytes (for piping into other tools) without invoking print
+/// macros or panicking on a closed downstream pipe.
+fn write_token_stdout(value: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(value.as_bytes())?;
+    stdout.flush()
 }
 
 /// Return the list of credential types required for the profile's auth method.

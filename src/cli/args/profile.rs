@@ -2,7 +2,7 @@ use clap::{Args, Subcommand};
 
 use super::OutputFormat;
 
-const PROFILE_AFTER_HELP: &str = "Examples:\n  snow-cli profile add dev --instance https://dev.service-now.com --auth-method basic --username admin\n  snow-cli profile edit dev --username new-admin\n  snow-cli profile add prod --instance https://prod.service-now.com --auth-method oauth2 --client-id abc123\n  snow-cli profile default prod\n  snow-cli profile current\n  snow-cli profile remove old-dev\n  snow-cli profile list\n  snow-cli profile find --instance dev123466\n  snow-cli profile sdk list\n  snow-cli profile sdk import --alias dev\n  snow-cli profile sdk export prod --alias prod-sdk\n  snow-cli profile show";
+const PROFILE_AFTER_HELP: &str = "Examples:\n  snow-cli profile add dev --instance https://dev.service-now.com --auth-method basic --username admin\n  snow-cli profile edit dev --username new-admin\n  snow-cli profile add prod --instance https://prod.service-now.com --auth-method oauth2 --client-id abc123\n  snow-cli profile default prod\n  snow-cli profile current\n  snow-cli profile remove old-dev\n  snow-cli profile list\n  snow-cli profile find --instance dev123466\n  snow-cli profile storage status\n  snow-cli profile storage set file\n  snow-cli profile storage migrate --delete-legacy\n  snow-cli profile sdk list\n  snow-cli profile sdk import --alias dev\n  snow-cli profile sdk export prod --alias prod-sdk\n  snow-cli profile show";
 
 const PROFILE_INIT_AFTER_HELP: &str = "Notes:\n  - This legacy command is non-interactive by default (safe for agents and CI).\n  - Prefer `snow-cli profile add <name>` for new profiles.\n  - Pass required values as flags.\n\nExamples:\n  snow-cli profile add default --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli profile init --instance https://mycompany.service-now.com --auth-method basic --username admin\n  snow-cli profile init --name prod --instance https://prod.service-now.com --auth-method oauth2 --oauth-grant-type client-credentials --client-id abc123";
 // --- Profile ---
@@ -238,6 +238,9 @@ pub enum ConfigCommands {
     /// Interoperate with now-sdk authentication aliases
     Sdk(ProfileSdkArgs),
 
+    /// Inspect or configure encrypted credential vault storage
+    Storage(ProfileStorageArgs),
+
     /// List saved now-sdk authentication aliases
     #[command(name = "list-now-sdk-profiles", hide = true)]
     ListNowSdkProfiles,
@@ -357,6 +360,53 @@ pub enum ProfileSdkCommands {
         #[arg(long)]
         set_default: bool,
     },
+}
+
+#[derive(Args, Debug)]
+pub struct ProfileStorageArgs {
+    #[command(subcommand)]
+    pub command: ProfileStorageCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProfileStorageCommands {
+    /// Show the active credential storage mode and vault status (never prompts keychain)
+    Status,
+
+    /// Switch credential storage mode (migrating the vault key automatically)
+    Set {
+        /// Target storage mode
+        #[arg(value_enum)]
+        mode: CliCredentialStoreMode,
+
+        /// Keep the previous master key in its old location instead of removing it
+        #[arg(long)]
+        keep_old_key: bool,
+    },
+
+    /// Copy legacy per-profile OS keychain credentials into the encrypted vault
+    Migrate {
+        /// Overwrite entries that already exist in the encrypted vault
+        #[arg(long)]
+        overwrite: bool,
+
+        /// Delete migrated legacy per-profile keychain items after vault write succeeds
+        #[arg(long)]
+        delete_legacy: bool,
+    },
+}
+
+/// Credential storage mode for CLI argument parsing.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum CliCredentialStoreMode {
+    /// Encrypted vault with a single master key in the OS keychain (default)
+    Keyring,
+    /// Encrypted vault with an owner-only key file (zero OS keychain popups)
+    File,
+    /// Encrypted vault keyed by SNOW_CLI_ENCRYPTION_KEY (CI / headless)
+    Env,
+    /// Legacy per-profile OS keychain entries
+    LegacyKeychain,
 }
 
 /// Authentication method for CLI argument parsing.

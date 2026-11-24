@@ -1,6 +1,6 @@
 ---
 name: snow-cli
-description: Read and inspect a ServiceNow instance with `snow-cli-ro`, the read-only build of the `snow-cli` CLI — records, schema, choices, counts, script and flow definitions, code search; background scripts and writes only when the user asks. Use when the user names ServiceNow/SNOW or an instance, pastes a ServiceNow record number (a prefix plus digits with no hyphen, such as INC0010001, CHG0030002 or RITM0010003), or asks a question whose answer lives in a ServiceNow table. Not for Jira or other trackers' keys such as INC-123.
+description: Read and inspect a ServiceNow instance with `snow-cli-ro`, the read-only build of the `snow-cli` CLI — records, schema, choices, counts, script and flow definitions, code search, OAuth profile setup; background scripts and writes only when the user asks. Use when the user names ServiceNow/SNOW or an instance, pastes a ServiceNow record number (a prefix plus digits with no hyphen, such as INC0010001, CHG0030002 or RITM0010003), asks to set up snow-cli OAuth/login, or asks a question whose answer lives in a ServiceNow table. Not for Jira or other trackers' keys such as INC-123.
 allowed-tools: Bash(snow-cli-ro *)
 ---
 
@@ -57,8 +57,8 @@ Full binary only (not in `snow-cli-ro`, not pre-approved): `snow-cli script run 
 stderr JSON: `{"error":{"code","message","class","retry"}}`, plus `status` for HTTP errors and `detail`/`issues` when the CLI has more context. Branch on `code`: `INVALID_TABLE`, `RECORD_NOT_FOUND`, `UNAUTHORIZED` (401), `FORBIDDEN`/`ACL_DENIED` (403), `POLICY_DENIED`, `SERVER_ERROR`. `retry: safe_reads_only` (500, 429, timeouts): a read may be retried after a pause; `never`: fix the input; `manual_review` (`SCRIPT_EXECUTION_FAILED`, `IMPORT_RECORD_ERRORS`, `IMPORT_SET_ROW_ERRORS`, `SESSION_SWITCH_UNCERTAIN`, `GRAPHQL_ERROR`): the command may already have changed records, so inspect them and do not re-run it; `unknown`: never replay blindly.
 Exit: 0 ok · 1 command/script failure · 2 usage/validation/profile config (usage errors are plain text listing valid options) · 3 local credentials · 4 HTTP 404 · 5 other API/HTTP incl. 400/401/403 · 6 local I/O · 7 read-only policy.
 
-## 11. Identity
-`snow-cli-ro auth status --verify` makes one request and reports `instance`, `username`, `verified`, `verified_user`, `latency_ms`, `build`. Without `--verify` it only reports whether credentials are stored.
+## 11. Identity & OAuth setup
+`snow-cli-ro auth status --verify` makes one request and reports `instance`, `username`, `verified`, `verified_user`, `latency_ms`, `build`. Without `--verify` it only reports whether credentials are stored. For setting up OAuth 2.0 user login (either the OOB **ServiceNow SDK** record via `--sdk-oauth` manual code paste, or a custom OAuth Application Registry record with localhost callback), read [references/oauth-setup.md](references/oauth-setup.md).
 
 ## 12. More (see `--help`)
 `domain status|list|inspect|table <t> --counts` and `--with-domain` on reads (domain separation); `scope list|inspect|inventory`; `attachment list <table> <sys_id>`; `data export`; `seed plan|apply|cleanup` (tracked test data); `snu` (SN-Utils browser-session bridge).
@@ -75,6 +75,7 @@ For multi-table ServiceNow investigations, read only the matching playbook in `r
 - [references/diagnostics-and-logs.md](references/diagnostics-and-logs.md) — Script errors (`syslog`), slow requests (`syslog_transaction`), scheduled jobs (`sys_trigger`/`sysauto_script`), `sys_audit`/`sys_audit_delete`.
 - [references/ui-and-portal.md](references/ui-and-portal.md) — Classic form/list layouts, Service Portal (`sp_page`/`sp_widget`), Next Experience / Workspace routes (`sys_ux_*`).
 - [references/auth-and-identity.md](references/auth-and-identity.md) — Users, groups, role inheritance (`sys_user_role_contains`/`sys_user_has_role`), delegates, OAuth/SSO, 401 vs 403.
+- [references/oauth-setup.md](references/oauth-setup.md) — OAuth 2.0 user login setup: OOB ServiceNow SDK app (`--sdk-oauth` paste-code flow) and custom OAuth Application Registry with localhost callback.
 - [references/data-and-attachments.md](references/data-and-attachments.md) — `attachment list/download/upload`, `data export`/`--import-ready`/`validate`/`import`, tracked `seed` fixtures.
 - [references/servicenow-docs-lookup.md](references/servicenow-docs-lookup.md) — Index-first lookup in a local `ServiceNowDocs` clone (`llms.txt` → `<pub>/index.md` → topic) without full-repo greps.
 

@@ -1149,7 +1149,7 @@ fn test_config_import_now_sdk_alias_creates_profile_and_password() {
     assert!(content.contains("username = \"admin\""));
 
     let stored_password =
-        common::read_test_keychain_entry(&keychain_store, "snow-cli", "dev:password").unwrap();
+        common::read_stored_credential(&config_path, &keychain_store, "dev", "password").unwrap();
     assert_eq!(stored_password, "secret");
 }
 
@@ -1204,7 +1204,7 @@ username = "olduser"
     assert!(content.contains("https://new.service-now.com"));
     assert!(content.contains("newuser"));
     assert_eq!(
-        common::read_test_keychain_entry(&keychain_store, "snow-cli", "dev:password").unwrap(),
+        common::read_stored_credential(&config_path, &keychain_store, "dev", "password").unwrap(),
         "new-secret"
     );
 }
@@ -1406,7 +1406,7 @@ username = "admin"
         .stdout(predicate::str::contains("\"alias\":\"sdk-dev\""));
 
     assert_eq!(
-        common::read_test_keychain_entry(&keychain_store, "snow-cli", "dev:password").unwrap(),
+        common::read_stored_credential(&config_path, &keychain_store, "dev", "password").unwrap(),
         "secret"
     );
 
@@ -1447,7 +1447,8 @@ auth_method = "api_key"
         .stdout(predicate::str::contains("api_token"));
 
     assert_eq!(
-        common::read_test_keychain_entry(&keychain_store, "snow-cli", "default:api_token").unwrap(),
+        common::read_stored_credential(&config_path, &keychain_store, "default", "api_token")
+            .unwrap(),
         "stdin-token"
     );
 }

@@ -141,6 +141,6 @@ snow-cli --profile dev-session session switch domain <domain_sys_id>
 snow-cli --profile dev-session table list incident --limit 20
 ```
 
-Cookies and CSRF tokens persist in the OS keychain. Native UI endpoints depend on
+Cookies and CSRF tokens persist in the encrypted credential vault (`~/.servicenow/credentials.enc`). Native UI endpoints depend on
 the instance release; see the [session reference](docs/site/src/content/docs/commands/session.md)
 for attachment, expiry, read-only behavior, and context limits.

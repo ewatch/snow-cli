@@ -107,7 +107,7 @@ fn reads_with_the_base64_keychain_key_now_sdk_stores() {
         .assert()
         .success();
     assert_eq!(
-        common::read_test_keychain_entry(&env.keychain, "snow-cli", "fixture-basic:password")
+        common::read_stored_credential(&env.config, &env.keychain, "fixture-basic", "password")
             .as_deref(),
         Some("fixture-password")
     );

@@ -2,7 +2,7 @@
 
 Use when answering: "Who am I authenticated as?", "Why does user X have (or lack) role R?", "Which groups/delegates cover user X?", or "Why is an OAuth/API client getting 401/403?"
 
-All inspection commands below are read-only and work with `snow-cli-ro` (do not run `auth login/logout` or `session login/switch` unless explicitly asked).
+All inspection commands below are read-only and work with `snow-cli-ro` (do not run `auth login/logout` or `session login/switch` unless explicitly asked). For configuring OAuth 2.0 user login (OOB ServiceNow SDK `--sdk-oauth` paste-code flow or custom OAuth app with localhost callback), see `references/oauth-setup.md`.
 
 ## 1. Key tables & CLI commands
 

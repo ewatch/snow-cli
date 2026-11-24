@@ -25,6 +25,7 @@ import argparse
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
@@ -56,15 +57,35 @@ PLACEHOLDER = re.compile(r"<([^<>\s\\]+)>")
 # Profile names the skill uses in examples (`--profile dev-session`) must exist,
 # with the auth method those commands require, so that the example reaches
 # argument validation instead of PROFILE_NOT_FOUND.
-OFFLINE_PROFILES = {
-    "offline": "api_key",
-    "destination": "api_key",
-    "dev-session": "native_session",
-}
-OFFLINE_CONFIG = "default_profile = 'offline'\n" + "".join(
-    f"[profiles.{name}]\ninstance = 'https://127.0.0.1:9'\nauth_method = '{method}'\n"
-    for name, method in OFFLINE_PROFILES.items()
-)
+def render_offline_config(occupied_port: int) -> str:
+    profiles = {
+        "offline": {"auth_method": "api_key"},
+        "destination": {"auth_method": "api_key"},
+        "dev-session": {"auth_method": "native_session"},
+        # OAuth2 authorization-code profiles bind to a port already held by this
+        # script so loopback `auth login` examples validate arguments and fail
+        # fast on EADDRINUSE without opening a real browser window.
+        "sdk": {
+            "auth_method": "oauth2",
+            "client_id": "placeholder-client-id",
+            "oauth_grant_type": "authorization_code",
+            "oauth_redirect_port": occupied_port,
+        },
+        "dev-oauth": {
+            "auth_method": "oauth2",
+            "client_id": "placeholder-client-id",
+            "oauth_grant_type": "authorization_code",
+            "oauth_redirect_port": occupied_port,
+        },
+    }
+    lines = ["default_profile = 'offline'"]
+    for name, settings in profiles.items():
+        lines.append(f"[profiles.{name}]")
+        lines.append("instance = 'https://127.0.0.1:9'")
+        for key, value in settings.items():
+            rendered = f"'{value}'" if isinstance(value, str) else str(value)
+            lines.append(f"{key} = {rendered}")
+    return "\n".join(lines) + "\n"
 
 
 @dataclass
@@ -175,17 +196,27 @@ def main() -> int:
 
     examples = extract(args.skills)
     failures: list[tuple[Example, str]] = []
-    with tempfile.TemporaryDirectory() as home:
+    with (
+        tempfile.TemporaryDirectory() as home,
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied,
+    ):
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen(1)
+        offline_config = render_offline_config(occupied.getsockname()[1])
         config = Path(home) / "config.toml"
-        config.write_text(OFFLINE_CONFIG)
         env = {
             "PATH": os.environ.get("PATH", ""),
             "HOME": home,
             "SNOW_CLI_CONFIG": str(config),
             "SNOW_CLI_OUTPUT": "json",
             "SNOW_CLI_SNU_WS_ADDR": UNREACHABLE_SNU_WS_ADDR,
+            "SNOW_CLI_TEST_KEYCHAIN_STORE": str(Path(home) / "keychain.json"),
+            "SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN": "1",
         }
         for example in examples:
+            # Reset config before each example so profile-mutating examples
+            # (such as `profile edit` or `profile default`) do not affect others.
+            config.write_text(offline_config)
             failure = check(binary, example, env, Path(home))
             if failure:
                 failures.append((example, failure))
