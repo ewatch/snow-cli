@@ -1860,8 +1860,17 @@ auth_method = "api_key"
 "#,
     );
 
+    // Use an empty fake keychain so the missing-token path is deterministic
+    // on hosts without an OS keyring backend (e.g. Linux CI).
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env_remove("SNOW_CLI_CREDENTIAL_STORE")
+        .env_remove("SNOW_CLI_API_TOKEN")
+        .env_remove("SNOW_CLI_PROFILE_DEFAULT_API_TOKEN")
         .args([
             "attachment",
             "list",
@@ -1885,8 +1894,17 @@ auth_method = "api_key"
 "#,
     );
 
+    // Use an empty fake keychain so the missing-token path is deterministic
+    // on hosts without an OS keyring backend (e.g. Linux CI).
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env_remove("SNOW_CLI_CREDENTIAL_STORE")
+        .env_remove("SNOW_CLI_API_TOKEN")
+        .env_remove("SNOW_CLI_PROFILE_DEFAULT_API_TOKEN")
         .args([
             "import-set",
             "load",
