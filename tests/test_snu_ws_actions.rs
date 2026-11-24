@@ -358,7 +358,7 @@ fn snu_context_screenshot_and_attachment_preserve_wire_payloads_and_outputs() {
         "snu",
         "attachment-upload",
         "incident",
-        "abc123",
+        "6816f79cc0a8016401c5a33be04be441",
         "--file",
         &attachment_path_arg,
         "--content-type",
@@ -376,7 +376,7 @@ fn snu_context_screenshot_and_attachment_preserve_wire_payloads_and_outputs() {
         json!({
             "action": "uploadAttachment",
             "tableName": "incident",
-            "recordSysId": "abc123",
+            "recordSysId": "6816f79cc0a8016401c5a33be04be441",
             "fileName": "note.txt",
             "imageData": "aGVsbG8=",
             "contentType": "text/custom",

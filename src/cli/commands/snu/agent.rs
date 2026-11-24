@@ -283,7 +283,10 @@ pub(super) async fn handle_records_agent(
             let query_string = build_table_query_string(&fields, limit, query.as_deref(), None);
             let mut payload = Map::new();
             payload.insert("instance".to_string(), serde_json::to_value(instance)?);
-            payload.insert("tableName".to_string(), Value::String(table));
+            payload.insert(
+                "tableName".to_string(),
+                Value::String(table.as_str().to_string()),
+            );
             payload.insert("queryString".to_string(), Value::String(query_string));
             payload.insert("nameField".to_string(), Value::String(name_field));
             let response =

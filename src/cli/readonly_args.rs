@@ -628,7 +628,7 @@ pub enum ReadOnlySnuCommands {
     /// Query ServiceNow records through the active SN-Utils browser session
     Query {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Encoded query
         #[arg(long)]
@@ -642,9 +642,9 @@ pub enum ReadOnlySnuCommands {
         #[arg(long, default_value = "10")]
         limit: u32,
 
-        /// ORDERBY clause or field expression appended to sysparm_query
-        #[arg(long)]
-        order_by: Option<String>,
+        /// Sort order: field (ascending), -field or field:desc (descending), or ORDERBY clauses
+        #[arg(long, allow_hyphen_values = true)]
+        order_by: Option<OrderBy>,
 
         /// Seconds to wait for helper/session/response
         #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
@@ -661,10 +661,10 @@ pub enum ReadOnlySnuCommands {
     /// Fetch a single record through the active SN-Utils browser session
     GetRecord {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// Optional comma-separated fields list
         #[arg(long)]
@@ -678,7 +678,7 @@ pub enum ReadOnlySnuCommands {
     /// Fetch table UI metadata through the active SN-Utils browser session
     Schema {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Seconds to wait for helper/session/response
         #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]

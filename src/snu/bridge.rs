@@ -486,31 +486,22 @@ impl BridgeManager {
         let response = match response {
             Ok(response) => response,
             Err(BridgeError::Timeout { .. }) => {
-                let after = self.helper_status().await;
-                if after.generation != before.generation {
-                    return Err(BridgeError::Disconnected);
-                }
-                if before.advertises_instance_gates() || after.advertises_instance_gates() {
-                    return Err(BridgeError::GateStateUnavailable(
-                        "helper capability refresh timed out".to_string(),
-                    ));
-                }
-                let mut status = self.inner.helper_status.lock().await;
+                let status = self.inner.helper_status.lock().await;
                 if status.generation != before.generation {
                     return Err(BridgeError::Disconnected);
                 }
-                if status.advertises_instance_gates()
-                    || status.security_gate_support == HelperSecurityGateSupport::Gated
-                {
-                    return Err(BridgeError::GateStateUnavailable(
-                        "helper advertised instance security gates while capability refresh timed out"
-                            .to_string(),
-                    ));
+                if status.security_gate_support == HelperSecurityGateSupport::LegacyUnrestricted {
+                    return Ok(CapabilityNegotiation::Legacy {
+                        generation: status.generation,
+                    });
                 }
-                status.security_gate_support = HelperSecurityGateSupport::LegacyUnrestricted;
-                return Ok(CapabilityNegotiation::Legacy {
-                    generation: status.generation,
-                });
+                // Fail closed when helper capability metadata has not settled:
+                // a slow or stalled modern helper must never silently downgrade
+                // to LegacyUnrestricted.
+                return Err(BridgeError::GateStateUnavailable(
+                    "helper capability refresh timed out before security gate state settled"
+                        .to_string(),
+                ));
             }
             Err(BridgeError::Paused) => return Err(BridgeError::Paused),
             Err(error) => {
@@ -876,6 +867,11 @@ fn host_hello_message(bridge_id: &str) -> Message {
 /// How long a replaced helper may take to flush its close frame.
 const REPLACED_GRACE: Duration = Duration::from_secs(2);
 
+/// Maximum time to wait for a newly accepted TCP client to finish its WebSocket
+/// upgrade handshake before closing it, so a stalled local TCP client cannot
+/// block `accept_loop` or tie up resources indefinitely.
+const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Close code for a helper replaced by a newer helper tab (SN-Utils 10.3).
 const HELPER_REPLACED: u16 = 4001;
 /// Close code for an automatic reconnect while another helper is active.
@@ -968,45 +964,61 @@ async fn accept_loop(inner: Arc<Inner>) {
                     continue;
                 }
             };
-            let mut resume = false;
-            let mut extension_peer = false;
-            let allowed_origins = &inner.config.allowed_origins;
-            #[cfg(test)]
-            let allow_native = inner.config.allow_native_peers;
-            #[cfg(not(test))]
-            let allow_native = false;
-            #[allow(
-                clippy::result_large_err,
-                reason = "tungstenite's handshake Callback trait fixes this Result type"
-            )]
-            let screen_handshake = |request: &Request, response: Response| {
-                let origin = request
-                    .headers()
-                    .get("origin")
-                    .map(|value| value.to_str().unwrap_or("invalid"));
-                match peer_origin(origin, allowed_origins, allow_native) {
-                    PeerOrigin::Refused => {
-                        let mut refusal = ErrorResponse::new(Some("Not allowed".to_owned()));
-                        *refusal.status_mut() = StatusCode::FORBIDDEN;
-                        Err(refusal)
-                    }
-                    kind => {
-                        extension_peer = kind == PeerOrigin::Extension;
-                        resume = is_resume_request(&request.uri().to_string());
-                        Ok(response)
-                    }
-                }
-            };
-            let socket = match accept_hdr_async(stream, screen_handshake).await {
-                Ok(socket) => socket,
-                Err(error) => {
-                    tracing::debug!(%error, %peer_addr, "SN-Utils bridge handshake refused or failed");
-                    continue;
-                }
-            };
-            attach_connection(&inner, socket, peer_addr, resume, extension_peer).await;
+            let conn_inner = Arc::clone(&inner);
+            tokio::spawn(async move {
+                handle_accepted_socket(conn_inner, stream, peer_addr).await;
+            });
         }
     }
+}
+
+async fn handle_accepted_socket(inner: Arc<Inner>, stream: TcpStream, peer_addr: SocketAddr) {
+    let mut resume = false;
+    let mut extension_peer = false;
+    let allowed_origins = &inner.config.allowed_origins;
+    #[cfg(test)]
+    let allow_native = inner.config.allow_native_peers;
+    #[cfg(not(test))]
+    let allow_native = false;
+    #[allow(
+        clippy::result_large_err,
+        reason = "tungstenite's handshake Callback trait fixes this Result type"
+    )]
+    let screen_handshake = |request: &Request, response: Response| {
+        let origin = request
+            .headers()
+            .get("origin")
+            .map(|value| value.to_str().unwrap_or("invalid"));
+        match peer_origin(origin, allowed_origins, allow_native) {
+            PeerOrigin::Refused => {
+                let mut refusal = ErrorResponse::new(Some("Not allowed".to_owned()));
+                *refusal.status_mut() = StatusCode::FORBIDDEN;
+                Err(refusal)
+            }
+            kind => {
+                extension_peer = kind == PeerOrigin::Extension;
+                resume = is_resume_request(&request.uri().to_string());
+                Ok(response)
+            }
+        }
+    };
+    let socket = match timeout(
+        WS_HANDSHAKE_TIMEOUT,
+        accept_hdr_async(stream, screen_handshake),
+    )
+    .await
+    {
+        Ok(Ok(socket)) => socket,
+        Ok(Err(error)) => {
+            tracing::debug!(%error, %peer_addr, "SN-Utils bridge handshake refused or failed");
+            return;
+        }
+        Err(_) => {
+            tracing::debug!(%peer_addr, "SN-Utils bridge handshake timed out");
+            return;
+        }
+    };
+    attach_connection(&inner, socket, peer_addr, resume, extension_peer).await;
 }
 
 /// Install a freshly accepted helper-tab connection, following SN-Utils
@@ -1022,40 +1034,72 @@ async fn attach_connection(
     resume: bool,
     extension_peer: bool,
 ) {
-    if resume && inner.conn.lock().await.is_some() {
-        tracing::debug!(%peer_addr, "SN-Utils helper reconnect told to stand by");
-        let _ = socket
-            .send(close_message(
-                HELPER_STANDBY,
-                "Another helper tab is active",
-            ))
-            .await;
-        return;
-    }
-    let generation = inner.generation.fetch_add(1, Ordering::Relaxed) + 1;
-    let (sink, stream) = socket.split();
-    let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<Message>();
-    let last_seen = Arc::new(std::sync::Mutex::new(Instant::now()));
-
-    let writer = tokio::spawn(writer_loop(sink, outbound_rx));
-    let reader = tokio::spawn(reader_loop(
-        Arc::clone(inner),
-        stream,
-        outbound_tx.clone(),
-        generation,
-        Arc::clone(&last_seen),
-    ));
-
+    let generation;
     let previous = {
         let mut conn = inner.conn.lock().await;
-        conn.replace(Conn {
+        if resume && conn.is_some() {
+            drop(conn);
+            tracing::debug!(%peer_addr, "SN-Utils helper reconnect told to stand by");
+            let _ = timeout(
+                REPLACED_GRACE,
+                socket.send(close_message(
+                    HELPER_STANDBY,
+                    "Another helper tab is active",
+                )),
+            )
+            .await;
+            return;
+        }
+
+        generation = inner.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        // Initialize helper_status for the new generation and enqueue hostHello
+        // (plus any pending banner) BEFORE spawning reader_loop or publishing
+        // inner.conn, so initial helperBuildInfo/helperGatesUpdated messages
+        // can never be dropped as belonging to a mismatched generation.
+        *inner.helper_status.lock().await = HelperStatus {
             generation,
-            outbound: outbound_tx.clone(),
+            ..HelperStatus::default()
+        };
+
+        let (sink, stream) = socket.split();
+        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<Message>();
+        let last_seen = Arc::new(std::sync::Mutex::new(Instant::now()));
+
+        // Only an extension page is the SN-Utils helper; native peers never learn
+        // the bridge identity SN-Utils trusts for automatic token refresh.
+        let bridge_id = if extension_peer {
+            inner.config.bridge_id.as_str()
+        } else {
+            ""
+        };
+        let _ = outbound_tx.send(host_hello_message(bridge_id));
+        if let Some(banner) = inner.pending_banner.lock().await.take() {
+            let _ = outbound_tx.send(banner_message(&banner));
+        }
+
+        let writer = tokio::spawn(writer_loop(sink, outbound_rx));
+        let reader = tokio::spawn(reader_loop(
+            Arc::clone(inner),
+            stream,
+            outbound_tx.clone(),
+            generation,
+            Arc::clone(&last_seen),
+        ));
+
+        let previous = conn.replace(Conn {
+            generation,
+            outbound: outbound_tx,
             reader,
             writer,
             last_seen,
-        })
+        });
+        // Update connected_tx while still holding inner.conn so a concurrent
+        // detach_connection for an older generation can never overwrite true
+        // with false.
+        inner.connected_tx.send_replace(true);
+        previous
     };
+
     if let Some(previous) = previous {
         previous.reader.abort();
         // Tell the replaced tab why so it stands by instead of reconnecting
@@ -1080,45 +1124,35 @@ async fn attach_connection(
         );
     }
 
-    *inner.helper_status.lock().await = HelperStatus {
-        generation,
-        ..HelperStatus::default()
-    };
-    // Only an extension page is the SN-Utils helper; native peers never learn
-    // the bridge identity SN-Utils trusts for automatic token refresh.
-    let bridge_id = if extension_peer {
-        inner.config.bridge_id.as_str()
-    } else {
-        ""
-    };
-    let _ = outbound_tx.send(host_hello_message(bridge_id));
-    if let Some(banner) = inner.pending_banner.lock().await.take() {
-        let _ = outbound_tx.send(banner_message(&banner));
-    }
-    // send_replace: a plain watch `send` drops the value when no receiver is
-    // currently subscribed, which would leave `connected` stuck at false.
-    inner.connected_tx.send_replace(true);
     tracing::debug!(%peer_addr, generation, "SN-Utils helper tab connected");
 }
 
 /// Tear down the given connection generation (no-op if it was already
 /// replaced) and fail its pending request waiters with `Disconnected`.
-async fn detach_connection(inner: &Arc<Inner>, generation: u64) {
-    {
+async fn detach_connection(inner: &Arc<Inner>, generation: u64, called_from_reader: bool) {
+    let detached = {
         let mut conn = inner.conn.lock().await;
         match conn.as_ref() {
             Some(current) if current.generation == generation => {
-                // Safe: we just checked as_ref() above; the Option is guaranteed to be Some
-                #[allow(clippy::unwrap_used)]
-                let current = conn.take().unwrap();
-                current.reader.abort();
-                current.writer.abort();
+                let current = conn.take();
+                // Update connected_tx under inner.conn so we can never clobber
+                // a newly attached connection's `true`.
+                inner.connected_tx.send_replace(false);
+                current
             }
             _ => return,
         }
-    }
-    inner.connected_tx.send_replace(false);
+    };
+    // Always notify waiters BEFORE aborting tasks — when called from
+    // `reader_loop`, aborting `current.reader` would cancel this very task
+    // before waiters are woken.
     fail_waiters_for_generation(inner, generation).await;
+    if let Some(current) = detached {
+        current.writer.abort();
+        if !called_from_reader {
+            current.reader.abort();
+        }
+    }
     tracing::debug!(generation, "SN-Utils helper tab disconnected");
 }
 
@@ -1210,7 +1244,7 @@ async fn reader_loop(
             }
         }
     }
-    detach_connection(&inner, generation).await;
+    detach_connection(&inner, generation, true).await;
 }
 
 /// Route a parsed message: capture any embedded session unconditionally, then
@@ -1326,7 +1360,7 @@ async fn heartbeat_loop(inner: Arc<Inner>) {
                 idle_ms = idle.as_millis() as u64,
                 "SN-Utils helper tab unresponsive; dropping connection"
             );
-            detach_connection(&inner, generation).await;
+            detach_connection(&inner, generation, false).await;
             continue;
         }
         let _ = outbound.send(Message::Ping(Bytes::new()));
@@ -2098,5 +2132,50 @@ mod tests {
         assert!(error.to_string().contains("loopback IP address"));
         let error = loopback_socket_addr("localhost:1978", "test address").unwrap_err();
         assert!(error.to_string().contains("IP socket address"));
+    }
+
+    #[tokio::test]
+    async fn negotiation_timeout_fails_closed_instead_of_legacy_downgrade() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        let mut helper = connect_helper(addr).await;
+        let requester = manager.clone();
+        let negotiation = tokio::spawn(async move { requester.negotiate_capabilities(1).await });
+
+        // Consume capability request without replying so negotiation times out.
+        let req = helper.next().await.unwrap().unwrap();
+        assert!(req.to_text().unwrap().contains("agentGetCapabilities"));
+
+        let error = negotiation.await.unwrap().unwrap_err();
+        assert!(
+            matches!(error, BridgeError::GateStateUnavailable(_)),
+            "expected fail-closed GateStateUnavailable on timeout, got: {error:?}"
+        );
+        assert_ne!(
+            manager.helper_status().await.security_gate_support,
+            HelperSecurityGateSupport::LegacyUnrestricted
+        );
+    }
+
+    #[tokio::test]
+    async fn stalled_tcp_client_does_not_freeze_accept_loop() {
+        let (manager, _sessions, addr) = start_manager(Duration::from_secs(60)).await;
+        // Open a raw TCP connection and never send a WebSocket upgrade request.
+        let _stalled = TcpStream::connect(addr).await.unwrap();
+
+        // A legitimate helper connecting right after must succeed immediately.
+        let mut helper = timeout(Duration::from_secs(2), connect_helper(addr))
+            .await
+            .expect("stalled TCP peer must not block helper handshake");
+        manager
+            .wait_connected(Duration::from_secs(2))
+            .await
+            .unwrap();
+        manager.send_banner("alive").await;
+        let frame = timeout(Duration::from_secs(2), helper.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(frame.to_text().unwrap().contains("alive"));
     }
 }

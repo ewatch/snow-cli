@@ -1,5 +1,8 @@
 use clap::{Args, Subcommand};
 
+use crate::models::identifiers::{SysId, TableName};
+use crate::models::order_by::OrderBy;
+
 const SNU_AFTER_HELP: &str = "Examples:\n  snow-cli snu check-connection --verify\n  snow-cli snu query incident --query 'active=true' --fields sys_id,number --limit 10\n  snow-cli snu get-record incident <sys_id> --fields sys_id,number,short_description\n  snow-cli snu update-record sys_script_include <sys_id> --field script --content 'gs.info(\"hello\")'\n  snow-cli snu execute-bg-script --code 'gs.info(\"hello from SN-Utils\")'\n  snow-cli --instance https://dev12345.service-now.com snu query incident --query 'active=true'\n  snow-cli snu broker status\n\nNotes:\n  - Requires the SN-Utils browser extension with its ScriptSync helper tab open. Commands auto-start a local broker on 127.0.0.1:1978; run /token in a ServiceNow tab when prompted. Stop sn-scriptsync first if it owns that port.\n  - When the browser holds sessions for several instances, pass the global --instance <url-or-host> to pick one; `snu broker status` lists live sessions and `snu broker clear` drops cached ones.\n  - `snu update-record` and `snu delete-record` run as server-side background scripts over the bridge; `snu delete-record --dry-run` only previews matches and never deletes.\n  - Full command list, token/session lifecycle, and troubleshooting: https://ewatch.github.io/snow-cli/commands/snu.html";
 pub const DEFAULT_SNU_TIMEOUT_SECS: u64 = 180;
 /// Default sysparm_fields used by snu record reads (query, get-record).
@@ -43,7 +46,7 @@ pub enum SnuCommands {
     /// Query ServiceNow records through the active SN-Utils browser session
     Query {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Encoded query
         #[arg(long)]
@@ -57,9 +60,9 @@ pub enum SnuCommands {
         #[arg(long, default_value = "10")]
         limit: u32,
 
-        /// ORDERBY clause or field expression appended to sysparm_query
-        #[arg(long)]
-        order_by: Option<String>,
+        /// Sort order: field (ascending), -field or field:desc (descending), or ORDERBY clauses
+        #[arg(long, allow_hyphen_values = true)]
+        order_by: Option<OrderBy>,
 
         /// Seconds to wait for helper/session/response
         #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
@@ -84,7 +87,7 @@ pub enum SnuCommands {
     /// Create a record through the active SN-Utils browser session
     CreateRecord {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// JSON object of field/value pairs for the new record
         #[arg(long)]
@@ -119,10 +122,10 @@ pub enum SnuCommands {
     /// Fetch a single record through the active SN-Utils browser session
     GetRecord {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// Optional comma-separated fields list
         #[arg(long)]
@@ -136,10 +139,10 @@ pub enum SnuCommands {
     /// Update one or more fields through the active SN-Utils browser session
     UpdateRecord {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// JSON object of field/value pairs to update (use for multiple fields)
         #[arg(long, group = "update_source")]
@@ -165,11 +168,11 @@ pub enum SnuCommands {
     /// Delete a record through the active SN-Utils browser session
     DeleteRecord {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id (single delete)
         #[arg(long, group = "delete_target")]
-        sys_id: Option<String>,
+        sys_id: Option<SysId>,
 
         /// Encoded query (bulk delete)
         #[arg(long, group = "delete_target")]
@@ -195,7 +198,7 @@ pub enum SnuCommands {
     /// Fetch table UI metadata through the active SN-Utils browser session
     Schema {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Seconds to wait for helper/session/response
         #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
@@ -261,10 +264,10 @@ pub enum SnuCommands {
     /// Upload an attachment through the active SN-Utils browser session
     AttachmentUpload {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// Path to file to upload
         #[arg(long, short)]
@@ -480,7 +483,7 @@ pub struct SnuRecordsArgs {
 pub enum SnuRecordsCommands {
     /// Fetch reference/parent choices from a table
     ParentOptions {
-        table: String,
+        table: TableName,
         /// Encoded query
         #[arg(long)]
         query: Option<String>,
@@ -745,7 +748,7 @@ mod tests {
                     await_confirmation,
                     ..
                 } => {
-                    assert_eq!(table, "sp_widget");
+                    assert_eq!(table.as_str(), "sp_widget");
                     assert_eq!(sys_id.as_str(), "6816f79cc0a8016401c5a33be04be441");
                     assert_eq!(
                         data.as_deref(),
@@ -887,6 +890,43 @@ mod tests {
         assert!(
             result.is_err(),
             "--data and --field must be mutually exclusive"
+        );
+    }
+
+    #[test]
+    fn test_snu_rejects_query_injection_in_sys_id_and_invalid_table_or_order_by() {
+        assert!(
+            Cli::try_parse_from([
+                "snow-cli",
+                "snu",
+                "get-record",
+                "incident",
+                "6816f79cc0a8016401c5a33be04be441^ORactive=true",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "snow-cli",
+                "snu",
+                "delete-record",
+                "incident",
+                "--sys-id",
+                "not-a-valid-sys-id",
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["snow-cli", "snu", "query", "incident/../sys_user"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "snow-cli",
+                "snu",
+                "query",
+                "incident",
+                "--order-by",
+                "number^ORactive=true",
+            ])
+            .is_err()
         );
     }
 }

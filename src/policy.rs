@@ -628,15 +628,15 @@ mod tests {
         }));
         assert_allowed(Commands::Snu(SnuArgs {
             command: SnuCommands::GetRecord {
-                table: "incident".to_string(),
-                sys_id: "abc".to_string(),
+                table: "incident".parse().unwrap(),
+                sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 fields: None,
                 timeout_secs: 1,
             },
         }));
         assert_allowed(Commands::Snu(SnuArgs {
             command: SnuCommands::Query {
-                table: "incident".to_string(),
+                table: "incident".parse().unwrap(),
                 query: None,
                 fields: "sys_id".to_string(),
                 limit: 10,
@@ -646,7 +646,7 @@ mod tests {
         }));
         assert_allowed(Commands::Snu(SnuArgs {
             command: SnuCommands::Schema {
-                table: "incident".to_string(),
+                table: "incident".parse().unwrap(),
                 timeout_secs: 1,
             },
         }));
@@ -690,8 +690,8 @@ mod tests {
     fn read_only_denies_snu_mutating_commands() {
         assert_denied(Commands::Snu(SnuArgs {
             command: SnuCommands::UpdateRecord {
-                table: "incident".to_string(),
-                sys_id: "abc".to_string(),
+                table: "incident".parse().unwrap(),
+                sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
                 data: None,
                 field: Some("state".to_string()),
                 content: Some("2".to_string()),
@@ -701,8 +701,8 @@ mod tests {
         }));
         assert_denied(Commands::Snu(SnuArgs {
             command: SnuCommands::DeleteRecord {
-                table: "incident".to_string(),
-                sys_id: Some("abc".to_string()),
+                table: "incident".parse().unwrap(),
+                sys_id: Some("6816f79cc0a8016401c5a33be04be441".parse().unwrap()),
                 query: None,
                 confirm: false,
                 limit: None,

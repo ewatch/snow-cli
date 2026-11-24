@@ -11,6 +11,7 @@ use crate::cli::args::{
 };
 use crate::cli::io::{DEFAULT_MAX_STDIN_BYTES, read_to_string_limited};
 use crate::cli::output::print_output;
+use crate::models::identifiers::{SysId, TableName};
 use crate::snu::broker::{BrokerBridge, BrokerStatus};
 use crate::snu::protocol::{SnuInstance, SnuMessage, redact_session_for_output, resolve_origin};
 
@@ -55,10 +56,18 @@ pub async fn handle(
         } => {
             let (bridge, instance) =
                 connect_and_wait_for_session(timeout_secs, target_origin).await?;
-            let query_string =
-                build_table_query_string(&fields, limit, query.as_deref(), order_by.as_deref());
+            let order_by_encoded = order_by.as_ref().map(|spec| spec.to_encoded_query());
+            let query_string = build_table_query_string(
+                &fields,
+                limit,
+                query.as_deref(),
+                order_by_encoded.as_deref(),
+            );
             let mut fields = Map::new();
-            fields.insert("tableName".to_string(), Value::String(table.clone()));
+            fields.insert(
+                "tableName".to_string(),
+                Value::String(table.as_str().to_string()),
+            );
             fields.insert("queryString".to_string(), Value::String(query_string));
             fields.insert("instance".to_string(), serde_json::to_value(instance)?);
             let response = send_agent_action_with_prefix(
@@ -70,7 +79,7 @@ pub async fn handle(
             )
             .await?;
             let value = json!({
-                "table": response.extra.get("tableName").and_then(Value::as_str).unwrap_or(&table),
+                "table": response.extra.get("tableName").and_then(Value::as_str).unwrap_or(table.as_str()),
                 "count": response.extra.get("count").and_then(Value::as_u64).unwrap_or_else(|| response.extra.get("records").and_then(Value::as_array).map(|a| a.len() as u64).unwrap_or(0)),
                 "records": response.extra.get("records").cloned().unwrap_or_else(|| json!([])),
             });
@@ -83,7 +92,10 @@ pub async fn handle(
             let (bridge, instance) =
                 connect_and_wait_for_session(timeout_secs, target_origin).await?;
             let mut fields = Map::new();
-            fields.insert("tableName".to_string(), Value::String(table));
+            fields.insert(
+                "tableName".to_string(),
+                Value::String(table.as_str().to_string()),
+            );
             fields.insert("instance".to_string(), serde_json::to_value(instance)?);
             let response = send_agent_action_with_prefix(
                 &bridge,
@@ -338,8 +350,14 @@ pub async fn handle(
                 content_type.unwrap_or_else(|| guess_content_type(&file_path).to_string());
             let image_data = base64::engine::general_purpose::STANDARD.encode(bytes);
             let mut fields = Map::new();
-            fields.insert("tableName".to_string(), Value::String(table));
-            fields.insert("recordSysId".to_string(), Value::String(sys_id));
+            fields.insert(
+                "tableName".to_string(),
+                Value::String(table.as_str().to_string()),
+            );
+            fields.insert(
+                "recordSysId".to_string(),
+                Value::String(sys_id.as_str().to_string()),
+            );
             fields.insert("fileName".to_string(), Value::String(file_name.to_string()));
             fields.insert("imageData".to_string(), Value::String(image_data));
             fields.insert("contentType".to_string(), Value::String(content_type));

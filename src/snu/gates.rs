@@ -217,9 +217,12 @@ struct RawCapabilitiesReport {
 /// Classify an outbound helper action before it reaches the browser socket,
 /// following SN-Utils' own bridge (`@snutils/snu` 0.6.6 `getCommandPolicy`).
 /// Every returned gate must allow the action; an empty list means ungated.
+///
+/// Uses an explicit allowlist for known ungated actions and fails closed
+/// (`BackgroundScripts`) for unknown or missing actions.
 pub fn gates_for_payload(payload: &Value) -> Vec<GateName> {
     let Some(action) = payload.get("action").and_then(Value::as_str) else {
-        return Vec::new();
+        return vec![GateName::BackgroundScripts];
     };
     match action {
         "executeBackgroundScript" | "agentRunBackgroundScript" => vec![GateName::BackgroundScripts],
@@ -248,9 +251,14 @@ pub fn gates_for_payload(payload: &Value) -> Vec<GateName> {
         }
         // A screenshot is a read; only debugger-based capture needs the gate.
         "takeScreenshot" => {
-            let uses_debugger = ["cdp", "allowDebugger"]
-                .iter()
-                .any(|key| payload.get(*key).and_then(Value::as_bool) == Some(true));
+            let uses_debugger = [
+                "/cdp",
+                "/allowDebugger",
+                "/params/cdp",
+                "/params/allowDebugger",
+            ]
+            .iter()
+            .any(|pointer| payload.pointer(pointer).and_then(Value::as_bool) == Some(true));
             if uses_debugger {
                 vec![GateName::BrowserDebugger]
             } else {
@@ -258,6 +266,21 @@ pub fn gates_for_payload(payload: &Value) -> Vec<GateName> {
             }
         }
         "agentRestApi" => rest_gates(payload),
+        // Known read-only metadata/query actions and extension actions that have
+        // no per-instance security gate (per ADR-0008).
+        "agentQueryRecords"
+        | "requestTableStructure"
+        | "requestAppMeta"
+        | "agentGetContext"
+        | "agentGetParentOptions"
+        | "agentGetFormState"
+        | "agentGetCapabilities"
+        | "activateTab"
+        | "switchContext"
+        | "runSlashCommand"
+        | "agentSetField"
+        | "agentClickElement"
+        | "agentNavigate" => Vec::new(),
         // Winding a debugger session down stays possible after the gate is
         // switched off mid-capture, as in SN-Utils' own bridge.
         "agentCdpStopConsoleCapture"
@@ -265,7 +288,8 @@ pub fn gates_for_payload(payload: &Value) -> Vec<GateName> {
         | "agentCdpClearDialogHandler"
         | "agentCdpDetach" => Vec::new(),
         action if action.starts_with("agentCdp") => vec![GateName::BrowserDebugger],
-        _ => Vec::new(),
+        // Fail closed on any unrecognized action rather than bypassing gates.
+        _ => vec![GateName::BackgroundScripts],
     }
 }
 
@@ -274,6 +298,7 @@ fn rest_gates(payload: &Value) -> Vec<GateName> {
         .get("method")
         .and_then(Value::as_str)
         .unwrap_or("GET")
+        .trim()
         .to_ascii_uppercase();
     match method.as_str() {
         "POST" | "PUT" | "PATCH" => match batch_sub_methods(payload) {
@@ -291,7 +316,7 @@ fn rest_gates(payload: &Value) -> Vec<GateName> {
                 vec![GateName::DeleteRecords, GateName::RestRequest]
             }
         },
-        "DELETE" => vec![GateName::DeleteRecords],
+        "DELETE" => vec![GateName::DeleteRecords, GateName::RestRequest],
         "GET" | "HEAD" | "OPTIONS" => Vec::new(),
         _ => vec![GateName::RestRequest],
     }
@@ -303,9 +328,10 @@ enum BatchMethods {
     Unreadable,
 }
 
-/// The sub-request methods of a Batch API call (`/api/now/v1/batch`). The
-/// endpoint is normalized like a browser URL first, so dot segments or
-/// encoded dots cannot hide it.
+/// The sub-request methods of a Batch API call (`/api/now/batch` or
+/// `/api/now/v<n>/batch`). The endpoint is percent-decoded and normalized like
+/// a browser URL first, so dot segments, encoded dots, or encoded characters
+/// cannot hide it.
 fn batch_sub_methods(payload: &Value) -> BatchMethods {
     let endpoint = payload
         .get("endpoint")
@@ -317,17 +343,29 @@ fn batch_sub_methods(payload: &Value) -> BatchMethods {
     let Ok(url) = base.join(endpoint) else {
         return BatchMethods::Unreadable;
     };
-    let mut path = url.path().to_ascii_lowercase();
+    // Decode percent-encoding and re-normalize with Url::join so encoded dots
+    // (`%2e%2e`), encoded slashes (`%2f`), and encoded letters (`%62atch`) all
+    // collapse before path matching.
+    let Ok(decoded_path) = urlencoding::decode(url.path()) else {
+        return BatchMethods::Unreadable;
+    };
+    let Ok(normalized_url) = base.join(&decoded_path) else {
+        return BatchMethods::Unreadable;
+    };
+    let mut path = normalized_url.path().to_ascii_lowercase();
     while path.contains("//") {
         path = path.replace("//", "/");
     }
     let path = path.strip_suffix('/').unwrap_or(&path);
-    let is_batch = path
-        .strip_prefix("/api/now/v")
-        .and_then(|rest| rest.split_once("/batch"))
-        .is_some_and(|(version, tail)| {
-            !version.is_empty() && version.chars().all(|c| c.is_ascii_digit()) && tail.is_empty()
-        });
+    let is_batch = path == "/api/now/batch"
+        || path
+            .strip_prefix("/api/now/v")
+            .and_then(|rest| rest.split_once("/batch"))
+            .is_some_and(|(version, tail)| {
+                !version.is_empty()
+                    && version.chars().all(|c| c.is_ascii_digit())
+                    && tail.is_empty()
+            });
     if !is_batch {
         return BatchMethods::NotBatch;
     }
@@ -348,6 +386,7 @@ fn batch_sub_methods(payload: &Value) -> BatchMethods {
                         .get("method")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
+                        .trim()
                         .to_ascii_uppercase()
                 })
                 .collect(),
@@ -358,8 +397,9 @@ fn batch_sub_methods(payload: &Value) -> BatchMethods {
 
 /// Resolve the target origin without retaining any session or action payload.
 pub fn payload_origin(payload: &Value) -> Option<String> {
+    let action = payload.get("action").and_then(Value::as_str);
     let page_action = matches!(
-        payload.get("action").and_then(Value::as_str),
+        action,
         Some(
             "agentRunUiAction"
                 | "agentSetField"
@@ -368,7 +408,7 @@ pub fn payload_origin(payload: &Value) -> Option<String> {
                 | "agentNavigate"
                 | "takeScreenshot"
         )
-    );
+    ) || action.is_some_and(|name| name.starts_with("agentCdp"));
     // Page actions act on the tab their URL selects, never on `instance`;
     // like the helper, `params.url` wins over the top-level `url`.
     let url = if page_action {
@@ -487,6 +527,14 @@ mod tests {
                 vec![BrowserDebugger],
             ),
             (
+                serde_json::json!({"action": "takeScreenshot", "params": {"cdp": true}}),
+                vec![BrowserDebugger],
+            ),
+            (
+                serde_json::json!({"action": "takeScreenshot", "params": {"allowDebugger": true}}),
+                vec![BrowserDebugger],
+            ),
+            (
                 serde_json::json!({"action": "agentCdpCaptureScreenshot"}),
                 vec![BrowserDebugger],
             ),
@@ -500,7 +548,11 @@ mod tests {
             ),
             (
                 serde_json::json!({"action": "agentRestApi", "method": "DELETE"}),
-                vec![DeleteRecords],
+                vec![DeleteRecords, RestRequest],
+            ),
+            (
+                serde_json::json!({"action": "agentRestApi", "method": " DELETE "}),
+                vec![DeleteRecords, RestRequest],
             ),
             (
                 batch(serde_json::json!([{"method": "GET"}, {"method": "patch"}])),
@@ -508,6 +560,10 @@ mod tests {
             ),
             (
                 batch(serde_json::json!([{"method": "GET"}, {"method": "DELETE"}])),
+                vec![DeleteRecords, RestRequest],
+            ),
+            (
+                batch(serde_json::json!([{"method": " DELETE "}])),
                 vec![DeleteRecords, RestRequest],
             ),
             (
@@ -520,17 +576,52 @@ mod tests {
                 vec![DeleteRecords, RestRequest],
             ),
             (
+                // Unversioned batch endpoint must also require DeleteRecords.
+                serde_json::json!({"action": "agentRestApi", "method": "POST",
+                    "endpoint": "/api/now/batch",
+                    "body": {"rest_requests": [{"method": "DELETE"}]}}),
+                vec![DeleteRecords, RestRequest],
+            ),
+            (
+                // Percent-encoded batch path cannot bypass gate detection.
+                serde_json::json!({"action": "agentRestApi", "method": "POST",
+                    "endpoint": "/api/now/v1/%62atch",
+                    "body": {"rest_requests": [{"method": "DELETE"}]}}),
+                vec![DeleteRecords, RestRequest],
+            ),
+            (
                 // Dot segments and doubled slashes cannot hide the endpoint.
                 serde_json::json!({"action": "agentRestApi", "method": "POST",
                     "endpoint": "/api/now/table/../v2//Batch/",
                     "body": {"rest_requests": [{"method": "DELETE"}]}}),
                 vec![DeleteRecords, RestRequest],
             ),
+            (
+                // Unknown actions fail closed instead of bypassing gates.
+                serde_json::json!({"action": "futureDangerousAction"}),
+                vec![BackgroundScripts],
+            ),
+            (
+                // Missing action fails closed.
+                serde_json::json!({}),
+                vec![BackgroundScripts],
+            ),
         ];
 
         for (payload, expected) in cases {
             assert_eq!(gates_for_payload(&payload), expected, "payload: {payload}");
         }
+
+        // agentCdp* actions resolve origin from params.url / url, never instance.url.
+        let cdp_payload = serde_json::json!({
+            "action": "agentCdpCaptureScreenshot",
+            "params": {"url": "https://prod.service-now.com/nav_to.do"},
+            "instance": {"url": "https://dev.service-now.com"}
+        });
+        assert_eq!(
+            payload_origin(&cdp_payload).as_deref(),
+            Some("https://prod.service-now.com:443")
+        );
     }
 
     #[test]

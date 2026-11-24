@@ -10,7 +10,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
@@ -21,7 +21,9 @@ use crate::models::secret::Secret;
 use crate::snu::bridge::{
     BridgeConfig, BridgeError, BridgeManager, Matcher, env_loopback_socket_addr,
 };
-use crate::snu::gates::{GateDecision, HelperStatus, PreflightResult};
+use crate::snu::gates::{
+    GateDecision, HelperStatus, PreflightResult, gates_for_payload, payload_origin,
+};
 use crate::snu::protocol::{SnuInstance, SnuMessage, normalize_origin};
 
 pub const DEFAULT_SNU_BROKER_ADDR: SocketAddr =
@@ -29,6 +31,16 @@ pub const DEFAULT_SNU_BROKER_ADDR: SocketAddr =
 
 const BROKER_IPC_TOKEN_FILE_NAME: &str = "snu-broker-token";
 const BROKER_IPC_TOKEN_BYTES: usize = 32;
+const BROKER_START_LOCK_FILE_NAME: &str = "snu-broker-start.lock";
+/// Hard upper bound on a single newline-delimited IPC frame (16 MiB) so a
+/// malformed or hostile local client cannot exhaust broker memory.
+const MAX_IPC_FRAME_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum time the broker waits to read a single IPC request line.
+const IPC_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// Maximum time allowed to flush a single IPC request or response frame.
+const IPC_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Maximum grace period to drain in-flight broker requests on shutdown.
+const BROKER_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 const BROKER_UNIX_DIR_NAME: &str = "run";
 #[cfg(unix)]
@@ -423,9 +435,28 @@ enum BrokerRequest {
     },
 }
 
+impl BrokerRequest {
+    fn ipc_response_timeout(&self) -> Duration {
+        let base_secs = match self {
+            Self::Ping | Self::Status | Self::Stop | Self::ClearSessions { .. } => 30,
+            Self::RefreshCapabilities { timeout_secs }
+            | Self::SendBanner { timeout_secs, .. }
+            | Self::WaitSession { timeout_secs, .. }
+            | Self::SendAction { timeout_secs, .. }
+            | Self::SendActionForAction { timeout_secs, .. }
+            | Self::SendActionWithLegacyFallback { timeout_secs, .. }
+            | Self::RefreshSession { timeout_secs, .. }
+            | Self::VerifySession { timeout_secs, .. } => timeout_secs.saturating_add(30),
+        };
+        Duration::from_secs(base_secs.max(5))
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct BrokerResponse {
     ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -505,6 +536,12 @@ struct Broker {
     /// only one may be in flight or concurrent callers could consume each
     /// other's action-matched response.
     legacy_action_lock: Mutex<()>,
+    /// Serializes on-disk session cache snapshots so concurrent updates never
+    /// race on writes or overwrite newer sessions with older snapshots.
+    persist_lock: Mutex<()>,
+    /// Single-flight per-origin token refresh locks so concurrent callers
+    /// hitting an expired token do not double-evict and prompt twice.
+    refresh_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl Broker {
@@ -513,7 +550,15 @@ impl Broker {
             state: Mutex::new(BrokerState::new(idle_timeout, ipc_addr)),
             manager,
             legacy_action_lock: Mutex::new(()),
+            persist_lock: Mutex::new(()),
+            refresh_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    async fn refresh_lock_for_origin(&self, origin: Option<&str>) -> Arc<Mutex<()>> {
+        let key = origin.unwrap_or("*").to_string();
+        let mut locks = self.refresh_locks.lock().await;
+        Arc::clone(locks.entry(key).or_insert_with(|| Arc::new(Mutex::new(()))))
     }
 }
 
@@ -687,9 +732,14 @@ impl BrokerBridge {
             BrokerEndpoint::Unix(_) => None,
         };
         if connect_once(&endpoint, auth_token.as_ref()).await.is_err() {
-            BridgeConfig::from_env()?;
-            spawn_broker()?;
-            wait_until_ready(&endpoint, auth_token.as_ref()).await?;
+            // Serialize concurrent CLI invocations trying to auto-spawn the
+            // broker simultaneously so only one child is launched.
+            let _start_lock = acquire_broker_start_lock().await?;
+            if connect_once(&endpoint, auth_token.as_ref()).await.is_err() {
+                BridgeConfig::from_env()?;
+                spawn_broker()?;
+                wait_until_ready(&endpoint, auth_token.as_ref()).await?;
+            }
         }
 
         Ok(Self {
@@ -905,16 +955,27 @@ async fn send_ipc_envelope_on_stream<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let response_timeout = envelope.request.ipc_response_timeout();
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
 
     let raw = serde_json::to_string(envelope)?;
-    write_half.write_all(raw.as_bytes()).await?;
-    write_half.write_all(b"\n").await?;
-    write_half.flush().await?;
+    if raw.len() > MAX_IPC_FRAME_BYTES {
+        anyhow::bail!(
+            "SN-Utils broker IPC request exceeds maximum frame size ({MAX_IPC_FRAME_BYTES} bytes)"
+        );
+    }
+    timeout(IPC_WRITE_TIMEOUT, async {
+        write_half.write_all(raw.as_bytes()).await?;
+        write_half.write_all(b"\n").await?;
+        write_half.flush().await
+    })
+    .await
+    .map_err(|_| anyhow!("timed out writing request to SN-Utils broker"))??;
 
-    let mut line = String::new();
-    reader.read_line(&mut line).await?;
+    let line = read_bounded_line(&mut reader, MAX_IPC_FRAME_BYTES, response_timeout)
+        .await
+        .context("failed to read response from SN-Utils broker")?;
     if line.trim().is_empty() {
         return Err(anyhow!(
             "SN-Utils broker closed the connection without a response"
@@ -922,6 +983,28 @@ where
     }
 
     serde_json::from_str(&line).context("invalid JSON response from SN-Utils broker")
+}
+
+async fn read_bounded_line<R>(
+    reader: &mut BufReader<R>,
+    max_bytes: usize,
+    read_timeout: Duration,
+) -> anyhow::Result<String>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    let mut limited = reader.take((max_bytes as u64).saturating_add(1));
+    let read = timeout(read_timeout, limited.read_until(b'\n', &mut bytes))
+        .await
+        .map_err(|_| anyhow!("timed out reading SN-Utils broker IPC frame"))??;
+    if read == 0 {
+        return Ok(String::new());
+    }
+    if bytes.len() > max_bytes {
+        anyhow::bail!("SN-Utils broker IPC frame exceeds maximum size of {max_bytes} bytes");
+    }
+    String::from_utf8(bytes).context("SN-Utils broker IPC frame is not valid UTF-8")
 }
 
 pub async fn broker_status() -> anyhow::Result<BrokerStatus> {
@@ -941,13 +1024,13 @@ pub async fn stop_broker() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Clear cached browser sessions from a running broker. Returns the cleared
-/// origins, or an empty list when no broker is running (nothing to clear).
+/// Clear cached browser sessions from a running broker, or directly from the
+/// persisted session cache file when no broker is currently running.
 pub async fn clear_broker_sessions(origin: Option<String>) -> anyhow::Result<Vec<String>> {
     broker_endpoint()?;
     match BrokerBridge::connect_existing().await {
         Ok(bridge) => bridge.clear_sessions(origin).await,
-        Err(_) => Ok(Vec::new()),
+        Err(_) => clear_persisted_sessions(origin.as_deref()),
     }
 }
 
@@ -1030,6 +1113,13 @@ pub async fn run_broker_server() -> anyhow::Result<()> {
         }
     });
 
+    let signal_broker = Arc::clone(&broker);
+    tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        tracing::info!("SN-Utils broker received shutdown signal; draining in-flight requests");
+        signal_broker.state.lock().await.shutdown = true;
+    });
+
     match bound {
         #[cfg(unix)]
         BoundListener::Unix {
@@ -1056,28 +1146,66 @@ pub async fn run_broker_server() -> anyhow::Result<()> {
                     }
                 });
             }
+            drain_in_flight_requests(&broker).await;
             let _ = std::fs::remove_file(&socket_path);
         }
-        BoundListener::Tcp { listener, token } => loop {
-            if broker.state.lock().await.shutdown {
-                break;
-            }
-
-            let accept = timeout(Duration::from_secs(1), listener.accept()).await;
-            let Ok(Ok((stream, _peer_addr))) = accept else {
-                continue;
-            };
-            let client_broker = Arc::clone(&broker);
-            let client_token = Arc::clone(&token);
-            tokio::spawn(async move {
-                if let Err(error) = handle_client(stream, client_broker, Some(client_token)).await {
-                    tracing::debug!(%error, "SN-Utils broker client failed");
+        BoundListener::Tcp { listener, token } => {
+            loop {
+                if broker.state.lock().await.shutdown {
+                    break;
                 }
-            });
-        },
+
+                let accept = timeout(Duration::from_secs(1), listener.accept()).await;
+                let Ok(Ok((stream, _peer_addr))) = accept else {
+                    continue;
+                };
+                let client_broker = Arc::clone(&broker);
+                let client_token = Arc::clone(&token);
+                tokio::spawn(async move {
+                    if let Err(error) =
+                        handle_client(stream, client_broker, Some(client_token)).await
+                    {
+                        tracing::debug!(%error, "SN-Utils broker client failed");
+                    }
+                });
+            }
+            drain_in_flight_requests(&broker).await;
+        }
     }
 
     Ok(())
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm = signal(SignalKind::terminate()).ok();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = async {
+                if let Some(ref mut term) = sigterm {
+                    term.recv().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+async fn drain_in_flight_requests(broker: &Broker) {
+    let deadline = Instant::now() + BROKER_SHUTDOWN_DRAIN_TIMEOUT;
+    loop {
+        if broker.state.lock().await.in_flight == 0 || Instant::now() >= deadline {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
 }
 
 async fn handle_client<S>(
@@ -1115,8 +1243,7 @@ where
 {
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
-    let mut line = String::new();
-    reader.read_line(&mut line).await?;
+    let line = read_bounded_line(&mut reader, MAX_IPC_FRAME_BYTES, IPC_READ_TIMEOUT).await?;
     if line.trim().is_empty() {
         return Ok(());
     }
@@ -1128,6 +1255,7 @@ where
     {
         BrokerResponse {
             ok: false,
+            version: None,
             error_code: Some("SNU_BROKER_UNAUTHORIZED".to_string()),
             error: Some(
                 "SN-Utils broker IPC request rejected: invalid or missing authentication token"
@@ -1144,6 +1272,7 @@ where
             Ok(response) => response,
             Err(error) => BrokerResponse {
                 ok: false,
+                version: None,
                 error_code: Some(
                     error
                         .downcast_ref::<BridgeError>()
@@ -1160,11 +1289,14 @@ where
         }
     };
 
-    write_half
-        .write_all(serde_json::to_string(&response)?.as_bytes())
-        .await?;
-    write_half.write_all(b"\n").await?;
-    write_half.flush().await?;
+    let serialized = serde_json::to_string(&response)?;
+    timeout(IPC_WRITE_TIMEOUT, async {
+        write_half.write_all(serialized.as_bytes()).await?;
+        write_half.write_all(b"\n").await?;
+        write_half.flush().await
+    })
+    .await
+    .map_err(|_| anyhow!("timed out writing response to SN-Utils broker IPC client"))??;
     Ok(())
 }
 
@@ -1190,7 +1322,10 @@ async fn process_request(
 
 async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<BrokerResponse> {
     match request {
-        BrokerRequest::Ping => Ok(ok_response()),
+        BrokerRequest::Ping => Ok(BrokerResponse {
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            ..ok_response()
+        }),
         BrokerRequest::Status => {
             // The manager tracks connectivity from its own accept/read loops,
             // so this reflects the actual socket state, not a guess.
@@ -1198,14 +1333,8 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             let helper = broker.manager.helper_status().await;
             let state = broker.state.lock().await;
             Ok(BrokerResponse {
-                ok: true,
-                error_code: None,
-                error: None,
-                message: None,
-                instance: None,
                 status: Some(state.status(browser_connected, helper)),
-                cleared: None,
-                token_valid: None,
+                ..ok_response()
             })
         }
         BrokerRequest::RefreshCapabilities { timeout_secs } => {
@@ -1214,14 +1343,8 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             let helper = broker.manager.helper_status().await;
             let state = broker.state.lock().await;
             Ok(BrokerResponse {
-                ok: true,
-                error_code: None,
-                error: None,
-                message: None,
-                instance: None,
                 status: Some(state.status(browser_connected, helper)),
-                cleared: None,
-                token_valid: None,
+                ..ok_response()
             })
         }
         BrokerRequest::Stop => {
@@ -1265,14 +1388,8 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             broker.state.lock().await.remember_session(&instance);
             persist_broker_sessions(broker).await;
             Ok(BrokerResponse {
-                ok: true,
-                error_code: None,
-                error: None,
-                message: None,
                 instance: Some(instance),
-                status: None,
-                cleared: None,
-                token_valid: None,
+                ..ok_response()
             })
         }
         BrokerRequest::SendAction {
@@ -1328,6 +1445,7 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             legacy_expected_action,
             timeout_secs,
         } => {
+            validate_legacy_fallback_equivalence(&current_payload, &legacy_payload)?;
             let preflight = preflight_for_dispatch(broker, &current_payload, timeout_secs).await?;
             let host_reviewed =
                 match review_before_dispatch(broker, &current_payload, &preflight, timeout_secs)
@@ -1364,16 +1482,11 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             timeout_secs,
             origin,
         } => {
-            let instance = refresh_session(broker, timeout_secs, origin.as_deref()).await?;
+            let instance =
+                refresh_session_if_stale(broker, timeout_secs, origin.as_deref(), None).await?;
             Ok(BrokerResponse {
-                ok: true,
-                error_code: None,
-                error: None,
-                message: None,
                 instance: Some(instance),
-                status: None,
-                cleared: None,
-                token_valid: None,
+                ..ok_response()
             })
         }
         BrokerRequest::VerifySession {
@@ -1397,14 +1510,8 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
                 broker.state.lock().await.mark_verified(&origin);
             }
             Ok(BrokerResponse {
-                ok: true,
-                error_code: None,
-                error: None,
-                message: None,
-                instance: None,
-                status: None,
-                cleared: None,
                 token_valid: Some(valid),
+                ..ok_response()
             })
         }
         BrokerRequest::ClearSessions { origin } => {
@@ -1423,16 +1530,57 @@ async fn dispatch(request: BrokerRequest, broker: &Broker) -> anyhow::Result<Bro
             };
             persist_broker_sessions(broker).await;
             Ok(BrokerResponse {
-                ok: true,
-                error_code: None,
-                error: None,
-                message: None,
-                instance: None,
-                status: None,
                 cleared: Some(cleared),
-                token_valid: None,
+                ..ok_response()
             })
         }
+    }
+}
+
+/// Ensure a legacy fallback payload targets the exact same instance origin and
+/// security gate class as the primary payload.
+fn validate_legacy_fallback_equivalence(
+    current_payload: &Value,
+    legacy_payload: &Value,
+) -> anyhow::Result<()> {
+    if payload_origin(current_payload) != payload_origin(legacy_payload) {
+        anyhow::bail!(
+            "SN-Utils legacy fallback payload origin does not match primary payload origin"
+        );
+    }
+    if gates_for_payload(current_payload) != gates_for_payload(legacy_payload) {
+        anyhow::bail!(
+            "SN-Utils legacy fallback payload gate class does not match primary payload gate class"
+        );
+    }
+    Ok(())
+}
+
+/// Only strictly read-only / idempotent actions may be automatically retried on
+/// transient fetch failures (mutations may already have executed server-side).
+fn is_safe_auto_retry_payload(payload: &Value) -> bool {
+    let Some(action) = payload.get("action").and_then(Value::as_str) else {
+        return false;
+    };
+    match action {
+        "agentQueryRecords"
+        | "requestTableStructure"
+        | "requestAppMeta"
+        | "agentGetContext"
+        | "agentGetParentOptions"
+        | "agentGetFormState"
+        | "agentGetCapabilities"
+        | "takeScreenshot" => true,
+        "agentRestApi" => {
+            let method = payload
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or("GET")
+                .trim()
+                .to_ascii_uppercase();
+            matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS")
+        }
+        _ => false,
     }
 }
 
@@ -1606,7 +1754,7 @@ async fn send_action_with_refresh(
         Err(error) => return Err(error.into()),
     };
 
-    if is_transient_helper_text(&text) {
+    if is_transient_helper_text(&text) && is_safe_auto_retry_payload(payload) {
         sleep(HELPER_SETTLE_DELAY).await;
         let retry_preflight = retry_preflight(broker, payload, timeout_secs, &text).await?;
         let message = broker
@@ -1651,7 +1799,10 @@ async fn send_action_with_refresh(
     // different tab in the same SN-Utils portal can't silently redirect the
     // retry to the wrong instance.
     let target_origin = normalize_origin(&instance.url);
-    let fresh = refresh_session(broker, timeout_secs, target_origin.as_deref()).await?;
+    let stale_g_ck = instance.g_ck.as_ref().map(|s| s.expose_secret().as_str());
+    let fresh =
+        refresh_session_if_stale(broker, timeout_secs, target_origin.as_deref(), stale_g_ck)
+            .await?;
     if let Some(object) = payload.as_object_mut() {
         object.insert("instance".to_string(), serde_json::to_value(&fresh)?);
     }
@@ -1722,7 +1873,7 @@ async fn send_legacy_action_with_refresh(
         Err(error) => return Err(error.into()),
     };
 
-    if is_transient_helper_text(&text) {
+    if is_transient_helper_text(&text) && is_safe_auto_retry_payload(payload) {
         sleep(HELPER_SETTLE_DELAY).await;
         let retry_preflight = preflight_for_dispatch(broker, payload, timeout_secs).await?;
         if retry_preflight.decision != GateDecision::LegacyUnrestricted {
@@ -1767,7 +1918,10 @@ async fn send_legacy_action_with_refresh(
     }
 
     let target_origin = normalize_origin(&instance.url);
-    let fresh = refresh_session(broker, timeout_secs, target_origin.as_deref()).await?;
+    let stale_g_ck = instance.g_ck.as_ref().map(|s| s.expose_secret().as_str());
+    let fresh =
+        refresh_session_if_stale(broker, timeout_secs, target_origin.as_deref(), stale_g_ck)
+            .await?;
     if let Some(object) = payload.as_object_mut() {
         object.insert("instance".to_string(), serde_json::to_value(&fresh)?);
     }
@@ -1853,15 +2007,29 @@ fn is_transient_helper_text(text: &str) -> bool {
 }
 
 /// Evict a cached session, prompt the user via a helper-tab banner, and wait for
-/// SN-Utils to push a fresh `/token`. When `origin` is `Some`, only that
-/// instance's session is evicted and only a matching `/token` is accepted, so
-/// other instances' cached tokens survive and the refresh can't return the wrong
-/// instance. `None` falls back to evicting every session.
-async fn refresh_session(
+/// SN-Utils to push a fresh `/token`. Serialized single-flight per origin so
+/// concurrent callers hitting an expired token do not double-evict or prompt
+/// twice; if another caller already rotated the token while we waited on the
+/// lock, the freshly-cached session is returned directly.
+async fn refresh_session_if_stale(
     broker: &Broker,
     timeout_secs: u64,
     origin: Option<&str>,
+    stale_g_ck: Option<&str>,
 ) -> anyhow::Result<SnuInstance> {
+    let origin_lock = broker.refresh_lock_for_origin(origin).await;
+    let _refresh_guard = origin_lock.lock().await;
+
+    if let (Some(orig), Some(old_token)) = (origin, stale_g_ck)
+        && let Some(existing) = broker.state.lock().await.session_for_origin(orig)
+        && existing
+            .g_ck
+            .as_ref()
+            .is_some_and(|tok| !tok.expose_secret().is_empty() && tok.expose_secret() != old_token)
+    {
+        return Ok(existing);
+    }
+
     {
         let mut state = broker.state.lock().await;
         match origin {
@@ -1905,6 +2073,7 @@ fn is_stale_token_text(text: &str) -> bool {
 fn ok_response() -> BrokerResponse {
     BrokerResponse {
         ok: true,
+        version: None,
         error_code: None,
         error: None,
         message: None,
@@ -1917,22 +2086,13 @@ fn ok_response() -> BrokerResponse {
 
 fn message_response(message: SnuMessage) -> BrokerResponse {
     BrokerResponse {
-        ok: true,
-        error_code: None,
-        error: None,
         message: Some(message),
-        instance: None,
-        status: None,
-        cleared: None,
-        token_valid: None,
+        ..ok_response()
     }
 }
 
-/// Probe the broker IPC with a full Ping round-trip. Merely being able to
-/// connect is not enough: any process could own the port, and treating a
-/// foreign listener as a live broker would make every subsequent request fail
-/// confusingly. Requiring a parseable `ok` response also flushes out a stale
-/// broker that accepts but no longer answers.
+/// Probe the broker IPC with a full Ping round-trip and check broker version
+/// compatibility when reported.
 async fn connect_once(
     endpoint: &BrokerEndpoint,
     auth_token: Option<&Secret>,
@@ -1947,11 +2107,36 @@ async fn connect_once(
     )
     .await
     .map_err(|_| anyhow!("SN-Utils broker did not answer ping"))??;
-    if response.ok {
-        Ok(())
-    } else {
-        Err(anyhow!("SN-Utils broker rejected ping"))
+    if !response.ok {
+        return Err(anyhow!("SN-Utils broker rejected ping"));
     }
+    if let Some(ref running_version) = response.version
+        && running_version != env!("CARGO_PKG_VERSION")
+    {
+        return Err(anyhow!(
+            "SN-Utils broker version mismatch (running {running_version}, CLI is {}); run `snow-cli snu broker stop` to restart it",
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
+    Ok(())
+}
+
+async fn acquire_broker_start_lock() -> anyhow::Result<Option<std::fs::File>> {
+    let lock_dir = broker_config_dir();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<Option<std::fs::File>> {
+        std::fs::create_dir_all(&lock_dir)?;
+        let lock_path = lock_dir.join(BROKER_START_LOCK_FILE_NAME);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        file.lock()?;
+        Ok(Some(file))
+    })
+    .await
+    .map_err(|error| anyhow!("broker start lock task failed: {error}"))?
 }
 
 fn spawn_broker() -> anyhow::Result<()> {
@@ -2103,12 +2288,14 @@ fn now_epoch_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Snapshot the broker's sessions under the state lock, then write them to disk
-/// outside the lock. Best-effort: persistence failures are logged, not fatal.
+/// Snapshot the broker's sessions under a serialized persistence lock and write
+/// them to disk on a blocking thread pool thread. Best-effort: persistence
+/// failures are logged, not fatal.
 async fn persist_broker_sessions(broker: &Broker) {
     if !persistence_enabled() {
         return;
     }
+    let _persist_guard = broker.persist_lock.lock().await;
     let (sessions, latest_origin) = {
         let state = broker.state.lock().await;
         (
@@ -2116,8 +2303,17 @@ async fn persist_broker_sessions(broker: &Broker) {
             state.latest_origin.clone(),
         )
     };
-    if let Err(error) = persist_sessions(&sessions, latest_origin.as_deref()) {
-        tracing::debug!(%error, "failed to persist SN-Utils broker sessions");
+    let result =
+        tokio::task::spawn_blocking(move || persist_sessions(&sessions, latest_origin.as_deref()))
+            .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::debug!(%error, "failed to persist SN-Utils broker sessions");
+        }
+        Err(error) => {
+            tracing::debug!(%error, "SN-Utils broker session persistence task failed");
+        }
     }
 }
 
@@ -2131,8 +2327,53 @@ fn persist_sessions(
     write_session_cache(&path, sessions, latest_origin, now_epoch_secs())
 }
 
-/// Write the session snapshot atomically (temp file + rename) with `0o600` on
-/// unix. An empty snapshot removes the file so `snu broker clear` clears disk too.
+fn clear_persisted_sessions(origin: Option<&str>) -> anyhow::Result<Vec<String>> {
+    let Some(path) = sessions_file_path() else {
+        return Ok(Vec::new());
+    };
+    clear_persisted_sessions_at(&path, origin)
+}
+
+fn clear_persisted_sessions_at(path: &Path, origin: Option<&str>) -> anyhow::Result<Vec<String>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let Some(mut persisted) = read_session_cache(path) else {
+        if origin.is_none() {
+            let _ = std::fs::remove_file(path);
+        }
+        return Ok(Vec::new());
+    };
+    let cleared = match origin {
+        Some(target) => {
+            if persisted.sessions.remove(target).is_some() {
+                if persisted.latest_origin.as_deref() == Some(target) {
+                    persisted.latest_origin = persisted.sessions.keys().next().cloned();
+                }
+                vec![target.to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+        None => {
+            let keys: Vec<String> = persisted.sessions.keys().cloned().collect();
+            persisted.sessions.clear();
+            persisted.latest_origin = None;
+            keys
+        }
+    };
+    write_session_cache(
+        path,
+        &persisted.sessions,
+        persisted.latest_origin.as_deref(),
+        now_epoch_secs(),
+    )?;
+    Ok(cleared)
+}
+
+/// Write the session snapshot atomically (unique `create_new(true)` `0o600`
+/// temp file + fsync + rename). An empty snapshot removes the file so
+/// `snu broker clear` clears disk too.
 fn write_session_cache(
     path: &Path,
     sessions: &HashMap<String, SnuInstance>,
@@ -2147,41 +2388,19 @@ fn write_session_cache(
         return Ok(());
     }
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
     let payload = PersistedSessions {
         saved_at,
         latest_origin: latest_origin.map(str::to_string),
         sessions: sessions.clone(),
     };
     let contents = serde_json::to_string_pretty(&payload)?;
-    let tmp = path.with_extension("json.tmp");
-    write_private(&tmp, contents.as_bytes())?;
-    std::fs::rename(&tmp, path)
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(SESSIONS_FILE_NAME);
+    crate::config::encrypted_store::write_atomic(path, contents.as_bytes(), file_name)
         .with_context(|| format!("failed to persist sessions to {}", path.display()))?;
     Ok(())
-}
-
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(bytes)
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, bytes)
-    }
 }
 
 /// Load the persisted session cache, or `None` when persistence is disabled, the
@@ -3498,5 +3717,152 @@ mod tests {
         let symlink_path = dir.path().join("symlink-token");
         std::os::unix::fs::symlink(&target, &symlink_path).unwrap();
         assert!(load_or_create_ipc_token_at(&symlink_path).is_err());
+    }
+
+    #[test]
+    fn auto_retry_is_restricted_to_read_only_actions() {
+        assert!(is_safe_auto_retry_payload(&serde_json::json!({
+            "action": "agentQueryRecords"
+        })));
+        assert!(is_safe_auto_retry_payload(&serde_json::json!({
+            "action": "agentRestApi",
+            "method": " GET "
+        })));
+        for unsafe_payload in [
+            serde_json::json!({"action": "agentRestApi", "method": "POST"}),
+            serde_json::json!({"action": "agentRestApi", "method": "DELETE"}),
+            serde_json::json!({"action": "createRecord"}),
+            serde_json::json!({"action": "uploadAttachment"}),
+            serde_json::json!({"action": "executeBackgroundScript"}),
+            serde_json::json!({"action": "agentRunBackgroundScript"}),
+            serde_json::json!({"action": "agentRunUiAction"}),
+            serde_json::json!({"action": "unknownAction"}),
+        ] {
+            assert!(
+                !is_safe_auto_retry_payload(&unsafe_payload),
+                "expected no auto-retry for {unsafe_payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_fallback_rejects_origin_or_gate_mismatch() {
+        let primary = serde_json::json!({
+            "action": "agentRunBackgroundScript",
+            "instance": {"url": "https://dev.service-now.com"}
+        });
+        let matching_legacy = serde_json::json!({
+            "action": "executeBackgroundScript",
+            "instance": {"url": "https://dev.service-now.com"}
+        });
+        assert!(validate_legacy_fallback_equivalence(&primary, &matching_legacy).is_ok());
+
+        let wrong_origin = serde_json::json!({
+            "action": "executeBackgroundScript",
+            "instance": {"url": "https://prod.service-now.com"}
+        });
+        assert!(validate_legacy_fallback_equivalence(&primary, &wrong_origin).is_err());
+
+        let wrong_gate = serde_json::json!({
+            "action": "createRecord",
+            "instance": {"url": "https://dev.service-now.com"}
+        });
+        assert!(validate_legacy_fallback_equivalence(&primary, &wrong_gate).is_err());
+    }
+
+    #[tokio::test]
+    async fn transient_error_on_mutation_is_not_retried() {
+        let (broker, mut helper) = gated_test_bridge().await;
+        let request_broker = Arc::clone(&broker);
+        let payload = serde_json::json!({
+            "action": "createRecord",
+            "agentRequestId": "create-no-retry",
+            "tableName": "incident",
+            "instance": {
+                "name": "dev",
+                "url": "https://dev.service-now.com",
+                "g_ck": "token"
+            }
+        });
+        let request = tokio::spawn(async move {
+            dispatch(
+                BrokerRequest::SendAction {
+                    payload,
+                    correlation_id: "create-no-retry".to_string(),
+                    timeout_secs: 3,
+                },
+                &request_broker,
+            )
+            .await
+        });
+
+        answer_capabilities(&mut helper, "auto").await;
+        let action = next_json(&mut helper).await;
+        assert_eq!(action["action"], "createRecord");
+        send_json(
+            &mut helper,
+            serde_json::json!({
+                "action": "createRecordResponse",
+                "agentRequestId": "create-no-retry",
+                "success": false,
+                "error": "Failed to fetch"
+            }),
+        )
+        .await;
+
+        assert!(request.await.unwrap().is_err());
+        assert!(
+            timeout(Duration::from_millis(200), helper.next())
+                .await
+                .is_err(),
+            "mutation must not be automatically retried after transient error"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_bounded_line_rejects_oversized_ipc_frames_and_ping_reports_version() {
+        let oversized = format!("{}\n", "a".repeat(128));
+        let mut reader = BufReader::new(oversized.as_bytes());
+        let err = read_bounded_line(&mut reader, 64, Duration::from_secs(1))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("exceeds maximum size"), "{err}");
+
+        let (broker, _helper) = gated_test_bridge().await;
+        let ping = dispatch(BrokerRequest::Ping, &broker).await.unwrap();
+        assert!(ping.ok);
+        assert_eq!(ping.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn clear_persisted_sessions_works_when_broker_is_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("snu-broker-sessions.json");
+        let mut sessions = HashMap::new();
+        sessions.insert(
+            "https://a.service-now.com:443".to_string(),
+            instance("https://a.service-now.com"),
+        );
+        sessions.insert(
+            "https://b.service-now.com:443".to_string(),
+            instance("https://b.service-now.com"),
+        );
+        write_session_cache(
+            &cache,
+            &sessions,
+            Some("https://a.service-now.com:443"),
+            now_epoch_secs(),
+        )
+        .unwrap();
+
+        let cleared_one =
+            clear_persisted_sessions_at(&cache, Some("https://a.service-now.com:443")).unwrap();
+        assert_eq!(cleared_one, vec!["https://a.service-now.com:443"]);
+        assert!(cache.exists());
+
+        let cleared_rest = clear_persisted_sessions_at(&cache, None).unwrap();
+        assert_eq!(cleared_rest, vec!["https://b.service-now.com:443"]);
+        assert!(!cache.exists());
     }
 }
