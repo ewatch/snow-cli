@@ -7,7 +7,7 @@ Use OAuth 2.0 authorization-code login when `snow-cli` must act in **user scope*
 - the ServiceNow authorization endpoint,
 - a temporary localhost redirect listener, or, with `--sdk-oauth`, the ServiceNow SDK app's copy-and-paste code page,
 - PKCE (`code_challenge_method=S256`),
-- secure token storage in the OS keychain,
+- secure token storage in the encrypted credential vault (`~/.servicenow/credentials.enc`, keyed by the OS keychain by default),
 - automatic token refresh when a refresh token is available.
 
 ## What you need from ServiceNow
@@ -192,7 +192,7 @@ snow-cli auth login --profile sdk --sdk-oauth
 2. It prints the authorization URL with `redirect_uri=/sdk-oauth.do` and opens it unless you pass `--no-browser`.
 3. You sign in and approve the request. ServiceNow shows an authorization code.
 4. You paste the code at the hidden `Authorization code:` prompt. The code is not echoed, logged, or accepted as a command-line argument.
-5. `snow-cli` exchanges the code at `/oauth_token.do` with the same `/sdk-oauth.do` redirect URI and the matching `code_verifier`. It sends no client secret, then stores the token set in the OS keychain.
+5. `snow-cli` exchanges the code at `/oauth_token.do` with the same `/sdk-oauth.do` redirect URI and the matching `code_verifier`. It sends no client secret, then stores the token set in the encrypted credential vault.
 
 Token refresh, `auth status --verify`, and `auth token` behave exactly as they do for the localhost flow.
 

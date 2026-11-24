@@ -42,7 +42,7 @@ What becomes easier or harder as a result of this decision?
 |------|--------------------------------|----------|
 | 0001 | Use Rust as implementation language | Accepted |
 | 0002 | Noun-verb command structure    | Accepted |
-| 0003 | OS keychain for credential storage | Accepted |
+| 0003 | OS keychain for credential storage | Superseded by ADR-0011 |
 | 0004 | TOML for configuration format  | Accepted |
 | 0005 | Structured JSON error output   | Accepted |
 | 0006 | Profile resolution and command UX simplification | Accepted |
@@ -50,3 +50,4 @@ What becomes easier or harder as a result of this decision?
 | 0008 | SN-Utils security-gate negotiation | Accepted |
 | 0009 | Native session context without SN-Utils | Accepted |
 | 0010 | Runtime error classification and conservative retry guidance | Accepted |
+| 0011 | Encrypted local credential vault with pluggable key source | Accepted |

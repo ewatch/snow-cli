@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::auth::oauth2::validate_oauth_redirect_host;
 use crate::cli::args::{
     CliAuthMethod, CliOAuthGrantType, ConfigArgs, ConfigCommands, OutputFormat, ProfileSdkCommands,
+    ProfileStorageCommands,
 };
 use crate::cli::output;
 use crate::config::credentials;
@@ -180,6 +181,20 @@ pub async fn handle(
                     .await
             }
         },
+        ConfigCommands::Storage(storage_args) => match storage_args.command {
+            ProfileStorageCommands::Status => {
+                handle_storage_status(&config_path, output_format).await
+            }
+            ProfileStorageCommands::Set { mode, keep_old_key } => {
+                handle_storage_set(&config_path, mode, keep_old_key, output_format).await
+            }
+            ProfileStorageCommands::Migrate {
+                overwrite,
+                delete_legacy,
+            } => {
+                handle_storage_migrate(&config_path, overwrite, delete_legacy, output_format).await
+            }
+        },
         ConfigCommands::ListNowSdkProfiles => handle_list_now_sdk_profiles(output_format).await,
         ConfigCommands::ImportNowSdk {
             alias,
@@ -218,10 +233,13 @@ mod now_sdk_commands;
 #[path = "output.rs"]
 mod output_commands;
 mod profiles;
+#[path = "storage.rs"]
+mod storage_commands;
 
 use now_sdk_commands::*;
 use output_commands::*;
 use profiles::*;
+use storage_commands::*;
 
 #[cfg(test)]
 mod tests;

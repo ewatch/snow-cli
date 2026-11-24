@@ -5,9 +5,9 @@ use thiserror::Error;
 
 use crate::cli::args::{
     ApiCommands, AttachmentCommands, AuthCommands, CodesearchCommands, Commands, ConfigCommands,
-    DataCommands, ImportSetCommands, ProfileSdkCommands, ScopeCommands, ScriptCommands,
-    SeedCommands, SkillCommands, SnuCommands, SnuContextCommands, SnuPageCommands, SnuRestCommands,
-    TableCommands,
+    DataCommands, ImportSetCommands, ProfileSdkCommands, ProfileStorageCommands, ScopeCommands,
+    ScriptCommands, SeedCommands, SkillCommands, SnuCommands, SnuContextCommands, SnuPageCommands,
+    SnuRestCommands, TableCommands,
 };
 
 static ACTIVE_POLICY_MODE: AtomicU8 = AtomicU8::new(PolicyMode::FullAccess as u8);
@@ -209,6 +209,19 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 ProfileSdkCommands::List | ProfileSdkCommands::Import { .. } => {
                     PolicyDecision::Allow
                 }
+            },
+            ConfigCommands::Storage(storage_args) => match &storage_args.command {
+                ProfileStorageCommands::Status => PolicyDecision::Allow,
+                ProfileStorageCommands::Set { .. } => deny(
+                    "profile storage set",
+                    CommandCapability::CredentialExport,
+                    "read-only policy does not allow changing credential storage backends or exporting vault keys",
+                ),
+                ProfileStorageCommands::Migrate { .. } => deny(
+                    "profile storage migrate",
+                    CommandCapability::LocalCredentialWrite,
+                    "read-only policy does not allow migrating or deleting legacy keychain credentials",
+                ),
             },
             _ => PolicyDecision::Allow,
         },
@@ -465,6 +478,11 @@ mod tests {
         assert_allowed(Commands::Profile(ConfigArgs {
             command: ConfigCommands::Sdk(ProfileSdkArgs {
                 command: ProfileSdkCommands::List,
+            }),
+        }));
+        assert_allowed(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::Storage(ProfileStorageArgs {
+                command: ProfileStorageCommands::Status,
             }),
         }));
         assert_allowed(Commands::Auth(AuthArgs {
@@ -746,6 +764,22 @@ mod tests {
                 alias: None,
                 set_default: false,
             },
+        }));
+        assert_denied(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::Storage(ProfileStorageArgs {
+                command: ProfileStorageCommands::Set {
+                    mode: CliCredentialStoreMode::File,
+                    keep_old_key: false,
+                },
+            }),
+        }));
+        assert_denied(Commands::Profile(ConfigArgs {
+            command: ConfigCommands::Storage(ProfileStorageArgs {
+                command: ProfileStorageCommands::Migrate {
+                    overwrite: false,
+                    delete_legacy: false,
+                },
+            }),
         }));
         // auth login/logout are local credential writes and now permitted.
         assert_allowed(Commands::Auth(AuthArgs {

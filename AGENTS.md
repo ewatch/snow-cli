@@ -62,7 +62,7 @@ Keep this file limited to durable contributor rules and entry points. Do not add
 ## Architectural Invariants
 
 - Preserve the noun-verb CLI model unless an ADR changes it.
-- Keep credentials out of plaintext configuration; use the OS keychain integration.
+- Keep credentials out of plaintext configuration; use the encrypted credential vault (`src/config/vault.rs`) / OS keychain integration.
 - Send structured command results to stdout and logs or errors to stderr.
 
 ### Module boundaries

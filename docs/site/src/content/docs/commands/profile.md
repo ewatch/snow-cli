@@ -121,6 +121,29 @@ snow-cli profile find --instance https://dev123456.service-now.com
 
 Use this when you know the instance but not the saved profile name.
 
+## `profile storage`
+
+Inspect, switch, or migrate `snow-cli`'s encrypted credential vault (`~/.servicenow/credentials.enc`).
+
+```bash
+snow-cli profile storage <status|set|migrate> [options]
+```
+
+Subcommands:
+
+- `profile storage status`: report the active storage mode (`keyring`, `file`, `env`, or `legacy-keychain`), where it came from (`default`, `config`, or `env`), and whether `credentials.enc` / `credentials.key` exist. Never prompts the OS keychain. Allowed in `snow-cli-ro`.
+- `profile storage set <mode> [--keep-old-key]`: switch `credential_store` in `config.toml` and migrate the vault key (or export vault entries back to legacy keychain items when switching to `legacy-keychain`) so existing logins keep working. Removes the previous persistent key when switching between `keyring` and `file` unless `--keep-old-key` is passed; keeps the previous persistent key when switching to `env`. Refuses if `SNOW_CLI_CREDENTIAL_STORE` is set in the environment to a different mode. Full `snow-cli` only.
+- `profile storage migrate [--delete-legacy] [--overwrite]`: copy legacy per-profile OS keychain entries for configured profiles into `credentials.enc`. Pass `--delete-legacy` to remove migrated legacy keychain items once the vault write succeeds (skipped entries are never deleted). Full `snow-cli` only.
+
+Examples:
+
+```bash
+snow-cli profile storage status
+snow-cli profile storage set file
+snow-cli profile storage set keyring
+snow-cli profile storage migrate --delete-legacy
+```
+
 ## `profile sdk`
 
 Interoperate with ServiceNow `now-sdk` aliases.

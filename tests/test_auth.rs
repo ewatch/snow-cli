@@ -335,7 +335,7 @@ async fn test_auth_login_rejected_password_fails_but_keeps_secret() {
     assert_eq!(login["verification_error"], "UNAUTHORIZED");
     // Kept so a retry after fixing the account does not need re-entry.
     assert_eq!(
-        common::read_test_keychain_entry(&keychain_store, "snow-cli", "dev:password").unwrap(),
+        common::read_stored_credential(&config_path, &keychain_store, "dev", "password").unwrap(),
         "wrong"
     );
 }
@@ -377,7 +377,7 @@ fn test_auth_login_no_verify_stores_without_request() {
     assert_eq!(login["status"], "stored");
     assert!(login.get("verified").is_none());
     assert_eq!(
-        common::read_test_keychain_entry(&keychain_store, "snow-cli", "dev:password").unwrap(),
+        common::read_stored_credential(&config_path, &keychain_store, "dev", "password").unwrap(),
         "secret"
     );
 }
@@ -587,12 +587,13 @@ async fn test_auth_login_sdk_oauth_exchanges_pasted_code_without_listener() {
         assert!(!stderr.contains(secret), "stderr leaked the {label}");
     }
 
-    let stored = common::read_test_keychain_entry(&keychain_store, "snow-cli", "sdk:oauth_token")
-        .expect("stored OAuth token");
+    let stored =
+        common::read_stored_credential(&config_path, &keychain_store, "sdk", "oauth_token")
+            .expect("stored OAuth token");
     assert!(stored.contains("sdk-access-token"));
     assert!(stored.contains("sdk-refresh-token"));
     assert!(
-        common::read_test_keychain_entry(&keychain_store, "snow-cli", "sdk:client_secret")
+        common::read_stored_credential(&config_path, &keychain_store, "sdk", "client_secret")
             .is_none(),
         "public-client login must clear a stale client secret"
     );

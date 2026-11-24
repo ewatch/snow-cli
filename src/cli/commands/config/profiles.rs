@@ -682,10 +682,8 @@ pub(super) async fn handle_delete_profile(
 
     config.save_to(config_path)?;
 
-    // Best-effort credential cleanup for all supported types.
-    for credential_type in credentials::ALL_CREDENTIAL_TYPES {
-        let _ = credentials::delete_credential(&name, credential_type);
-    }
+    // Best-effort credential cleanup for all supported types in one atomic vault update.
+    let _ = credentials::delete_profile_credentials(&name);
 
     let result = serde_json::json!({
         "status": "deleted",

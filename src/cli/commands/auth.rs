@@ -887,14 +887,12 @@ async fn handle_logout(profile_name: &str, format: &OutputFormat) -> anyhow::Res
         .active_profile(Some(profile_name))
         .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
-    // Delete all credential types for this auth method
-    let cred_types = credential_types_for_auth(profile);
-    for cred_type in &cred_types {
-        credentials::delete_credential(profile_name, cred_type)?;
+    // Delete all credential types for this auth method in one atomic update
+    let mut cred_types = credential_types_for_auth(profile);
+    if uses_authorization_code_grant(profile) && !cred_types.contains(&"client_secret") {
+        cred_types.push("client_secret");
     }
-    if uses_authorization_code_grant(profile) {
-        credentials::delete_credential(profile_name, "client_secret")?;
-    }
+    credentials::delete_credentials(profile_name, &cred_types)?;
 
     tracing::info!("Credentials removed for profile '{}'", profile_name);
 
@@ -953,9 +951,12 @@ async fn handle_status(
         env_set
     } else {
         let cred_types = credential_types_for_auth(profile);
-        let present = cred_types
-            .iter()
-            .all(|ct| credentials::has_credential(profile_name, ct));
+        let mut present = true;
+        for ct in &cred_types {
+            if !credentials::check_credential_present(profile_name, ct)? {
+                present = false;
+            }
+        }
         result.insert(
             "credential_types".into(),
             serde_json::to_value(&cred_types)?,

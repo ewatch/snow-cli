@@ -32,6 +32,12 @@ pub struct AppConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_output: Option<String>,
 
+    /// Credential storage mode (`keyring`, `file`, `env`, or `legacy-keychain`).
+    /// Defaults to `keyring` (single encrypted vault with one OS keychain master key)
+    /// when omitted. Validated strictly when credentials are accessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_store: Option<String>,
+
     /// Map of profile name to profile configuration, in file order so a
     /// save rewrites only what changed.
     #[serde(default)]
@@ -489,8 +495,7 @@ mod tests {
     fn test_toml_round_trip() {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
-            default_output: None,
-            profiles: IndexMap::new(),
+            ..AppConfig::default()
         };
         config.profiles.insert(
             "dev".to_string(),
@@ -524,8 +529,7 @@ mod tests {
     fn test_active_profile_with_override() {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
-            default_output: None,
-            profiles: IndexMap::new(),
+            ..AppConfig::default()
         };
         config.profiles.insert(
             "dev".to_string(),
@@ -594,8 +598,7 @@ mod tests {
     fn test_resolve_active_profile_name_uses_default() {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
-            default_output: None,
-            profiles: IndexMap::new(),
+            ..AppConfig::default()
         };
         config.profiles.insert(
             "dev".to_string(),
@@ -623,8 +626,7 @@ mod tests {
     fn test_resolve_active_profile_name_fails_for_unknown_override() {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
-            default_output: None,
-            profiles: IndexMap::new(),
+            ..AppConfig::default()
         };
         config.profiles.insert(
             "dev".to_string(),
@@ -655,8 +657,7 @@ mod tests {
     fn test_profile_not_found_message_includes_suggestion() {
         let mut config = AppConfig {
             default_profile: "dev".to_string(),
-            default_output: None,
-            profiles: IndexMap::new(),
+            ..AppConfig::default()
         };
         config.profiles.insert(
             "dev".to_string(),

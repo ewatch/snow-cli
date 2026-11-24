@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR-0011](0011-encrypted-credential-vault.md) (OS keychain now stores a single vault master key by default instead of one entry per profile/credential type, with opt-in `file`, `env`, and `legacy-keychain` modes)
 
 ## Context
 

@@ -568,7 +568,7 @@ async fn expiry_response_persists_cookie_deletion_without_login_fallback() {
         .failure()
         .stderr(predicate::str::contains("expired"));
     let saved: Value = serde_json::from_str(
-        &common::read_test_keychain_entry(&store, "snow-cli", "native:native_session").unwrap(),
+        &common::read_stored_credential(&config, &store, "native", "native_session").unwrap(),
     )
     .unwrap();
     assert_eq!(saved["cookie_header"], "route=node1");
@@ -603,7 +603,7 @@ async fn access_denial_preserves_cookie_rotation_for_subsequent_requests() {
         .failure()
         .stderr(predicate::str::contains("Access denied"));
     let saved: Value = serde_json::from_str(
-        &common::read_test_keychain_entry(&store, "snow-cli", "native:native_session").unwrap(),
+        &common::read_stored_credential(&config, &store, "native", "native_session").unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -681,14 +681,14 @@ async fn cookie_attachment_creates_dedicated_profile_without_exporting_secrets()
     assert!(saved.contains("native_session"));
     assert!(!saved.contains("attached-secret"));
     let credential =
-        common::read_test_keychain_entry(&store, "snow-cli", "attached:native_session").unwrap();
+        common::read_stored_credential(&config, &store, "attached", "native_session").unwrap();
     assert!(credential.contains("attached-secret"));
     command("ro", &config, &store)
         .args(["--profile", "attached", "session", "forget"])
         .assert()
         .success();
     assert!(
-        common::read_test_keychain_entry(&store, "snow-cli", "attached:native_session").is_none()
+        common::read_stored_credential(&config, &store, "attached", "native_session").is_none()
     );
 }
 
@@ -850,7 +850,7 @@ async fn login_verifies_cookie_only_identity_and_does_not_store_password() {
         .stdout(predicate::str::contains("login-secret").not())
         .stdout(predicate::str::contains("password-secret").not());
     let saved =
-        common::read_test_keychain_entry(&store, "snow-cli", "loggedin:native_session").unwrap();
+        common::read_stored_credential(&config, &store, "loggedin", "native_session").unwrap();
     assert!(saved.contains("login-secret"));
     assert!(!saved.contains("password-secret"));
     let requests = server.received_requests().await.unwrap();

@@ -10,7 +10,7 @@ All `auth` subcommands also accept the global flags from the [command overview](
 
 ## `auth login`
 
-Authenticate and store credentials in the OS keychain.
+Authenticate and store credentials in the encrypted credential vault (`~/.servicenow/credentials.enc`, keyed by the OS keychain by default; see [Configuration and authentication](/configuration/)).
 
 ```bash
 snow-cli auth login [options]
