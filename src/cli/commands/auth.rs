@@ -1052,7 +1052,7 @@ async fn handle_token(profile_name: &str, reveal: bool) -> anyhow::Result<()> {
             use base64::Engine;
             let encoded = base64::engine::general_purpose::STANDARD
                 .encode(format!("{username}:{credential}"));
-            print!("{encoded}");
+            write_token_stdout(&encoded)?;
         }
         crate::config::profile::AuthMethod::Oauth2 => {
             let auth = OAuth2Auth::new(profile_name, profile)
@@ -1070,7 +1070,7 @@ async fn handle_token(profile_name: &str, reveal: bool) -> anyhow::Result<()> {
             let access_token = authorization
                 .strip_prefix("Bearer ")
                 .unwrap_or(authorization);
-            print!("{access_token}");
+            write_token_stdout(access_token)?;
         }
         _ => {
             let primary_cred_type = credentials::credential_type_for_auth(&profile.auth_method);
@@ -1081,11 +1081,21 @@ async fn handle_token(profile_name: &str, reveal: bool) -> anyhow::Result<()> {
                         profile_name
                     )
                 })?;
-            print!("{credential}");
+            write_token_stdout(&credential)?;
         }
     }
 
     Ok(())
+}
+
+/// Write an explicitly requested token or `--reveal`ed credential directly to
+/// stdout as raw bytes (for piping into other tools) without invoking print
+/// macros or panicking on a closed downstream pipe.
+fn write_token_stdout(value: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(value.as_bytes())?;
+    stdout.flush()
 }
 
 /// Return the list of credential types required for the profile's auth method.
