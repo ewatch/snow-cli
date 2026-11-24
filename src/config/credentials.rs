@@ -28,7 +28,7 @@
 //! - `SNOW_CLI_API_TOKEN` — API token
 //! - `SNOW_CLI_CLIENT_SECRET` — OAuth2 client secret
 //! - `SNOW_CLI_OAUTH_TOKEN` — persisted OAuth2 authorization-code token JSON
-//! - `SNOW_CLI_SESSION_COOKIE` — browser session cookie
+//! - `SNOW_SESSION_COOKIE` — browser session cookie
 
 use crate::config::error::ConfigError;
 use crate::config::keychain;
@@ -47,22 +47,74 @@ pub const ALL_CREDENTIAL_TYPES: &[&str] = &[
     "native_session",
 ];
 
-/// Map credential type to its environment variable name.
+/// Map credential type to its global environment variable name.
 fn env_var_for(credential_type: &str) -> Option<&'static str> {
     match credential_type {
         "password" => Some("SNOW_CLI_PASSWORD"),
         "api_token" => Some("SNOW_CLI_API_TOKEN"),
         "client_secret" => Some("SNOW_CLI_CLIENT_SECRET"),
         "oauth_token" => Some("SNOW_CLI_OAUTH_TOKEN"),
-        "session_cookie" => Some("SNOW_CLI_SESSION_COOKIE"),
+        "session_cookie" => Some("SNOW_SESSION_COOKIE"),
         _ => None,
     }
 }
 
-fn env_fallback(credential_type: &str) -> Option<String> {
+fn env_var_suffix_for(credential_type: &str) -> Option<&'static str> {
+    match credential_type {
+        "password" => Some("PASSWORD"),
+        "api_token" => Some("API_TOKEN"),
+        "client_secret" => Some("CLIENT_SECRET"),
+        "oauth_token" => Some("OAUTH_TOKEN"),
+        "session_cookie" => Some("SESSION_COOKIE"),
+        _ => None,
+    }
+}
+
+/// Build the profile-scoped environment variable name, e.g.
+/// `SNOW_CLI_PROFILE_PROD_PASSWORD` for profile `prod`.
+pub(crate) fn scoped_env_var_name(profile: &str, credential_type: &str) -> Option<String> {
+    let suffix = env_var_suffix_for(credential_type)?;
+    let sanitized: String = profile
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        return None;
+    }
+    Some(format!("SNOW_CLI_PROFILE_{sanitized}_{suffix}"))
+}
+
+fn read_non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+pub(crate) fn env_fallback(profile: &str, credential_type: &str) -> Option<String> {
+    if let Some(scoped_name) = scoped_env_var_name(profile, credential_type)
+        && let Some(value) = read_non_empty_env(&scoped_name)
+    {
+        tracing::debug!(
+            env_var = %scoped_name,
+            profile,
+            "Retrieved credential from profile-scoped environment variable"
+        );
+        return Some(value);
+    }
+
     let env_var = env_var_for(credential_type)?;
-    let value = std::env::var(env_var).ok()?;
-    tracing::debug!(env_var, "Retrieved credential from environment variable");
+    let value = read_non_empty_env(env_var)?;
+    tracing::debug!(
+        env_var,
+        profile,
+        "Retrieved credential from global environment variable fallback"
+    );
     Some(value)
 }
 
@@ -119,6 +171,7 @@ pub fn store_credential(profile: &str, credential_type: &str, value: &str) -> an
 pub fn get_credential(profile: &str, credential_type: &str) -> anyhow::Result<Option<String>> {
     let key = format!("{profile}:{credential_type}");
     let mode = vault::resolve_mode()?.mode;
+    let mut store_error: Option<anyhow::Error> = None;
 
     if mode.uses_vault() {
         let config_dir = AppConfig::config_dir();
@@ -148,6 +201,7 @@ pub fn get_credential(profile: &str, credential_type: &str) -> anyhow::Result<Op
                     %error,
                     "Vault read failed, trying fallbacks"
                 );
+                store_error = Some(error);
             }
         }
 
@@ -167,6 +221,9 @@ pub fn get_credential(profile: &str, credential_type: &str) -> anyhow::Result<Op
                         %error,
                         "Legacy keychain fallback failed, trying env var fallback"
                     );
+                    if store_error.is_none() {
+                        store_error = Some(error);
+                    }
                 }
             }
         }
@@ -185,11 +242,20 @@ pub fn get_credential(profile: &str, credential_type: &str) -> anyhow::Result<Op
                     %error,
                     "Keychain error, trying env var fallback"
                 );
+                store_error = Some(error);
             }
         }
     }
 
-    Ok(env_fallback(credential_type))
+    if let Some(secret) = env_fallback(profile, credential_type) {
+        return Ok(Some(secret));
+    }
+
+    if let Some(error) = store_error {
+        return Err(error);
+    }
+
+    Ok(None)
 }
 
 /// Retrieve a credential directly from the backing store without env fallback.
@@ -307,7 +373,34 @@ pub fn has_credential(profile: &str, credential_type: &str) -> bool {
     matches!(get_credential(profile, credential_type), Ok(Some(_)))
 }
 
-/// Return the credential type expected for a given auth method.
+/// Return the list of credential types required for the given profile.
+pub fn credential_types_for_profile(
+    profile: &crate::config::profile::Profile,
+) -> Vec<&'static str> {
+    use crate::config::profile::{AuthMethod, OAuthGrantType};
+    match &profile.auth_method {
+        AuthMethod::Basic => vec!["password"],
+        AuthMethod::ApiKey => vec!["api_token"],
+        AuthMethod::Oauth2 => {
+            let grant_type = profile
+                .oauth_grant_type
+                .as_ref()
+                .cloned()
+                .unwrap_or(OAuthGrantType::ClientCredentials);
+            match grant_type {
+                OAuthGrantType::Password => vec!["client_secret", "password"],
+                OAuthGrantType::AuthorizationCode => vec!["oauth_token"],
+                OAuthGrantType::ClientCredentials => vec!["client_secret"],
+            }
+        }
+        AuthMethod::Mtls => vec!["cert_passphrase"],
+        AuthMethod::NativeSession => vec!["native_session"],
+        // Browser session tokens are supplied at runtime via SNOW_SESSION_COOKIE.
+        AuthMethod::BrowserSession => vec![],
+    }
+}
+
+/// Return the primary credential type expected for a given auth method.
 pub fn credential_type_for_auth(auth_method: &crate::config::profile::AuthMethod) -> &'static str {
     match auth_method {
         crate::config::profile::AuthMethod::Basic => "password",
@@ -329,11 +422,12 @@ mod tests {
         assert_eq!(env_var_for("api_token"), Some("SNOW_CLI_API_TOKEN"));
         assert_eq!(env_var_for("client_secret"), Some("SNOW_CLI_CLIENT_SECRET"));
         assert_eq!(env_var_for("oauth_token"), Some("SNOW_CLI_OAUTH_TOKEN"));
-        assert_eq!(
-            env_var_for("session_cookie"),
-            Some("SNOW_CLI_SESSION_COOKIE")
-        );
+        assert_eq!(env_var_for("session_cookie"), Some("SNOW_SESSION_COOKIE"));
         assert_eq!(env_var_for("unknown"), None);
+        assert_eq!(
+            scoped_env_var_name("prod-eu", "password").as_deref(),
+            Some("SNOW_CLI_PROFILE_PROD_EU_PASSWORD")
+        );
     }
 
     #[test]

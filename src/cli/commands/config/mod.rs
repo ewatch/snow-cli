@@ -9,7 +9,7 @@ use crate::cli::output;
 use crate::config::credentials;
 use crate::config::now_sdk;
 use crate::config::profile::{
-    AppConfig, AuthMethod, OAuthGrantType, Profile, validate_instance_url,
+    AppConfig, AuthMethod, OAuthGrantType, Profile, validate_instance_url, validate_profile_name,
 };
 
 /// Convert CLI auth method enum to config auth method enum.

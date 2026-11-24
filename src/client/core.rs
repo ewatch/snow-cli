@@ -4,27 +4,20 @@ use std::time::Duration;
 use http::HeaderMap;
 use reqwest::{Client, Response as TransportResponse, Url};
 
+use crate::models::secret::Secret;
 use crate::policy::ExecutionPolicy;
 
 use super::{DEFAULT_TIMEOUT_SECS, FORM_SCRIPT_ENDPOINT};
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormSession {
-    pub g_ck: String,
-}
-
-impl fmt::Debug for FormSession {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FormSession")
-            .field("g_ck", &"<redacted>")
-            .finish()
-    }
+    pub g_ck: Secret<String>,
 }
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct SessionState {
-    pub(super) jsessionid: Option<String>,
-    pub(super) form_cookie_header: Option<String>,
+    pub(super) jsessionid: Option<Secret<String>>,
+    pub(super) form_cookie_header: Option<Secret<String>>,
     // Native credentials live only in the authenticator; remember readiness, not secrets.
     pub(super) native_form_bootstrapped: bool,
     pub(super) form_session: Option<FormSession>,
@@ -320,7 +313,10 @@ impl SnowClient {
     }
 
     pub fn jsessionid(&self) -> Option<&str> {
-        self.session.jsessionid.as_deref()
+        self.session
+            .jsessionid
+            .as_ref()
+            .map(|secret| secret.expose_secret().as_str())
     }
 
     pub fn form_session(&self) -> Option<&FormSession> {
@@ -414,5 +410,29 @@ mod tests {
                 "expected unsafe URL to be rejected: {unsafe_url}"
             );
         }
+    }
+
+    #[test]
+    fn test_resolve_authenticated_url_rejects_userinfo_and_session_state_redacts_debug() {
+        let err = resolve_authenticated_url(
+            "https://dev12345.service-now.com",
+            "https://user:pass@dev12345.service-now.com/api/now/table/incident",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unsafe URL"), "{err}");
+
+        let state = SessionState {
+            jsessionid: Some(Secret::new("jsession-secret-999".to_string())),
+            form_cookie_header: Some(Secret::new("JSESSIONID=jsession-secret-999".to_string())),
+            native_form_bootstrapped: false,
+            form_session: Some(FormSession {
+                g_ck: Secret::new("gck-secret-999".to_string()),
+            }),
+        };
+        let debug = format!("{state:?}");
+        assert!(!debug.contains("jsession-secret-999"));
+        assert!(!debug.contains("gck-secret-999"));
+        assert!(debug.contains("<redacted>"));
     }
 }

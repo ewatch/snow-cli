@@ -3,6 +3,7 @@ use std::time::Duration;
 use http::{HeaderMap, Method};
 
 use super::*;
+use crate::models::secret::Secret;
 
 pub(crate) fn extract_jsessionid_from_headers(headers: &http::HeaderMap) -> Option<String> {
     let merged = crate::config::native_session::merge_cookie_header("", headers);
@@ -192,12 +193,13 @@ impl SnowClient {
             let base_cookies = self
                 .session
                 .form_cookie_header
-                .clone()
+                .as_ref()
+                .map(|secret| secret.expose_secret().clone())
                 .or_else(|| {
                     self.session
                         .jsessionid
-                        .as_deref()
-                        .map(|id| format!("JSESSIONID={id}"))
+                        .as_ref()
+                        .map(|id| format!("JSESSIONID={}", id.expose_secret()))
                 })
                 .unwrap_or_default();
             let merged = crate::config::native_session::merge_cookie_header_for_url(
@@ -206,10 +208,10 @@ impl SnowClient {
                 Some(response_url),
             );
             if self.session.form_cookie_header.is_some() {
-                self.session.form_cookie_header = Some(merged.clone());
+                self.session.form_cookie_header = Some(Secret::new(merged.clone()));
             }
             if headers_touch_cookie(headers, "JSESSIONID") {
-                self.session.jsessionid = read_cookie_value(&merged, "JSESSIONID");
+                self.session.jsessionid = read_cookie_value(&merged, "JSESSIONID").map(Secret::new);
             }
         }
         Ok(())
@@ -219,7 +221,10 @@ impl SnowClient {
         if let Some(native) = self.authenticator.native_session_credentials() {
             return Some(native.cookie_header.expose_secret().to_string());
         }
-        self.session.form_cookie_header.clone()
+        self.session
+            .form_cookie_header
+            .as_ref()
+            .map(|secret| secret.expose_secret().clone())
     }
 
     pub(super) fn current_form_session(&self) -> Option<FormSession> {
@@ -227,7 +232,7 @@ impl SnowClient {
             && let Some(native) = self.authenticator.native_session_credentials()
         {
             return Some(FormSession {
-                g_ck: native.csrf_token.expose_secret().to_string(),
+                g_ck: native.csrf_token.clone(),
             });
         }
         self.session.form_session.clone()
@@ -319,7 +324,12 @@ impl SnowClient {
         let seeded_cookies = auth_headers
             .get(http::header::COOKIE)
             .and_then(|value| value.to_str().ok())
-            .or(self.session.form_cookie_header.as_deref())
+            .or_else(|| {
+                self.session
+                    .form_cookie_header
+                    .as_ref()
+                    .map(|secret| secret.expose_secret().as_str())
+            })
             .unwrap_or("");
         let merged_cookies = crate::config::native_session::merge_cookie_header_for_url(
             seeded_cookies,
@@ -328,8 +338,12 @@ impl SnowClient {
         );
         let jsessionid = match native.as_ref() {
             Some(session) => read_cookie_value(session.cookie_header.expose_secret(), "JSESSIONID"),
-            None => read_cookie_value(&merged_cookies, "JSESSIONID")
-                .or_else(|| self.session.jsessionid.clone()),
+            None => read_cookie_value(&merged_cookies, "JSESSIONID").or_else(|| {
+                self.session
+                    .jsessionid
+                    .as_ref()
+                    .map(|secret| secret.expose_secret().clone())
+            }),
         };
         let Some(jsessionid) = jsessionid else {
             anyhow::bail!(
@@ -348,12 +362,14 @@ impl SnowClient {
                 }
             });
         if native.is_none() {
-            self.session.form_cookie_header = Some(cookie_header);
-            self.session.jsessionid = Some(jsessionid);
+            self.session.form_cookie_header = Some(Secret::new(cookie_header));
+            self.session.jsessionid = Some(Secret::new(jsessionid));
         }
         self.authenticator.update_native_csrf(&g_ck).await?;
 
-        let session = FormSession { g_ck };
+        let session = FormSession {
+            g_ck: Secret::new(g_ck),
+        };
         if native.is_some() {
             self.session.native_form_bootstrapped = true;
         } else {
@@ -516,9 +532,11 @@ impl SnowClient {
             anyhow::bail!("Could not determine JSESSIONID from login/bootstrap cookies.");
         };
 
-        self.session.jsessionid = Some(jsessionid.clone());
-        self.session.form_cookie_header = Some(cookie_header);
-        let session = FormSession { g_ck };
+        self.session.jsessionid = Some(Secret::new(jsessionid));
+        self.session.form_cookie_header = Some(Secret::new(cookie_header));
+        let session = FormSession {
+            g_ck: Secret::new(g_ck),
+        };
         self.session.form_session = Some(session);
         Ok(())
     }
@@ -527,6 +545,7 @@ impl SnowClient {
 mod tests {
     use super::*;
     use crate::client::test_support::*;
+    use crate::models::secret::Secret;
     use http::HeaderMap;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -578,7 +597,7 @@ mod tests {
     #[test]
     fn form_session_debug_redacts_secret_values() {
         let session = FormSession {
-            g_ck: "gck-secret-value".to_string(),
+            g_ck: Secret::new("gck-secret-value".to_string()),
         };
 
         let debug = format!("{session:?}");
@@ -683,7 +702,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(first.g_ck, "form-gck-456");
+        assert_eq!(first.g_ck.expose_secret(), "form-gck-456");
         assert_eq!(
             client.current_form_cookie_header().unwrap(),
             "JSESSIONID=form-session-123"
@@ -693,7 +712,7 @@ mod tests {
         assert_eq!(
             client.form_session(),
             Some(&FormSession {
-                g_ck: "form-gck-456".to_string(),
+                g_ck: Secret::new("form-gck-456".to_string()),
             })
         );
     }
@@ -722,7 +741,7 @@ mod tests {
             .ensure_form_session("/sys.scripts.modern.do")
             .await
             .unwrap();
-        assert_eq!(form.g_ck, "new-csrf");
+        assert_eq!(form.g_ck.expose_secret(), "new-csrf");
         assert_eq!(
             client.current_form_cookie_header().unwrap(),
             "JSESSIONID=existing; route=node1"
@@ -771,8 +790,10 @@ mod tests {
     #[tokio::test]
     async fn deleted_jsessionid_is_cleared_not_recaptured() {
         let mut client = test_client("https://dev1.service-now.com", MockAuth::new("token"));
-        client.session.jsessionid = Some("old-session".to_string());
-        client.session.form_cookie_header = Some("JSESSIONID=old-session; route=node1".to_string());
+        client.session.jsessionid = Some(Secret::new("old-session".to_string()));
+        client.session.form_cookie_header = Some(Secret::new(
+            "JSESSIONID=old-session; route=node1".to_string(),
+        ));
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -820,7 +841,7 @@ mod tests {
             .ensure_form_session("/sys.scripts.modern.do")
             .await
             .unwrap();
-        assert_eq!(session.g_ck, "browser-gck-999");
+        assert_eq!(session.g_ck.expose_secret(), "browser-gck-999");
         assert_eq!(client.jsessionid(), Some("browser-123"));
         assert_eq!(
             client.current_form_cookie_header().as_deref(),

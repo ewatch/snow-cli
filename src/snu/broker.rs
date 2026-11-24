@@ -555,8 +555,8 @@ impl BrokerState {
                     origin: origin.clone(),
                     has_g_ck: instance
                         .g_ck
-                        .as_deref()
-                        .is_some_and(|token| !token.is_empty()),
+                        .as_ref()
+                        .is_some_and(|token| !token.expose_secret().is_empty()),
                     scope: instance.scope.clone(),
                     is_latest: self.latest_origin.as_deref() == Some(origin.as_str()),
                     captured_at: meta.captured_at,
@@ -3079,7 +3079,9 @@ mod tests {
         broker.state.lock().await.remember_session(&SnuInstance {
             name: "dev".to_string(),
             url: "https://dev.service-now.com".to_string(),
-            g_ck: Some("fresh-token".to_string()),
+            g_ck: Some(crate::models::secret::Secret::new(
+                "fresh-token".to_string(),
+            )),
             scope: None,
         });
         let mut payload = serde_json::json!({
@@ -3100,7 +3102,7 @@ mod tests {
         SnuInstance {
             name: url.to_string(),
             url: url.to_string(),
-            g_ck: Some("token".to_string()),
+            g_ck: Some(crate::models::secret::Secret::new("token".to_string())),
             scope: None,
         }
     }
@@ -3113,7 +3115,7 @@ mod tests {
         SnuInstance {
             name: url.to_string(),
             url: url.to_string(),
-            g_ck: Some(token.to_string()),
+            g_ck: Some(crate::models::secret::Secret::new(token.to_string())),
             scope: None,
         }
     }

@@ -40,7 +40,9 @@ fn agent_response_output_redacts_embedded_session_token() {
         instance: Some(SnuInstance {
             name: "dev".to_string(),
             url: "https://dev.service-now.com".to_string(),
-            g_ck: Some("must-not-leak".to_string()),
+            g_ck: Some(crate::models::secret::Secret::new(
+                "must-not-leak".to_string(),
+            )),
             scope: Some("global".to_string()),
         }),
         success: Some(true),

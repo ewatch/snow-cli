@@ -72,6 +72,7 @@ url = "2"
 regex = "1"
 urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
 
 # Detach the SN-Utils broker into its own session so it survives the spawning
 # command's process group (setsid). Unix only; Windows uses creation flags.

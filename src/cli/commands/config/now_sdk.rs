@@ -61,13 +61,15 @@ pub(super) async fn handle_import_now_sdk(
         let Some(entry) = store.get(alias_name) else {
             anyhow::bail!("now-sdk alias '{}' not found.", alias_name);
         };
-        let basic = entry.as_basic_profile().ok_or_else(|| {
+        let mut basic = entry.as_basic_profile().ok_or_else(|| {
             anyhow::anyhow!(
                 "now-sdk alias '{}' uses unsupported auth type '{}'; only basic is supported.",
                 alias_name,
                 entry.auth_type(),
             )
         })?;
+        validate_profile_name(&basic.alias)?;
+        basic.instance = validate_instance_url(&basic.instance)?;
         imports.push(basic);
     }
 

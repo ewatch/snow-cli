@@ -130,30 +130,10 @@ fn save_test_store(path: &Path, store: &TestStore) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
     let contents = serde_json::to_string_pretty(store)?;
-
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)?;
-        file.write_all(contents.as_bytes())?;
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, contents)?;
-        Ok(())
-    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("test-keychain.json");
+    crate::config::encrypted_store::write_atomic(path, contents.as_bytes(), file_name)
 }

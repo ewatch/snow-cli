@@ -274,8 +274,8 @@ impl Matcher {
 fn instance_matches_session(instance: &SnuInstance, target_origin: Option<&str>) -> bool {
     let has_token = instance
         .g_ck
-        .as_deref()
-        .is_some_and(|token| !token.is_empty());
+        .as_ref()
+        .is_some_and(|token| !token.expose_secret().is_empty());
     if !has_token {
         return false;
     }
@@ -1220,8 +1220,8 @@ async fn deliver_message(inner: &Inner, msg: SnuMessage, generation: u64) {
     if let Some(instance) = &msg.instance
         && instance
             .g_ck
-            .as_deref()
-            .is_some_and(|token| !token.is_empty())
+            .as_ref()
+            .is_some_and(|token| !token.expose_secret().is_empty())
     {
         let _ = inner.sessions_tx.send(instance.clone());
     }

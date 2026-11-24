@@ -131,8 +131,28 @@ enum Backend {
 /// selects the encrypted file; a file without its key is never touched.
 fn backend() -> anyhow::Result<Backend> {
     let source = credential_file::KeySource::from_env()?;
-    let key = source.key()?;
     let path = credential_file::credentials_path();
+    let key = match source.key() {
+        Ok(key) => key,
+        Err(error) => {
+            if let Some(path) = path.as_ref().filter(|path| path.exists()) {
+                return Err(crate::config::error::ConfigError::new(
+                    "NOW_SDK_CREDENTIALS_UNREADABLE",
+                    format!(
+                        "now-sdk encrypted credentials exist at {} but their key could not be read ({}). \
+                         snow-cli did not modify them; unlock the keychain or set the key, then retry.",
+                        path.display(),
+                        match source {
+                            credential_file::KeySource::Keyring => "keychain unavailable or locked",
+                            credential_file::KeySource::Env => "SN_SDK_ENCRYPTION_KEY is invalid",
+                        }
+                    ),
+                )
+                .into());
+            }
+            return Err(error);
+        }
+    };
     match (key, path) {
         (Some(_), None) => Err(crate::config::error::ConfigError::new(
             "NOW_SDK_CREDENTIALS_UNREADABLE",

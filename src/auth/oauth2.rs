@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use http::HeaderMap;
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::auth::Authenticator;
 use crate::config::credentials;
@@ -38,6 +38,10 @@ const OAUTH_EXPIRY_SKEW_SECS: u64 = 30;
 /// get one chance to refresh through ServiceNow before being asked to log in.
 const STORED_TOKEN_FALLBACK_TTL_SECS: u64 = 3600;
 
+/// Cap in-memory monotonic TTL arithmetic so a malformed/huge `expires_in`
+/// returned by an endpoint can never overflow `Instant`.
+const MAX_CACHED_TOKEN_TTL_SECS: u64 = 10 * 365 * 24 * 60 * 60;
+
 /// Cached OAuth2 token with expiry tracking.
 ///
 /// Secret fields are wrapped in [`Secret`], so the derived `Debug` redacts them
@@ -51,7 +55,8 @@ struct CachedToken {
 
 impl CachedToken {
     fn is_expired(&self) -> bool {
-        Instant::now() >= self.expires_at - Duration::from_secs(OAUTH_EXPIRY_SKEW_SECS)
+        self.expires_at.saturating_duration_since(Instant::now())
+            <= Duration::from_secs(OAUTH_EXPIRY_SKEW_SECS)
     }
 }
 
@@ -75,7 +80,7 @@ pub struct StoredOAuthToken {
 impl StoredOAuthToken {
     pub fn is_expired(&self) -> bool {
         self.expires_at
-            .map(|expires_at| now_epoch_secs().saturating_add(30) >= expires_at)
+            .map(|expires_at| now_epoch_secs().saturating_add(OAUTH_EXPIRY_SKEW_SECS) >= expires_at)
             .unwrap_or(false)
     }
 }
@@ -118,6 +123,8 @@ pub struct OAuth2Auth {
     credential_source: CredentialSource,
     /// Cached token (shared across authenticate/refresh calls)
     cached_token: Arc<RwLock<Option<CachedToken>>>,
+    /// Serializes token acquisition and refresh across concurrent callers.
+    refresh_lock: Arc<Mutex<()>>,
 }
 
 /// ServiceNow OAuth token response.
@@ -132,6 +139,7 @@ struct TokenResponse {
 
 impl OAuth2Auth {
     pub fn new(profile_name: &str, profile: &Profile) -> anyhow::Result<Self> {
+        let instance = crate::config::profile::validate_instance_url(&profile.instance)?;
         let client_id = profile.client_id.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "OAuth2 auth requires `client_id` in the profile configuration. \
@@ -154,7 +162,7 @@ impl OAuth2Auth {
         }
 
         Ok(Self {
-            instance: profile.instance.clone(),
+            instance,
             client_id,
             grant_type,
             username: profile.username.clone(),
@@ -162,6 +170,7 @@ impl OAuth2Auth {
                 profile_name: profile_name.to_string(),
             },
             cached_token: Arc::new(RwLock::new(None)),
+            refresh_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -188,6 +197,7 @@ impl OAuth2Auth {
                 oauth_token: None,
             },
             cached_token: Arc::new(RwLock::new(None)),
+            refresh_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -210,6 +220,7 @@ impl OAuth2Auth {
                 oauth_token: Some(oauth_token),
             },
             cached_token: Arc::new(RwLock::new(None)),
+            refresh_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -363,7 +374,15 @@ impl OAuth2Auth {
 
         let body =
             self.build_refresh_request_body(&self.client_id, client_secret.as_deref(), refresh_tok);
-        self.send_token_request(&body).await
+        let mut token_set = self.send_token_request(&body).await?;
+        // RFC 6749 §6: if the authorization server omits refresh_token in the
+        // refresh response, retain the existing refresh token.
+        if token_set.stored.refresh_token.is_none() {
+            let preserved = Secret::new(refresh_tok.to_string());
+            token_set.cached.refresh_token = Some(preserved.clone());
+            token_set.stored.refresh_token = Some(preserved);
+        }
+        Ok(token_set)
     }
 
     /// Send a token request to the ServiceNow OAuth endpoint.
@@ -371,10 +390,28 @@ impl OAuth2Auth {
         send_oauth_token_request(&self.token_url(), body).await
     }
 
+    async fn acquire_refresh_file_lock(&self) -> anyhow::Result<Option<std::fs::File>> {
+        let profile_name = match &self.credential_source {
+            CredentialSource::Keychain { profile_name } => profile_name.clone(),
+            #[cfg(test)]
+            CredentialSource::Direct { .. } => return Ok(None),
+        };
+        tokio::task::spawn_blocking(move || acquire_oauth_profile_lock(&profile_name))
+            .await
+            .map_err(|error| anyhow::anyhow!("OAuth refresh lock task failed: {error}"))?
+    }
+
     async fn authenticate_authorization_code(&self) -> anyhow::Result<HeaderMap> {
         if let Some(token) = self.valid_cached_token().await? {
             return Ok(token);
         }
+
+        let _refresh_guard = self.refresh_lock.lock().await;
+        if let Some(token) = self.valid_cached_token().await? {
+            return Ok(token);
+        }
+
+        let _file_lock = self.acquire_refresh_file_lock().await?;
 
         let Some(stored_token) = self.get_stored_oauth_token()? else {
             anyhow::bail!(
@@ -574,7 +611,7 @@ impl TokenResponse {
             cached: CachedToken {
                 access_token: access_token.clone(),
                 refresh_token: refresh_token.clone(),
-                expires_at: Instant::now() + Duration::from_secs(self.expires_in),
+                expires_at: instant_after_secs(self.expires_in),
             },
             stored: StoredOAuthToken {
                 access_token,
@@ -587,18 +624,44 @@ impl TokenResponse {
     }
 }
 
+fn instant_after_secs(secs: u64) -> Instant {
+    let now = Instant::now();
+    let clamped = Duration::from_secs(secs.min(MAX_CACHED_TOKEN_TTL_SECS));
+    now.checked_add(clamped).unwrap_or(now)
+}
+
+fn acquire_oauth_profile_lock(profile: &str) -> anyhow::Result<Option<std::fs::File>> {
+    let config_path = crate::config::profile::AppConfig::config_path();
+    let Some(dir) = config_path.parent() else {
+        return Ok(None);
+    };
+    let lock_dir = dir.join(".locks");
+    std::fs::create_dir_all(&lock_dir)?;
+    let digest = Sha256::digest(profile.as_bytes());
+    let hash: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let lock_path = lock_dir.join(format!("oauth-refresh-{hash}.lock"));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    file.lock()?;
+    Ok(Some(file))
+}
+
 fn stored_to_cached(stored: &StoredOAuthToken) -> CachedToken {
     let expires_at = stored
         .expires_at
         .map(|expires_at| {
-            let now = now_epoch_secs();
-            if expires_at > now {
-                Instant::now() + Duration::from_secs(expires_at - now)
+            let remaining = expires_at.saturating_sub(now_epoch_secs());
+            if remaining > 0 {
+                instant_after_secs(remaining)
             } else {
-                Instant::now() - Duration::from_secs(1)
+                Instant::now()
             }
         })
-        .unwrap_or_else(|| Instant::now() + Duration::from_secs(STORED_TOKEN_FALLBACK_TTL_SECS));
+        .unwrap_or_else(|| instant_after_secs(STORED_TOKEN_FALLBACK_TTL_SECS));
 
     CachedToken {
         access_token: stored.access_token.clone(),
@@ -687,6 +750,11 @@ impl Authenticator for OAuth2Auth {
             return Ok(headers);
         }
 
+        let _refresh_guard = self.refresh_lock.lock().await;
+        if let Some(headers) = self.valid_cached_token().await? {
+            return Ok(headers);
+        }
+
         // Token missing or expired — fetch a new one
         let token = self.fetch_token().await?;
         let headers = bearer_headers(token.access_token.expose_secret())?;
@@ -701,21 +769,44 @@ impl Authenticator for OAuth2Auth {
     }
 
     async fn refresh(&mut self) -> anyhow::Result<bool> {
-        // Try to use refresh_token if available
-        let refresh_tok = {
-            let cached = self.cached_token.read().await;
-            cached.as_ref().and_then(|t| t.refresh_token.clone())
+        let _refresh_guard = self.refresh_lock.lock().await;
+        let _file_lock = if self.grant_type == OAuthGrantType::AuthorizationCode {
+            self.acquire_refresh_file_lock().await?
+        } else {
+            None
+        };
+
+        let cached_snapshot = self.cached_token.read().await.clone();
+
+        // Reload persisted authorization-code token under the cross-process lock:
+        // if another process already rotated it, adopt that fresh token instead of
+        // burning a single-use refresh token a second time.
+        let reloaded_stored = if self.grant_type == OAuthGrantType::AuthorizationCode {
+            self.get_stored_oauth_token()?
+        } else {
+            None
+        };
+
+        if let Some(ref stored) = reloaded_stored
+            && !stored.is_expired()
+            && cached_snapshot.as_ref().is_some_and(|cached| {
+                cached.access_token.expose_secret() != stored.access_token.expose_secret()
+            })
+        {
+            let mut cached = self.cached_token.write().await;
+            *cached = Some(stored_to_cached(stored));
+            return Ok(true);
         }
-        .or_else(|| {
-            if self.grant_type == OAuthGrantType::AuthorizationCode {
-                self.get_stored_oauth_token()
-                    .ok()
-                    .flatten()
-                    .and_then(|token| token.refresh_token)
-            } else {
-                None
-            }
-        });
+
+        // Try to use refresh_token if available (prefer latest persisted refresh_token for auth-code).
+        let refresh_tok = reloaded_stored
+            .as_ref()
+            .and_then(|token| token.refresh_token.clone())
+            .or_else(|| {
+                cached_snapshot
+                    .as_ref()
+                    .and_then(|token| token.refresh_token.clone())
+            });
 
         let new_token = if let Some(ref rt) = refresh_tok {
             tracing::debug!("Attempting OAuth2 token refresh");
@@ -1750,5 +1841,138 @@ mod tests {
     async fn test_auth_type_returns_oauth2() {
         let auth = test_oauth2_client_credentials("https://test.service-now.com");
         assert_eq!(auth.auth_type(), AuthMethod::Oauth2);
+    }
+
+    #[test]
+    fn test_oauth2_new_rejects_invalid_instance_url() {
+        let profile = Profile {
+            instance: "http://evil.example.com".to_string(),
+            auth_method: AuthMethod::Oauth2,
+            username: None,
+            client_id: Some("cid".to_string()),
+            oauth_grant_type: Some(OAuthGrantType::ClientCredentials),
+            oauth_scope: None,
+            oauth_redirect_host: None,
+            oauth_redirect_port: None,
+            oauth_redirect_path: None,
+            cert_path: None,
+            key_path: None,
+            sso_login_url: None,
+        };
+        assert!(OAuth2Auth::new("dev", &profile).is_err());
+    }
+
+    #[test]
+    fn test_instant_expiry_math_never_panics_on_extremes() {
+        let huge = TokenResponse {
+            access_token: Secret::new("tok".to_string()),
+            refresh_token: None,
+            token_type: Some("Bearer".to_string()),
+            expires_in: u64::MAX,
+            scope: None,
+        };
+        let set = huge.into_token_set();
+        assert!(!set.cached.is_expired());
+        assert!(!set.stored.is_expired());
+
+        let zero = TokenResponse {
+            access_token: Secret::new("tok".to_string()),
+            refresh_token: None,
+            token_type: None,
+            expires_in: 0,
+            scope: None,
+        };
+        let zero_set = zero.into_token_set();
+        assert!(zero_set.cached.is_expired());
+
+        let past_stored = StoredOAuthToken {
+            access_token: Secret::new("old".to_string()),
+            refresh_token: Some(Secret::new("rt".to_string())),
+            token_type: None,
+            expires_at: Some(1),
+            scope: None,
+        };
+        let past_cached = stored_to_cached(&past_stored);
+        assert!(past_cached.is_expired());
+    }
+
+    #[tokio::test]
+    async fn test_refresh_preserves_existing_refresh_token_when_server_omits_it() {
+        let server = MockServer::start().await;
+
+        // First refresh returns no refresh_token (RFC 6749 §6)
+        Mock::given(method("POST"))
+            .and(path("/oauth_token.do"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .and(body_string_contains("refresh_token=keep_me"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(token_response_json("rotated_access_1", 3600)),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let mut auth = OAuth2Auth::new_with_stored_token(
+            server.uri(),
+            "test_client_id".to_string(),
+            Some("test_client_secret".to_string()),
+            StoredOAuthToken {
+                access_token: Secret::new("expired_access".to_string()),
+                refresh_token: Some(Secret::new("keep_me".to_string())),
+                token_type: Some("Bearer".to_string()),
+                expires_at: Some(1),
+                scope: None,
+            },
+        );
+
+        let headers = auth.authenticate().await.unwrap();
+        assert_eq!(
+            headers.get("authorization").unwrap().to_str().unwrap(),
+            "Bearer rotated_access_1"
+        );
+
+        // The preserved refresh_token must still be present for a second refresh.
+        let cached = auth.cached_token.read().await;
+        assert_eq!(
+            cached
+                .as_ref()
+                .and_then(|t| t.refresh_token.as_ref())
+                .map(|s| s.expose_secret().as_str()),
+            Some("keep_me")
+        );
+        drop(cached);
+
+        assert!(auth.refresh().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_authenticate_serializes_token_fetch() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/oauth_token.do"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(50))
+                    .set_body_json(token_response_json("single_flight_tok", 3600)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let auth = Arc::new(test_oauth2_client_credentials(&server.uri()));
+        let (r1, r2, r3) = tokio::join!(
+            auth.authenticate(),
+            auth.authenticate(),
+            auth.authenticate()
+        );
+        for res in [r1, r2, r3] {
+            let headers = res.unwrap();
+            assert_eq!(
+                headers.get("authorization").unwrap().to_str().unwrap(),
+                "Bearer single_flight_tok"
+            );
+        }
     }
 }

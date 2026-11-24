@@ -168,14 +168,15 @@ impl AppConfig {
         self.save_to(&Self::config_path())
     }
 
-    /// Save config to a specific path.
+    /// Save config to a specific path atomically with `0o600` permissions (and
+    /// `0o700` directory creation when creating the parent directory).
     pub fn save_to(&self, path: &std::path::Path) -> anyhow::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
-        Ok(())
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config.toml");
+        crate::config::encrypted_store::write_atomic(path, content.as_bytes(), file_name)
     }
 
     /// Get a profile by name, falling back to the default profile.
@@ -338,6 +339,28 @@ fn profile_similarity_score(requested: &str, candidate: &str) -> usize {
     }
 
     0
+}
+
+/// Validate a profile name so it cannot collide with `{profile}:{cred_type}`
+/// vault/keychain keys or contain control characters or surrounding whitespace.
+pub fn validate_profile_name(name: &str) -> anyhow::Result<&str> {
+    let invalid = |message| ConfigError::new("INVALID_PROFILE_NAME", message);
+    if name.is_empty() || name != name.trim() {
+        return Err(invalid(
+            "Invalid profile name: must not be empty or have leading/trailing whitespace.",
+        )
+        .into());
+    }
+    if name.contains(':') {
+        return Err(invalid(
+            "Invalid profile name: ':' is not allowed because credential store keys use '<profile>:<type>'.",
+        )
+        .into());
+    }
+    if name.chars().any(|ch| ch.is_control()) {
+        return Err(invalid("Invalid profile name: control characters are not allowed.").into());
+    }
+    Ok(name)
 }
 
 pub fn validate_instance_url(input: &str) -> anyhow::Result<String> {
@@ -746,5 +769,37 @@ mod tests {
         let message = config.profile_not_found_message("dev");
         assert!(message.contains("No profiles are configured yet"));
         assert!(message.contains("profile add"));
+    }
+
+    #[test]
+    fn test_validate_profile_name_forbids_colon_empty_and_control_chars() {
+        assert_eq!(validate_profile_name("prod-eu").unwrap(), "prod-eu");
+        assert_eq!(validate_profile_name("dev_1").unwrap(), "dev_1");
+        assert!(validate_profile_name("").is_err());
+        assert!(validate_profile_name(" dev").is_err());
+        assert!(validate_profile_name("dev ").is_err());
+        assert!(validate_profile_name("dev:password").is_err());
+        assert!(validate_profile_name("dev\nprod").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_save_to_writes_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("private-snow");
+        let config_path = config_dir.join("config.toml");
+        let config = AppConfig::default();
+        config.save_to(&config_path).unwrap();
+
+        let dir_mode = std::fs::metadata(&config_dir).unwrap().permissions().mode() & 0o777;
+        let file_mode = std::fs::metadata(&config_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
     }
 }

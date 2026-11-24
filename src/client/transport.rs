@@ -253,7 +253,7 @@ impl SnowClient {
                 let mut form_fields = vec![
                     ("script", script.to_string()),
                     ("runscript", "Run script".to_string()),
-                    ("sysparm_ck", session.g_ck.clone()),
+                    ("sysparm_ck", session.g_ck.expose_secret().to_string()),
                     ("sys_scope", scope.to_string()),
                 ];
                 if options.rollback {
@@ -274,7 +274,7 @@ impl SnowClient {
                     .post(&url)
                     .header("Accept", "text/html,application/xhtml+xml")
                     .header("Cookie", cookie_header)
-                    .header("X-UserToken", session.g_ck)
+                    .header("X-UserToken", session.g_ck.expose_secret())
                     .form(&form_fields)
                     .build()?;
 
@@ -1350,8 +1350,12 @@ mod tests {
     #[tokio::test]
     async fn observe_session_response_headers_ignores_foreign_origin() {
         let mut client = test_client("https://dev1.service-now.com", MockAuth::new("token"));
-        client.session.jsessionid = Some("original-session".to_string());
-        client.session.form_cookie_header = Some("JSESSIONID=original-session".to_string());
+        client.session.jsessionid = Some(crate::models::secret::Secret::new(
+            "original-session".to_string(),
+        ));
+        client.session.form_cookie_header = Some(crate::models::secret::Secret::new(
+            "JSESSIONID=original-session".to_string(),
+        ));
 
         let mut headers = http::HeaderMap::new();
         headers.insert(
@@ -1366,7 +1370,11 @@ mod tests {
             .unwrap();
         assert_eq!(client.jsessionid(), Some("original-session"));
         assert_eq!(
-            client.session.form_cookie_header.as_deref(),
+            client
+                .session
+                .form_cookie_header
+                .as_ref()
+                .map(|s| s.expose_secret().as_str()),
             Some("JSESSIONID=original-session")
         );
 
