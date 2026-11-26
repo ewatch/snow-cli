@@ -68,7 +68,15 @@ async fn exercise_failure(scenario: &str) {
 
     tokio::time::timeout(Duration::from_secs(15), async {
         let mut helper = loop {
-            if let Ok((helper, _)) = tokio_tungstenite::connect_async(format!("ws://{ws_addr}")).await {
+            use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+            let mut request = format!("ws://{ws_addr}").into_client_request().unwrap();
+            request.headers_mut().insert(
+                "origin",
+                "chrome-extension://jgaodbdddndbaijmcljdbglhpdhnjobg"
+                    .parse()
+                    .unwrap(),
+            );
+            if let Ok((helper, _)) = tokio_tungstenite::connect_async(request).await {
                 break helper;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;

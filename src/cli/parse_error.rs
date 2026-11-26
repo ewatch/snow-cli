@@ -53,7 +53,7 @@ pub(crate) fn actionable_message(
         ErrorKind::InvalidSubcommand => {
             let bad = context_string(error, ContextKind::InvalidSubcommand)?;
             if is_write_only_command(&path, &bad) {
-                read_only_rejection(current, &display_path, &bad)
+                read_only_rejection(&path, current, &display_path, &bad)
             } else {
                 invalid_subcommand(
                     current,
@@ -132,21 +132,61 @@ fn is_write_only_command(path: &[&Command], bad: &str) -> bool {
     let full = crate::cli::args::Cli::command();
     let mut current = &full;
     for command in path.iter().skip(1) {
-        match current.find_subcommand(command.get_name()) {
+        match find_subcommand_or_alias(current, command.get_name()) {
             Some(next) => current = next,
             None => return false,
         }
     }
-    current.find_subcommand(bad).is_some()
+    find_subcommand_or_alias(current, bad).is_some()
 }
 
-fn read_only_rejection(current: &Command, display_path: &str, bad: &str) -> String {
+fn canonical_full_subcommand_path(path: &[&Command], bad: &str) -> Vec<String> {
+    let full = crate::cli::args::Cli::command();
+    let mut current = &full;
+    let mut names = Vec::new();
+    for command in path.iter().skip(1) {
+        match find_subcommand_or_alias(current, command.get_name()) {
+            Some(next) => {
+                names.push(next.get_name().to_string());
+                current = next;
+            }
+            None => return names,
+        }
+    }
+    if let Some(leaf) = find_subcommand_or_alias(current, bad) {
+        names.push(leaf.get_name().to_string());
+    } else {
+        names.push(bad.to_string());
+    }
+    names
+}
+
+fn read_only_rejection(
+    path: &[&Command],
+    current: &Command,
+    display_path: &str,
+    bad: &str,
+) -> String {
     let valid = visible_subcommands(current);
     let full_path = display_path.replacen(READ_ONLY_BINARY, "snow-cli", 1);
+    let canonical = canonical_full_subcommand_path(path, bad);
+    let refs: Vec<&str> = canonical.iter().map(String::as_str).collect();
+    let reason = match crate::policy::read_only_denial_for_path(&refs) {
+        Some((crate::policy::CommandCapability::RemoteWrite | crate::policy::CommandCapability::RawApiWrite, _)) => {
+            "can change remote data, so the read-only binary does not include it".to_string()
+        }
+        Some((_, detail)) => format!("{detail}, so the read-only binary does not include it"),
+        None => "is not permitted under the read-only policy, so the read-only binary does not include it".to_string(),
+    };
     format!(
-        "'{bad}' is not a `{display_path}` subcommand: `{full_path} {bad}` can change \
-         remote data, so the read-only binary does not include it\n\n  valid subcommands: {valid}\n"
+        "'{bad}' is not a `{display_path}` subcommand: `{full_path} {bad}` {reason}\n\n  valid subcommands: {valid}\n"
     )
+}
+
+fn find_subcommand_or_alias<'a>(command: &'a Command, token: &str) -> Option<&'a Command> {
+    command
+        .get_subcommands()
+        .find(|sub| sub.get_name() == token || sub.get_all_aliases().any(|alias| alias == token))
 }
 
 fn visible_subcommands(current: &Command) -> String {
@@ -224,7 +264,12 @@ fn command_path<'a>(root: &'a Command, args: &[String]) -> Vec<&'a Command> {
             };
             let takes_value = current
                 .get_arguments()
-                .find(|arg| arg.get_long() == Some(name))
+                .find(|arg| {
+                    arg.get_long() == Some(name)
+                        || arg
+                            .get_all_aliases()
+                            .is_some_and(|aliases| aliases.into_iter().any(|alias| alias == name))
+                })
                 .is_some_and(|arg| arg.get_action().takes_values());
             if takes_value && !inline_value {
                 tokens.next();
@@ -235,7 +280,12 @@ fn command_path<'a>(root: &'a Command, args: &[String]) -> Vec<&'a Command> {
             let takes_value = short.chars().next().is_some_and(|flag| {
                 current
                     .get_arguments()
-                    .find(|arg| arg.get_short() == Some(flag))
+                    .find(|arg| {
+                        arg.get_short() == Some(flag)
+                            || arg.get_all_short_aliases().is_some_and(|aliases| {
+                                aliases.into_iter().any(|alias| alias == flag)
+                            })
+                    })
                     .is_some_and(|arg| arg.get_action().takes_values())
             });
             if takes_value && short.len() == 1 {
@@ -243,7 +293,7 @@ fn command_path<'a>(root: &'a Command, args: &[String]) -> Vec<&'a Command> {
             }
             continue;
         }
-        match current.find_subcommand(token) {
+        match find_subcommand_or_alias(current, token) {
             Some(subcommand) => path.push(subcommand),
             None => break,
         }
@@ -365,5 +415,61 @@ mod tests {
     fn other_errors_keep_clap_rendering() {
         assert!(message_for(&["snow-cli", "table", "list"]).is_none());
         assert!(message_for(&["snow-cli", "table", "get", "incident", "a", "b", "c"]).is_none());
+    }
+
+    #[test]
+    fn command_path_handles_long_and_subcommand_aliases() {
+        // `--format` is an alias for `--output` and takes a value (`json`),
+        // so `table` must still be recognized as the active subcommand.
+        let msg = message_for(&["snow-cli", "--format", "json", "table", "incident"]).unwrap();
+        assert!(
+            msg.contains("'incident' is not a `snow-cli table` subcommand"),
+            "{msg}"
+        );
+
+        // `config` is a subcommand alias for `profile`.
+        let msg = message_for(&["snow-cli", "config", "bogus"]).unwrap();
+        assert!(
+            msg.contains("'bogus' is not a `snow-cli profile` subcommand"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn read_only_rejection_derives_accurate_policy_reason_for_non_remote_write_commands() {
+        let ro_message = |argv: &[&str]| {
+            let args: Vec<String> = argv.iter().map(|arg| (*arg).to_owned()).collect();
+            let mut root = crate::cli::readonly_args::ReadOnlyCli::command();
+            let error = root.try_get_matches_from_mut(&args).unwrap_err();
+            root.build();
+            actionable_message(&error, &root, &args).unwrap()
+        };
+
+        let token_msg = ro_message(&["snow-cli-ro", "auth", "token"]);
+        assert!(
+            token_msg.contains("exports reusable credentials"),
+            "{token_msg}"
+        );
+        assert!(!token_msg.contains("can change remote data"), "{token_msg}");
+
+        let export_msg = ro_message(&["snow-cli-ro", "profile", "sdk", "export", "dev"]);
+        assert!(
+            export_msg.contains("exports reusable credentials to the now-sdk store"),
+            "{export_msg}"
+        );
+        assert!(
+            !export_msg.contains("can change remote data"),
+            "{export_msg}"
+        );
+
+        let storage_msg = ro_message(&["snow-cli-ro", "profile", "storage", "set", "file"]);
+        assert!(
+            storage_msg.contains("changes credential storage backends"),
+            "{storage_msg}"
+        );
+        assert!(
+            !storage_msg.contains("can change remote data"),
+            "{storage_msg}"
+        );
     }
 }

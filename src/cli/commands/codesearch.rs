@@ -89,7 +89,7 @@ fn render_response(body: &str, format: &OutputFormat, preview_enabled: bool) -> 
         let preview = preview_codesearch_output(&mut json, preview_enabled);
         if let Some(object) = json.as_object_mut() {
             object.insert("searched_tables".to_string(), searched_tables.into());
-            insert_preview(object, &preview)?;
+            insert_preview(object, preview_enabled, &preview)?;
         }
         return output::print_output(&json, format);
     }
@@ -99,17 +99,17 @@ fn render_response(body: &str, format: &OutputFormat, preview_enabled: bool) -> 
     if let Ok(table_resp) =
         serde_json::from_value::<crate::models::record::TableResponse>(json.clone())
     {
-        if preview.is_empty() {
+        if !preview_enabled && preview.is_empty() {
             output::print_records(&table_resp.result, format)
         } else {
             if let Some(object) = json.as_object_mut() {
-                insert_preview(object, &preview)?;
+                insert_preview(object, preview_enabled, &preview)?;
             }
             output::print_output(&json, format)
         }
     } else {
         if let Some(object) = json.as_object_mut() {
-            insert_preview(object, &preview)?;
+            insert_preview(object, preview_enabled, &preview)?;
         }
         output::print_output(&json, format)
     }
@@ -129,9 +129,10 @@ fn preview_codesearch_output(json: &mut serde_json::Value, preview_enabled: bool
 
 fn insert_preview(
     object: &mut serde_json::Map<String, serde_json::Value>,
+    preview_enabled: bool,
     preview: &PreviewReport,
 ) -> anyhow::Result<()> {
-    if !preview.is_empty() {
+    if preview_enabled || !preview.is_empty() {
         object.insert("preview".to_string(), serde_json::to_value(preview)?);
     }
     Ok(())

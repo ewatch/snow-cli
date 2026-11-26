@@ -29,21 +29,24 @@ pub async fn handle(
 ) -> anyhow::Result<()> {
     match args.command {
         AuthCommands::Login {
-            password,
-            password_stdin,
-            token,
-            token_stdin,
-            client_secret,
-            client_secret_stdin,
-            session_cookie,
-            session_cookie_stdin,
-            no_browser,
-            sdk_oauth,
-            code_stdin,
+            base:
+                crate::cli::args::AuthLoginBaseArgs {
+                    password,
+                    password_stdin,
+                    token,
+                    token_stdin,
+                    client_secret,
+                    client_secret_stdin,
+                    session_cookie,
+                    session_cookie_stdin,
+                    no_browser,
+                    sdk_oauth,
+                    code_stdin,
+                    no_verify,
+                },
             also_now_sdk,
             now_sdk_alias,
             set_now_sdk_default,
-            no_verify,
         } => {
             let callback = if sdk_oauth {
                 AuthorizationCodeCallback::SdkManualCode { code_stdin }
@@ -76,7 +79,7 @@ pub async fn handle(
             .await
         }
         AuthCommands::Logout => handle_logout(profile_name, format).await,
-        AuthCommands::Status { verify } => {
+        AuthCommands::Status(crate::cli::args::AuthStatusArgs { verify }) => {
             handle_status(profile_name, format, instance, timeout_secs, verify).await
         }
         AuthCommands::Token { reveal } => handle_token(profile_name, reveal).await,
@@ -202,13 +205,6 @@ async fn handle_login(
                     }
                 };
                 let secret = resolve_optional_secret(client_secret, client_secret_stdin)?;
-                if let Some(secret) = secret.as_deref() {
-                    credentials::store_credential(profile_name, "client_secret", secret)?;
-                } else {
-                    // Public PKCE clients should not accidentally reuse a stale secret from an
-                    // earlier confidential-client login for the same profile.
-                    credentials::delete_credential(profile_name, "client_secret")?;
-                }
 
                 let (oauth_token, redirect_uri) = match manual_code {
                     None => {
@@ -236,6 +232,15 @@ async fn handle_login(
                     "oauth_token",
                     &serde_json::to_string(&oauth_token)?,
                 )?;
+                // Defer mutating or deleting client_secret until the token exchange
+                // succeeds so a failed/cancelled login never destroys working secrets.
+                if let Some(secret) = secret.as_deref() {
+                    credentials::store_credential(profile_name, "client_secret", secret)?;
+                } else {
+                    // Public PKCE clients should not accidentally reuse a stale secret from an
+                    // earlier confidential-client login for the same profile.
+                    credentials::delete_credential(profile_name, "client_secret")?;
+                }
 
                 // The authorization-code exchange itself proves the login.
                 let result = serde_json::json!({
@@ -243,7 +248,7 @@ async fn handle_login(
                     "profile": profile_name,
                     "auth_method": profile.auth_method,
                     "oauth_grant_type": grant_type,
-                    "credential_types": credential_types_for_auth(profile),
+                    "credential_types": credentials::credential_types_for_profile(profile),
                     "redirect_uri": redirect_uri,
                     "scope": oauth_token.scope.or_else(|| profile.oauth_scope.clone()),
                     "has_refresh_token": oauth_token.refresh_token.is_some(),
@@ -492,7 +497,7 @@ async fn run_oauth_authorization_code_login(
         )
     })?;
     let actual_port = listener.local_addr()?.port();
-    let redirect_uri = format!("http://{bind_host}:{actual_port}{redirect_path}");
+    let redirect_uri = format_oauth_redirect_uri(bind_host, actual_port, &redirect_path);
     let state = generate_oauth_state();
     let code_verifier = generate_pkce_code_verifier();
     let code_challenge = pkce_code_challenge_s256(&code_verifier);
@@ -515,67 +520,137 @@ async fn run_oauth_authorization_code_login(
     Ok((token, redirect_uri))
 }
 
+fn format_oauth_redirect_uri(bind_host: &str, port: u16, path: &str) -> String {
+    if bind_host.contains(':') && !(bind_host.starts_with('[') && bind_host.ends_with(']')) {
+        format!("http://[{bind_host}]:{port}{path}")
+    } else {
+        format!("http://{bind_host}:{port}{path}")
+    }
+}
+
 async fn wait_for_oauth_redirect(
     listener: TcpListener,
     expected_path: &str,
     expected_state: &str,
 ) -> anyhow::Result<String> {
-    let (mut stream, _) = timeout(OAUTH_LOGIN_TIMEOUT, listener.accept())
-        .await
-        .map_err(|_| {
+    wait_for_oauth_redirect_with_timeout(
+        listener,
+        expected_path,
+        expected_state,
+        OAUTH_LOGIN_TIMEOUT,
+    )
+    .await
+}
+
+async fn wait_for_oauth_redirect_with_timeout(
+    listener: TcpListener,
+    expected_path: &str,
+    expected_state: &str,
+    total_timeout: Duration,
+) -> anyhow::Result<String> {
+    // Bound the local HTTP header block; TCP reads may split even the request line.
+    const MAX_CALLBACK_HEADER_BYTES: usize = 8192;
+    let deadline = tokio::time::Instant::now() + total_timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            anyhow::bail!(
+                "Timed out waiting for ServiceNow OAuth redirect after {} seconds.",
+                total_timeout.as_secs()
+            );
+        }
+
+        let (mut stream, _) = timeout(remaining, listener.accept()).await.map_err(|_| {
             anyhow::anyhow!(
                 "Timed out waiting for ServiceNow OAuth redirect after {} seconds.",
-                OAUTH_LOGIN_TIMEOUT.as_secs()
+                total_timeout.as_secs()
             )
         })??;
 
-    // Bound the local HTTP header block; TCP reads may split even the request line.
-    const MAX_CALLBACK_HEADER_BYTES: usize = 8192;
-    let request = timeout(OAUTH_LOGIN_TIMEOUT, async {
-        let mut buffer = vec![0_u8; MAX_CALLBACK_HEADER_BYTES];
-        let mut used = 0;
-        loop {
-            let read = stream.read(&mut buffer[used..]).await?;
-            anyhow::ensure!(
-                read > 0,
-                "OAuth callback ended before its HTTP headers were complete"
-            );
-            used += read;
-            if buffer[..used]
-                .windows(4)
-                .any(|window| window == b"\r\n\r\n")
-            {
-                return Ok::<_, anyhow::Error>(
-                    String::from_utf8_lossy(&buffer[..used]).into_owned(),
+        let read_remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let request = match timeout(read_remaining, async {
+            let mut buffer = vec![0_u8; MAX_CALLBACK_HEADER_BYTES];
+            let mut used = 0;
+            loop {
+                let read = stream.read(&mut buffer[used..]).await?;
+                if read == 0 {
+                    return Ok::<_, anyhow::Error>(None);
+                }
+                used += read;
+                if buffer[..used]
+                    .windows(4)
+                    .any(|window| window == b"\r\n\r\n")
+                {
+                    return Ok(Some(String::from_utf8_lossy(&buffer[..used]).into_owned()));
+                }
+                anyhow::ensure!(
+                    used < MAX_CALLBACK_HEADER_BYTES,
+                    "OAuth callback HTTP headers exceed the size limit"
                 );
             }
-            anyhow::ensure!(
-                used < MAX_CALLBACK_HEADER_BYTES,
-                "OAuth callback HTTP headers exceed the size limit"
-            );
-        }
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("Timed out reading OAuth callback HTTP headers"))??;
-    let first_line = request.lines().next().unwrap_or_default();
+        })
+        .await
+        {
+            Ok(Ok(Some(request))) => request,
+            Ok(Ok(None)) => {
+                // Ignore empty preconnect sockets from browsers and keep waiting.
+                tracing::debug!("Ignoring empty connection on OAuth callback listener");
+                continue;
+            }
+            Ok(Err(error)) => {
+                let _ = write_oauth_http_response(&mut stream, 400, &format!("{error}")).await;
+                continue;
+            }
+            Err(_) => {
+                anyhow::bail!(
+                    "Timed out waiting for ServiceNow OAuth redirect after {} seconds.",
+                    total_timeout.as_secs()
+                );
+            }
+        };
 
-    let result = parse_oauth_callback_request(first_line, expected_path, expected_state);
-    match &result {
-        Ok(_) => {
-            write_oauth_http_response(
+        let first_line = request.lines().next().unwrap_or_default();
+        if !callback_request_matches_path(first_line, expected_path) {
+            let _ = write_oauth_http_response(
                 &mut stream,
-                200,
-                "OAuth login complete. You can close this browser window and return to snow-cli.",
+                404,
+                "Not found. Waiting for the OAuth callback.",
             )
-            .await?;
+            .await;
+            continue;
         }
-        Err(error) => {
-            write_oauth_http_response(&mut stream, 400, &format!("OAuth login failed: {error}"))
-                .await?;
-        }
-    }
 
-    result
+        let result = parse_oauth_callback_request(first_line, expected_path, expected_state);
+        match &result {
+            Ok(_) => {
+                write_oauth_http_response(
+                    &mut stream,
+                    200,
+                    "OAuth login complete. You can close this browser window and return to snow-cli.",
+                )
+                .await?;
+            }
+            Err(error) => {
+                write_oauth_http_response(
+                    &mut stream,
+                    400,
+                    &format!("OAuth login failed: {error}"),
+                )
+                .await?;
+            }
+        }
+
+        return result;
+    }
+}
+
+fn callback_request_matches_path(request_line: &str, expected_path: &str) -> bool {
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let target = parts.next().unwrap_or_default();
+    let (path, _) = target.split_once('?').unwrap_or((target, ""));
+    method == "GET" && path == expected_path
 }
 
 async fn write_oauth_http_response(
@@ -583,14 +658,19 @@ async fn write_oauth_http_response(
     status: u16,
     message: &str,
 ) -> anyhow::Result<()> {
-    let status_text = if status == 200 { "OK" } else { "Bad Request" };
+    let status_text = match status {
+        200 => "OK",
+        404 => "Not Found",
+        _ => "Bad Request",
+    };
+    let heading = match status {
+        200 => "Login complete",
+        404 => "Not found",
+        _ => "Login failed",
+    };
     let body = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>snow-cli OAuth</title></head><body><h1>{}</h1><p>{}</p></body></html>",
-        if status == 200 {
-            "Login complete"
-        } else {
-            "Login failed"
-        },
+        heading,
         html_escape(message),
     );
     let response = format!(
@@ -621,19 +701,21 @@ fn parse_oauth_callback_request(
     }
 
     let params = parse_query_params(query)?;
+    // Always validate state before acting on error or code parameters so
+    // an unauthenticated local probe cannot abort login with a forged error.
+    let state = params
+        .get("state")
+        .ok_or_else(|| anyhow::anyhow!("OAuth callback did not include a state parameter."))?;
+    if state != expected_state {
+        anyhow::bail!("OAuth callback state did not match the login request.");
+    }
+
     if let Some(error) = params.get("error") {
         let description = params
             .get("error_description")
             .map(String::as_str)
             .unwrap_or("");
         anyhow::bail!("ServiceNow returned OAuth error '{error}': {description}");
-    }
-
-    let state = params
-        .get("state")
-        .ok_or_else(|| anyhow::anyhow!("OAuth callback did not include a state parameter."))?;
-    if state != expected_state {
-        anyhow::bail!("OAuth callback state did not match the login request.");
     }
 
     params
@@ -888,7 +970,7 @@ async fn handle_logout(profile_name: &str, format: &OutputFormat) -> anyhow::Res
         .ok_or_else(|| anyhow::anyhow!("{}", config.profile_not_found_message(profile_name)))?;
 
     // Delete all credential types for this auth method in one atomic update
-    let mut cred_types = credential_types_for_auth(profile);
+    let mut cred_types = credentials::credential_types_for_profile(profile);
     if uses_authorization_code_grant(profile) && !cred_types.contains(&"client_secret") {
         cred_types.push("client_secret");
     }
@@ -950,7 +1032,7 @@ async fn handle_status(
         );
         env_set
     } else {
-        let cred_types = credential_types_for_auth(profile);
+        let cred_types = credentials::credential_types_for_profile(profile);
         let mut present = true;
         for ct in &cred_types {
             if !credentials::check_credential_present(profile_name, ct)? {
@@ -1043,10 +1125,9 @@ async fn handle_token(profile_name: &str, reveal: bool) -> anyhow::Result<()> {
         crate::config::profile::AuthMethod::Basic => {
             let credential =
                 credentials::get_credential(profile_name, "password")?.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "No credentials stored for profile '{}'. Run `snow-cli auth login` first.",
-                        profile_name
-                    )
+                    crate::auth::AuthenticationError::new(format!(
+                        "No credentials stored for profile '{profile_name}'. Run `snow-cli auth login --profile {profile_name}` first."
+                    ))
                 })?;
             let username = profile.username.as_deref().unwrap_or("");
             use base64::Engine;
@@ -1072,14 +1153,22 @@ async fn handle_token(profile_name: &str, reveal: bool) -> anyhow::Result<()> {
                 .unwrap_or(authorization);
             write_token_stdout(access_token)?;
         }
+        crate::config::profile::AuthMethod::BrowserSession => {
+            let credential = credentials::env_fallback(profile_name, "session_cookie")
+                .ok_or_else(|| {
+                    crate::auth::AuthenticationError::new(format!(
+                        "No ServiceNow session cookie found for profile '{profile_name}'. Set SNOW_SESSION_COOKIE in your environment."
+                    ))
+                })?;
+            write_token_stdout(&credential)?;
+        }
         _ => {
             let primary_cred_type = credentials::credential_type_for_auth(&profile.auth_method);
             let credential = credentials::get_credential(profile_name, primary_cred_type)?
                 .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "No credentials stored for profile '{}'. Run `snow-cli auth login` first.",
-                        profile_name
-                    )
+                    crate::auth::AuthenticationError::new(format!(
+                        "No credentials stored for profile '{profile_name}'. Run `snow-cli auth login --profile {profile_name}` first."
+                    ))
                 })?;
             write_token_stdout(&credential)?;
         }
@@ -1096,35 +1185,6 @@ fn write_token_stdout(value: &str) -> std::io::Result<()> {
     let mut stdout = std::io::stdout().lock();
     stdout.write_all(value.as_bytes())?;
     stdout.flush()
-}
-
-/// Return the list of credential types required for the profile's auth method.
-///
-/// OAuth2 authorization-code profiles require only the stored `oauth_token`.
-fn credential_types_for_auth(profile: &crate::config::profile::Profile) -> Vec<&'static str> {
-    match &profile.auth_method {
-        AuthMethod::Basic => vec!["password"],
-        AuthMethod::ApiKey => vec!["api_token"],
-        AuthMethod::Oauth2 => {
-            let grant_type = profile
-                .oauth_grant_type
-                .as_ref()
-                .cloned()
-                .unwrap_or(OAuthGrantType::ClientCredentials);
-            match grant_type {
-                OAuthGrantType::Password => vec!["client_secret", "password"],
-                OAuthGrantType::AuthorizationCode => vec!["oauth_token"],
-                OAuthGrantType::ClientCredentials => vec!["client_secret"],
-            }
-        }
-        AuthMethod::Mtls => vec!["cert_passphrase"],
-        AuthMethod::NativeSession => vec!["native_session"],
-        AuthMethod::BrowserSession => {
-            // Browser session tokens are not stored anywhere — they are provided
-            // at runtime via SNOW_SESSION_COOKIE.
-            vec![]
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1166,26 +1226,35 @@ mod tests {
     #[test]
     fn test_credential_types_basic() {
         let profile = make_profile(AuthMethod::Basic, None);
-        assert_eq!(credential_types_for_auth(&profile), vec!["password"]);
+        assert_eq!(
+            credentials::credential_types_for_profile(&profile),
+            vec!["password"]
+        );
     }
 
     #[test]
     fn test_credential_types_api_key() {
         let profile = make_profile(AuthMethod::ApiKey, None);
-        assert_eq!(credential_types_for_auth(&profile), vec!["api_token"]);
+        assert_eq!(
+            credentials::credential_types_for_profile(&profile),
+            vec!["api_token"]
+        );
     }
 
     #[test]
     fn test_credential_types_oauth2_client_credentials() {
         let profile = make_profile(AuthMethod::Oauth2, Some(OAuthGrantType::ClientCredentials));
-        assert_eq!(credential_types_for_auth(&profile), vec!["client_secret"]);
+        assert_eq!(
+            credentials::credential_types_for_profile(&profile),
+            vec!["client_secret"]
+        );
     }
 
     #[test]
     fn test_credential_types_oauth2_password() {
         let profile = make_profile(AuthMethod::Oauth2, Some(OAuthGrantType::Password));
         assert_eq!(
-            credential_types_for_auth(&profile),
+            credentials::credential_types_for_profile(&profile),
             vec!["client_secret", "password"]
         );
     }
@@ -1194,13 +1263,19 @@ mod tests {
     fn test_credential_types_oauth2_default_grant() {
         // No grant type set — should default to client_credentials
         let profile = make_profile(AuthMethod::Oauth2, None);
-        assert_eq!(credential_types_for_auth(&profile), vec!["client_secret"]);
+        assert_eq!(
+            credentials::credential_types_for_profile(&profile),
+            vec!["client_secret"]
+        );
     }
 
     #[test]
     fn test_credential_types_oauth2_authorization_code() {
         let profile = make_profile(AuthMethod::Oauth2, Some(OAuthGrantType::AuthorizationCode));
-        assert_eq!(credential_types_for_auth(&profile), vec!["oauth_token"]);
+        assert_eq!(
+            credentials::credential_types_for_profile(&profile),
+            vec!["oauth_token"]
+        );
     }
 
     #[test]
@@ -1320,13 +1395,112 @@ mod tests {
     #[test]
     fn test_credential_types_mtls() {
         let profile = make_profile(AuthMethod::Mtls, None);
-        assert_eq!(credential_types_for_auth(&profile), vec!["cert_passphrase"]);
+        assert_eq!(
+            credentials::credential_types_for_profile(&profile),
+            vec!["cert_passphrase"]
+        );
     }
 
     #[test]
     fn test_credential_types_browser_session() {
         let profile = make_profile(AuthMethod::BrowserSession, None);
         // Browser session tokens are not stored in keychain, so no credential types.
-        assert_eq!(credential_types_for_auth(&profile), Vec::<&str>::new());
+        assert_eq!(
+            credentials::credential_types_for_profile(&profile),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
+    fn test_format_oauth_redirect_uri_brackets_ipv6() {
+        assert_eq!(
+            format_oauth_redirect_uri("::1", 8080, "/oauth/callback"),
+            "http://[::1]:8080/oauth/callback"
+        );
+        assert_eq!(
+            format_oauth_redirect_uri("127.0.0.1", 8080, "/oauth/callback"),
+            "http://127.0.0.1:8080/oauth/callback"
+        );
+        assert_eq!(
+            format_oauth_redirect_uri("localhost", 8080, "/oauth/callback"),
+            "http://localhost:8080/oauth/callback"
+        );
+    }
+
+    #[test]
+    fn test_parse_oauth_callback_request_validates_state_before_error() {
+        let err = parse_oauth_callback_request(
+            "GET /oauth/callback?error=access_denied&state=wrong HTTP/1.1",
+            "/oauth/callback",
+            "expected-state",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("state"), "expected state error, got: {err}");
+
+        let err = parse_oauth_callback_request(
+            "GET /oauth/callback?error=access_denied HTTP/1.1",
+            "/oauth/callback",
+            "expected-state",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("state"),
+            "expected missing state error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_oauth_redirect_ignores_favicon_and_accepts_callback() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            wait_for_oauth_redirect_with_timeout(
+                listener,
+                "/oauth/callback",
+                "state-123",
+                Duration::from_secs(5),
+            )
+            .await
+        });
+
+        // Browser probes /favicon.ico first; listener must return 404 and keep waiting.
+        let mut favicon_client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        favicon_client
+            .write_all(b"GET /favicon.ico HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut favicon_resp = String::new();
+        favicon_client
+            .read_to_string(&mut favicon_resp)
+            .await
+            .unwrap();
+        assert!(
+            favicon_resp.starts_with("HTTP/1.1 404 Not Found"),
+            "{favicon_resp}"
+        );
+
+        // Real OAuth callback arrives next and succeeds.
+        let mut callback_client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        callback_client
+            .write_all(
+                b"GET /oauth/callback?code=auth-code-xyz&state=state-123 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut callback_resp = String::new();
+        callback_client
+            .read_to_string(&mut callback_resp)
+            .await
+            .unwrap();
+        assert!(
+            callback_resp.starts_with("HTTP/1.1 200 OK"),
+            "{callback_resp}"
+        );
+
+        let code = server.await.unwrap().unwrap();
+        assert_eq!(code, "auth-code-xyz");
     }
 }

@@ -58,6 +58,7 @@ pub(super) async fn handle_init_with_oauth_options(
     oauth_redirect_path: Option<String>,
     name: String,
 ) -> anyhow::Result<serde_json::Value> {
+    validate_profile_name(&name)?;
     if config_path.exists() {
         anyhow::bail!(
             "Configuration already exists at {}. Use `snow-cli profile add <name>` to create another profile or `snow-cli profile edit <name>` to modify one.",
@@ -163,6 +164,7 @@ pub(super) async fn handle_add_profile_with_oauth_options(
     key_path: Option<String>,
     sso_login_url: Option<String>,
 ) -> anyhow::Result<serde_json::Value> {
+    validate_profile_name(&name)?;
     let config = AppConfig::load_from(config_path)?;
     if config.profiles.contains_key(&name) {
         anyhow::bail!(
@@ -253,6 +255,7 @@ pub(super) async fn handle_set_profile_with_oauth_options(
     key_path: Option<String>,
     sso_login_url: Option<String>,
 ) -> anyhow::Result<serde_json::Value> {
+    validate_profile_name(&name)?;
     let mut config = AppConfig::load_from(config_path)?;
     let instance = instance
         .map(|value| validate_instance_url(&value))
@@ -261,13 +264,17 @@ pub(super) async fn handle_set_profile_with_oauth_options(
         validate_oauth_redirect_host(host)?;
     }
 
-    let profile = if let Some(existing) = config.profiles.get(&name) {
+    let (profile, credentials_need_clearing) = if let Some(existing) = config.profiles.get(&name) {
+        let next_instance = instance.unwrap_or_else(|| existing.instance.clone());
+        let next_auth_method = auth_method
+            .map(|a| to_auth_method(&a))
+            .unwrap_or_else(|| existing.auth_method.clone());
+        let origin_changed = !same_instance_origin(&existing.instance, &next_instance);
+        let auth_changed = existing.auth_method != next_auth_method;
         // Update existing profile — merge provided fields
-        Profile {
-            instance: instance.unwrap_or_else(|| existing.instance.clone()),
-            auth_method: auth_method
-                .map(|a| to_auth_method(&a))
-                .unwrap_or_else(|| existing.auth_method.clone()),
+        let updated = Profile {
+            instance: next_instance,
+            auth_method: next_auth_method,
             username: username.or_else(|| existing.username.clone()),
             client_id: client_id.or_else(|| existing.client_id.clone()),
             oauth_grant_type: oauth_grant_type
@@ -287,7 +294,8 @@ pub(super) async fn handle_set_profile_with_oauth_options(
                 .map(PathBuf::from)
                 .or_else(|| existing.key_path.clone()),
             sso_login_url: sso_login_url.or_else(|| existing.sso_login_url.clone()),
-        }
+        };
+        (updated, origin_changed || auth_changed)
     } else {
         // New profile — instance is required
         let instance = instance.ok_or_else(|| {
@@ -296,7 +304,7 @@ pub(super) async fn handle_set_profile_with_oauth_options(
             )
         })?;
 
-        Profile {
+        let created = Profile {
             instance,
             auth_method: auth_method
                 .map(|a| to_auth_method(&a))
@@ -311,7 +319,8 @@ pub(super) async fn handle_set_profile_with_oauth_options(
             cert_path: cert_path.map(PathBuf::from),
             key_path: key_path.map(PathBuf::from),
             sso_login_url,
-        }
+        };
+        (created, false)
     };
 
     let is_update = config.profiles.contains_key(&name);
@@ -324,14 +333,40 @@ pub(super) async fn handle_set_profile_with_oauth_options(
 
     config.save_to(config_path)?;
 
+    let mut credentials_cleared = false;
+    if credentials_need_clearing {
+        match credentials::delete_profile_credentials(&name) {
+            Ok(()) => {
+                credentials_cleared = true;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    profile = %name,
+                    %error,
+                    "Failed to clear stored credentials after changing profile instance or auth method"
+                );
+            }
+        }
+    }
+
     let action = if is_update { "updated" } else { "created" };
     tracing::info!("Profile '{}' {}", name, action);
 
-    let result = serde_json::json!({
+    let mut result = serde_json::json!({
         "status": action,
         "profile": name,
     });
+    if credentials_cleared {
+        result["credentials_cleared"] = serde_json::Value::Bool(true);
+    }
     Ok(result)
+}
+
+fn same_instance_origin(left: &str, right: &str) -> bool {
+    match (url::Url::parse(left), url::Url::parse(right)) {
+        (Ok(a), Ok(b)) => a.origin() == b.origin(),
+        _ => left == right,
+    }
 }
 
 /// `profile list` — List all configured profiles.

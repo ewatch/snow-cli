@@ -1,13 +1,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::models::secret::Secret;
+
 /// Browser-session metadata sent by SN-Utils when the user runs `/token`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SnuInstance {
     pub name: String,
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub g_ck: Option<String>,
+    pub g_ck: Option<Secret<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
 }
@@ -104,7 +106,10 @@ pub fn redact_session_for_output(instance: &SnuInstance) -> Value {
     serde_json::json!({
         "name": instance.name,
         "url": instance.url,
-        "has_g_ck": instance.g_ck.as_deref().is_some_and(|token| !token.is_empty()),
+        "has_g_ck": instance
+            .g_ck
+            .as_ref()
+            .is_some_and(|token| !token.expose_secret().is_empty()),
         "scope": instance.scope,
     })
 }
@@ -123,16 +128,21 @@ mod tests {
     }
 
     #[test]
-    fn redacts_g_ck_from_output() {
-        let out = redact_session_for_output(&SnuInstance {
+    fn redacts_g_ck_from_output_and_debug() {
+        let instance = SnuInstance {
             name: "dev".into(),
             url: "https://dev.service-now.com".into(),
-            g_ck: Some("secret".into()),
+            g_ck: Some(Secret::new("secret".into())),
             scope: None,
-        });
+        };
+        let out = redact_session_for_output(&instance);
         assert_eq!(out["has_g_ck"], true);
         assert!(out.to_string().contains("has_g_ck"));
         assert!(!out.to_string().contains("secret"));
+
+        let debug = format!("{instance:?}");
+        assert!(!debug.contains("secret"));
+        assert!(debug.contains("<redacted>"));
     }
 
     #[test]

@@ -126,10 +126,16 @@ impl SnowClient {
                 .build()?;
             super::log_raw_http_request(&request);
             let response = self.http.execute(request).await?;
-            super::log_raw_http_response(&url, response.status(), response.headers());
-            self.authenticator
-                .observe_response_headers(response.headers())
-                .await?;
+            super::log_raw_http_response(
+                response.url().as_str(),
+                response.status(),
+                response.headers(),
+            );
+            if self.is_same_origin_url(response.url()) {
+                self.authenticator
+                    .observe_response_headers(response.headers())
+                    .await?;
+            }
             anyhow::ensure!(
                 super::session::logged_in_header_value(response.headers()) != Some(false),
                 "Native session has expired or is not authenticated; log in or attach again"

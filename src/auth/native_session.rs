@@ -49,9 +49,17 @@ impl Authenticator for NativeSessionAuth {
         if self.session.csrf_token.expose_secret() == token {
             return Ok(());
         }
-        self.session.csrf_token = crate::models::secret::Secret::new(token.to_string());
         if let Some(profile) = &self.profile_name {
-            native_session::save(profile, &self.session)?;
+            let updated = native_session::update_locked(profile, &self.session, |stored| {
+                if stored.csrf_token.expose_secret() == token {
+                    return false;
+                }
+                stored.csrf_token = crate::models::secret::Secret::new(token.to_string());
+                true
+            })?;
+            self.session = updated;
+        } else {
+            self.session.csrf_token = crate::models::secret::Secret::new(token.to_string());
         }
         Ok(())
     }
@@ -59,10 +67,16 @@ impl Authenticator for NativeSessionAuth {
         AuthMethod::NativeSession
     }
     async fn observe_response_headers(&mut self, headers: &HeaderMap) -> anyhow::Result<()> {
-        if self.session.merge_response_cookies(headers)
-            && let Some(profile) = &self.profile_name
-        {
-            native_session::save(profile, &self.session)?;
+        if let Some(profile) = &self.profile_name {
+            if headers.get(http::header::SET_COOKIE).is_none() {
+                return Ok(());
+            }
+            let updated = native_session::update_locked(profile, &self.session, |stored| {
+                stored.merge_response_cookies(headers)
+            })?;
+            self.session = updated;
+        } else {
+            self.session.merge_response_cookies(headers);
         }
         Ok(())
     }

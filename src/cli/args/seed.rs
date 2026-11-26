@@ -1,6 +1,8 @@
 use clap::{Args, Subcommand};
 
 const SEED_AFTER_HELP: &str = "Examples:\n  snow-cli seed plan --file qa-fixture.json\n  snow-cli seed apply --file qa-fixture.json\n  snow-cli seed cleanup <run-id> --dry-run";
+pub(crate) const READ_ONLY_SEED_AFTER_HELP: &str =
+    "Examples:\n  snow-cli-ro seed plan --file qa-fixture.json";
 // --- Seed ---
 
 #[derive(Args, Debug)]
@@ -10,14 +12,17 @@ pub struct SeedArgs {
     pub command: SeedCommands,
 }
 
+#[derive(Args, Debug)]
+pub struct SeedPlanArgs {
+    /// Seed specification file
+    #[arg(long, short = 'f')]
+    pub file: String,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum SeedCommands {
     /// Validate a seed spec and show the execution plan
-    Plan {
-        /// Seed specification file
-        #[arg(long, short = 'f')]
-        file: String,
-    },
+    Plan(SeedPlanArgs),
 
     /// Create test data from a seed spec
     Apply {

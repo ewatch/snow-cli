@@ -1,6 +1,8 @@
 use crate::models::identifiers::TableName;
 use clap::{Args, Subcommand, ValueEnum};
 
+pub(crate) const READ_ONLY_DOMAIN_AFTER_HELP: &str = "Examples:\n  snow-cli-ro domain status\n  snow-cli-ro domain list\n  snow-cli-ro domain table incident\n  snow-cli-ro domain table incident --counts\n  snow-cli-ro domain inspect <domain_sys_id>\n\nDomain separation is independent of application scope. Home domain is not proof of session domain; empty results can reflect restricted visibility. These commands read configuration and never calculate effective access or switch session domains.";
+
 #[derive(Args, Debug)]
 #[command(
     after_help = "Examples:\n  snow-cli domain status\n  snow-cli domain list\n  snow-cli domain table incident\n  snow-cli domain table incident --counts\n  snow-cli domain table incident --counts all   # admin: all domains\n  snow-cli domain inspect <domain_sys_id>\n\nDomain separation is independent of application scope. Home domain is not proof of session domain; empty results can reflect restricted visibility. These commands read configuration and never calculate effective access or switch session domains."
@@ -10,30 +12,36 @@ pub struct DomainArgs {
     pub command: DomainCommands,
 }
 
+#[derive(Args, Debug)]
+pub struct DomainListArgs {
+    #[arg(long, default_value_t = 100)]
+    pub limit: usize,
+    /// Request cross-domain reads (admin or query_no_domain_table_api required)
+    #[arg(long)]
+    pub query_no_domain: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DomainInspectArgs {
+    /// Domain sys_id or the special global value
+    pub domain: crate::models::domain::DomainId,
+    /// Maximum rows per relationship table
+    #[arg(long, default_value_t = 100)]
+    pub limit: usize,
+    /// Request cross-domain reads (admin or query_no_domain_table_api required)
+    #[arg(long)]
+    pub query_no_domain: bool,
+}
+
 /// These commands only read instance configuration; they never switch domains.
 #[derive(Subcommand, Debug)]
 pub enum DomainCommands {
     /// Read domain settings and the authenticated user's home domain
     Status,
     /// List visible domain records and parent relationships (global is a special value)
-    List {
-        #[arg(long, default_value_t = 100)]
-        limit: usize,
-        /// Request cross-domain reads (admin or query_no_domain_table_api required)
-        #[arg(long)]
-        query_no_domain: bool,
-    },
+    List(DomainListArgs),
     /// Read a domain's direct children, Contains relationships, and visibility grants
-    Inspect {
-        /// Domain sys_id or the special global value
-        domain: crate::models::domain::DomainId,
-        /// Maximum rows per relationship table
-        #[arg(long, default_value_t = 100)]
-        limit: usize,
-        /// Request cross-domain reads (admin or query_no_domain_table_api required)
-        #[arg(long)]
-        query_no_domain: bool,
-    },
+    Inspect(DomainInspectArgs),
     /// Inspect inherited domain fields on a table
     Table {
         table: TableName,
@@ -59,6 +67,22 @@ pub enum DomainCountScope {
     Visible,
     /// Every domain, from one read-only background script (admin only)
     All,
+}
+
+/// Read-only `domain table --counts` scope (`all` uses a background script and
+/// is omitted from `snow-cli-ro`).
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadOnlyDomainCountScope {
+    /// Domains visible to this session, from the Aggregate API (the default)
+    Visible,
+}
+
+impl From<ReadOnlyDomainCountScope> for DomainCountScope {
+    fn from(scope: ReadOnlyDomainCountScope) -> Self {
+        match scope {
+            ReadOnlyDomainCountScope::Visible => Self::Visible,
+        }
+    }
 }
 
 /// Domain-visibility options shared by the Table API record reads

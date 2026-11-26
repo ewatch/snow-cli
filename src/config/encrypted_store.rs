@@ -5,22 +5,34 @@
 //!
 //! File layout: CBOR map `{version: 1, iv: <12 bytes>, data: <ciphertext || 16-byte tag>}`.
 
+use std::io::Read as _;
 use std::path::Path;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Only envelope format version currently supported.
 pub(crate) const FORMAT_VERSION: u64 = 1;
 /// AES-256 key length in bytes.
 pub(crate) const KEY_LEN: usize = 32;
+/// Maximum encrypted credential store file size read into memory (16 MiB).
+pub(crate) const MAX_CREDENTIAL_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
-/// A 32-byte AES-256-GCM key. Never printed in Debug output.
+/// A 32-byte AES-256-GCM key. Never printed in Debug output and zeroized on drop.
 #[derive(Clone)]
 #[cfg_attr(test, derive(PartialEq, Eq))]
 pub(crate) struct FileKey([u8; KEY_LEN]);
+
+impl Drop for FileKey {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for FileKey {}
 
 impl std::fmt::Debug for FileKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -79,13 +91,25 @@ pub(crate) enum EnvelopeError {
     DecryptFailed,
 }
 
-/// Read raw file bytes, returning `Ok(None)` when the file does not exist.
+/// Read raw file bytes (capped at [`MAX_CREDENTIAL_FILE_BYTES`]), returning
+/// `Ok(None)` when the file does not exist.
 pub(crate) fn read_raw(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_CREDENTIAL_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CREDENTIAL_FILE_BYTES {
+        anyhow::bail!(
+            "Credential file {} exceeds the {} byte safety limit.",
+            path.display(),
+            MAX_CREDENTIAL_FILE_BYTES
+        );
     }
+    Ok(Some(bytes))
 }
 
 /// Encrypt UTF-8 plaintext into a CBOR `{version: 1, iv, data}` envelope with a fresh IV.
@@ -262,5 +286,22 @@ mod tests {
     #[test]
     fn key_debug_is_redacted() {
         assert_eq!(format!("{KEY:?}"), "FileKey(<redacted>)");
+    }
+
+    #[test]
+    fn file_key_implements_zeroize_on_drop() {
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<FileKey>();
+    }
+
+    #[test]
+    fn read_raw_rejects_oversized_credential_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.enc");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_CREDENTIAL_FILE_BYTES + 1).unwrap();
+        drop(file);
+        let err = read_raw(&path).unwrap_err().to_string();
+        assert!(err.contains("safety limit"), "{err}");
     }
 }

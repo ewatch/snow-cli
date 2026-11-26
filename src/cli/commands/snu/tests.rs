@@ -40,7 +40,9 @@ fn agent_response_output_redacts_embedded_session_token() {
         instance: Some(SnuInstance {
             name: "dev".to_string(),
             url: "https://dev.service-now.com".to_string(),
-            g_ck: Some("must-not-leak".to_string()),
+            g_ck: Some(crate::models::secret::Secret::new(
+                "must-not-leak".to_string(),
+            )),
             scope: Some("global".to_string()),
         }),
         success: Some(true),
@@ -243,6 +245,21 @@ fn resolve_script_from_stdin() {
 fn resolve_script_from_tty_no_input_errors() {
     let err = resolve_script_from(None, None, Cursor::new(b""), true).unwrap_err();
     assert!(err.to_string().contains("No script provided"));
+}
+
+#[test]
+fn resolve_script_from_missing_file_hides_private_path() {
+    let err = resolve_script_from(
+        Some("/private/secret-dir/missing-script.js".into()),
+        None,
+        Cursor::new(b""),
+        false,
+    )
+    .unwrap_err();
+    assert!(err.downcast_ref::<crate::error::InputFileError>().is_some());
+    let msg = err.to_string();
+    assert!(msg.contains("--file"), "{msg}");
+    assert!(!msg.contains("secret-dir"), "{msg}");
 }
 
 fn fields_from(pairs: &[(&str, Value)]) -> Map<String, Value> {

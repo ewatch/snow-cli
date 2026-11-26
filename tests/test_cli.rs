@@ -319,6 +319,69 @@ fn test_snow_cli_ro_rejects_snu_update_record_at_parse_time() {
 }
 
 #[test]
+fn test_read_only_blocks_auth_login_also_now_sdk_and_snu_slash_tab_broker() {
+    let (_dir, config_path) = common::create_temp_config(
+        r#"
+default_profile = "dev"
+
+[profiles.dev]
+instance = "https://dev.service-now.com"
+auth_method = "basic"
+username = "admin"
+"#,
+    );
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args([
+            "--read-only",
+            "auth",
+            "login",
+            "--password",
+            "secret",
+            "--also-now-sdk",
+            "--no-verify",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("POLICY_DENIED"))
+        .stderr(predicate::str::contains("auth login --also-now-sdk"));
+
+    cargo_bin_cmd!("snow-cli-ro")
+        .args(["auth", "login", "--also-now-sdk"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--also-now-sdk"));
+
+    for args in [
+        vec!["--read-only", "snu", "slash", "/tn"],
+        vec![
+            "--read-only",
+            "snu",
+            "tab",
+            "activate",
+            "https://dev.service-now.com/",
+        ],
+        vec!["--read-only", "snu", "broker", "stop"],
+        vec!["--read-only", "snu", "broker", "clear"],
+    ] {
+        cargo_bin_cmd!("snow-cli")
+            .env("SNOW_CLI_CONFIG", &config_path)
+            .args(&args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("POLICY_DENIED"));
+    }
+
+    for sub in ["slash", "tab", "broker"] {
+        cargo_bin_cmd!("snow-cli-ro")
+            .args(["snu", sub])
+            .assert()
+            .failure();
+    }
+}
+
+#[test]
 fn test_read_only_api_get_denies_method_override_header() {
     let (_dir, config_path) = common::create_temp_config(
         r#"
@@ -1797,8 +1860,17 @@ auth_method = "api_key"
 "#,
     );
 
+    // Use an empty fake keychain so the missing-token path is deterministic
+    // on hosts without an OS keyring backend (e.g. Linux CI).
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env_remove("SNOW_CLI_CREDENTIAL_STORE")
+        .env_remove("SNOW_CLI_API_TOKEN")
+        .env_remove("SNOW_CLI_PROFILE_DEFAULT_API_TOKEN")
         .args([
             "attachment",
             "list",
@@ -1822,8 +1894,17 @@ auth_method = "api_key"
 "#,
     );
 
+    // Use an empty fake keychain so the missing-token path is deterministic
+    // on hosts without an OS keyring backend (e.g. Linux CI).
+    let (_keychain_dir, keychain_store) = common::create_temp_keychain_store();
+
     cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_TEST_KEYCHAIN_STORE", &keychain_store)
+        .env("SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN", "1")
+        .env_remove("SNOW_CLI_CREDENTIAL_STORE")
+        .env_remove("SNOW_CLI_API_TOKEN")
+        .env_remove("SNOW_CLI_PROFILE_DEFAULT_API_TOKEN")
         .args([
             "import-set",
             "load",

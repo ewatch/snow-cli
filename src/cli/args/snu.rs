@@ -1,6 +1,10 @@
 use clap::{Args, Subcommand};
 
+use crate::models::identifiers::{SysId, TableName};
+use crate::models::order_by::OrderBy;
+
 const SNU_AFTER_HELP: &str = "Examples:\n  snow-cli snu check-connection --verify\n  snow-cli snu query incident --query 'active=true' --fields sys_id,number --limit 10\n  snow-cli snu get-record incident <sys_id> --fields sys_id,number,short_description\n  snow-cli snu update-record sys_script_include <sys_id> --field script --content 'gs.info(\"hello\")'\n  snow-cli snu execute-bg-script --code 'gs.info(\"hello from SN-Utils\")'\n  snow-cli --instance https://dev12345.service-now.com snu query incident --query 'active=true'\n  snow-cli snu broker status\n\nNotes:\n  - Requires the SN-Utils browser extension with its ScriptSync helper tab open. Commands auto-start a local broker on 127.0.0.1:1978; run /token in a ServiceNow tab when prompted. Stop sn-scriptsync first if it owns that port.\n  - When the browser holds sessions for several instances, pass the global --instance <url-or-host> to pick one; `snu broker status` lists live sessions and `snu broker clear` drops cached ones.\n  - `snu update-record` and `snu delete-record` run as server-side background scripts over the bridge; `snu delete-record --dry-run` only previews matches and never deletes.\n  - Full command list, token/session lifecycle, and troubleshooting: https://ewatch.github.io/snow-cli/commands/snu.html";
+pub(crate) const READ_ONLY_SNU_AFTER_HELP: &str = "Examples:\n  snow-cli-ro snu check-connection --verify\n  snow-cli-ro snu query incident --query 'active=true' --fields sys_id,number --limit 10\n  snow-cli-ro snu get-record incident <sys_id> --fields sys_id,number,short_description\n  snow-cli-ro --instance https://dev12345.service-now.com snu query incident --query 'active=true'\n  snow-cli-ro snu broker status\n\nNotes:\n  - Requires the SN-Utils browser extension with its ScriptSync helper tab open. Commands auto-start a local broker on 127.0.0.1:1978; run /token in a ServiceNow tab when prompted. Stop sn-scriptsync first if it owns that port.\n  - Full command list, token/session lifecycle, and troubleshooting: https://ewatch.github.io/snow-cli/commands/snu.html";
 pub const DEFAULT_SNU_TIMEOUT_SECS: u64 = 180;
 /// Default sysparm_fields used by snu record reads (query, get-record).
 pub const DEFAULT_SNU_FIELDS: &str = "sys_id,number,short_description";
@@ -13,58 +17,128 @@ pub struct SnuArgs {
     pub command: SnuCommands,
 }
 
+#[derive(Args, Debug)]
+pub struct SnuCheckConnectionArgs {
+    /// Seconds to wait for helper/session/response
+    #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+    pub timeout_secs: u64,
+    /// Also probe ServiceNow with the cached session to prove the g_ck
+    /// token is still valid (adds `token_valid` to the output)
+    #[arg(long)]
+    pub verify: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct SnuTimeoutArgs {
+    /// Seconds to wait for helper/session/response
+    #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+    pub timeout_secs: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct SnuQueryArgs {
+    /// Table name
+    pub table: TableName,
+
+    /// Encoded query
+    #[arg(long)]
+    pub query: Option<String>,
+
+    /// Comma-separated sysparm_fields
+    #[arg(long, default_value = DEFAULT_SNU_FIELDS)]
+    pub fields: String,
+
+    /// Maximum records to return
+    #[arg(long, default_value = "10")]
+    pub limit: u32,
+
+    /// Sort order: field (ascending), -field or field:desc (descending), or ORDERBY clauses
+    #[arg(long, allow_hyphen_values = true)]
+    pub order_by: Option<OrderBy>,
+
+    /// Seconds to wait for helper/session/response
+    #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+    pub timeout_secs: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct SnuAppMetaArgs {
+    /// Application scope or sys_id (sysparm_transaction_scope)
+    pub app_id: String,
+
+    /// Seconds to wait for helper/session/response
+    #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+    pub timeout_secs: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct SnuGetRecordArgs {
+    /// Table name
+    pub table: TableName,
+
+    /// Record sys_id
+    pub sys_id: SysId,
+
+    /// Optional comma-separated fields list
+    #[arg(long)]
+    pub fields: Option<String>,
+
+    /// Seconds to wait for helper/session/response
+    #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+    pub timeout_secs: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct SnuSchemaArgs {
+    /// Table name
+    pub table: TableName,
+
+    /// Seconds to wait for helper/session/response
+    #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+    pub timeout_secs: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct SnuScreenshotArgs {
+    /// Browser tab URL/pattern to capture
+    #[arg(long)]
+    pub url: Option<String>,
+
+    /// Specific browser tab id to capture
+    #[arg(long)]
+    pub tab_id: Option<u64>,
+
+    /// Output PNG path; defaults to the helper-provided filename
+    #[arg(long = "out", short = 'o')]
+    pub out_path: Option<String>,
+
+    /// Seconds to wait for helper/session/response
+    #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
+    pub timeout_secs: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct SnuPageFormStateArgs {
+    /// Comma-separated field names; omit to read all form fields
+    #[arg(long, value_delimiter = ',')]
+    pub fields: Vec<String>,
+    #[command(flatten)]
+    pub target: SnuPageTargetArgs,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum SnuCommands {
     /// Check whether the SN-Utils bridge and browser helper are connected
-    CheckConnection {
-        /// Seconds to wait for helper/session/response
-        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
-        timeout_secs: u64,
-        /// Also probe ServiceNow with the cached session to prove the g_ck
-        /// token is still valid (adds `token_valid` to the output)
-        #[arg(long)]
-        verify: bool,
-    },
+    CheckConnection(SnuCheckConnectionArgs),
 
     /// Get SN-Utils bridge instance info
-    GetInstanceInfo {
-        /// Seconds to wait for helper/session/response
-        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
-        timeout_secs: u64,
-    },
+    GetInstanceInfo(SnuTimeoutArgs),
 
     /// Wait for /token from SN-Utils and print the received browser session metadata
-    WaitToken {
-        /// Seconds to wait for the helper tab and /token message
-        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
-        timeout_secs: u64,
-    },
+    WaitToken(SnuTimeoutArgs),
 
     /// Query ServiceNow records through the active SN-Utils browser session
-    Query {
-        /// Table name
-        table: String,
-
-        /// Encoded query
-        #[arg(long)]
-        query: Option<String>,
-
-        /// Comma-separated sysparm_fields
-        #[arg(long, default_value = DEFAULT_SNU_FIELDS)]
-        fields: String,
-
-        /// Maximum records to return
-        #[arg(long, default_value = "10")]
-        limit: u32,
-
-        /// ORDERBY clause or field expression appended to sysparm_query
-        #[arg(long)]
-        order_by: Option<String>,
-
-        /// Seconds to wait for helper/session/response
-        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
-        timeout_secs: u64,
-    },
+    Query(SnuQueryArgs),
 
     /// Execute a server-side background script through the active SN-Utils browser session
     ExecuteBgScript {
@@ -84,7 +158,7 @@ pub enum SnuCommands {
     /// Create a record through the active SN-Utils browser session
     CreateRecord {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// JSON object of field/value pairs for the new record
         #[arg(long)]
@@ -100,46 +174,21 @@ pub enum SnuCommands {
     },
 
     /// Fetch a scoped application's artifacts/metadata (SN-Utils requestAppMeta)
-    AppMeta {
-        /// Application scope or sys_id (sysparm_transaction_scope)
-        app_id: String,
-
-        /// Seconds to wait for helper/session/response
-        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
-        timeout_secs: u64,
-    },
+    AppMeta(SnuAppMetaArgs),
 
     /// List available tables through the active SN-Utils browser session
-    ListTables {
-        /// Seconds to wait for helper/session/response
-        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
-        timeout_secs: u64,
-    },
+    ListTables(SnuTimeoutArgs),
 
     /// Fetch a single record through the active SN-Utils browser session
-    GetRecord {
-        /// Table name
-        table: String,
-
-        /// Record sys_id
-        sys_id: String,
-
-        /// Optional comma-separated fields list
-        #[arg(long)]
-        fields: Option<String>,
-
-        /// Seconds to wait for helper/session/response
-        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
-        timeout_secs: u64,
-    },
+    GetRecord(SnuGetRecordArgs),
 
     /// Update one or more fields through the active SN-Utils browser session
     UpdateRecord {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// JSON object of field/value pairs to update (use for multiple fields)
         #[arg(long, group = "update_source")]
@@ -165,11 +214,11 @@ pub enum SnuCommands {
     /// Delete a record through the active SN-Utils browser session
     DeleteRecord {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id (single delete)
         #[arg(long, group = "delete_target")]
-        sys_id: Option<String>,
+        sys_id: Option<SysId>,
 
         /// Encoded query (bulk delete)
         #[arg(long, group = "delete_target")]
@@ -193,14 +242,7 @@ pub enum SnuCommands {
     },
 
     /// Fetch table UI metadata through the active SN-Utils browser session
-    Schema {
-        /// Table name
-        table: String,
-
-        /// Seconds to wait for helper/session/response
-        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
-        timeout_secs: u64,
-    },
+    Schema(SnuSchemaArgs),
 
     /// Run an SN-Utils slash command in a ServiceNow browser tab
     Slash {
@@ -240,31 +282,15 @@ pub enum SnuCommands {
     Context(SnuContextArgs),
 
     /// Capture a browser screenshot through SN-Utils
-    Screenshot {
-        /// Browser tab URL/pattern to capture
-        #[arg(long)]
-        url: Option<String>,
-
-        /// Specific browser tab id to capture
-        #[arg(long)]
-        tab_id: Option<u64>,
-
-        /// Output PNG path; defaults to the helper-provided filename
-        #[arg(long = "out", short = 'o')]
-        out_path: Option<String>,
-
-        /// Seconds to wait for helper/session/response
-        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
-        timeout_secs: u64,
-    },
+    Screenshot(SnuScreenshotArgs),
 
     /// Upload an attachment through the active SN-Utils browser session
     AttachmentUpload {
         /// Table name
-        table: String,
+        table: TableName,
 
         /// Record sys_id
-        sys_id: String,
+        sys_id: SysId,
 
         /// Path to file to upload
         #[arg(long, short)]
@@ -396,13 +422,7 @@ pub struct SnuPageArgs {
 #[derive(Subcommand, Debug)]
 pub enum SnuPageCommands {
     /// Read fields and metadata from the active form
-    FormState {
-        /// Comma-separated field names; omit to read all form fields
-        #[arg(long, value_delimiter = ',')]
-        fields: Vec<String>,
-        #[command(flatten)]
-        target: SnuPageTargetArgs,
-    },
+    FormState(SnuPageFormStateArgs),
     /// Set a field on the active form without submitting it
     SetField {
         field: String,
@@ -480,7 +500,7 @@ pub struct SnuRecordsArgs {
 pub enum SnuRecordsCommands {
     /// Fetch reference/parent choices from a table
     ParentOptions {
-        table: String,
+        table: TableName,
         /// Encoded query
         #[arg(long)]
         query: Option<String>,
@@ -508,11 +528,7 @@ pub struct SnuContextArgs {
 #[derive(Subcommand, Debug)]
 pub enum SnuContextCommands {
     /// Get the current application scope and update set through the Agent API
-    Get {
-        /// Seconds to wait for helper/session/response
-        #[arg(long, default_value_t = DEFAULT_SNU_TIMEOUT_SECS)]
-        timeout_secs: u64,
-    },
+    Get(SnuTimeoutArgs),
 
     /// Switch update set, application, or domain in the browser session
     Switch {
@@ -602,10 +618,10 @@ mod tests {
 
         match cli.command {
             Commands::Snu(args) => match args.command {
-                SnuCommands::CheckConnection {
+                SnuCommands::CheckConnection(SnuCheckConnectionArgs {
                     timeout_secs,
                     verify,
-                } => {
+                }) => {
                     assert_eq!(timeout_secs, DEFAULT_SNU_TIMEOUT_SECS);
                     assert!(!verify);
                 }
@@ -621,7 +637,7 @@ mod tests {
 
         match cli.command {
             Commands::Snu(args) => match args.command {
-                SnuCommands::GetInstanceInfo { timeout_secs } => {
+                SnuCommands::GetInstanceInfo(SnuTimeoutArgs { timeout_secs }) => {
                     assert_eq!(timeout_secs, DEFAULT_SNU_TIMEOUT_SECS);
                 }
                 _ => panic!("Expected Snu GetInstanceInfo command"),
@@ -636,7 +652,7 @@ mod tests {
 
         match cli.command {
             Commands::Snu(args) => match args.command {
-                SnuCommands::ListTables { timeout_secs } => {
+                SnuCommands::ListTables(SnuTimeoutArgs { timeout_secs }) => {
                     assert_eq!(timeout_secs, DEFAULT_SNU_TIMEOUT_SECS);
                 }
                 _ => panic!("Expected Snu ListTables command"),
@@ -679,10 +695,10 @@ mod tests {
 
         match cli.command {
             Commands::Snu(args) => match args.command {
-                SnuCommands::AppMeta {
+                SnuCommands::AppMeta(SnuAppMetaArgs {
                     app_id,
                     timeout_secs,
-                } => {
+                }) => {
                     assert_eq!(app_id, "x_my_app");
                     assert_eq!(timeout_secs, DEFAULT_SNU_TIMEOUT_SECS);
                 }
@@ -706,12 +722,12 @@ mod tests {
 
         match cli.command {
             Commands::Snu(args) => match args.command {
-                SnuCommands::GetRecord {
+                SnuCommands::GetRecord(SnuGetRecordArgs {
                     table,
                     sys_id,
                     fields,
                     ..
-                } => {
+                }) => {
                     assert_eq!(table.as_str(), "incident");
                     assert_eq!(sys_id.as_str(), "6816f79cc0a8016401c5a33be04be441");
                     assert_eq!(fields, Some("sys_id,number".to_string()));
@@ -745,7 +761,7 @@ mod tests {
                     await_confirmation,
                     ..
                 } => {
-                    assert_eq!(table, "sp_widget");
+                    assert_eq!(table.as_str(), "sp_widget");
                     assert_eq!(sys_id.as_str(), "6816f79cc0a8016401c5a33be04be441");
                     assert_eq!(
                         data.as_deref(),
@@ -839,7 +855,7 @@ mod tests {
         match cli.command {
             Commands::Snu(args) => match args.command {
                 SnuCommands::Page(page) => match page.command {
-                    SnuPageCommands::FormState { fields, target } => {
+                    SnuPageCommands::FormState(SnuPageFormStateArgs { fields, target }) => {
                         assert_eq!(fields, ["number", "state"]);
                         assert_eq!(target.tab_id, Some(42));
                     }
@@ -858,7 +874,7 @@ mod tests {
         match cli.command {
             Commands::Snu(args) => match args.command {
                 SnuCommands::Context(context) => match context.command {
-                    SnuContextCommands::Get { timeout_secs } => {
+                    SnuContextCommands::Get(SnuTimeoutArgs { timeout_secs }) => {
                         assert_eq!(timeout_secs, DEFAULT_SNU_TIMEOUT_SECS);
                     }
                     _ => panic!("Expected Snu Context Get command"),
@@ -887,6 +903,43 @@ mod tests {
         assert!(
             result.is_err(),
             "--data and --field must be mutually exclusive"
+        );
+    }
+
+    #[test]
+    fn test_snu_rejects_query_injection_in_sys_id_and_invalid_table_or_order_by() {
+        assert!(
+            Cli::try_parse_from([
+                "snow-cli",
+                "snu",
+                "get-record",
+                "incident",
+                "6816f79cc0a8016401c5a33be04be441^ORactive=true",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "snow-cli",
+                "snu",
+                "delete-record",
+                "incident",
+                "--sys-id",
+                "not-a-valid-sys-id",
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["snow-cli", "snu", "query", "incident/../sys_user"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "snow-cli",
+                "snu",
+                "query",
+                "incident",
+                "--order-by",
+                "number^ORactive=true",
+            ])
+            .is_err()
         );
     }
 }

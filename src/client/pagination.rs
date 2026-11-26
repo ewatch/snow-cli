@@ -1,11 +1,15 @@
 //! Auto-pagination for ServiceNow Table API responses.
 //!
 //! ServiceNow returns paginated results with:
-//! - `X-Total-Count` header: total number of matching records
-//! - `Link` header with `rel="next"`: URL for the next page
+//! - `X-Total-Count` header: total number of matching records (before row-level read ACLs)
+//! - `Link` header with `rel="next"`: server-generated URL for the next page
 //!
-//! The paginator fetches pages automatically, yielding records
-//! as a stream until all records are retrieved or `--limit` is reached.
+//! The paginator follows `Link: <...>; rel="next"` headers (validated against
+//! the client's authenticated instance origin) when present so ACL-filtered or
+//! server-capped (`glide.rest.max_limit`) pages do not terminate early, and
+//! falls back to `sysparm_offset`/`sysparm_limit` paging when no `Link` header
+//! is returned. Results are collected until all pages are retrieved or `--limit`
+//! is reached.
 
 /// Outcome of a table-list fetch, preserving Table API result metadata.
 ///

@@ -57,13 +57,13 @@ snow-cli --profile destination data import --file incidents-import-ready.json
 snow-cli --profile destination data import --file users-import-ready.json --import-set-table imp_user --fail-on-error
 ```
 
-## 3. Reversible test fixtures (`seed` — WRITE OP, blocked in `snow-cli-ro`)
+## 3. Reversible test fixtures (`seed` — `plan` is read-only; `apply`/`cleanup` are WRITE OPS)
 
 Use `seed` instead of ad-hoc `table create` calls when generating QA/test fixtures so every created record is tracked under a `run-id` and can be cleanly removed:
 
 ```bash
 # 1. Validate spec and inspect plan (no writes)
-snow-cli seed plan --file qa-fixture.json
+snow-cli-ro seed plan --file qa-fixture.json
 
 # 2. Preview apply, then execute when explicitly asked
 snow-cli seed apply --file qa-fixture.json --dry-run

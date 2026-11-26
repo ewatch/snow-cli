@@ -660,10 +660,21 @@ auth_method = "api_key"
     assert_eq!(json["source"], "default");
     assert_eq!(json["vault_exists"], false);
 
-    // `profile storage set` and `migrate` are denied with POLICY_DENIED (exit 7).
+    // `profile storage set` and `migrate` are omitted from `snow-cli-ro` at
+    // parse time (exit 2 with the policy reason) and denied at runtime under
+    // `snow-cli --read-only` with POLICY_DENIED (exit 7).
     cargo_bin_cmd!("snow-cli-ro")
         .env("SNOW_CLI_CONFIG", &config_path)
         .args(["profile", "storage", "set", "file"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "changes credential storage backends",
+        ));
+
+    cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .args(["--read-only", "profile", "storage", "set", "file"])
         .assert()
         .code(7)
         .stderr(predicate::str::contains("POLICY_DENIED"));

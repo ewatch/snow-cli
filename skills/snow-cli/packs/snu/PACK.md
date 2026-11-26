@@ -2,7 +2,7 @@
 
 Opt-in pack for working through a live SN-Utils browser helper tab (`ws://127.0.0.1:1978`) when you need active browser SSO/MFA session context, live form inspection, screenshots, or browser-driven REST/query calls.
 
-Read-only `snu` verbs (`check-connection`, `wait-token`, `get-instance-info`, `app-meta`, `list-tables`, `get-record`, `query`, `schema`, `context get`, `rest get`, `records parent-options`, `page form-state`, `screenshot`) work in `snow-cli-ro`. (`snu broker *` commands are only available in the full `snow-cli` binary.)
+Read-only `snu` verbs (`check-connection`, `wait-token`, `get-instance-info`, `app-meta`, `list-tables`, `get-record`, `query`, `schema`, `context get`, `rest get`, `records parent-options`, `page form-state`, `screenshot`, `broker status`) work in `snow-cli-ro`. (`snu broker clear` and `snu broker stop` are only available in the full `snow-cli` binary.)
 
 ## 1. Check bridge health & active instances first
 
@@ -14,8 +14,8 @@ snow-cli-ro snu get-instance-info
 # Pin a command to one specific instance when multiple tabs are open
 snow-cli-ro --instance https://dev12345.service-now.com snu context get
 
-# Full snow-cli binary only: inspect broker-cached sessions across multiple tabs/instances
-snow-cli snu broker status
+# Inspect broker-cached sessions across multiple tabs/instances
+snow-cli-ro snu broker status
 ```
 
 If no session is cached yet, ask the user to run `/token` in their ServiceNow browser tab (or wait via `snow-cli-ro snu wait-token`).

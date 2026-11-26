@@ -114,7 +114,7 @@ impl ApiError {
             code: code.to_string(),
             message: message.to_string(),
             status,
-            detail: body.map(|body| safe_error_detail(&body)),
+            detail: body.as_deref().and_then(safe_error_detail),
             instance: instance.to_string(),
         }
     }
@@ -185,32 +185,105 @@ fn refine_code(status: u16, message: &str, detail: Option<&str>) -> Option<&'sta
     }
 }
 
-/// Key fragments whose `key=value` / `key: value` values are always redacted.
-const SENSITIVE_KEY_FRAGMENTS: &[&str] = &[
-    "password",
-    "passwd",
-    "secret",
-    "token",
-    "cookie",
-    "authorization",
-    "sysparm_ck",
-    "g_ck",
-    "jsessionid",
-    "api_key",
-    "apikey",
-    "bearer",
-];
+use super::redaction::SENSITIVE_KEY_FRAGMENTS;
+
+fn scrub_url_userinfo(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut pos = 0;
+
+    while let Some(rel) = text[pos..].find("://") {
+        let authority_start = pos + rel + 3;
+        let mut end = authority_start;
+        while end < bytes.len()
+            && !matches!(
+                bytes[end],
+                b'/' | b'?'
+                    | b'#'
+                    | b' '
+                    | b'\t'
+                    | b'"'
+                    | b'\''
+                    | b'<'
+                    | b'>'
+                    | b')'
+                    | b']'
+                    | b'}'
+                    | b','
+            )
+        {
+            end += 1;
+        }
+        if let Some(at_rel) = text[authority_start..end].rfind('@') {
+            let at_pos = authority_start + at_rel;
+            if at_pos > authority_start {
+                out.push_str(&text[copied..authority_start]);
+                out.push_str("<redacted>");
+                copied = at_pos;
+            }
+        }
+        pos = end;
+    }
+
+    out.push_str(&text[copied..]);
+    out
+}
+
+fn looks_like_basic_credential(candidate: &str) -> bool {
+    if candidate.len() < 4
+        || !candidate
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_'))
+    {
+        return false;
+    }
+
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(candidate)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(candidate));
+    if let Ok(bytes) = decoded
+        && let Ok(text) = std::str::from_utf8(&bytes)
+        && text.contains(':')
+        && text.bytes().all(|b| !b.is_ascii_control())
+    {
+        return true;
+    }
+
+    let has_upper = candidate.bytes().any(|b| b.is_ascii_uppercase());
+    let has_lower = candidate.bytes().any(|b| b.is_ascii_lowercase());
+    let has_digit = candidate.bytes().any(|b| b.is_ascii_digit());
+    let has_b64_punct = candidate.bytes().any(|b| matches!(b, b'+' | b'/' | b'='));
+    candidate.len() >= 8 && (has_b64_punct || (has_upper && has_lower && has_digit))
+}
+
+fn scan_unquoted_value_end(bytes: &[u8], start: usize) -> usize {
+    let mut cursor = start;
+    while cursor < bytes.len()
+        && !matches!(
+            bytes[cursor],
+            b' ' | b'&' | b',' | b';' | b'"' | b'\'' | b'}' | b')' | b']'
+        )
+    {
+        cursor += 1;
+    }
+    cursor
+}
 
 /// Redact credential-like values from free text taken from a server response.
 ///
 /// Values following a sensitive key (`token=..`, `"password": ".."`,
-/// `Authorization: Bearer ..`) are replaced with `<redacted>`, and control
-/// characters (including ANSI escapes) are replaced with spaces.
+/// `Authorization: Bearer ..`), standalone `Bearer`/`Basic` credentials,
+/// multi-cookie `Cookie:` headers, and URL userinfo are replaced with
+/// `<redacted>`, and control characters (including ANSI escapes) are replaced
+/// with spaces.
 pub(crate) fn scrub_secrets(text: &str) -> String {
-    let text: String = text
+    let sanitized: String = text
         .chars()
         .map(|ch| if ch.is_control() { ' ' } else { ch })
         .collect();
+    let text = scrub_url_userinfo(&sanitized);
     // Match on bytes: every fragment and delimiter is ASCII, so matches can
     // never start or end inside a multi-byte character.
     let lower = text.to_ascii_lowercase().into_bytes();
@@ -228,10 +301,18 @@ pub(crate) fn scrub_secrets(text: &str) -> String {
             continue;
         };
 
+        if matches!(*fragment, "bearer" | "basic")
+            && index > 0
+            && (bytes[index - 1].is_ascii_alphanumeric() || bytes[index - 1] == b'_')
+        {
+            index += 1;
+            continue;
+        }
+
         let mut cursor = index + fragment.len();
-        // Finish the key word (e.g. `token` inside `access_token_value`).
+        // Finish the key word (e.g. `token` inside `access_token_value` or `x-csrf-token`).
         while cursor < bytes.len()
-            && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+            && (bytes[cursor].is_ascii_alphanumeric() || matches!(bytes[cursor], b'_' | b'-'))
         {
             cursor += 1;
         }
@@ -242,35 +323,83 @@ pub(crate) fn scrub_secrets(text: &str) -> String {
         let has_separator = cursor < bytes.len() && matches!(bytes[cursor], b'=' | b':');
         if has_separator {
             cursor += 1;
-        } else if *fragment != "bearer" || key_end == cursor {
+        } else if !matches!(*fragment, "bearer" | "basic") || key_end == cursor {
             index = key_end;
             continue;
         }
-        while cursor < bytes.len() && matches!(bytes[cursor], b'"' | b'\'' | b' ') {
+
+        while cursor < bytes.len() && bytes[cursor] == b' ' {
             cursor += 1;
         }
+        let opening_quote = if cursor < bytes.len() && matches!(bytes[cursor], b'"' | b'\'') {
+            let quote = bytes[cursor];
+            cursor += 1;
+            Some(quote)
+        } else {
+            None
+        };
+
         // `Authorization: Bearer <token>` / `Basic <token>`: skip the scheme word.
-        if let Some(scheme) = [&b"bearer "[..], &b"basic "[..]]
-            .into_iter()
-            .find(|scheme| lower[cursor..].starts_with(scheme))
+        if has_separator
+            && let Some(scheme) = [&b"bearer "[..], &b"basic "[..]]
+                .into_iter()
+                .find(|scheme| lower[cursor..].starts_with(scheme))
         {
             cursor += scheme.len();
+            while cursor < bytes.len() && bytes[cursor] == b' ' {
+                cursor += 1;
+            }
         }
+
         let value_start = cursor;
-        while cursor < bytes.len()
-            && !matches!(
-                bytes[cursor],
-                b' ' | b'&' | b',' | b';' | b'"' | b'\'' | b'}' | b')' | b']'
-            )
-        {
-            cursor += 1;
+        if let Some(quote) = opening_quote {
+            while cursor < bytes.len() {
+                if bytes[cursor] == b'\\' && cursor + 1 < bytes.len() {
+                    cursor += 2;
+                    continue;
+                }
+                if bytes[cursor] == quote {
+                    break;
+                }
+                cursor += 1;
+            }
+        } else {
+            cursor = scan_unquoted_value_end(bytes, cursor);
+            // Multi-cookie header (`Cookie: a=1; glide_user_activity=2; glide_session_store=3`).
+            if has_separator && *fragment == "cookie" {
+                while cursor < bytes.len() && bytes[cursor] == b';' {
+                    let mut next = cursor + 1;
+                    while next < bytes.len() && bytes[next] == b' ' {
+                        next += 1;
+                    }
+                    let pair_end = scan_unquoted_value_end(bytes, next);
+                    if bytes[next..pair_end].contains(&b'=') {
+                        cursor = pair_end;
+                    } else {
+                        break;
+                    }
+                }
+            }
         }
+
+        if !has_separator
+            && *fragment == "basic"
+            && !looks_like_basic_credential(&text[value_start..cursor])
+        {
+            index = cursor.max(index + 1);
+            continue;
+        }
+
         if cursor > value_start {
             out.push_str(&text[copied..value_start]);
             out.push_str("<redacted>");
             copied = cursor;
         }
-        index = cursor.max(index + 1);
+        index = if opening_quote.is_some() && cursor < bytes.len() {
+            cursor + 1
+        } else {
+            cursor.max(index + 1)
+        };
     }
 
     out.push_str(&text[copied..]);
@@ -308,12 +437,16 @@ impl GraphqlError {
     const MAX_MESSAGES: usize = 8;
     /// Maximum Unicode scalar values retained from each GraphQL error message.
     const MAX_MESSAGE_CHARS: usize = 256;
+    /// Total detail character budget aligned with `crate::error::MAX_DIAGNOSTIC_CHARS`
+    /// so `safe_message` never chops off later errors or the omission notice.
+    const MAX_DETAIL_CHARS: usize = crate::error::MAX_DIAGNOSTIC_CHARS;
 
     pub fn from_errors(errors: &[serde_json::Value]) -> Self {
-        let mut messages = errors
+        let sanitized: Vec<String> = errors
             .iter()
             .filter_map(|error| error.get("message").and_then(serde_json::Value::as_str))
             .filter_map(|message| {
+                let message = scrub_secrets(message.trim());
                 let message = message.trim();
                 if message.is_empty() {
                     None
@@ -321,21 +454,48 @@ impl GraphqlError {
                     Some(truncate_graphql_message(message))
                 }
             })
-            .take(Self::MAX_MESSAGES)
-            .collect::<Vec<_>>();
+            .collect();
 
-        if errors.len() > Self::MAX_MESSAGES {
-            messages.push(format!(
-                "<{} additional GraphQL errors omitted>",
-                errors.len() - Self::MAX_MESSAGES
-            ));
+        let total_sanitized = sanitized.len();
+        let mut kept: Vec<String> = Vec::new();
+        let mut used_chars = 0usize;
+
+        for (index, message) in sanitized.into_iter().take(Self::MAX_MESSAGES).enumerate() {
+            let msg_chars = message.chars().count();
+            let sep_chars = if kept.is_empty() { 0 } else { 2 }; // "; "
+            let remaining_after = total_sanitized.saturating_sub(index + 1);
+            let notice_chars = if remaining_after > 0 {
+                2 + format!("<{remaining_after} additional GraphQL errors omitted>")
+                    .chars()
+                    .count()
+            } else {
+                0
+            };
+
+            if !kept.is_empty()
+                && used_chars + sep_chars + msg_chars + notice_chars > Self::MAX_DETAIL_CHARS
+            {
+                break;
+            }
+
+            used_chars += sep_chars + msg_chars;
+            kept.push(message);
+        }
+
+        let omitted = if kept.len() < total_sanitized {
+            total_sanitized - kept.len()
+        } else {
+            errors.len().saturating_sub(Self::MAX_MESSAGES)
+        };
+        if omitted > 0 {
+            kept.push(format!("<{omitted} additional GraphQL errors omitted>"));
         }
 
         Self {
-            detail: if messages.is_empty() {
+            detail: if kept.is_empty() {
                 None
             } else {
-                Some(messages.join("; "))
+                Some(kept.join("; "))
             },
         }
     }
@@ -371,11 +531,11 @@ fn truncate_graphql_message(message: &str) -> String {
 
 /// Unknown response text is always withheld from runtime errors. Sensitive
 /// HTTP diagnostics are a separate channel and cannot weaken this boundary.
-pub(crate) fn safe_error_detail(body: &str) -> String {
+pub(crate) fn safe_error_detail(body: &str) -> Option<String> {
     if body.trim().is_empty() {
-        String::new()
+        None
     } else {
-        format!("<response body redacted, {} bytes>", body.len())
+        Some(format!("<response body redacted, {} bytes>", body.len()))
     }
 }
 
@@ -388,9 +548,10 @@ mod tests {
         let body = "private credential ".repeat(100);
         assert_eq!(
             safe_error_detail(&body),
-            format!("<response body redacted, {} bytes>", body.len())
+            Some(format!("<response body redacted, {} bytes>", body.len()))
         );
-        assert_eq!(safe_error_detail("  "), "");
+        assert_eq!(safe_error_detail("  "), None);
+        assert_eq!(safe_error_detail(""), None);
     }
 
     #[test]
@@ -527,9 +688,32 @@ mod tests {
                 "Authorization: Basic <redacted>",
             ),
             ("Bearer abc.def rejected", "Bearer <redacted> rejected"),
+            ("Cookie: JSESSIONID=ABC; glide_user=x", "Cookie: <redacted>"),
             (
-                "Cookie: JSESSIONID=ABC; glide_user=x",
-                "Cookie: <redacted>; glide_user=x",
+                "Cookie: JSESSIONID=ABC; glide_user_activity=secret1; glide_session_store=secret2 failed",
+                "Cookie: <redacted> failed",
+            ),
+            (
+                r#"{"password": "my secret, with spaces", "ok": true}"#,
+                r#"{"password": "<redacted>", "ok": true}"#,
+            ),
+            (
+                r#"{"password": "escaped \"quote\" secret"}"#,
+                r#"{"password": "<redacted>"}"#,
+            ),
+            ("Basic dXNlcjpwYXNz rejected", "Basic <redacted> rejected"),
+            (
+                "Basic authentication required",
+                "Basic authentication required",
+            ),
+            (
+                "Failed to connect to https://admin:hunter2@dev123.service-now.com/api",
+                "Failed to connect to https://<redacted>@dev123.service-now.com/api",
+            ),
+            ("X-SN-ApiKey: sn-secret-key", "X-SN-ApiKey: <redacted>"),
+            (
+                "glide_user_activity=secret1; glide_session_store=secret2",
+                "glide_user_activity=<redacted>; glide_session_store=<redacted>",
             ),
             ("g_ck=abc", "g_ck=<redacted>"),
             (
@@ -573,5 +757,19 @@ mod tests {
         assert!(!detail.contains(secret_extension));
         assert!(!detail.contains("incident"));
         assert_eq!(error.code(), "GRAPHQL_ERROR");
+    }
+
+    #[test]
+    fn graphql_error_scrubs_secrets_in_messages() {
+        let errors = serde_json::json!([
+            {
+                "message": "Auth failed for Authorization: Bearer top-secret-tok and https://admin:pw@dev.service-now.com"
+            }
+        ]);
+        let error = GraphqlError::from_errors(errors.as_array().unwrap());
+        let detail = error.detail.as_deref().unwrap();
+        assert!(!detail.contains("top-secret-tok"), "{detail}");
+        assert!(!detail.contains("admin:pw"), "{detail}");
+        assert!(detail.contains("<redacted>"), "{detail}");
     }
 }

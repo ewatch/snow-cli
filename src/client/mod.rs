@@ -12,6 +12,7 @@ mod core;
 mod debug;
 mod identity;
 mod native_session;
+mod redaction;
 mod script_response;
 mod session;
 mod session_bootstrap;

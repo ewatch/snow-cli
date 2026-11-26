@@ -347,7 +347,8 @@ async fn script_domain_counts(
     )
     .await?;
     let output: ScriptOutput = serde_json::from_str(&body).map_err(|_| {
-        let detail = crate::client::error::safe_error_detail(&body);
+        let detail = crate::client::error::safe_error_detail(&body)
+            .unwrap_or_else(|| "<empty response>".to_string());
         anyhow::anyhow!("domain count script returned unexpected output: {detail}")
     })?;
     counts_from_script(output)

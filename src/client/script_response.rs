@@ -45,22 +45,14 @@ impl fmt::Debug for BackgroundScriptResponse {
 /// cookie `en`) would otherwise mangle unrelated words in script output.
 const MIN_COOKIE_REDACTION_LEN: usize = 8;
 
-/// Whether a cookie carries a session credential rather than a preference.
-fn is_credential_cookie(name: &str) -> bool {
-    let name = name.trim().to_ascii_lowercase();
-    name == "jsessionid"
-        || name.starts_with("glide_session")
-        || name.starts_with("glide_user")
-        || name.starts_with("glide_sso")
-        || name.contains("token")
-}
+use super::redaction::{is_credential_cookie_name, is_sensitive_header_name};
 
 #[derive(Default)]
 pub(super) struct ScriptRedactions(Vec<Secret>);
 
 impl ScriptRedactions {
     fn add_cookie(&mut self, name: &str, value: &str) {
-        if is_credential_cookie(name) && value.len() >= MIN_COOKIE_REDACTION_LEN {
+        if is_credential_cookie_name(name) && value.len() >= MIN_COOKIE_REDACTION_LEN {
             self.add(value);
         }
     }
@@ -74,37 +66,40 @@ impl ScriptRedactions {
     }
 
     pub(super) fn observe_request(&mut self, headers: &HeaderMap) {
-        if let Some(value) = headers
-            .get(http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-        {
-            self.add(value);
-            if let Some((scheme, credential)) = value.split_once(' ') {
-                self.add(credential);
-                if scheme.eq_ignore_ascii_case("basic") {
-                    use base64::Engine;
-                    if let Ok(decoded) =
-                        base64::engine::general_purpose::STANDARD.decode(credential)
-                        && let Ok(decoded) = String::from_utf8(decoded)
-                        && let Some((_, password)) = decoded.split_once(':')
-                    {
-                        self.add(password);
+        for (name, raw_value) in headers {
+            let Ok(value) = raw_value.to_str() else {
+                continue;
+            };
+            let header_name = name.as_str().to_ascii_lowercase();
+            match header_name.as_str() {
+                "authorization" | "proxy-authorization" => {
+                    self.add(value);
+                    if let Some((scheme, credential)) = value.split_once(' ') {
+                        self.add(credential);
+                        if scheme.eq_ignore_ascii_case("basic") {
+                            use base64::Engine;
+                            if let Ok(decoded) =
+                                base64::engine::general_purpose::STANDARD.decode(credential)
+                                && let Ok(decoded) = String::from_utf8(decoded)
+                                && let Some((_, password)) = decoded.split_once(':')
+                            {
+                                self.add(password);
+                            }
+                        }
                     }
                 }
-            }
-        }
-        if let Some(value) = headers
-            .get(http::header::COOKIE)
-            .and_then(|v| v.to_str().ok())
-        {
-            for cookie in value.split(';') {
-                if let Some((name, value)) = cookie.trim().split_once('=') {
-                    self.add_cookie(name, value);
+                "cookie" => {
+                    for cookie in value.split(';') {
+                        if let Some((cookie_name, cookie_value)) = cookie.trim().split_once('=') {
+                            self.add_cookie(cookie_name, cookie_value);
+                        }
+                    }
                 }
+                _ if is_sensitive_header_name(&header_name) => {
+                    self.add(value);
+                }
+                _ => {}
             }
-        }
-        if let Some(value) = headers.get("X-UserToken").and_then(|v| v.to_str().ok()) {
-            self.add(value);
         }
     }
 
@@ -188,6 +183,19 @@ mod tests {
                 "Incident sent to the Event queue\nsession-private\n1234567890.12345.0000".into()
             ),
             "Incident sent to the Event queue\n<redacted>\n1234567890.12345.0000"
+        );
+    }
+
+    #[test]
+    fn redacts_api_key_and_csrf_request_headers() {
+        let mut redactions = ScriptRedactions::default();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-sn-apikey", "sn-api-key-secret".parse().unwrap());
+        headers.insert("x-csrf-token", "csrf-token-secret".parse().unwrap());
+        redactions.observe_request(&headers);
+        assert_eq!(
+            redactions.redact("key=sn-api-key-secret csrf=csrf-token-secret".into()),
+            "key=<redacted> csrf=<redacted>"
         );
     }
 }

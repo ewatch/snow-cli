@@ -168,14 +168,15 @@ impl AppConfig {
         self.save_to(&Self::config_path())
     }
 
-    /// Save config to a specific path.
+    /// Save config to a specific path atomically with `0o600` permissions (and
+    /// `0o700` directory creation when creating the parent directory).
     pub fn save_to(&self, path: &std::path::Path) -> anyhow::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
-        Ok(())
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config.toml");
+        crate::config::encrypted_store::write_atomic(path, content.as_bytes(), file_name)
     }
 
     /// Get a profile by name, falling back to the default profile.
@@ -340,6 +341,28 @@ fn profile_similarity_score(requested: &str, candidate: &str) -> usize {
     0
 }
 
+/// Validate a profile name so it cannot collide with `{profile}:{cred_type}`
+/// vault/keychain keys or contain control characters or surrounding whitespace.
+pub fn validate_profile_name(name: &str) -> anyhow::Result<&str> {
+    let invalid = |message| ConfigError::new("INVALID_PROFILE_NAME", message);
+    if name.is_empty() || name != name.trim() {
+        return Err(invalid(
+            "Invalid profile name: must not be empty or have leading/trailing whitespace.",
+        )
+        .into());
+    }
+    if name.contains(':') {
+        return Err(invalid(
+            "Invalid profile name: ':' is not allowed because credential store keys use '<profile>:<type>'.",
+        )
+        .into());
+    }
+    if name.chars().any(|ch| ch.is_control()) {
+        return Err(invalid("Invalid profile name: control characters are not allowed.").into());
+    }
+    Ok(name)
+}
+
 pub fn validate_instance_url(input: &str) -> anyhow::Result<String> {
     let invalid = |message| ConfigError::new("INVALID_INSTANCE", message);
     let trimmed = input.trim().trim_end_matches('/');
@@ -367,7 +390,7 @@ pub fn validate_instance_url(input: &str) -> anyhow::Result<String> {
     }
     match url.scheme() {
         "https" => Ok(trimmed.to_string()),
-        "http" if url.host_str().map(is_loopback_host).unwrap_or(false) => Ok(trimmed.to_string()),
+        "http" if is_loopback_url(&url) => Ok(trimmed.to_string()),
         "http" => Err(invalid(
             "Invalid instance URL: HTTP is only allowed for loopback test instances.",
         )
@@ -376,11 +399,33 @@ pub fn validate_instance_url(input: &str) -> anyhow::Result<String> {
     }
 }
 
-fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host.starts_with("127.")
+fn is_loopback_parsed_host<S: AsRef<str>>(host: &url::Host<S>) -> bool {
+    match host {
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+        url::Host::Domain(domain) => domain.as_ref().eq_ignore_ascii_case("localhost"),
+    }
+}
+
+/// Returns `true` when `url` targets a loopback host (`localhost`, `127.0.0.0/8`, or `::1`).
+pub fn is_loopback_url(url: &url::Url) -> bool {
+    url.host()
+        .is_some_and(|host| is_loopback_parsed_host(&host))
+}
+
+/// Returns `true` when a host string (`localhost`, IPv4 loopback, or bracketed/unbracketed `::1`)
+/// targets a loopback address.
+pub fn is_loopback_host(host: &str) -> bool {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    url::Host::parse(trimmed)
+        .map(|parsed| is_loopback_parsed_host(&parsed))
+        .unwrap_or(false)
 }
 
 fn dirs_config_path() -> PathBuf {
@@ -440,6 +485,43 @@ mod tests {
             positions.windows(2).all(|pair| pair[0] < pair[1]),
             "{saved}"
         );
+    }
+
+    #[test]
+    fn validate_instance_url_enforces_strict_loopback_and_ipv6() {
+        for accepted in [
+            "http://127.0.0.1:8080",
+            "http://127.0.0.2:8080",
+            "http://localhost:8080",
+            "http://LOCALHOST:8080",
+            "http://[::1]:8080",
+            "https://dev12345.service-now.com",
+        ] {
+            assert!(
+                validate_instance_url(accepted).is_ok(),
+                "expected loopback/HTTPS URL to be accepted: {accepted}"
+            );
+        }
+
+        for rejected in [
+            "http://127.attacker.example",
+            "http://127.0.0.1.nip.io",
+            "http://127.0.0.1.nip.io:8080",
+            "http://localhost.attacker.example",
+            "http://example.com",
+        ] {
+            assert!(
+                validate_instance_url(rejected).is_err(),
+                "expected non-loopback HTTP URL to be rejected: {rejected}"
+            );
+        }
+
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("::1"));
+        assert!(is_loopback_host("[::1]"));
+        assert!(is_loopback_host("localhost"));
+        assert!(!is_loopback_host("127.attacker.example"));
+        assert!(!is_loopback_host("127.0.0.1.nip.io"));
     }
 
     #[test]
@@ -687,5 +769,37 @@ mod tests {
         let message = config.profile_not_found_message("dev");
         assert!(message.contains("No profiles are configured yet"));
         assert!(message.contains("profile add"));
+    }
+
+    #[test]
+    fn test_validate_profile_name_forbids_colon_empty_and_control_chars() {
+        assert_eq!(validate_profile_name("prod-eu").unwrap(), "prod-eu");
+        assert_eq!(validate_profile_name("dev_1").unwrap(), "dev_1");
+        assert!(validate_profile_name("").is_err());
+        assert!(validate_profile_name(" dev").is_err());
+        assert!(validate_profile_name("dev ").is_err());
+        assert!(validate_profile_name("dev:password").is_err());
+        assert!(validate_profile_name("dev\nprod").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_save_to_writes_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("private-snow");
+        let config_path = config_dir.join("config.toml");
+        let config = AppConfig::default();
+        config.save_to(&config_path).unwrap();
+
+        let dir_mode = std::fs::metadata(&config_dir).unwrap().permissions().mode() & 0o777;
+        let file_mode = std::fs::metadata(&config_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(file_mode, 0o600);
     }
 }

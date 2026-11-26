@@ -526,8 +526,22 @@ async fn counts_reject_a_group_without_a_count_instead_of_reporting_zero() {
 async fn script_counts_are_denied_read_only_and_require_admin() {
     let server = MockServer::start().await;
     let (_dir, config_path) = config(&server.uri());
+    // `snow-cli-ro` omits `--counts all` from its grammar (exit 2), while
+    // `snow-cli --read-only` rejects it at the policy layer (exit 7).
     domain_cmd("ro", &config_path, &server)
         .args(["domain", "table", "incident", "--counts", "all"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("invalid value 'all'"));
+    domain_cmd("full", &config_path, &server)
+        .args([
+            "--read-only",
+            "domain",
+            "table",
+            "incident",
+            "--counts",
+            "all",
+        ])
         .assert()
         .code(7)
         .stderr(predicate::str::contains("POLICY_DENIED"));

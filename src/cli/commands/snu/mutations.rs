@@ -1,8 +1,8 @@
 use super::*;
 
 pub(super) struct DeleteRecordRequest {
-    pub(super) table: String,
-    pub(super) sys_id: Option<String>,
+    pub(super) table: TableName,
+    pub(super) sys_id: Option<SysId>,
     pub(super) query: Option<String>,
     pub(super) confirm: bool,
     pub(super) limit: Option<u32>,
@@ -31,21 +31,21 @@ pub(super) async fn handle_delete_record(
             return print_output(
                 &json!({
                     "dry_run": true,
-                    "table": request.table,
-                    "sys_id": sys_id,
+                    "table": request.table.as_str(),
+                    "sys_id": sys_id.as_str(),
                     "record": record,
                 }),
                 output_format,
             );
         }
 
-        let script = build_delete_script(&request.table, &sys_id);
+        let script = build_delete_script(request.table.as_str(), sys_id.as_str());
         let response = run_bg_mutation(&bridge, &instance, &script, timeout_secs).await?;
         return print_output(
             &json!({
                 "deleted": true,
-                "table": request.table,
-                "sys_id": sys_id,
+                "table": request.table.as_str(),
+                "sys_id": sys_id.as_str(),
                 "response": response,
             }),
             output_format,
@@ -69,7 +69,7 @@ pub(super) async fn handle_delete_record(
         &bridge,
         &instance,
         QueryRecordsRequest {
-            table: &request.table,
+            table: request.table.as_str(),
             fields: "sys_id,number,short_description,name",
             limit,
             query: Some(&query),
@@ -89,7 +89,7 @@ pub(super) async fn handle_delete_record(
         return print_output(
             &json!({
                 "dry_run": true,
-                "table": request.table,
+                "table": request.table.as_str(),
                 "query": query,
                 "limit": limit,
                 "records": records,
@@ -108,7 +108,7 @@ pub(super) async fn handle_delete_record(
         .filter_map(|record| record.get("sys_id").and_then(Value::as_str))
         .map(str::to_string)
         .collect();
-    let script = build_bulk_delete_script(&request.table, &query, limit);
+    let script = build_bulk_delete_script(request.table.as_str(), &query, limit);
     let result = run_bg_mutation(&bridge, &instance, &script, timeout_secs).await?;
     let deleted: Vec<String> = result
         .get("deleted")
@@ -132,7 +132,7 @@ pub(super) async fn handle_delete_record(
             "failed_count": failed.len(),
             "deleted": deleted,
             "failed": failed,
-            "table": request.table,
+            "table": request.table.as_str(),
             "query": query,
             "limit": limit,
         }),

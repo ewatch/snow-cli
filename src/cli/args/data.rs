@@ -4,11 +4,13 @@ use crate::models::identifiers::TableName;
 use crate::models::order_by::OrderBy;
 
 const DATA_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export sys_user --fields sys_id,user_name,email --out users.json\n  snow-cli data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli data validate --file export.json\n  snow-cli data import --file export.json\n  snow-cli data import --file users.json --import-set-table imp_user";
+pub(crate) const READ_ONLY_DATA_AFTER_HELP: &str = "Examples:\n  snow-cli-ro data export incident --query 'active=true'\n  snow-cli-ro data export sys_user --fields sys_id,user_name,email --out users.json\n  snow-cli-ro data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli-ro data validate --file export.json";
 
-const DATA_EXPORT_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export incident --fields sys_id,number,short_description --limit 50\n  snow-cli data export incident --import-ready --limit 10 --out incidents.json\n  snow-cli --output csv data export sys_user --fields sys_id,user_name,email --out users.csv";
+pub(crate) const DATA_EXPORT_AFTER_HELP: &str = "Examples:\n  snow-cli data export incident --query 'active=true'\n  snow-cli data export incident --fields sys_id,number,short_description --limit 50\n  snow-cli data export incident --import-ready --limit 10 --out incidents.json\n  snow-cli --output csv data export sys_user --fields sys_id,user_name,email --out users.csv";
 
-const DATA_EXPORT_PACKAGE_AFTER_HELP: &str = "Examples:\n  snow-cli data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli data validate --file exported-dataset/manifest.json\n  snow-cli data import --file exported-dataset/manifest.json";
-// --- Scope ---
+pub(crate) const DATA_EXPORT_PACKAGE_AFTER_HELP: &str = "Examples:\n  snow-cli data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli data validate --file exported-dataset/manifest.json\n  snow-cli data import --file exported-dataset/manifest.json";
+pub(crate) const READ_ONLY_DATA_EXPORT_PACKAGE_AFTER_HELP: &str = "Examples:\n  snow-cli-ro data export-package --file dataset-spec.json --out-dir exported-dataset\n  snow-cli-ro data validate --file exported-dataset/manifest.json";
+// --- Data ---
 
 #[derive(Args, Debug)]
 #[command(after_help = DATA_AFTER_HELP)]
@@ -17,59 +19,68 @@ pub struct DataArgs {
     pub command: DataCommands,
 }
 
+#[derive(Args, Debug)]
+pub struct DataExportArgs {
+    /// Table name (e.g., incident, sys_user, cmdb_ci)
+    pub table: TableName,
+
+    /// Encoded query string
+    #[arg(long)]
+    pub query: Option<String>,
+
+    /// Comma-separated list of fields to return
+    #[arg(long)]
+    pub fields: Option<String>,
+
+    /// Maximum number of records to return
+    #[arg(long)]
+    pub limit: Option<usize>,
+
+    /// Sort order: field (ascending), -field or field:desc (descending);
+    /// comma-separate several keys. Sent as ORDERBY clauses in the query.
+    #[arg(long, allow_hyphen_values = true)]
+    pub order_by: Option<OrderBy>,
+
+    /// Prepare a JSON create-only dataset using readable source dictionary metadata
+    /// (reports omitted fields; references are not remapped; validate on the target)
+    #[arg(long)]
+    pub import_ready: bool,
+
+    /// Write the exported artifact to a file instead of stdout
+    #[arg(long = "out", short = 'o')]
+    pub out_path: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct DataExportPackageArgs {
+    /// Dataset export spec file
+    #[arg(long, short = 'f')]
+    pub file: String,
+
+    /// Output directory for manifest and table files
+    #[arg(long)]
+    pub out_dir: String,
+}
+
+#[derive(Args, Debug)]
+pub struct DataValidateArgs {
+    /// Dataset file to validate
+    #[arg(long, short = 'f')]
+    pub file: String,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum DataCommands {
     /// Export records from a single table
     #[command(after_help = DATA_EXPORT_AFTER_HELP)]
-    Export {
-        /// Table name (e.g., incident, sys_user, cmdb_ci)
-        table: TableName,
-
-        /// Encoded query string
-        #[arg(long)]
-        query: Option<String>,
-
-        /// Comma-separated list of fields to return
-        #[arg(long)]
-        fields: Option<String>,
-
-        /// Maximum number of records to return
-        #[arg(long)]
-        limit: Option<usize>,
-
-        /// Sort order: field (ascending), -field or field:desc (descending);
-        /// comma-separate several keys. Sent as ORDERBY clauses in the query.
-        #[arg(long, allow_hyphen_values = true)]
-        order_by: Option<OrderBy>,
-
-        /// Prepare a JSON create-only dataset using readable source dictionary metadata
-        /// (reports omitted fields; references are not remapped; validate on the target)
-        #[arg(long)]
-        import_ready: bool,
-
-        /// Write the exported artifact to a file instead of stdout
-        #[arg(long = "out", short = 'o')]
-        out_path: Option<String>,
-    },
+    Export(DataExportArgs),
 
     /// Export a multi-table dataset package from a manifest spec
     #[command(after_help = DATA_EXPORT_PACKAGE_AFTER_HELP)]
-    ExportPackage {
-        /// Dataset export spec file
-        #[arg(long, short = 'f')]
-        file: String,
-
-        /// Output directory for manifest and table files
-        #[arg(long)]
-        out_dir: String,
-    },
+    ExportPackage(DataExportPackageArgs),
 
     /// Validate a dataset file against the target instance
-    Validate {
-        /// Dataset file to validate
-        #[arg(long, short = 'f')]
-        file: String,
-    },
+    Validate(DataValidateArgs),
 
     /// Import a dataset file into the target instance
     Import {
@@ -114,13 +125,13 @@ mod tests {
 
         match cli.command {
             Commands::Data(args) => match args.command {
-                DataCommands::Export {
+                DataCommands::Export(DataExportArgs {
                     table,
                     query,
                     fields,
                     out_path,
                     ..
-                } => {
+                }) => {
                     assert_eq!(table.as_str(), "incident");
                     assert_eq!(query, Some("active=true".to_string()));
                     assert_eq!(fields, Some("sys_id,number".to_string()));
@@ -149,7 +160,7 @@ mod tests {
 
         match cli.command {
             Commands::Data(args) => match args.command {
-                DataCommands::ExportPackage { file, out_dir } => {
+                DataCommands::ExportPackage(DataExportPackageArgs { file, out_dir }) => {
                     assert_eq!(file, "dataset-spec.json");
                     assert_eq!(out_dir, "exported-dataset");
                 }

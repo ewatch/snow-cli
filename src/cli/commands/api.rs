@@ -14,7 +14,7 @@ pub async fn handle(
     timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     match args.command {
-        ApiCommands::Get { path, header } => {
+        ApiCommands::Get(crate::cli::args::ApiGetArgs { path, header }) => {
             tracing::info!("API GET {}", path);
 
             let extra_headers = parse_headers(&header)?;
@@ -34,7 +34,7 @@ pub async fn handle(
         ApiCommands::Post { path, data, header } => {
             tracing::info!("API POST {}", path);
 
-            let body = read_data(data)?;
+            let body = read_data(data, "api post <path>")?;
             let extra_headers = parse_headers(&header)?;
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -52,7 +52,7 @@ pub async fn handle(
         ApiCommands::Put { path, data, header } => {
             tracing::info!("API PUT {}", path);
 
-            let body = read_data(data)?;
+            let body = read_data(data, "api put <path>")?;
             let extra_headers = parse_headers(&header)?;
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
@@ -95,39 +95,47 @@ fn parse_headers(headers: &[String]) -> anyhow::Result<Vec<(String, String)>> {
             let (key, value) = h.split_once(':').ok_or_else(|| {
                 ValidationError::new("Invalid header format. Use 'Key: Value', for example: -H 'X-Trace-Id: abc123'.")
             })?;
-            Ok((key.trim().to_string(), value.trim().to_string()))
+            let key = key.trim();
+            if key.is_empty() {
+                return Err(ValidationError::new(
+                    "Invalid header format: header name cannot be empty. Use 'Key: Value', for example: -H 'X-Trace-Id: abc123'.",
+                )
+                .into());
+            }
+            Ok((key.to_string(), value.trim().to_string()))
         })
         .collect()
 }
 
 /// Read data from `--data` flag or stdin (same pattern as table commands).
-fn read_data(data: Option<String>) -> anyhow::Result<String> {
+fn read_data(data: Option<String>, command_hint: &str) -> anyhow::Result<String> {
     let stdin = std::io::stdin();
-    read_data_from(data, stdin.lock(), stdin.is_terminal())
+    read_data_from(data, stdin.lock(), stdin.is_terminal(), command_hint)
 }
 
 fn read_data_from<R: std::io::Read>(
     data: Option<String>,
     reader: R,
     is_tty: bool,
+    command_hint: &str,
 ) -> anyhow::Result<String> {
     if let Some(d) = data {
         return Ok(d);
     }
 
     if is_tty {
-        return Err(ValidationError::new(
-            "No data provided. Use --data or pipe a request body to snow-cli api post <path>.",
-        )
+        return Err(ValidationError::new(format!(
+            "No data provided. Use --data or pipe a request body to snow-cli {command_hint}."
+        ))
         .into());
     }
 
     let buf = read_to_string_limited(reader, DEFAULT_MAX_STDIN_BYTES, "API stdin body")?;
 
     if buf.trim().is_empty() {
-        return Err(ValidationError::new(
-            "No data received from stdin. Pipe a non-empty body to snow-cli api post <path>.",
-        )
+        return Err(ValidationError::new(format!(
+            "No data received from stdin. Pipe a non-empty body to snow-cli {command_hint}."
+        ))
         .into());
     }
 
@@ -204,11 +212,23 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_headers_rejects_empty_key() {
+        for bad in [": value", "   : value", ":"] {
+            let err = parse_headers(&[bad.to_string()]).unwrap_err();
+            assert!(
+                err.to_string().contains("header name cannot be empty"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn test_read_data_from_flag() {
         let data = read_data_from(
             Some(r#"{"key":"value"}"#.to_string()),
             Cursor::new(b""),
             false,
+            "api post <path>",
         )
         .unwrap();
         assert_eq!(data, r#"{"key":"value"}"#);
@@ -216,14 +236,21 @@ mod tests {
 
     #[test]
     fn test_read_data_from_stdin() {
-        let data = read_data_from(None, Cursor::new(b"raw body content"), false).unwrap();
+        let data = read_data_from(
+            None,
+            Cursor::new(b"raw body content"),
+            false,
+            "api post <path>",
+        )
+        .unwrap();
         assert_eq!(data, "raw body content");
     }
 
     #[test]
     fn test_read_data_from_tty_errors() {
-        let result = read_data_from(None, Cursor::new(b""), true);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No data provided"));
+        let result = read_data_from(None, Cursor::new(b""), true, "api put <path>");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("No data provided"));
+        assert!(msg.contains("api put <path>"));
     }
 }

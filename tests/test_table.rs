@@ -342,14 +342,15 @@ async fn test_table_list_jsonl_preview_uses_metadata_envelope() {
         .clone();
     let stdout = String::from_utf8(output).unwrap();
     let lines: Vec<&str> = stdout.trim().split('\n').collect();
-    assert_eq!(lines.len(), 1);
-    let json: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-
-    assert_eq!(json["records"][0]["description"], "x".repeat(2_000));
+    assert_eq!(lines.len(), 2);
+    let header: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(header["meta"]["fields_truncated"], true);
     assert_eq!(
-        json["preview"]["truncated_fields"][0]["path"],
+        header["meta"]["preview"]["truncated_fields"][0]["path"],
         "/records/0/description"
     );
+    let record: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(record["description"], "x".repeat(2_000));
 }
 
 #[tokio::test]
@@ -1009,6 +1010,47 @@ async fn test_table_get_previews_long_fields_with_preview_flag() {
 }
 
 #[tokio::test]
+async fn test_table_get_preview_keeps_stable_envelope_without_truncation() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/api/now/table/incident/6816f79cc0a8016401c5a33be04be441",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"sys_id": "6816f79cc0a8016401c5a33be04be441", "description": "short"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config(&server.uri());
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "get",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--preview",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let previewed: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(previewed["record"]["description"], "short");
+    assert_eq!(
+        previewed["preview"]["truncated_fields"],
+        serde_json::json!([])
+    );
+}
+
+#[tokio::test]
 async fn test_table_get_explicit_json_detail_is_lossless_without_full_or_preview() {
     let server = MockServer::start().await;
     let long_description = format!("{}END", "雪".repeat(2_000));
@@ -1541,6 +1583,85 @@ async fn test_table_schema_csv_output() {
         .stdout(predicate::str::contains("number,string,Number"));
 }
 
+#[tokio::test]
+async fn test_table_schema_extended_csv_output_aligns_optional_columns_and_neutralizes_formulas() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {
+                    "element": "short_description",
+                    "internal_type": "string",
+                    "column_label": "=HYPERLINK(\"http://evil\")",
+                    "mandatory": "false",
+                    "read_only": "false",
+                    "display": "false",
+                    "max_length": "160",
+                    "default_value": "",
+                    "reference": "",
+                    "name": "incident"
+                },
+                {
+                    "element": "caller_id",
+                    "internal_type": "reference",
+                    "column_label": "Caller",
+                    "mandatory": "true",
+                    "read_only": "false",
+                    "display": "false",
+                    "max_length": "32",
+                    "default_value": "+cmd",
+                    "reference": "sys_user",
+                    "name": "incident"
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config(&server.uri());
+
+    let output = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--output",
+            "csv",
+            "--instance",
+            &server.uri(),
+            "table",
+            "schema",
+            "incident",
+            "--extended",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "{stdout}");
+    assert_eq!(
+        lines[0],
+        "column,type,label,table,required,read_only,display,max_length,default_value,reference"
+    );
+    assert!(
+        stdout.contains(
+            "short_description,string,\"'=HYPERLINK(\"\"http://evil\"\")\",incident,false,false,false,160,,"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("caller_id,reference,Caller,incident,true,false,false,32,'+cmd,sys_user"),
+        "{stdout}"
+    );
+}
+
 // --- table stats ---
 
 #[tokio::test]
@@ -1980,6 +2101,112 @@ async fn test_table_list_display_value_both_compacts_pairs_in_json_and_splits_in
         "{csv}"
     );
     assert!(csv.contains(",INC0010025,4,4 - Low"), "{csv}");
+}
+
+#[tokio::test]
+async fn test_table_list_display_value_both_uniform_in_toon_auto_and_truncated_in_preview() {
+    let server = MockServer::start().await;
+    let long_raw = "r".repeat(2_005);
+    let long_disp = "d".repeat(2_005);
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_display_value", "all"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("X-Total-Count", "2")
+                .set_body_json(serde_json::json!({"result": [
+                    {
+                        "number": {"display_value": "INC1", "value": "INC1"},
+                        "assignment_group": {"display_value": "Network", "value": "grp1"},
+                        "description": {"display_value": long_disp, "value": long_raw}
+                    },
+                    {
+                        "number": {"display_value": "INC2", "value": "INC2"},
+                        "assignment_group": {"display_value": "", "value": ""},
+                        "description": {"display_value": "ok", "value": "ok"}
+                    }
+                ]})),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    // 1. JSON + --preview truncates inside {"value","display"} pairs.
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &[
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            "number,assignment_group,description",
+            "--display-value",
+            "both",
+            "--preview",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["fields_truncated"], true);
+    assert_eq!(
+        json["records"][0]["description"]["value"],
+        "r".repeat(2_000)
+    );
+    assert_eq!(
+        json["records"][0]["description"]["display"],
+        "d".repeat(2_000)
+    );
+
+    // 2. TOON uses compact tabular encoding [2]{...}: because split_both_columns_uniform
+    //    normalizes assignment_group.display and description.display across all rows.
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &[
+            "--output",
+            "toon",
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            "number,assignment_group,description",
+            "--display-value",
+            "both",
+            "--preview",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let toon = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        toon.contains("records[2]{assignment_group,assignment_group.display,description,description.display,number}:"),
+        "expected uniform TOON table header, got:\n{toon}"
+    );
+
+    // 3. Auto also splits both-columns uniformly so TOON can encode tabular rows.
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &[
+            "--output",
+            "auto",
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            "number,assignment_group,description",
+            "--display-value",
+            "both",
+            "--preview",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let auto_out = String::from_utf8(output.stdout).unwrap();
+    assert!(auto_out.contains("assignment_group.display"), "{auto_out}");
 }
 
 #[tokio::test]

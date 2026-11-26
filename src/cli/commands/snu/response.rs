@@ -30,29 +30,7 @@ pub(super) fn print_background_script_response(
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("SN-Utils background script response did not contain output"))?;
 
-    match output_format {
-        OutputFormat::Json | OutputFormat::Text => match serde_json::from_str::<Value>(data) {
-            Ok(json) => println!("{}", serde_json::to_string_pretty(&json)?),
-            Err(_) => println!("{}", data),
-        },
-        OutputFormat::Csv => {
-            println!("{}", data);
-        }
-        OutputFormat::Jsonl => match serde_json::from_str::<Value>(data) {
-            Ok(json) => print_output(&json, output_format)?,
-            Err(_) => println!("{}", data),
-        },
-        OutputFormat::Toon => match serde_json::from_str::<Value>(data) {
-            Ok(json) => print_output(&json, output_format)?,
-            Err(_) => println!("{}", data),
-        },
-        OutputFormat::Auto => match serde_json::from_str::<Value>(data) {
-            Ok(json) => print_output(&json, output_format)?,
-            Err(_) => println!("{}", data),
-        },
-    }
-
-    Ok(())
+    crate::cli::output::print_passthrough(data, output_format)
 }
 pub(super) fn resolve_script(file: Option<String>, code: Option<String>) -> anyhow::Result<String> {
     resolve_script_from(
@@ -77,10 +55,16 @@ pub(super) fn resolve_script_from<R: std::io::Read>(
     }
 
     if let Some(path) = file {
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| anyhow::anyhow!("Failed to read script file '{}': {}", path, e))?;
+        let content = crate::cli::io::read_input_file_to_string(
+            std::path::Path::new(&path),
+            "Script file",
+            "--file",
+        )?;
         if content.trim().is_empty() {
-            anyhow::bail!("Script file '{}' is empty.", path);
+            return Err(crate::models::validation::ValidationError::new(
+                "Script file passed to --file is empty.",
+            )
+            .into());
         }
         return Ok(content);
     }

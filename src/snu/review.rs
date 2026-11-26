@@ -61,12 +61,12 @@ pub async fn review_if_required(
         return Err(BridgeError::ReviewUnsupported { gate, origin });
     }
 
-    let correlation_id = payload
-        .get("agentRequestId")
-        .and_then(Value::as_str)
-        .map_or_else(|| format!("snow-cli-{}", random_hex(8)), str::to_owned);
-    let review_id = format!("rev_snow_cli_{}", random_hex(8));
-    let nonce = random_hex(16);
+    let correlation_id = match payload.get("agentRequestId").and_then(Value::as_str) {
+        Some(existing) => existing.to_owned(),
+        None => format!("snow-cli-{}", random_hex(8)?),
+    };
+    let review_id = format!("rev_snow_cli_{}", random_hex(8)?);
+    let nonce = random_hex(16)?;
     let command = review_command(payload);
     let params = review_params(payload);
     let payload_hash = payload_hash(&origin, &command, &params);
@@ -132,7 +132,7 @@ pub async fn review_if_required(
             gate,
             origin,
             feedback: field("userFeedback")
-                .map(|text| text.chars().take(1000).collect::<String>())
+                .map(sanitize_user_feedback)
                 .filter(|text| !text.trim().is_empty()),
         });
     }
@@ -254,6 +254,7 @@ fn summarize_large_values(params: &Value) -> Value {
                 .map(|(key, value)| (key.clone(), summarize_large_values(value)))
                 .collect(),
         ),
+        Value::Array(items) => Value::Array(items.iter().map(summarize_large_values).collect()),
         Value::String(text) if text.len() > CARD_VALUE_LIMIT => Value::String(format!(
             "<{} characters, sha256 {}>",
             text.len(),
@@ -261,6 +262,55 @@ fn summarize_large_values(params: &Value) -> Value {
         )),
         other => other.clone(),
     }
+}
+
+/// Strip ANSI escape sequences and non-printable control characters from
+/// browser-supplied rejection feedback before printing it to the terminal.
+fn sanitize_user_feedback(input: &str) -> String {
+    let mut cleaned = String::with_capacity(input.len().min(1000));
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if cleaned.chars().count() >= 1000 {
+            break;
+        }
+        if ch == '\u{1b}' {
+            match chars.peek().copied() {
+                // CSI sequence: ESC [ ... <final byte 0x40..=0x7E>
+                Some('[') => {
+                    chars.next();
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC sequence: ESC ] ... BEL or ST (ESC \)
+                Some(']') => {
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c == '\u{07}' {
+                            break;
+                        }
+                        if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+            continue;
+        }
+        if matches!(ch, '\n' | '\r' | '\t') {
+            cleaned.push(' ');
+        } else if !ch.is_control() {
+            cleaned.push(ch);
+        }
+    }
+    cleaned
 }
 
 /// Instance name and URL only; never the session token.
@@ -278,12 +328,12 @@ fn payload_hash(origin: &str, command: &str, params: &Value) -> String {
     hex(digest(&SHA256, canonical.as_bytes()).as_ref())
 }
 
-fn random_hex(bytes: usize) -> String {
+fn random_hex(bytes: usize) -> Result<String, BridgeError> {
     let mut buffer = vec![0u8; bytes];
-    // A failing system RNG leaves zeros; the nonce check still binds the
-    // reply to this request, and the id stays unique per correlation.
-    let _ = SystemRandom::new().fill(&mut buffer);
-    hex(&buffer)
+    SystemRandom::new()
+        .fill(&mut buffer)
+        .map_err(|_| BridgeError::GateStateUnavailable("system CSPRNG failure".to_owned()))?;
+    Ok(hex(&buffer))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -313,7 +363,12 @@ mod tests {
 
     #[test]
     fn large_values_are_summarized_for_the_card() {
-        let params = json!({"file_name": "a.png", "content": "A".repeat(5000), "nested": {"x": "B".repeat(3000)}});
+        let params = json!({
+            "file_name": "a.png",
+            "content": "A".repeat(5000),
+            "nested": {"x": "B".repeat(3000)},
+            "items": ["short", "C".repeat(4000)]
+        });
         let card = summarize_large_values(&params);
         assert_eq!(card["file_name"], "a.png");
         assert!(
@@ -328,6 +383,20 @@ mod tests {
                 .unwrap()
                 .starts_with("<3000 characters")
         );
+        assert_eq!(card["items"][0], "short");
+        assert!(
+            card["items"][1]
+                .as_str()
+                .unwrap()
+                .starts_with("<4000 characters, sha256 ")
+        );
+    }
+
+    #[test]
+    fn sanitize_user_feedback_strips_ansi_and_control_chars() {
+        let raw = "Denied \u{1b}[31mred\u{1b}[0m \u{1b}]0;title\u{07}line1\nline2\u{00}\u{08}ok";
+        assert_eq!(sanitize_user_feedback(raw), "Denied red line1 line2ok");
+        assert!(random_hex(16).unwrap().len() == 32);
     }
 
     #[test]

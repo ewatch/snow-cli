@@ -16,18 +16,28 @@
 
 use std::fmt;
 
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 /// Placeholder rendered anywhere a secret would otherwise be printed.
 const REDACTED: &str = "<redacted>";
 
 /// Wraps a sensitive value so it cannot accidentally leak through `Debug`,
-/// `Display`, or `tracing`. Read the inner value only through
-/// [`Secret::expose_secret`].
+/// `Display`, or `tracing`, and zeroizes its backing memory on drop. Read the
+/// inner value only through [`Secret::expose_secret`].
 ///
 /// Defaults to wrapping a `String`, the common case (API tokens, passwords).
 #[derive(Clone, PartialEq, Eq)]
-pub struct Secret<T = String>(T);
+pub struct Secret<T: Zeroize = String>(T);
 
-impl<T> Secret<T> {
+impl<T: Zeroize> Drop for Secret<T> {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl<T: Zeroize> ZeroizeOnDrop for Secret<T> {}
+
+impl<T: Zeroize> Secret<T> {
     /// Wrap a value, marking it as secret.
     pub fn new(value: T) -> Self {
         Self(value)
@@ -41,7 +51,7 @@ impl<T> Secret<T> {
     }
 }
 
-impl<T> fmt::Debug for Secret<T> {
+impl<T: Zeroize> fmt::Debug for Secret<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Keep the `Secret(...)` shape so `#[derive(Debug)]` on a containing
         // struct reads naturally, but never show the value.
@@ -49,13 +59,13 @@ impl<T> fmt::Debug for Secret<T> {
     }
 }
 
-impl<T> fmt::Display for Secret<T> {
+impl<T: Zeroize> fmt::Display for Secret<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(REDACTED)
     }
 }
 
-impl<T> From<T> for Secret<T> {
+impl<T: Zeroize> From<T> for Secret<T> {
     fn from(value: T) -> Self {
         Self(value)
     }
@@ -63,14 +73,14 @@ impl<T> From<T> for Secret<T> {
 
 /// Transparent serialization: the real value is written, so secrets round-trip
 /// through persisted config/keychain payloads unchanged.
-impl<T: serde::Serialize> serde::Serialize for Secret<T> {
+impl<T: Zeroize + serde::Serialize> serde::Serialize for Secret<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.0.serialize(serializer)
     }
 }
 
 /// Transparent deserialization: a plain scalar in JSON becomes a `Secret<T>`.
-impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Secret<T> {
+impl<'de, T: Zeroize + serde::Deserialize<'de>> serde::Deserialize<'de> for Secret<T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self(T::deserialize(deserializer)?))
     }
@@ -150,5 +160,35 @@ mod tests {
         let a: Secret<String> = "x".to_string().into();
         let b = Secret::new("x".to_string());
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn drop_zeroizes_inner_value() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        struct Probe {
+            zeroized: Arc<AtomicBool>,
+        }
+
+        impl Zeroize for Probe {
+            fn zeroize(&mut self) {
+                self.zeroized.store(true, Ordering::SeqCst);
+            }
+        }
+
+        fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<Secret<String>>();
+
+        let flag = Arc::new(AtomicBool::new(false));
+        {
+            let _secret = Secret::new(Probe {
+                zeroized: Arc::clone(&flag),
+            });
+            assert!(!flag.load(Ordering::SeqCst));
+        }
+        assert!(flag.load(Ordering::SeqCst));
     }
 }

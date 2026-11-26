@@ -23,7 +23,7 @@ pub(super) fn resolve_record_data(data: Option<String>) -> anyhow::Result<Map<St
 }
 
 pub(super) async fn handle_create_record(
-    table: String,
+    table: TableName,
     data: Option<String>,
     scope: Option<String>,
     timeout_secs: u64,
@@ -42,7 +42,7 @@ pub(super) async fn handle_create_record(
             &json!({
                 "action": "createRecord",
                 "agentRequestId": correlation_id,
-                "tableName": table,
+                "tableName": table.as_str(),
                 // SN-Utils' createRecord handler reads the record body from
                 // `payload` (it rejects the message with "Missing payload or
                 // tableName for createRecord" otherwise). `fields` is kept for
@@ -59,7 +59,7 @@ pub(super) async fn handle_create_record(
         .await?;
 
     print_output(
-        &build_create_record_result(&table, &response)?,
+        &build_create_record_result(table.as_str(), &response)?,
         output_format,
     )
 }
@@ -164,8 +164,8 @@ pub(super) async fn handle_list_tables(
 }
 
 pub(super) async fn handle_get_record(
-    table: String,
-    sys_id: String,
+    table: TableName,
+    sys_id: SysId,
     fields: Option<String>,
     timeout_secs: u64,
     target_origin: Option<String>,
@@ -176,29 +176,10 @@ pub(super) async fn handle_get_record(
         .as_deref()
         .filter(|fields| !fields.trim().is_empty())
         .unwrap_or(DEFAULT_SNU_FIELDS);
-    let sys_id_query = format!("sys_id={sys_id}");
-    let response = query_records_via_bridge(
-        &bridge,
-        &instance,
-        QueryRecordsRequest {
-            table: &table,
-            fields,
-            limit: 1,
-            query: Some(&sys_id_query),
-            order_by: None,
-        },
-        timeout_secs,
-    )
-    .await?;
-    let record = response
-        .extra
-        .get("records")
-        .and_then(Value::as_array)
-        .and_then(|records| records.first())
-        .cloned()
-        .unwrap_or(Value::Null);
+    let record =
+        fetch_record_by_sys_id(&bridge, &instance, timeout_secs, &table, &sys_id, fields).await?;
     print_output(
-        &json!({ "table": table, "sys_id": sys_id, "record": record }),
+        &json!({ "table": table.as_str(), "sys_id": sys_id.as_str(), "record": record }),
         output_format,
     )
 }
@@ -231,8 +212,8 @@ pub(super) fn resolve_update_fields(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_update_record(
-    table: String,
-    sys_id: String,
+    table: TableName,
+    sys_id: SysId,
     data: Option<String>,
     field: Option<String>,
     content: Option<String>,
@@ -250,15 +231,15 @@ pub(super) async fn handle_update_record(
     // against, so the request is always rejected. The generated GlideRecord
     // script prints a machine-parseable JSON result we parse for success.
     let (bridge, instance) = connect_and_wait_for_session(timeout_secs, target_origin).await?;
-    let script = build_update_script(&table, &sys_id, &fields_object);
+    let script = build_update_script(table.as_str(), sys_id.as_str(), &fields_object);
     let response = run_bg_mutation(&bridge, &instance, &script, timeout_secs).await?;
 
     if !await_confirmation {
         return print_output(
             &json!({
                 "success": true,
-                "table": table,
-                "sys_id": sys_id,
+                "table": table.as_str(),
+                "sys_id": sys_id.as_str(),
                 "fields": requested_fields,
                 "response": response,
             }),
@@ -281,8 +262,8 @@ pub(super) async fn handle_update_record(
         &json!({
             "success": true,
             "awaited": true,
-            "table": table,
-            "sys_id": sys_id,
+            "table": table.as_str(),
+            "sys_id": sys_id.as_str(),
             "fields": requested_fields,
             "persisted": persisted,
             "warnings": warnings,
@@ -313,8 +294,8 @@ pub(super) async fn snu_fetch_persisted_record(
     bridge: &BrokerBridge,
     instance: &SnuInstance,
     timeout_secs: u64,
-    table: &str,
-    sys_id: &str,
+    table: &TableName,
+    sys_id: &SysId,
     field_names: &[&str],
 ) -> anyhow::Result<Value> {
     let fields = if field_names.is_empty() {
@@ -329,16 +310,16 @@ pub(super) async fn fetch_record_by_sys_id(
     bridge: &BrokerBridge,
     instance: &SnuInstance,
     timeout_secs: u64,
-    table: &str,
-    sys_id: &str,
+    table: &TableName,
+    sys_id: &SysId,
     fields: &str,
 ) -> anyhow::Result<Value> {
-    let sys_id_query = format!("sys_id={sys_id}");
+    let sys_id_query = format!("sys_id={}", sys_id.as_str());
     let response = query_records_via_bridge(
         bridge,
         instance,
         QueryRecordsRequest {
-            table,
+            table: table.as_str(),
             fields,
             limit: 1,
             query: Some(&sys_id_query),

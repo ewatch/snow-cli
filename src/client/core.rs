@@ -4,27 +4,20 @@ use std::time::Duration;
 use http::HeaderMap;
 use reqwest::{Client, Response as TransportResponse, Url};
 
+use crate::models::secret::Secret;
 use crate::policy::ExecutionPolicy;
 
 use super::{DEFAULT_TIMEOUT_SECS, FORM_SCRIPT_ENDPOINT};
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormSession {
-    pub g_ck: String,
-}
-
-impl fmt::Debug for FormSession {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FormSession")
-            .field("g_ck", &"<redacted>")
-            .finish()
-    }
+    pub g_ck: Secret<String>,
 }
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct SessionState {
-    pub(super) jsessionid: Option<String>,
-    pub(super) form_cookie_header: Option<String>,
+    pub(super) jsessionid: Option<Secret<String>>,
+    pub(super) form_cookie_header: Option<Secret<String>>,
     // Native credentials live only in the authenticator; remember readiness, not secrets.
     pub(super) native_form_bootstrapped: bool,
     pub(super) form_session: Option<FormSession>,
@@ -94,6 +87,9 @@ pub struct BackgroundScriptOptions {
 /// pagination, and error mapping.
 pub struct SnowClient {
     pub(super) http: Client,
+    /// Streaming HTTP client configured with connect + idle read timeouts
+    /// (without a fixed total request timeout) for large attachment downloads.
+    pub(super) http_streaming: Client,
     pub(super) base_url: String,
     pub(super) authenticator: Box<dyn crate::auth::Authenticator>,
     pub(super) session: SessionState,
@@ -140,17 +136,41 @@ impl Default for ClientConfig {
     }
 }
 
-pub(super) fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost")
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host.starts_with("127.")
+/// Maximum number of same-origin redirects allowed for authenticated non-native requests.
+const MAX_REDIRECT_HOPS: usize = 10;
+
+/// Cap TCP/TLS connection setup wait so dead hosts fail quickly instead of
+/// stalling for the full 90s request timeout.
+const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 15;
+
+fn build_client_redirect_policy(
+    auth_type: crate::config::AuthMethod,
+    expected_base: Url,
+) -> reqwest::redirect::Policy {
+    if auth_type == crate::config::AuthMethod::NativeSession {
+        reqwest::redirect::Policy::none()
+    } else {
+        reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= MAX_REDIRECT_HOPS {
+                return attempt.error("Too many redirects");
+            }
+            if !is_safe_authenticated_url(attempt.url())
+                || !same_origin(&expected_base, attempt.url())
+            {
+                return attempt.error("Refusing to follow redirect to unsafe or cross-origin URL");
+            }
+            attempt.follow()
+        })
+    }
 }
 
 pub(super) fn is_safe_authenticated_url(url: &Url) -> bool {
+    if !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
     match url.scheme() {
         "https" => true,
-        "http" => url.host_str().map(is_loopback_host).unwrap_or(false),
+        "http" => crate::config::profile::is_loopback_url(url),
         _ => false,
     }
 }
@@ -172,9 +192,7 @@ pub(super) fn endpoint_requires_form_session(endpoint: &str) -> bool {
 }
 
 pub(super) fn same_origin(left: &Url, right: &Url) -> bool {
-    left.scheme() == right.scheme()
-        && left.host_str() == right.host_str()
-        && left.port_or_known_default() == right.port_or_known_default()
+    left.origin() == right.origin()
 }
 
 pub(super) fn validate_external_url(url: &Url, operation: &str) -> anyhow::Result<()> {
@@ -253,19 +271,34 @@ impl SnowClient {
         if let Some(session) = authenticator.native_session_credentials() {
             session.ensure_instance(&base_url)?;
         }
-        let builder = Client::builder();
-        let builder = if authenticator.auth_type() == crate::config::AuthMethod::NativeSession {
-            builder.redirect(reqwest::redirect::Policy::none())
-        } else {
-            builder
-        };
-        let http = builder
-            .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(config.timeout_secs))
+        let user_agent = format!("snow-cli/{}", env!("CARGO_PKG_VERSION"));
+        let connect_timeout =
+            Duration::from_secs(config.timeout_secs.clamp(1, DEFAULT_CONNECT_TIMEOUT_SECS));
+        let request_timeout = Duration::from_secs(config.timeout_secs);
+
+        let http = Client::builder()
+            .redirect(build_client_redirect_policy(
+                authenticator.auth_type(),
+                parsed_base.clone(),
+            ))
+            .user_agent(&user_agent)
+            .connect_timeout(connect_timeout)
+            .timeout(request_timeout)
+            .build()?;
+
+        let http_streaming = Client::builder()
+            .redirect(build_client_redirect_policy(
+                authenticator.auth_type(),
+                parsed_base,
+            ))
+            .user_agent(&user_agent)
+            .connect_timeout(connect_timeout)
+            .read_timeout(request_timeout)
             .build()?;
 
         Ok(Self {
             http,
+            http_streaming,
             base_url,
             authenticator,
             session: SessionState::default(),
@@ -280,7 +313,10 @@ impl SnowClient {
     }
 
     pub fn jsessionid(&self) -> Option<&str> {
-        self.session.jsessionid.as_deref()
+        self.session
+            .jsessionid
+            .as_ref()
+            .map(|secret| secret.expose_secret().as_str())
     }
 
     pub fn form_session(&self) -> Option<&FormSession> {
@@ -346,5 +382,57 @@ mod tests {
     fn test_default_client_config() {
         let config = ClientConfig::default();
         assert_eq!(config.timeout_secs, DEFAULT_TIMEOUT_SECS);
+    }
+
+    #[test]
+    fn test_is_safe_authenticated_url_loopback_and_ipv6() {
+        for safe in [
+            "https://dev12345.service-now.com/api/now/table/incident",
+            "http://127.0.0.1:8080/api",
+            "http://127.0.0.2:8080/api",
+            "http://localhost:8080/api",
+            "http://[::1]:8080/api",
+        ] {
+            let url = Url::parse(safe).unwrap();
+            assert!(is_safe_authenticated_url(&url), "expected safe URL: {safe}");
+        }
+
+        for unsafe_url in [
+            "http://127.attacker.example/api",
+            "http://127.0.0.1.nip.io/api",
+            "http://localhost.attacker.example/api",
+            "http://dev12345.service-now.com/api",
+            "https://user:pass@dev12345.service-now.com/api",
+        ] {
+            let url = Url::parse(unsafe_url).unwrap();
+            assert!(
+                !is_safe_authenticated_url(&url),
+                "expected unsafe URL to be rejected: {unsafe_url}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_authenticated_url_rejects_userinfo_and_session_state_redacts_debug() {
+        let err = resolve_authenticated_url(
+            "https://dev12345.service-now.com",
+            "https://user:pass@dev12345.service-now.com/api/now/table/incident",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unsafe URL"), "{err}");
+
+        let state = SessionState {
+            jsessionid: Some(Secret::new("jsession-secret-999".to_string())),
+            form_cookie_header: Some(Secret::new("JSESSIONID=jsession-secret-999".to_string())),
+            native_form_bootstrapped: false,
+            form_session: Some(FormSession {
+                g_ck: Secret::new("gck-secret-999".to_string()),
+            }),
+        };
+        let debug = format!("{state:?}");
+        assert!(!debug.contains("jsession-secret-999"));
+        assert!(!debug.contains("gck-secret-999"));
+        assert!(debug.contains("<redacted>"));
     }
 }
