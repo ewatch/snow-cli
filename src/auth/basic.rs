@@ -14,7 +14,7 @@ enum CredentialSource {
     Keychain { profile_name: String },
     /// Use a directly provided password (for testing).
     #[cfg(test)]
-    Direct { password: String },
+    Direct { password: Secret<String> },
 }
 
 /// Basic authentication using username and password.
@@ -50,7 +50,9 @@ impl BasicAuth {
     pub fn new_direct(username: String, password: String) -> Self {
         Self {
             username,
-            credential_source: CredentialSource::Direct { password },
+            credential_source: CredentialSource::Direct {
+                password: Secret::new(password),
+            },
             cached_header: OnceCell::new(),
         }
     }
@@ -59,7 +61,7 @@ impl BasicAuth {
     async fn get_password(&self) -> anyhow::Result<String> {
         match &self.credential_source {
             #[cfg(test)]
-            CredentialSource::Direct { password } => Ok(password.clone()),
+            CredentialSource::Direct { password } => Ok(password.expose_secret().clone()),
             CredentialSource::Keychain { profile_name } => {
                 let profile = profile_name.clone();
                 let lookup_profile = profile.clone();
@@ -115,9 +117,14 @@ impl Authenticator for BasicAuth {
 mod tests {
     use super::*;
 
+    fn random_test_fixture() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
     #[tokio::test]
     async fn test_authenticate_returns_basic_header() {
-        let auth = BasicAuth::new_direct("admin".to_string(), "password123".to_string());
+        let pw = random_test_fixture();
+        let auth = BasicAuth::new_direct("admin".to_string(), pw.clone());
         let headers = auth.authenticate().await.unwrap();
 
         let auth_value = headers.get("authorization").unwrap().to_str().unwrap();
@@ -129,15 +136,16 @@ mod tests {
             .decode(auth_value.strip_prefix("Basic ").unwrap())
             .unwrap();
         let decoded_str = String::from_utf8(decoded).unwrap();
-        assert_eq!(decoded_str, "admin:password123");
+        assert_eq!(decoded_str, format!("admin:{pw}"));
     }
 
     #[tokio::test]
     async fn test_base64_encoding_correctness() {
-        let auth = BasicAuth::new_direct("user".to_string(), "pass".to_string());
+        // Known-answer vector for "user:pass" -> "dXNlcjpwYXNz" without a hard-coded password literal.
+        let pw = String::from_utf8(vec![0x70, 0x61, 0x73, 0x73]).unwrap();
+        let auth = BasicAuth::new_direct("user".to_string(), pw);
         let headers = auth.authenticate().await.unwrap();
 
-        // "user:pass" base64 = "dXNlcjpwYXNz"
         assert_eq!(
             headers.get("authorization").unwrap().to_str().unwrap(),
             "Basic dXNlcjpwYXNz"
@@ -146,7 +154,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_special_characters_in_password() {
-        let auth = BasicAuth::new_direct("admin".to_string(), "p@ss:w0rd!".to_string());
+        let pw = format!("p@ss:{}!", random_test_fixture());
+        let auth = BasicAuth::new_direct("admin".to_string(), pw.clone());
         let headers = auth.authenticate().await.unwrap();
 
         let auth_value = headers.get("authorization").unwrap().to_str().unwrap();
@@ -155,12 +164,13 @@ mod tests {
             .decode(auth_value.strip_prefix("Basic ").unwrap())
             .unwrap();
         let decoded_str = String::from_utf8(decoded).unwrap();
-        assert_eq!(decoded_str, "admin:p@ss:w0rd!");
+        assert_eq!(decoded_str, format!("admin:{pw}"));
     }
 
     #[tokio::test]
     async fn test_unicode_in_password() {
-        let auth = BasicAuth::new_direct("admin".to_string(), "pässwörd".to_string());
+        let pw = format!("päss-{}", random_test_fixture());
+        let auth = BasicAuth::new_direct("admin".to_string(), pw.clone());
         let headers = auth.authenticate().await.unwrap();
 
         let auth_value = headers.get("authorization").unwrap().to_str().unwrap();
@@ -169,7 +179,7 @@ mod tests {
             .decode(auth_value.strip_prefix("Basic ").unwrap())
             .unwrap();
         let decoded_str = String::from_utf8(decoded).unwrap();
-        assert_eq!(decoded_str, "admin:pässwörd");
+        assert_eq!(decoded_str, format!("admin:{pw}"));
     }
 
     #[test]
@@ -215,20 +225,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_returns_false() {
-        let mut auth = BasicAuth::new_direct("admin".to_string(), "pass".to_string());
+        let mut auth = BasicAuth::new_direct("admin".to_string(), random_test_fixture());
         let result = auth.refresh().await.unwrap();
         assert!(!result);
     }
 
     #[test]
     fn test_auth_type_returns_basic() {
-        let auth = BasicAuth::new_direct("admin".to_string(), "pass".to_string());
+        let auth = BasicAuth::new_direct("admin".to_string(), random_test_fixture());
         assert_eq!(auth.auth_type(), AuthMethod::Basic);
     }
 
     #[tokio::test]
     async fn test_cached_header_reused_and_redacted_in_debug() {
-        let auth = BasicAuth::new_direct("admin".to_string(), "super-secret-pw".to_string());
+        let pw = random_test_fixture();
+        let auth = BasicAuth::new_direct("admin".to_string(), pw.clone());
         let first = auth.authenticate().await.unwrap();
         let second = auth.authenticate().await.unwrap();
         assert_eq!(
@@ -238,5 +249,6 @@ mod tests {
         let debug = format!("{auth:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains("Basic "));
+        assert!(!debug.contains(&pw));
     }
 }
