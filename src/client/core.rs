@@ -91,6 +91,9 @@ pub struct SnowClient {
     /// (without a fixed total request timeout) for large attachment downloads.
     pub(super) http_streaming: Client,
     pub(super) base_url: String,
+    /// Validated parsed instance URL cached at client construction time so
+    /// per-request URL resolution never re-parses `base_url`.
+    pub(super) parsed_base_url: Url,
     pub(super) authenticator: Box<dyn crate::auth::Authenticator>,
     pub(super) session: SessionState,
     pub(super) timeout_secs: u64,
@@ -206,6 +209,7 @@ pub(super) fn validate_external_url(url: &Url, operation: &str) -> anyhow::Resul
     )
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_authenticated_url(base_url: &str, path: &str) -> anyhow::Result<String> {
     let base = Url::parse(base_url)
         .map_err(|error| anyhow::anyhow!("Invalid instance URL '{}': {}", base_url, error))?;
@@ -215,7 +219,13 @@ pub(crate) fn resolve_authenticated_url(base_url: &str, path: &str) -> anyhow::R
             base_url
         );
     }
+    resolve_authenticated_url_from_base(&base, path)
+}
 
+pub(super) fn resolve_authenticated_url_from_base(
+    base: &Url,
+    path: &str,
+) -> anyhow::Result<String> {
     let candidate = if path.starts_with("http://") || path.starts_with("https://") {
         Url::parse(path)
             .map_err(|error| anyhow::anyhow!("Invalid request URL '{}': {}", path, error))?
@@ -232,7 +242,7 @@ pub(crate) fn resolve_authenticated_url(base_url: &str, path: &str) -> anyhow::R
         );
     }
 
-    if !same_origin(&base, &candidate) {
+    if !same_origin(base, &candidate) {
         anyhow::bail!(
             "Refusing to send credentials to non-instance URL '{}'. Expected same origin as '{}'.",
             candidate,
@@ -289,7 +299,7 @@ impl SnowClient {
         let http_streaming = Client::builder()
             .redirect(build_client_redirect_policy(
                 authenticator.auth_type(),
-                parsed_base,
+                parsed_base.clone(),
             ))
             .user_agent(&user_agent)
             .connect_timeout(connect_timeout)
@@ -300,6 +310,7 @@ impl SnowClient {
             http,
             http_streaming,
             base_url,
+            parsed_base_url: parsed_base,
             authenticator,
             session: SessionState::default(),
             timeout_secs: config.timeout_secs,

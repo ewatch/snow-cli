@@ -27,6 +27,15 @@ pub fn display_value_params(mode: Option<DisplayValue>) -> Vec<(&'static str, &'
     }
 }
 
+/// Summary returned by streaming page-by-page table reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TablePageSummary {
+    pub offset: usize,
+    pub returned: usize,
+    pub total: Option<usize>,
+    pub truncated: bool,
+}
+
 impl SnowClient {
     /// Fetch paginated records from the Table API.
     ///
@@ -97,6 +106,46 @@ impl SnowClient {
         order_by: Option<&crate::models::order_by::OrderBy>,
         options: &TableReadOptions,
     ) -> anyhow::Result<pagination::TableListResult> {
+        let mut records = Vec::new();
+        let summary = self
+            .for_each_table_records_with_options(
+                table,
+                query,
+                fields,
+                pagination,
+                order_by,
+                options,
+                |page| {
+                    records.extend(page);
+                    Ok(())
+                },
+            )
+            .await?;
+        Ok(pagination::TableListResult {
+            records,
+            offset: summary.offset,
+            total: summary.total,
+            truncated: summary.truncated,
+            fields_truncated: false,
+        })
+    }
+
+    /// Stream Table API records page-by-page to `on_page` without buffering
+    /// every page in memory.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn for_each_table_records_with_options<F>(
+        &mut self,
+        table: &crate::models::identifiers::TableName,
+        query: Option<&str>,
+        fields: Option<&str>,
+        pagination: &pagination::PaginationConfig,
+        order_by: Option<&crate::models::order_by::OrderBy>,
+        options: &TableReadOptions,
+        on_page: F,
+    ) -> anyhow::Result<TablePageSummary>
+    where
+        F: FnMut(Vec<crate::models::record::Record>) -> anyhow::Result<()>,
+    {
         let path = format!("/api/now/table/{table}");
         let ordered_query = order_by.map(|order| order.apply_to_query(query));
         let query = ordered_query.as_deref().or(query);
@@ -111,7 +160,8 @@ impl SnowClient {
             params.push(("sysparm_fields", f));
         }
         params.extend(display_value_params(options.display_value));
-        self.get_paged_records(&path, &params, pagination).await
+        self.for_each_paged_records(&path, &params, pagination, on_page)
+            .await
     }
 
     /// Fetch `sysparm_limit`/`sysparm_offset`-paged records from any
@@ -126,20 +176,48 @@ impl SnowClient {
         params: &[(&str, &str)],
         pagination: &pagination::PaginationConfig,
     ) -> anyhow::Result<pagination::TableListResult> {
+        let mut all_records = Vec::new();
+        let summary = self
+            .for_each_paged_records(path, params, pagination, |page| {
+                all_records.extend(page);
+                Ok(())
+            })
+            .await?;
+        Ok(pagination::TableListResult {
+            records: all_records,
+            offset: summary.offset,
+            total: summary.total,
+            truncated: summary.truncated,
+            fields_truncated: false,
+        })
+    }
+
+    /// Stream `sysparm_limit`/`sysparm_offset`-paged records page-by-page to
+    /// `on_page`, enforcing the same pagination, `Link rel="next"`, and
+    /// truncation semantics as [`Self::get_paged_records`].
+    pub async fn for_each_paged_records<F>(
+        &mut self,
+        path: &str,
+        params: &[(&str, &str)],
+        pagination: &pagination::PaginationConfig,
+        mut on_page: F,
+    ) -> anyhow::Result<TablePageSummary>
+    where
+        F: FnMut(Vec<crate::models::record::Record>) -> anyhow::Result<()>,
+    {
         if pagination.page_size == 0 {
             return Err(ValidationError::new("Pagination page_size must be at least 1").into());
         }
         if pagination.limit == Some(0) {
-            return Ok(pagination::TableListResult {
-                records: Vec::new(),
+            return Ok(TablePageSummary {
                 offset: pagination.offset,
+                returned: 0,
                 total: None,
                 truncated: false,
-                fields_truncated: false,
             });
         }
 
-        let mut all_records = Vec::new();
+        let mut returned = 0usize;
         let mut offset = pagination.offset;
         let page_size = pagination.page_size;
         let limit = pagination.limit;
@@ -152,7 +230,7 @@ impl SnowClient {
         loop {
             // Never request more records than the remaining limit allows.
             let request_size = match limit {
-                Some(lim) => page_size.min(lim.saturating_sub(all_records.len())),
+                Some(lim) => page_size.min(lim.saturating_sub(returned)),
                 None => page_size,
             };
 
@@ -179,29 +257,41 @@ impl SnowClient {
             let link_info = parse_link_header(response.headers());
             let body = response.text().await?;
             tracing::debug!(body_len = body.len(), "Parsing JSON response");
-            let page: crate::models::record::TableResponse = serde_json::from_str(&body)
+            let mut page: crate::models::record::TableResponse = serde_json::from_str(&body)
                 .map_err(|_| super::error::TransportError::InvalidResponse)?;
 
             let count = page.result.len();
+            let hit_limit = if let Some(lim) = limit {
+                let remaining = lim.saturating_sub(returned);
+                if count >= remaining {
+                    maybe_more = count > remaining
+                        || link_info.next_url.is_some()
+                        || (!link_info.has_any_link && count == request_size);
+                    page.result.truncate(remaining);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            let delivered = page.result.len();
+            returned = returned.saturating_add(delivered);
             tracing::debug!(
                 path = %path,
                 offset = offset,
                 fetched = count,
-                total_so_far = all_records.len() + count,
+                total_so_far = returned,
                 has_next_link = link_info.next_url.is_some(),
                 "Fetched page"
             );
 
-            all_records.extend(page.result);
+            if delivered > 0 {
+                on_page(page.result)?;
+            }
 
-            // Check if we've reached the configured limit
-            if let Some(lim) = limit
-                && all_records.len() >= lim
-            {
-                maybe_more = all_records.len() > lim
-                    || link_info.next_url.is_some()
-                    || (!link_info.has_any_link && count == request_size);
-                all_records.truncate(lim);
+            if hit_limit {
                 break;
             }
 
@@ -235,8 +325,7 @@ impl SnowClient {
         let truncated = match total {
             Some(t) => {
                 if limit.is_some() {
-                    !all_records.is_empty()
-                        && pagination.offset.saturating_add(all_records.len()) < t
+                    returned > 0 && pagination.offset.saturating_add(returned) < t
                 } else {
                     maybe_more
                 }
@@ -244,12 +333,11 @@ impl SnowClient {
             None => maybe_more,
         };
 
-        Ok(pagination::TableListResult {
-            records: all_records,
+        Ok(TablePageSummary {
             offset: pagination.offset,
+            returned,
             total,
             truncated,
-            fields_truncated: false,
         })
     }
 
@@ -1075,5 +1163,70 @@ mod tests {
             .await
             .expect_err("cross-origin Link rel=\"next\" must be refused");
         assert!(err.to_string().contains("non-instance URL"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_for_each_paged_records_streams_pages_incrementally() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .and(query_param("sysparm_limit", "2"))
+            .and(query_param("sysparm_offset", "0"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("X-Total-Count", "3")
+                    .set_body_json(serde_json::json!({
+                        "result": [{"sys_id": "1"}, {"sys_id": "2"}]
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .and(query_param("sysparm_limit", "2"))
+            .and(query_param("sysparm_offset", "2"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("X-Total-Count", "3")
+                    .set_body_json(serde_json::json!({
+                        "result": [{"sys_id": "3"}]
+                    })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let pagination = pagination::PaginationConfig::default().with_page_size(2);
+        let mut page_sizes = Vec::new();
+        let mut seen_ids = Vec::new();
+        let summary = client
+            .for_each_table_records_with_options(
+                &incident_table(),
+                None,
+                None,
+                &pagination,
+                None,
+                &TableReadOptions::default(),
+                |page| {
+                    page_sizes.push(page.len());
+                    seen_ids.extend(
+                        page.into_iter()
+                            .filter_map(|r| r.sys_id().map(ToOwned::to_owned)),
+                    );
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(page_sizes, vec![2, 1]);
+        assert_eq!(seen_ids, vec!["1", "2", "3"]);
+        assert_eq!(summary.returned, 3);
+        assert_eq!(summary.total, Some(3));
+        assert!(!summary.truncated);
     }
 }

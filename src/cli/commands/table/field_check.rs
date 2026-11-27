@@ -38,6 +38,11 @@ pub(super) struct CheckInputs<'a> {
     pub query: Option<&'a str>,
     pub order_by: Option<&'a OrderBy>,
     pub group_by: Option<&'a str>,
+    pub avg: Option<&'a str>,
+    pub min: Option<&'a str>,
+    pub max: Option<&'a str>,
+    pub sum: Option<&'a str>,
+    pub having: &'a [String],
 }
 
 impl FieldChecks {
@@ -67,6 +72,21 @@ impl FieldChecks {
         for field in list(inputs.group_by) {
             checks.push(field, FieldSource::GroupBy);
         }
+        for field in list(inputs.avg) {
+            checks.push(field, FieldSource::Avg);
+        }
+        for field in list(inputs.min) {
+            checks.push(field, FieldSource::Min);
+        }
+        for field in list(inputs.max) {
+            checks.push(field, FieldSource::Max);
+        }
+        for field in list(inputs.sum) {
+            checks.push(field, FieldSource::Sum);
+        }
+        for field in inputs.having {
+            checks.push(field.clone(), FieldSource::Having);
+        }
         checks
     }
 
@@ -80,9 +100,20 @@ impl FieldChecks {
         self.0.is_empty()
     }
 
+    /// Subset of checked paths that dot-walk across a reference (`a.b`).
+    pub(super) fn dot_walked(&self) -> Self {
+        Self(
+            self.0
+                .iter()
+                .filter(|(field, _)| field.contains('.'))
+                .cloned()
+                .collect(),
+        )
+    }
+
     /// Whether an empty result warrants a probe: only names that shape the
-    /// result (query, sort, grouping) matter then; a projection-only check
-    /// on an empty page has nothing to report.
+    /// result (query, sort, grouping, aggregates) matter then; a
+    /// projection-only check on an empty page has nothing to report.
     pub(super) fn needs_probe_on_empty(&self) -> bool {
         self.0
             .iter()
@@ -113,12 +144,85 @@ impl FieldChecks {
                 .split(',')
                 .any(|existing| existing.trim() == field)
             {
-                projection.push(',');
+                if !projection.is_empty() {
+                    projection.push(',');
+                }
                 projection.push_str(field);
                 injected.push(field.to_string());
             }
         }
         (Some(projection), injected)
+    }
+
+    /// Verify checked paths against fetched records in `warn` mode.
+    ///
+    /// - When `records` is empty and any non-projection field was checked,
+    ///   probes one unfiltered row.
+    /// - When `all_fields` is true (`--fields '*'`), top-level columns are
+    ///   checked directly against `records`, while dot-walked paths (which
+    ///   ServiceNow omits when `sysparm_fields` is not sent) are verified via
+    ///   a targeted one-row probe so `--fields '*'` matches `--check-fields
+    ///   error` behavior. If that probe fails, falls back to root-segment
+    ///   verification against `records`.
+    pub(super) async fn check_records(
+        &self,
+        client: &mut SnowClient,
+        table: &TableName,
+        records: &[Record],
+        all_fields: bool,
+        query_no_domain: bool,
+    ) -> Vec<FieldWarning> {
+        if self.is_empty() {
+            return Vec::new();
+        }
+        if records.is_empty() {
+            if self.needs_probe_on_empty() {
+                return self
+                    .probe(client, table, query_no_domain)
+                    .await
+                    .unwrap_or_default();
+            }
+            return Vec::new();
+        }
+        if !all_fields {
+            return self.missing(table, records, false);
+        }
+        let dot_checks = self.dot_walked();
+        if dot_checks.is_empty() {
+            return self.missing(table, records, false);
+        }
+        let Some(probed_missing) = dot_checks.probe(client, table, query_no_domain).await else {
+            return self.missing(table, records, true);
+        };
+        self.merge_all_fields_warnings(table, records, &probed_missing)
+    }
+
+    /// Combine top-level record checks with probed dot-walk warnings in
+    /// original first-seen order.
+    fn merge_all_fields_warnings(
+        &self,
+        table: &TableName,
+        records: &[Record],
+        probed_dot_missing: &[FieldWarning],
+    ) -> Vec<FieldWarning> {
+        self.0
+            .iter()
+            .filter_map(|(field, source)| {
+                if field.contains('.') {
+                    probed_dot_missing
+                        .iter()
+                        .find(|warning| warning.field == *field)
+                        .cloned()
+                } else if !records
+                    .iter()
+                    .any(|record| record.fields.contains_key(field))
+                {
+                    Some(FieldWarning::unknown_field(table.as_str(), field, *source))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Warnings for checked paths absent from every record. `all_fields`
@@ -266,9 +370,67 @@ mod tests {
                 fields: Some("number,extends"),
                 query: Some("active=true^assigned_two.name=Abel Tuter^number=1"),
                 order_by: Some(&order),
-                group_by: None,
+                ..CheckInputs::default()
             },
         )
+    }
+
+    #[test]
+    fn collects_aggregate_and_having_sources() {
+        let having = vec!["reassignment_count".to_string(), "priority".to_string()];
+        let collected = FieldChecks::collect(
+            CheckFields::Warn,
+            CheckInputs {
+                group_by: Some("state"),
+                avg: Some("priority"),
+                min: Some("impact"),
+                max: Some("urgency"),
+                sum: Some("calendar_duration"),
+                having: &having,
+                ..CheckInputs::default()
+            },
+        );
+        assert_eq!(
+            collected.0,
+            vec![
+                ("state".to_string(), FieldSource::GroupBy),
+                ("priority".to_string(), FieldSource::Avg),
+                ("impact".to_string(), FieldSource::Min),
+                ("urgency".to_string(), FieldSource::Max),
+                ("calendar_duration".to_string(), FieldSource::Sum),
+                ("reassignment_count".to_string(), FieldSource::Having),
+            ]
+        );
+    }
+
+    #[test]
+    fn augment_projection_avoids_leading_comma_on_empty_projection() {
+        let (projection, injected) = checks().augment_projection(Some(String::new()));
+        assert_eq!(
+            projection.as_deref(),
+            Some("number,extends,active,assigned_two.name,sys_created_on")
+        );
+        assert_eq!(injected.len(), 5);
+    }
+
+    #[test]
+    fn dot_walked_and_merge_preserve_order() {
+        let dot = checks().dot_walked();
+        assert_eq!(
+            dot.0,
+            vec![("assigned_two.name".to_string(), FieldSource::Query)]
+        );
+        let records = [record(serde_json::json!({
+            "number": "INC1", "active": "true", "assigned_two": "x", "sys_created_on": "t"
+        }))];
+        let probed = vec![FieldWarning::unknown_field(
+            "incident",
+            "assigned_two.name",
+            FieldSource::Query,
+        )];
+        let merged = checks().merge_all_fields_warnings(&table(), &records, &probed);
+        let fields: Vec<_> = merged.iter().map(|w| w.field.as_str()).collect();
+        assert_eq!(fields, ["extends", "assigned_two.name"]);
     }
 
     #[test]

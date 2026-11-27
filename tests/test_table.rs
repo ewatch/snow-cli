@@ -2642,6 +2642,165 @@ async fn test_table_stats_warns_on_unknown_group_by() {
     assert_eq!(warning["warning"]["in"], "group_by");
 }
 
+#[tokio::test]
+async fn test_table_list_star_fields_checks_dot_walked_query_fields() {
+    let server = MockServer::start().await;
+    // Main query with --fields '*' sends no sysparm_fields and returns top-level fields.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_query", "assigned_to.bogus=x"))
+        .and(query_param_is_missing("sysparm_fields"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "11111111111111111111111111111111", "assigned_to": "abc"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Warn mode probes only the dot-walked path so assigned_to.bogus is caught.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param_is_missing("sysparm_query"))
+        .and(query_param("sysparm_limit", "1"))
+        .and(query_param("sysparm_fields", "assigned_to.bogus"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli-ro",
+        &server,
+        &config,
+        &[
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            " * ",
+            "--query",
+            "assigned_to.bogus=x",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["warnings"][0]["field"], "assigned_to.bogus");
+    assert_eq!(value["warnings"][0]["in"], "query");
+}
+
+#[tokio::test]
+async fn test_table_list_escaped_caret_query_passes_check_fields_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param_is_missing("sysparm_query"))
+        .and(query_param("sysparm_limit", "1"))
+        .and(query_param("sysparm_fields", "short_description"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"short_description": "a^b"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_query", "short_descriptionLIKEa^^b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "11111111111111111111111111111111", "short_description": "a^b"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli-ro",
+        &server,
+        &config,
+        &[
+            "table",
+            "list",
+            "incident",
+            "--query",
+            "short_descriptionLIKEa^^b",
+            "--check-fields",
+            "error",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[tokio::test]
+async fn test_table_stats_checks_aggregate_and_having_fields_with_domain_probe() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_fields", "bogus_avg,bogus_having"))
+        .and(query_param("sysparm_query_no_domain", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_db_object"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"name": "incident", "super_class": ""}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"name": "incident", "element": "sys_id"},
+                {"name": "incident", "element": "sys_domain"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/stats/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"stats": {"count": "12"}}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli-ro",
+        &server,
+        &config,
+        &[
+            "table",
+            "stats",
+            "incident",
+            "--domain",
+            "global",
+            "--avg",
+            "bogus_avg",
+            "--having",
+            "sum(bogus_having)>1",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let lines: Vec<serde_json::Value> = stderr
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    assert_eq!(lines[0]["warning"]["field"], "bogus_avg");
+    assert_eq!(lines[0]["warning"]["in"], "avg");
+    assert_eq!(lines[1]["warning"]["field"], "bogus_having");
+    assert_eq!(lines[1]["warning"]["in"], "having");
+}
+
 #[test]
 fn test_table_help_lists_agent_recipes() {
     for binary in ["snow-cli", "snow-cli-ro"] {

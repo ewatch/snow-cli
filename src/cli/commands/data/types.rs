@@ -214,6 +214,12 @@ pub(super) struct DatasetTableRecord {
     pub(super) data: Record,
 }
 
+impl AsRef<Record> for DatasetTableRecord {
+    fn as_ref(&self) -> &Record {
+        &self.data
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub(super) struct DatasetExportSummary {
     pub(super) kind: &'static str,

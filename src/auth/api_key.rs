@@ -1,9 +1,11 @@
 use async_trait::async_trait;
 use http::HeaderMap;
+use tokio::sync::OnceCell;
 
 use crate::auth::Authenticator;
 use crate::config::credentials;
 use crate::config::profile::{AuthMethod, Profile};
+use crate::models::secret::Secret;
 
 /// Source of the API token — keychain or directly injected (for testing).
 #[derive(Debug)]
@@ -24,6 +26,8 @@ enum TokenSource {
 pub struct ApiKeyAuth {
     /// Where to get the token from.
     token_source: TokenSource,
+    /// Cached `Bearer <token>` Authorization header value, resolved once per client.
+    cached_header: OnceCell<Secret<String>>,
 }
 
 impl ApiKeyAuth {
@@ -32,6 +36,7 @@ impl ApiKeyAuth {
             token_source: TokenSource::Keychain {
                 profile_name: profile_name.to_string(),
             },
+            cached_header: OnceCell::new(),
         })
     }
 
@@ -40,20 +45,27 @@ impl ApiKeyAuth {
     pub fn new_with_token(token: String) -> Self {
         Self {
             token_source: TokenSource::Direct { token },
+            cached_header: OnceCell::new(),
         }
     }
 
-    /// Retrieve the token from the configured source.
-    fn get_token(&self) -> anyhow::Result<String> {
+    /// Retrieve the token from the configured source without blocking Tokio worker threads.
+    async fn get_token(&self) -> anyhow::Result<String> {
         match &self.token_source {
             #[cfg(test)]
             TokenSource::Direct { token } => Ok(token.clone()),
             TokenSource::Keychain { profile_name } => {
-                credentials::get_credential(profile_name, "api_token")?.ok_or_else(|| {
+                let profile = profile_name.clone();
+                let lookup_profile = profile.clone();
+                let stored = tokio::task::spawn_blocking(move || {
+                    credentials::get_credential(&lookup_profile, "api_token")
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("Credential lookup task failed: {error}"))??;
+                stored.ok_or_else(|| {
                     crate::auth::AuthenticationError::new(format!(
-                        "No API token found for profile '{}'. \
-                         Run `snow-cli auth login --profile {} --token <token>` first.",
-                        profile_name, profile_name
+                        "No API token found for profile '{profile}'. \
+                         Run `snow-cli auth login --profile {profile} --token <token>` first."
                     ))
                     .into()
                 })
@@ -65,12 +77,18 @@ impl ApiKeyAuth {
 #[async_trait]
 impl Authenticator for ApiKeyAuth {
     async fn authenticate(&self) -> anyhow::Result<HeaderMap> {
-        let token = self.get_token()?;
+        let header_value = self
+            .cached_header
+            .get_or_try_init(|| async {
+                let token = self.get_token().await?;
+                Ok::<_, anyhow::Error>(Secret::new(format!("Bearer {token}")))
+            })
+            .await?;
 
         let mut headers = HeaderMap::new();
         headers.insert(
             http::header::AUTHORIZATION,
-            format!("Bearer {token}").parse()?,
+            header_value.expose_secret().parse()?,
         );
         Ok(headers)
     }
@@ -143,5 +161,19 @@ mod tests {
         };
         let auth = ApiKeyAuth::new("test", &profile);
         assert!(auth.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cached_header_reused_and_redacted_in_debug() {
+        let auth = ApiKeyAuth::new_with_token("api-secret-token-xyz".to_string());
+        let first = auth.authenticate().await.unwrap();
+        let second = auth.authenticate().await.unwrap();
+        assert_eq!(
+            first.get(http::header::AUTHORIZATION),
+            second.get(http::header::AUTHORIZATION)
+        );
+        let debug = format!("{auth:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("Bearer api-secret-token-xyz"));
     }
 }

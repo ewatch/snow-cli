@@ -1,9 +1,11 @@
 use async_trait::async_trait;
 use http::HeaderMap;
+use tokio::sync::OnceCell;
 
 use crate::auth::Authenticator;
 use crate::config::credentials;
 use crate::config::{AuthMethod, Profile};
+use crate::models::secret::Secret;
 
 /// Source of the password — keychain or directly injected (for testing).
 #[derive(Debug)]
@@ -20,6 +22,8 @@ enum CredentialSource {
 pub struct BasicAuth {
     username: String,
     credential_source: CredentialSource,
+    /// Cached `Basic <base64>` Authorization header value, resolved once per client.
+    cached_header: OnceCell<Secret<String>>,
 }
 
 impl BasicAuth {
@@ -37,6 +41,7 @@ impl BasicAuth {
             credential_source: CredentialSource::Keychain {
                 profile_name: profile_name.to_string(),
             },
+            cached_header: OnceCell::new(),
         })
     }
 
@@ -46,24 +51,30 @@ impl BasicAuth {
         Self {
             username,
             credential_source: CredentialSource::Direct { password },
+            cached_header: OnceCell::new(),
         }
     }
 
-    /// Retrieve the password from the configured source.
-    fn get_password(&self) -> anyhow::Result<String> {
+    /// Retrieve the password from the configured source without blocking Tokio worker threads.
+    async fn get_password(&self) -> anyhow::Result<String> {
         match &self.credential_source {
             #[cfg(test)]
             CredentialSource::Direct { password } => Ok(password.clone()),
-            CredentialSource::Keychain { profile_name } => credentials::get_credential(
-                profile_name,
-                "password",
-            )?
-            .ok_or_else(|| {
-                crate::auth::AuthenticationError::new(format!(
-                    "No password found for profile '{profile_name}'. Run `snow-cli auth login --profile {profile_name}` first."
-                ))
-                .into()
-            }),
+            CredentialSource::Keychain { profile_name } => {
+                let profile = profile_name.clone();
+                let lookup_profile = profile.clone();
+                let stored = tokio::task::spawn_blocking(move || {
+                    credentials::get_credential(&lookup_profile, "password")
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("Credential lookup task failed: {error}"))??;
+                stored.ok_or_else(|| {
+                    crate::auth::AuthenticationError::new(format!(
+                        "No password found for profile '{profile}'. Run `snow-cli auth login --profile {profile}` first."
+                    ))
+                    .into()
+                })
+            }
         }
     }
 }
@@ -71,16 +82,21 @@ impl BasicAuth {
 #[async_trait]
 impl Authenticator for BasicAuth {
     async fn authenticate(&self) -> anyhow::Result<HeaderMap> {
-        let password = self.get_password()?;
-
-        use base64::Engine;
-        let encoded = base64::engine::general_purpose::STANDARD
-            .encode(format!("{}:{}", self.username, password));
+        let header_value = self
+            .cached_header
+            .get_or_try_init(|| async {
+                let password = self.get_password().await?;
+                use base64::Engine;
+                let encoded = base64::engine::general_purpose::STANDARD
+                    .encode(format!("{}:{}", self.username, password));
+                Ok::<_, anyhow::Error>(Secret::new(format!("Basic {encoded}")))
+            })
+            .await?;
 
         let mut headers = HeaderMap::new();
         headers.insert(
             http::header::AUTHORIZATION,
-            format!("Basic {encoded}").parse()?,
+            header_value.expose_secret().parse()?,
         );
         Ok(headers)
     }
@@ -208,5 +224,19 @@ mod tests {
     fn test_auth_type_returns_basic() {
         let auth = BasicAuth::new_direct("admin".to_string(), "pass".to_string());
         assert_eq!(auth.auth_type(), AuthMethod::Basic);
+    }
+
+    #[tokio::test]
+    async fn test_cached_header_reused_and_redacted_in_debug() {
+        let auth = BasicAuth::new_direct("admin".to_string(), "super-secret-pw".to_string());
+        let first = auth.authenticate().await.unwrap();
+        let second = auth.authenticate().await.unwrap();
+        assert_eq!(
+            first.get(http::header::AUTHORIZATION),
+            second.get(http::header::AUTHORIZATION)
+        );
+        let debug = format!("{auth:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("Basic "));
     }
 }

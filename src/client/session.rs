@@ -162,11 +162,8 @@ pub(crate) fn extract_g_ck_from_body(body: &str) -> Option<String> {
 
 impl SnowClient {
     pub(super) fn is_same_origin_url(&self, url: &reqwest::Url) -> bool {
-        reqwest::Url::parse(&self.base_url)
-            .map(|base| {
-                super::core::is_safe_authenticated_url(url) && super::core::same_origin(&base, url)
-            })
-            .unwrap_or(false)
+        super::core::is_safe_authenticated_url(url)
+            && super::core::same_origin(&self.parsed_base_url, url)
     }
 
     pub(super) fn invalidate_form_session(&mut self) {

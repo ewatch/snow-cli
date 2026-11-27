@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -9,13 +10,55 @@ use crate::cli::spinner::SnowflakeSpinner;
 use crate::client::error::{ApiError, GraphqlError};
 
 use super::core::{
-    endpoint_requires_form_session, is_safe_authenticated_url, validate_external_url,
+    endpoint_requires_form_session, is_safe_authenticated_url, resolve_authenticated_url_from_base,
+    validate_external_url,
 };
 use super::debug::redact_url_str_for_http_debug;
 use super::*;
 
 const MAX_AUTH_RETRIES: u32 = 1;
 const MAX_EXTERNAL_REDIRECT_HOPS: usize = 10;
+
+/// Shared HTTP client for unauthenticated OAuth token form posts (no redirects).
+static OAUTH_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+
+/// Shared HTTP client for unauthenticated skill resource fetches (HTTPS/loopback redirects only).
+static SKILL_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+
+fn oauth_http_client() -> anyhow::Result<&'static Client> {
+    if let Some(client) = OAUTH_HTTP_CLIENT.get() {
+        return Ok(client);
+    }
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .build()?;
+    Ok(OAUTH_HTTP_CLIENT.get_or_init(|| client))
+}
+
+fn skill_http_client() -> anyhow::Result<&'static Client> {
+    if let Some(client) = SKILL_HTTP_CLIENT.get() {
+        return Ok(client);
+    }
+    let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_EXTERNAL_REDIRECT_HOPS {
+            return attempt.error("Too many redirects");
+        }
+        if !is_safe_authenticated_url(attempt.url()) {
+            return attempt.error(
+                "Refusing to follow redirect to unsafe URL; external HTTP requires HTTPS except loopback HTTP",
+            );
+        }
+        attempt.follow()
+    });
+    let client = Client::builder()
+        .redirect(redirect_policy)
+        .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .build()?;
+    Ok(SKILL_HTTP_CLIENT.get_or_init(|| client))
+}
 
 async fn buffered_external_response(
     response: TransportResponse,
@@ -36,11 +79,7 @@ async fn buffered_external_response(
 pub async fn post_oauth_token_form(url: &str, body: &str) -> anyhow::Result<ExternalResponse> {
     let url = Url::parse(url)?;
     validate_external_url(&url, "request OAuth tokens")?;
-    let http = Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-        .build()?;
+    let http = oauth_http_client()?;
     let request = http
         .post(url)
         .header("Content-Type", "application/x-www-form-urlencoded")
@@ -53,22 +92,7 @@ pub async fn post_oauth_token_form(url: &str, body: &str) -> anyhow::Result<Exte
 /// Fetch one unauthenticated remote skill resource from a validated URL.
 pub async fn fetch_skill_resource(url: &url::Url) -> anyhow::Result<ExternalResponse> {
     validate_external_url(url, "fetch a skill resource")?;
-    let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.previous().len() >= MAX_EXTERNAL_REDIRECT_HOPS {
-            return attempt.error("Too many redirects");
-        }
-        if !is_safe_authenticated_url(attempt.url()) {
-            return attempt.error(
-                "Refusing to follow redirect to unsafe URL; external HTTP requires HTTPS except loopback HTTP",
-            );
-        }
-        attempt.follow()
-    });
-    let http = Client::builder()
-        .redirect(redirect_policy)
-        .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-        .build()?;
+    let http = skill_http_client()?;
     let request = http.get(url.clone()).header("Accept", "*/*").build()?;
     log_raw_http_request(&request);
     buffered_external_response(http.execute(request).await?).await
@@ -84,7 +108,7 @@ impl SnowClient {
     }
 
     pub(crate) fn authenticated_url(&self, path: &str) -> anyhow::Result<String> {
-        resolve_authenticated_url(&self.base_url, path)
+        resolve_authenticated_url_from_base(&self.parsed_base_url, path)
     }
 
     /// Apply the common policy and origin checks required before any

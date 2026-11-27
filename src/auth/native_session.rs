@@ -50,13 +50,22 @@ impl Authenticator for NativeSessionAuth {
             return Ok(());
         }
         if let Some(profile) = &self.profile_name {
-            let updated = native_session::update_locked(profile, &self.session, |stored| {
-                if stored.csrf_token.expose_secret() == token {
-                    return false;
-                }
-                stored.csrf_token = crate::models::secret::Secret::new(token.to_string());
-                true
-            })?;
+            let profile = profile.clone();
+            let current = self.session.clone();
+            let token_owned = token.to_string();
+            let updated = tokio::task::spawn_blocking(move || {
+                native_session::update_locked(&profile, &current, |stored| {
+                    if stored.csrf_token.expose_secret().as_str() == token_owned {
+                        return false;
+                    }
+                    stored.csrf_token = crate::models::secret::Secret::new(token_owned.clone());
+                    true
+                })
+            })
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("Native session CSRF update task failed: {error}")
+            })??;
             self.session = updated;
         } else {
             self.session.csrf_token = crate::models::secret::Secret::new(token.to_string());
@@ -71,9 +80,18 @@ impl Authenticator for NativeSessionAuth {
             if headers.get(http::header::SET_COOKIE).is_none() {
                 return Ok(());
             }
-            let updated = native_session::update_locked(profile, &self.session, |stored| {
-                stored.merge_response_cookies(headers)
-            })?;
+            let profile = profile.clone();
+            let current = self.session.clone();
+            let headers = headers.clone();
+            let updated = tokio::task::spawn_blocking(move || {
+                native_session::update_locked(&profile, &current, |stored| {
+                    stored.merge_response_cookies(&headers)
+                })
+            })
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("Native session cookie update task failed: {error}")
+            })??;
             self.session = updated;
         } else {
             self.session.merge_response_cookies(headers);

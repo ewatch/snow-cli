@@ -51,7 +51,7 @@ pub(super) async fn handle_export_package(
         raw_records_by_table.insert(table_name.clone(), records);
     }
 
-    let mut source_value_indexes = build_source_value_indexes(&spec.tables, &raw_records_by_table);
+    let source_value_indexes = build_source_value_indexes(&spec.tables, &raw_records_by_table);
     let mut manifest_tables = Vec::new();
     let mut summary_tables = Vec::new();
 
@@ -71,8 +71,6 @@ pub(super) async fn handle_export_package(
         let file_name = table_output_file_name(table_spec)?;
         let file_path = package_file_path(&out_dir_path, &file_name)?;
         write_json_file(&file_path, &artifact)?;
-
-        source_value_indexes = build_source_value_indexes(&spec.tables, &raw_records_by_table);
 
         manifest_tables.push(DatasetManifestTable {
             name: table_spec.name.clone(),
@@ -139,11 +137,7 @@ pub(super) async fn build_package_validation_report(
             &artifact.kind,
             &table.name,
             table.fields.as_deref(),
-            &artifact
-                .records
-                .iter()
-                .map(|record| record.data.clone())
-                .collect::<Vec<_>>(),
+            &artifact.records,
         )
         .await?;
         errors.extend(report.errors.clone());
@@ -904,13 +898,16 @@ pub(super) fn ensure_json_output(format: &OutputFormat, command: &str) -> anyhow
     Ok(())
 }
 
-pub(super) fn record_field_names(fields: Option<&[String]>, records: &[Record]) -> Vec<String> {
+pub(super) fn record_field_names<R: AsRef<Record>>(
+    fields: Option<&[String]>,
+    records: &[R],
+) -> Vec<String> {
     let mut field_names = std::collections::BTreeSet::new();
     if let Some(fields) = fields {
         field_names.extend(fields.iter().cloned());
     }
     for record in records {
-        field_names.extend(record.fields.keys().cloned());
+        field_names.extend(record.as_ref().fields.keys().cloned());
     }
     field_names.into_iter().collect()
 }

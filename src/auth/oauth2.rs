@@ -267,13 +267,19 @@ impl OAuth2Auth {
         ])
     }
 
-    /// Retrieve the client_secret from the credential source, if one is configured.
-    fn get_client_secret_optional(&self) -> anyhow::Result<Option<String>> {
+    /// Retrieve the client_secret from the credential source, if one is configured,
+    /// without blocking Tokio worker threads.
+    async fn get_client_secret_optional(&self) -> anyhow::Result<Option<String>> {
         match &self.credential_source {
             #[cfg(test)]
             CredentialSource::Direct { client_secret, .. } => Ok(client_secret.clone()),
             CredentialSource::Keychain { profile_name } => {
-                credentials::get_credential(profile_name, "client_secret")
+                let profile = profile_name.clone();
+                tokio::task::spawn_blocking(move || {
+                    credentials::get_credential(&profile, "client_secret")
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("Credential lookup task failed: {error}"))?
             }
         }
     }
@@ -288,8 +294,9 @@ impl OAuth2Auth {
     }
 
     /// Retrieve the client_secret from the credential source when the grant requires it.
-    fn get_required_client_secret(&self) -> anyhow::Result<String> {
-        self.get_client_secret_optional()?
+    async fn get_required_client_secret(&self) -> anyhow::Result<String> {
+        self.get_client_secret_optional()
+            .await?
             .ok_or_else(|| match &self.credential_source {
                 CredentialSource::Keychain { profile_name } => {
                     crate::auth::AuthenticationError::new(format!(
@@ -308,7 +315,7 @@ impl OAuth2Auth {
     }
 
     /// Retrieve the password from the credential source (for password grant).
-    fn get_password(&self) -> anyhow::Result<Option<String>> {
+    async fn get_password(&self) -> anyhow::Result<Option<String>> {
         if self.grant_type != OAuthGrantType::Password {
             return Ok(None);
         }
@@ -322,31 +329,44 @@ impl OAuth2Auth {
                 .into()),
             },
             CredentialSource::Keychain { profile_name } => {
-                let pw =
-                    credentials::get_credential(profile_name, "password")?.ok_or_else(|| {
-                        crate::auth::AuthenticationError::new(format!(
-                            "No password found for profile '{profile_name}'. \
-                             Run `snow-cli auth login --profile {profile_name} --password <password>` first."
-                        ))
-                    })?;
+                let profile = profile_name.clone();
+                let lookup_profile = profile.clone();
+                let stored = tokio::task::spawn_blocking(move || {
+                    credentials::get_credential(&lookup_profile, "password")
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("Credential lookup task failed: {error}"))??;
+                let pw = stored.ok_or_else(|| {
+                    crate::auth::AuthenticationError::new(format!(
+                        "No password found for profile '{profile}'. \
+                         Run `snow-cli auth login --profile {profile} --password <password>` first."
+                    ))
+                })?;
                 Ok(Some(pw))
             }
         }
     }
 
     /// Retrieve the persisted authorization-code OAuth token.
-    fn get_stored_oauth_token(&self) -> anyhow::Result<Option<StoredOAuthToken>> {
+    async fn get_stored_oauth_token(&self) -> anyhow::Result<Option<StoredOAuthToken>> {
         match &self.credential_source {
             #[cfg(test)]
             CredentialSource::Direct { oauth_token, .. } => Ok(oauth_token.clone()),
             CredentialSource::Keychain { profile_name } => {
-                let Some(raw) = credentials::get_credential(profile_name, "oauth_token")? else {
+                let profile = profile_name.clone();
+                let lookup_profile = profile.clone();
+                let raw = tokio::task::spawn_blocking(move || {
+                    credentials::get_credential(&lookup_profile, "oauth_token")
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("Credential lookup task failed: {error}"))??;
+                let Some(raw) = raw else {
                     return Ok(None);
                 };
                 let token = serde_json::from_str(&raw).map_err(|_| {
                     crate::auth::AuthenticationError::new(format!(
-                        "Stored OAuth token for profile '{profile_name}' is invalid. \
-                         Run `snow-cli auth login --profile {profile_name}` again."
+                        "Stored OAuth token for profile '{profile}' is invalid. \
+                         Run `snow-cli auth login --profile {profile}` again."
                     ))
                 })?;
                 Ok(Some(token))
@@ -355,14 +375,18 @@ impl OAuth2Auth {
     }
 
     /// Persist an authorization-code OAuth token after refresh.
-    fn store_oauth_token(&self, token: &StoredOAuthToken) -> anyhow::Result<()> {
+    async fn store_oauth_token(&self, token: &StoredOAuthToken) -> anyhow::Result<()> {
         match &self.credential_source {
             CredentialSource::Keychain { profile_name } => {
-                credentials::store_credential(
-                    profile_name,
-                    "oauth_token",
-                    &serde_json::to_string(token)?,
-                )?;
+                let profile = profile_name.clone();
+                let serialized = serde_json::to_string(token)?;
+                tokio::task::spawn_blocking(move || {
+                    credentials::store_credential(&profile, "oauth_token", &serialized)
+                })
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("Credential persistence task failed: {error}")
+                })??;
             }
             #[cfg(test)]
             CredentialSource::Direct { .. } => {}
@@ -380,8 +404,8 @@ impl OAuth2Auth {
             .into());
         }
 
-        let client_secret = self.get_required_client_secret()?;
-        let password = self.get_password()?;
+        let client_secret = self.get_required_client_secret().await?;
+        let password = self.get_password().await?;
 
         let body = self.build_token_request_body(&client_secret, password.as_deref());
         Ok(self.send_token_request(&body).await?.cached)
@@ -389,7 +413,7 @@ impl OAuth2Auth {
 
     /// Attempt to refresh using the stored refresh token.
     async fn refresh_token(&self, refresh_tok: &str) -> anyhow::Result<TokenSet> {
-        let client_secret = self.get_client_secret_optional()?;
+        let client_secret = self.get_client_secret_optional().await?;
 
         let body =
             self.build_refresh_request_body(&self.client_id, client_secret.as_deref(), refresh_tok);
@@ -432,7 +456,7 @@ impl OAuth2Auth {
 
         let _file_lock = self.acquire_refresh_file_lock().await?;
 
-        let Some(stored_token) = self.get_stored_oauth_token()? else {
+        let Some(stored_token) = self.get_stored_oauth_token().await? else {
             let profile = self.profile_label();
             return Err(crate::auth::AuthenticationError::new(format!(
                 "No OAuth token found for profile '{profile}'. Run `snow-cli auth login --profile {profile}` to complete the authorization-code browser flow."
@@ -449,7 +473,7 @@ impl OAuth2Auth {
         {
             tracing::debug!("Stored OAuth2 access token expired; refreshing with refresh_token");
             let refreshed = self.refresh_token(refresh_token).await?;
-            self.store_oauth_token(&refreshed.stored)?;
+            self.store_oauth_token(&refreshed.stored).await?;
             refreshed.cached
         } else {
             let profile = self.profile_label();
@@ -805,7 +829,7 @@ impl Authenticator for OAuth2Auth {
         // if another process already rotated it, adopt that fresh token instead of
         // burning a single-use refresh token a second time.
         let reloaded_stored = if self.grant_type == OAuthGrantType::AuthorizationCode {
-            self.get_stored_oauth_token()?
+            self.get_stored_oauth_token().await?
         } else {
             None
         };
@@ -836,7 +860,7 @@ impl Authenticator for OAuth2Auth {
             match self.refresh_token(rt.expose_secret()).await {
                 Ok(token_set) => {
                     if self.grant_type == OAuthGrantType::AuthorizationCode {
-                        self.store_oauth_token(&token_set.stored)?;
+                        self.store_oauth_token(&token_set.stored).await?;
                     }
                     token_set.cached
                 }

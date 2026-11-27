@@ -82,10 +82,14 @@ impl ApiError {
             _ => ("UNKNOWN_ERROR", "Unexpected error"),
         };
 
+        let parsed_body = body
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+
         // OAuth descriptions may echo credentials or arbitrary request data.
         // Retain only recognized protocol error names, never descriptions or
         // extra fields (even when sensitive HTTP diagnostics are enabled).
-        if let Some(oauth_error) = body.as_deref().and_then(oauth_error_name) {
+        if let Some(oauth_error) = parsed_body.as_ref().and_then(oauth_error_name_from_value) {
             return Self {
                 code: code.to_string(),
                 message: format!("OAuth2 token request failed: {oauth_error}"),
@@ -95,7 +99,10 @@ impl ApiError {
             };
         }
 
-        if let Some(envelope) = body.as_deref().and_then(ServiceNowErrorEnvelope::parse) {
+        if let Some(envelope) = parsed_body
+            .as_ref()
+            .and_then(ServiceNowErrorEnvelope::from_value)
+        {
             let message = bound_chars(&scrub_secrets(&envelope.message), Self::MAX_ENVELOPE_CHARS);
             let detail = envelope
                 .detail
@@ -122,8 +129,13 @@ impl ApiError {
 
 /// OAuth 2.0 error names from RFC 6749 sections 4.1.2.1 and 5.2.
 /// An allow-list prevents a server-controlled `error` string echoing secrets.
+#[cfg(test)]
 fn oauth_error_name(body: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    oauth_error_name_from_value(&value)
+}
+
+fn oauth_error_name_from_value(value: &serde_json::Value) -> Option<String> {
     let name = value.get("error")?.as_str()?;
     match name {
         "invalid_request"
@@ -148,10 +160,8 @@ pub(crate) struct ServiceNowErrorEnvelope {
 }
 
 impl ServiceNowErrorEnvelope {
-    /// Parse `{"error":{"message":"..","detail":".."|null}}`. Returns `None`
-    /// for non-JSON bodies, other JSON shapes, or an empty message.
-    pub(crate) fn parse(body: &str) -> Option<Self> {
-        let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    /// Extract a ServiceNow error envelope from an already-parsed JSON value.
+    pub(crate) fn from_value(value: &serde_json::Value) -> Option<Self> {
         let error = value.get("error")?;
         let message = error.get("message")?.as_str()?.trim();
         if message.is_empty() {

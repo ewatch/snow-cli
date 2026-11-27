@@ -199,8 +199,9 @@ pub struct TableStatsArgs {
     #[arg(long)]
     pub having: Option<String>,
 
-    /// Check --query/--group-by field names: warn (default), error, or off
-    /// (env SNOW_CLI_CHECK_FIELDS). Costs one row read when either is set.
+    /// Check --query/--group-by/--avg/--min/--max/--sum/--having field names:
+    /// warn (default), error, or off (env SNOW_CLI_CHECK_FIELDS). Costs one
+    /// row read when any of those flags is set.
     #[arg(long, value_enum, value_name = "MODE")]
     pub check_fields: Option<CheckFields>,
 }

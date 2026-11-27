@@ -60,7 +60,7 @@ pub async fn handle(
                     fields: fields.as_deref(),
                     query: query.as_deref(),
                     order_by: order_by.as_ref(),
-                    group_by: None,
+                    ..CheckInputs::default()
                 },
             );
 
@@ -92,6 +92,109 @@ pub async fn handle(
                 display_value: read.display_value,
             };
 
+            if all
+                && !preview
+                && !domain_read.with_domain
+                && read.display_value != Some(DisplayValue::Both)
+                && matches!(format, OutputFormat::Jsonl | OutputFormat::Csv)
+            {
+                if matches!(format, OutputFormat::Csv) && !all_fields {
+                    let stdout = std::io::stdout();
+                    let mut stream =
+                        output::CsvRecordStream::new(std::io::BufWriter::new(stdout.lock()));
+                    let mut warnings = None;
+                    let summary = client
+                        .for_each_table_records_with_options(
+                            &table,
+                            query.as_deref(),
+                            projection.as_deref(),
+                            &pagination,
+                            order_by.as_ref(),
+                            &options,
+                            |mut page| {
+                                if check_mode == CheckFields::Warn
+                                    && !checks.is_empty()
+                                    && warnings.is_none()
+                                {
+                                    warnings = Some(checks.missing(&table, &page, false));
+                                }
+                                field_check::strip_injected(&mut page, &injected);
+                                stream.write_page(&page)
+                            },
+                        )
+                        .await?;
+                    stream.finish()?;
+                    let warnings = match warnings {
+                        Some(warnings) => warnings,
+                        None if check_mode == CheckFields::Warn
+                            && summary.returned == 0
+                            && checks.needs_probe_on_empty() =>
+                        {
+                            checks
+                                .probe(&mut client, &table, domain_read.query_no_domain)
+                                .await
+                                .unwrap_or_default()
+                        }
+                        None => Vec::new(),
+                    };
+                    field_check::emit_stderr(&warnings);
+                    return Ok(());
+                }
+
+                if matches!(format, OutputFormat::Jsonl) {
+                    let mut jsonl_buf = Vec::new();
+                    let mut warnings = None;
+                    let mut first_record_sample: Option<Record> = None;
+                    let summary = client
+                        .for_each_table_records_with_options(
+                            &table,
+                            query.as_deref(),
+                            projection.as_deref(),
+                            &pagination,
+                            order_by.as_ref(),
+                            &options,
+                            |mut page| {
+                                if check_mode == CheckFields::Warn && !checks.is_empty() {
+                                    if !all_fields && warnings.is_none() {
+                                        warnings = Some(checks.missing(&table, &page, false));
+                                    } else if all_fields
+                                        && first_record_sample.is_none()
+                                        && let Some(first) = page.first()
+                                    {
+                                        first_record_sample = Some(first.clone());
+                                    }
+                                }
+                                field_check::strip_injected(&mut page, &injected);
+                                output::write_jsonl_slice(&page, &mut jsonl_buf)
+                            },
+                        )
+                        .await?;
+                    let warnings = if let Some(warnings) = warnings {
+                        warnings
+                    } else if check_mode == CheckFields::Warn && !checks.is_empty() {
+                        let sample = first_record_sample.as_slice();
+                        checks
+                            .check_records(
+                                &mut client,
+                                &table,
+                                sample,
+                                all_fields,
+                                domain_read.query_no_domain,
+                            )
+                            .await
+                    } else {
+                        Vec::new()
+                    };
+                    field_check::emit_stderr(&warnings);
+                    let stdout = std::io::stdout();
+                    let mut writer = std::io::BufWriter::new(stdout.lock());
+                    output::write_table_list_jsonl_meta(summary, &warnings, &mut writer)?;
+                    std::io::Write::write_all(&mut writer, &jsonl_buf)?;
+                    std::io::Write::flush(&mut writer)?;
+                    return Ok(());
+                }
+            }
+
             let mut result = client
                 .get_table_records_with_options(
                     &table,
@@ -102,15 +205,16 @@ pub async fn handle(
                     &options,
                 )
                 .await?;
-            let warnings = if check_mode == CheckFields::Warn && !checks.is_empty() {
-                if result.records.is_empty() && checks.needs_probe_on_empty() {
-                    checks
-                        .probe(&mut client, &table, domain_read.query_no_domain)
-                        .await
-                        .unwrap_or_default()
-                } else {
-                    checks.missing(&table, &result.records, all_fields)
-                }
+            let warnings = if check_mode == CheckFields::Warn {
+                checks
+                    .check_records(
+                        &mut client,
+                        &table,
+                        &result.records,
+                        all_fields,
+                        domain_read.query_no_domain,
+                    )
+                    .await
             } else {
                 Vec::new()
             };
@@ -177,7 +281,12 @@ pub async fn handle(
 
             domain::warn_if_query_no_domain_ignored(&mut client, domain_read.query_no_domain).await;
             // Without --fields every field is returned, including the domain ones.
-            let projection = sysparm_fields(fields.as_deref(), fields.clone(), false, domain_read);
+            let projection = sysparm_fields(
+                fields.as_deref(),
+                resolve_get_fields(fields.as_deref()),
+                false,
+                domain_read,
+            );
             let options = TableReadOptions {
                 query_no_domain: domain_read.query_no_domain,
                 display_value: read.display_value,
@@ -390,12 +499,21 @@ pub async fn handle(
                 .as_deref()
                 .map(having::to_sysparm_having)
                 .transpose()?;
+            let having_fields = having
+                .as_deref()
+                .map(having::field_names)
+                .unwrap_or_default();
             let check_mode = CheckFields::resolve(check_fields);
             let checks = FieldChecks::collect(
                 check_mode,
                 CheckInputs {
                     query: query.as_deref(),
                     group_by: group_by.as_deref(),
+                    avg: avg.as_deref(),
+                    min: min.as_deref(),
+                    max: max.as_deref(),
+                    sum: sum.as_deref(),
+                    having: &having_fields,
                     ..CheckInputs::default()
                 },
             );
@@ -403,8 +521,11 @@ pub async fn handle(
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
             // The Aggregate API returns no field names, so one row read verifies them.
+            // Pass query_no_domain when --domain targets records outside the session's
+            // default domain (the Aggregate API itself ignores sysparm_query_no_domain,
+            // so table stats exposes --domain rather than --query-no-domain).
             let warnings = checks
-                .probe(&mut client, &table, false)
+                .probe(&mut client, &table, domain.is_some())
                 .await
                 .unwrap_or_default();
             if !warnings.is_empty() && check_mode == CheckFields::Error {
@@ -524,17 +645,53 @@ fn default_list_fields(table: &str) -> &'static str {
     }
 }
 
+/// Append a single field to a comma-separated projection if it is not already
+/// present, avoiding a leading comma when `projection` is empty.
+fn push_projection_field(projection: &mut String, field: &str) {
+    if !projection
+        .split(',')
+        .any(|existing| existing.trim() == field)
+    {
+        if !projection.is_empty() {
+            projection.push(',');
+        }
+        projection.push_str(field);
+    }
+}
+
 /// Append the domain fields `--with-domain` reports, skipping ones already
 /// requested.
 fn add_domain_fields(projection: &mut String) {
     for field in ["sys_domain", "sys_domain_path"] {
-        if !projection
-            .split(',')
-            .any(|existing| existing.trim() == field)
-        {
-            projection.push(',');
-            projection.push_str(field);
+        push_projection_field(projection, field);
+    }
+}
+
+/// Normalized form of a caller-supplied `--fields` value.
+#[derive(Debug, PartialEq, Eq)]
+enum NormalizedFields {
+    /// `*` (with optional surrounding whitespace) requests all fields.
+    All,
+    /// Blank or comma/whitespace-only input specifies no explicit fields.
+    Empty,
+    /// One or more trimmed, non-empty field names joined with commas.
+    Explicit(String),
+}
+
+fn normalize_fields(raw: &str) -> NormalizedFields {
+    let mut names = Vec::new();
+    for segment in raw.split(',').map(str::trim) {
+        if segment == "*" {
+            return NormalizedFields::All;
         }
+        if !segment.is_empty() {
+            names.push(segment);
+        }
+    }
+    if names.is_empty() {
+        NormalizedFields::Empty
+    } else {
+        NormalizedFields::Explicit(names.join(","))
     }
 }
 
@@ -553,23 +710,39 @@ fn sysparm_fields(
     domain_read: DomainReadArgs,
 ) -> Option<String> {
     let mut projection = resolved?;
+    let has_explicit_user_fields = matches!(
+        user_fields.map(normalize_fields),
+        Some(NormalizedFields::Explicit(_))
+    );
     if domain_read.with_domain {
         add_domain_fields(&mut projection);
-    } else if user_fields.is_none() && (domain_filter || domain_read.query_no_domain) {
-        projection.push_str(",sys_domain");
+    } else if !has_explicit_user_fields && (domain_filter || domain_read.query_no_domain) {
+        push_projection_field(&mut projection, "sys_domain");
     }
     Some(projection)
 }
 
 /// Resolve the effective `sysparm_fields` for `table list`.
 ///
-/// Caller-supplied `--fields` is authoritative; `"*"` requests every field
-/// (no projection); omission falls back to the compact default set.
+/// Caller-supplied `--fields` is authoritative; `"*"` (trimmed) requests every
+/// field (no projection); omission or blank input falls back to the compact
+/// default set.
 fn resolve_list_fields(table: &str, fields: Option<&str>) -> Option<String> {
-    match fields {
-        Some("*") => None,
-        Some(f) => Some(f.to_string()),
-        None => Some(default_list_fields(table).to_string()),
+    match fields.map(normalize_fields) {
+        Some(NormalizedFields::All) => None,
+        Some(NormalizedFields::Explicit(f)) => Some(f),
+        Some(NormalizedFields::Empty) | None => Some(default_list_fields(table).to_string()),
+    }
+}
+
+/// Resolve the effective `sysparm_fields` for `table get`.
+///
+/// `"*"` or blank input omits `sysparm_fields` (returning all fields); explicit
+/// comma-separated names are trimmed and stripped of empty segments.
+fn resolve_get_fields(fields: Option<&str>) -> Option<String> {
+    match fields.map(normalize_fields) {
+        Some(NormalizedFields::Explicit(f)) => Some(f),
+        Some(NormalizedFields::All | NormalizedFields::Empty) | None => None,
     }
 }
 
@@ -1041,6 +1214,34 @@ mod tests {
     #[test]
     fn test_resolve_list_fields_star_requests_all_fields() {
         assert_eq!(resolve_list_fields("incident", Some("*")), None);
+        assert_eq!(resolve_list_fields("incident", Some(" * ")), None);
+        assert_eq!(resolve_list_fields("incident", Some("number, *")), None);
+    }
+
+    #[test]
+    fn test_resolve_fields_trims_and_skips_empty_segments() {
+        assert_eq!(
+            resolve_list_fields("incident", Some(" sys_id , , number , ")),
+            Some("sys_id,number".to_string())
+        );
+        assert_eq!(
+            resolve_list_fields("incident", Some("")),
+            Some(default_list_fields("incident").to_string())
+        );
+        assert_eq!(
+            resolve_list_fields("incident", Some(" , , ")),
+            Some(default_list_fields("incident").to_string())
+        );
+        assert_eq!(resolve_get_fields(Some(" * ")), None);
+        assert_eq!(resolve_get_fields(Some("")), None);
+        assert_eq!(
+            resolve_get_fields(Some(" number , , state ")),
+            Some("number,state".to_string())
+        );
+
+        let mut empty = String::new();
+        add_domain_fields(&mut empty);
+        assert_eq!(empty, "sys_domain,sys_domain_path");
     }
 
     #[test]
