@@ -9,15 +9,15 @@ const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --quer
 /// `table --help` recipes for `snow-cli-ro` (read-only commands only).
 pub(crate) const READ_ONLY_TABLE_AFTER_HELP: &str = "Recipes for agents:\n  Labels, not codes:   snow-cli-ro table list incident --fields number,priority,state --display-value\n  Newest first, paged: snow-cli-ro table list incident --order-by -sys_created_on --limit 10 --offset 10\n  Verify a filter:     unknown --query/--fields names appear under \"warnings\" (ServiceNow ignores them);\n                       add --check-fields error to fail instead, or compare table stats counts\n  Script by name:      snow-cli-ro include show <name> --chain --source-of canMoveTo\n  Flow steps:          snow-cli-ro flow show '<flow name>'\n  One field verbatim:  snow-cli-ro table get sys_script_include <name> --fields script --raw";
 
-pub(crate) const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list incident --query 'active=true' --fields number,priority,state,assignment_group --order-by -sys_created_on --limit 5 --display-value\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --order-by -sys_created_on --limit 3 --offset 3   # second page\n  snow-cli table list incident --all --fields '*' --full   # everything, uncapped\n  snow-cli table list incident --preview   # opt in to shortening oversized fields\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - --display-value (bare = display) returns labels (priority \"4 - Low\"); display renders dates in your user's timezone and format. both keeps raw values: {\"value\":..,\"display\":..} only where they differ (CSV/TOON: extra <field>.display column).\n  - Fields in --fields/--query/--order-by that ServiceNow does not return (unknown or not readable) are listed under \"warnings\" and on stderr, because ServiceNow silently ignores such query terms. --check-fields error fails instead; off skips the check (env SNOW_CLI_CHECK_FIELDS).\n  - Output is lossless by default. Pass --preview to shorten long field values in JSON, JSONL, TOON, text, or auto output; preview metadata reports the field path, original size, shown size, and --full escape hatch.\n  - --preview is not supported with CSV output because CSV has no metadata channel; CSV remains lossless.\n  - Responses include offset/next_offset and returned/truncated metadata plus the server-reported total.\n  - For complete data set extraction prefer `data export`.";
+pub(crate) const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 20\n  snow-cli table list incident --query 'active=true' --fields number,priority,state,assignment_group --order-by -sys_created_on --limit 5 --display-value\n  snow-cli table list sys_user --fields sys_id,user_name,email --order-by user_name\n  snow-cli table list incident --order-by -sys_created_on --limit 3 --offset 3   # second page\n  snow-cli table list incident --all --fields '*' --full   # everything, uncapped\n  snow-cli table list incident --preview   # opt in to shortening oversized fields\n\nNotes:\n  - Without --limit/--all, output is bounded to 20 records; without --fields, a compact table-aware field set is returned.\n  - Reference fields return plain values by default (sysparm_exclude_reference_link=true); pass --reference-links to include ServiceNow's {\"link\",\"value\"} URLs.\n  - --display-value (bare = display) returns labels (priority \"4 - Low\"); display renders dates in your user's timezone and format. both keeps raw values: {\"value\":..,\"display\":..} only where they differ (CSV/TOON: extra <field>.display column).\n  - Fields in --fields/--query/--order-by that ServiceNow does not return (unknown or not readable) are listed under \"warnings\" and on stderr, because ServiceNow silently ignores such query terms. --check-fields error fails instead; off skips the check (env SNOW_CLI_CHECK_FIELDS).\n  - Output is lossless by default. Pass --preview to shorten long field values in JSON, JSONL, TOON, text, or auto output; preview metadata reports the field path, original size, shown size, and --full escape hatch.\n  - --preview is not supported with CSV output because CSV has no metadata channel; CSV remains lossless.\n  - Responses include offset/next_offset and returned/truncated metadata plus the server-reported total.\n  - For complete data set extraction prefer `data export`.";
 
-pub(crate) const TABLE_GET_AFTER_HELP: &str = "Examples:\n  snow-cli table get incident <sys_id> --display-value both\n  snow-cli table get sys_script_include ChangeRequestStateHandler --fields name,api_name,script\n  snow-cli table get sys_script_include ChangeRequestStateHandler --fields script --raw | grep -n canMoveTo\n  snow-cli table get incident INC0010001 --key-field number\n\nNotes:\n  - A record that is not a 32-hex sys_id is looked up by --key-field (default: number for values like INC0010001, otherwise name); several matches fail with the candidates' sys_ids.\n  - --raw prints the single --fields value verbatim (no JSON escaping).";
+pub(crate) const TABLE_GET_AFTER_HELP: &str = "Examples:\n  snow-cli table get incident <sys_id> --display-value both\n  snow-cli table get sys_script_include ChangeRequestStateHandler --fields name,api_name,script\n  snow-cli table get sys_script_include ChangeRequestStateHandler --fields script --raw | grep -n canMoveTo\n  snow-cli table get incident INC0010001 --key-field number\n\nNotes:\n  - A record that is not a 32-hex sys_id is looked up by --key-field (default: number for values like INC0010001, otherwise name); several matches fail with the candidates' sys_ids.\n  - Reference fields return plain values by default; pass --reference-links to include {\"link\",\"value\"} URLs.\n  - --raw prints the single --fields value verbatim (no JSON escaping).";
 
 const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incident --data '{\"short_description\":\"VPN down\"}'\n  echo '{\"short_description\":\"From stdin\"}' | snow-cli table create incident";
 
 const TABLE_DELETE_AFTER_HELP: &str = "Examples:\n  snow-cli table delete incident <sys_id> --yes\n  snow-cli table delete incident <sys_id> --yes --ignore-not-found\n\nNotes:\n  - Sends a single DELETE /api/now/table/<table>/<sys_id> request (no preflight GET).\n  - By default, deleting an absent record fails with RECORD_NOT_FOUND (exit 4).\n  - With --ignore-not-found, succeeds (exit 0) with outcome \"already_absent\" only when ServiceNow returns HTTP 404 RECORD_NOT_FOUND (\"No Record found\").\n  - Wrong table (400 INVALID_TABLE), generic HTTP 404 (NOT_FOUND), ACL/permission errors (403), auth failures (401), and 5xx/transport errors still fail non-zero.\n  - ServiceNow returns \"No Record found\" for both absent records and records hidden by ACLs or domain separation, so --ignore-not-found is opt-in.\n  - Create, update, data import, and script mutations are not blindly idempotent; convergent --ignore-not-found applies only to table delete.";
 
-pub(crate) const TABLE_STATS_AFTER_HELP: &str = "Examples:\n  snow-cli table stats incident\n  snow-cli table stats incident --query 'active=true'\n  snow-cli table stats incident --group-by state,priority\n  snow-cli table stats incident --group-by state --avg priority --having 'count>5'";
+pub(crate) const TABLE_STATS_AFTER_HELP: &str = "Examples:\n  snow-cli table stats incident\n  snow-cli table stats incident --query 'active=true'\n  snow-cli table stats incident --group-by state,priority\n  snow-cli table stats incident --group-by state,assignment_group --display-value\n  snow-cli table stats incident --group-by state --avg priority --having 'count>5'";
 pub(crate) const TABLE_FIND_AFTER_HELP: &str = "Examples:\n  snow-cli table find flow\n  snow-cli table find 'service catalog' --limit 50\n\nNotes:\n  - Matches name or label (case-insensitive contains), sorted by name.\n  - Each row has name, label, extends (parent table), and scope.\n  - Output is bounded to 20 tables; use --limit, --offset, or --all.";
 
 pub(crate) const TABLE_CHOICES_AFTER_HELP: &str = "Examples:\n  snow-cli table choices incident priority\n  snow-cli table choices incident\n  snow-cli table choices change_request state --language de\n\nNotes:\n  - Choices are taken from the most specific table in the hierarchy that defines them\n    (incident.priority choices live on task); each row names that table.\n  - Rows have element, value, label, sequence, table, and dependent_value when set.";
@@ -201,6 +201,11 @@ pub struct TableStatsArgs {
     #[arg(long)]
     pub having: Option<String>,
 
+    /// Group/aggregate values: raw (stored codes), display (labels), or both.
+    /// Bare --display-value means display
+    #[arg(long, value_name = "MODE", num_args = 0..=1, default_missing_value = "display")]
+    pub display_value: Option<DisplayValue>,
+
     /// Check --query/--group-by/--avg/--min/--max/--sum/--having field names:
     /// warn (default), error, or off (env SNOW_CLI_CHECK_FIELDS). Costs one
     /// row read when any of those flags is set.
@@ -330,6 +335,11 @@ pub struct RecordReadArgs {
     /// timezone/format), or both. Bare --display-value means display
     #[arg(long, value_name = "MODE", num_args = 0..=1, default_missing_value = "display")]
     pub display_value: Option<DisplayValue>,
+
+    /// Include ServiceNow reference link URLs ({"link","value"}) on reference
+    /// fields; excluded by default (sysparm_exclude_reference_link=true)
+    #[arg(long)]
+    pub reference_links: bool,
 
     /// Check field names in --fields/--query/--order-by: warn (default),
     /// error, or off (env SNOW_CLI_CHECK_FIELDS)
@@ -564,6 +574,34 @@ mod tests {
                     assert_eq!(having, Some("count>5".to_string()));
                 }
                 _ => panic!("Expected Table Stats command"),
+            },
+            _ => panic!("Expected Table command"),
+        }
+
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "table",
+            "stats",
+            "incident",
+            "--group-by",
+            "state",
+            "--display-value",
+        ]);
+        match cli.command {
+            Commands::Table(args) => match args.command {
+                TableCommands::Stats(TableStatsArgs { display_value, .. }) => {
+                    assert_eq!(display_value, Some(DisplayValue::Display));
+                }
+                _ => panic!("Expected Table Stats command"),
+            },
+            _ => panic!("Expected Table command"),
+        }
+
+        let cli = Cli::parse_from(["snow-cli", "table", "list", "incident", "--reference-links"]);
+        match cli.command {
+            Commands::Table(args) => match args.command {
+                TableCommands::List(list) => assert!(list.read.reference_links),
+                _ => panic!("Expected Table List command"),
             },
             _ => panic!("Expected Table command"),
         }

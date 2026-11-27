@@ -681,6 +681,7 @@ mod tests {
                 max: None,
                 sum: None,
                 having: None,
+                display_value: None,
                 check_fields: None,
             }),
         }));

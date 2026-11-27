@@ -35,7 +35,7 @@ ServiceNow ignores query terms on unknown/unreadable fields and returns a broade
 ## 5. Labels and references
 - `snow-cli-ro table choices incident priority`: value → label (searches parent tables; rows name the defining table).
 - Dot-walk in `--fields` and `--group-by`: `--fields number,assignment_group.name`, `table stats incident --group-by assignment_group.name`.
-- Whole-row labels: `table list|get … --display-value` (labels; dates in the user's timezone) or `--display-value both` (`{"value":"4","display":"4 - Low"}` where they differ; CSV/TOON add `<field>.display`). `""` for a reference means it is empty.
+- Whole-row labels: `table list|get|stats … --display-value` (labels; dates in the user's timezone) or `--display-value both` (`{"value":"4","display":"4 - Low"}` where they differ; CSV/TOON add `<field>.display`). Reference fields return plain values by default (`--reference-links` to include link URLs); `""` means empty.
 
 ## 6. Discovery
 - `table find <text>`: tables by name/label, with `extends` and `scope`.

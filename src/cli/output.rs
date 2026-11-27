@@ -942,6 +942,145 @@ mod tests {
         assert_eq!(run_emit_auto(&serde_json::json!(42)), "42\n");
     }
 
+    /// Lightweight zero-dependency regression test covering representative
+    /// ServiceNow payload classes (servicenow-cli-90.4): verifies lossless
+    /// round-trip across JSON, JSONL, TOON, and `auto`, and confirms `auto`
+    /// picks compact TOON for uniform tabular lists while keeping JSON for
+    /// scalars and cases where TOON does not save bytes.
+    #[test]
+    fn format_round_trip_and_auto_selection_across_servicenow_payload_classes() {
+        let flat_table_rows = serde_json::json!({
+            "total": 4,
+            "returned": 4,
+            "offset": 0,
+            "next_offset": null,
+            "truncated": false,
+            "records": [
+                {"sys_id": "0001", "number": "INC0010001", "state": "In Progress", "priority": "1 - Critical", "assigned_to": "Abel Tuter"},
+                {"sys_id": "0002", "number": "INC0010002", "state": "New", "priority": "2 - High", "assigned_to": "Beth Anglin"},
+                {"sys_id": "0003", "number": "INC0010003", "state": "On Hold", "priority": "3 - Moderate", "assigned_to": ""},
+                {"sys_id": "0004", "number": "INC0010004", "state": "Resolved", "priority": "4 - Low", "assigned_to": "David Loo"}
+            ]
+        });
+        let nested_references = serde_json::json!({
+            "records": [
+                {"number": "INC0010001", "assigned_to": {"value": "u1", "link": "https://dev.service-now.com/api/now/table/sys_user/u1"}},
+                {"number": "INC0010002", "assigned_to": ""}
+            ]
+        });
+        let irregular_objects = serde_json::json!([
+            {"sys_id": "1", "name": "Rule A", "condition": "active=true"},
+            {"sys_id": "2", "name": "Rule B", "tags": ["a", "b"], "meta": {"order": 100}}
+        ]);
+        let long_text = serde_json::json!({
+            "sys_id": "abc123",
+            "name": "ChangeRequestStateHandler",
+            "script": format!("// line 1: \"quoted\", commas, colons: {}\nvar x = 1;\n", "é".repeat(500))
+        });
+        let empty_list = serde_json::json!({
+            "total": 0,
+            "returned": 0,
+            "offset": 0,
+            "next_offset": null,
+            "truncated": false,
+            "records": []
+        });
+        let aggregate_rows = serde_json::json!([
+            {"state": "New", "priority": "1 - Critical", "count": 4, "avg_reassignment_count": 1.25},
+            {"state": "In Progress", "priority": "2 - High", "count": 12, "avg_reassignment_count": 2.5},
+            {"state": "Resolved", "priority": "3 - Moderate", "count": 30, "avg_reassignment_count": 0.75}
+        ]);
+        let error_payload = serde_json::json!({
+            "error": {
+                "code": "INVALID_TABLE",
+                "message": "Invalid table name 'incidnt'",
+                "class": "api",
+                "retry": "never",
+                "status": 400
+            }
+        });
+        let export_artifact = serde_json::json!({
+            "kind": "table-export",
+            "table": "incident",
+            "exported_at": "2026-11-27T16:00:00Z",
+            "records": [
+                {"sys_id": "0001", "number": "INC0010001", "short_description": "VPN down"},
+                {"sys_id": "0002", "number": "INC0010002", "short_description": "Printer jam"}
+            ]
+        });
+
+        let cases: &[(&str, &Value, bool)] = &[
+            ("flat_table_rows", &flat_table_rows, true),
+            ("nested_references", &nested_references, false),
+            ("irregular_objects", &irregular_objects, false),
+            ("long_text", &long_text, false),
+            ("empty_list", &empty_list, false),
+            ("aggregate_rows", &aggregate_rows, true),
+            ("error_payload", &error_payload, false),
+            ("export_artifact", &export_artifact, true),
+        ];
+
+        for (name, value, expect_toon_smaller_than_json) in cases {
+            let mut json_buf = Vec::new();
+            write_output(value, &OutputFormat::Json, &mut json_buf).unwrap();
+            let decoded_json: Value = serde_json::from_slice(&json_buf).unwrap();
+            assert_eq!(&decoded_json, *value, "{name}: json round-trip");
+
+            let mut jsonl_buf = Vec::new();
+            write_output(value, &OutputFormat::Jsonl, &mut jsonl_buf).unwrap();
+            let jsonl_str = String::from_utf8(jsonl_buf).unwrap();
+            let lines: Vec<Value> = jsonl_str
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let decoded_jsonl = if value.is_array() {
+                Value::Array(lines)
+            } else {
+                assert_eq!(lines.len(), 1, "{name}: object jsonl line count");
+                lines.into_iter().next().unwrap()
+            };
+            assert_eq!(&decoded_jsonl, *value, "{name}: jsonl round-trip");
+
+            let mut toon_buf = Vec::new();
+            write_output(value, &OutputFormat::Toon, &mut toon_buf).unwrap();
+            let toon_str = String::from_utf8(toon_buf).unwrap();
+            let decoded_toon: Value = toon_format::decode_default(&toon_str).unwrap();
+            assert_eq!(&decoded_toon, *value, "{name}: toon round-trip");
+
+            let auto_out = run_emit_auto(value);
+            assert_eq!(auto_out, expected_auto(value), "{name}: auto selector");
+            assert!(
+                auto_out.len() <= json_buf.len(),
+                "{name}: auto ({} B) must never exceed compact JSON ({} B)",
+                auto_out.len(),
+                json_buf.len()
+            );
+            let decoded_auto: Value = if value.is_array() && auto_out.lines().count() > 1 {
+                match auto_out
+                    .lines()
+                    .map(serde_json::from_str::<Value>)
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(items) => Value::Array(items),
+                    Err(_) => toon_format::decode_default(&auto_out).unwrap(),
+                }
+            } else {
+                serde_json::from_str::<Value>(&auto_out)
+                    .unwrap_or_else(|_| toon_format::decode_default(&auto_out).unwrap())
+            };
+            assert_eq!(&decoded_auto, *value, "{name}: auto round-trip");
+
+            if *expect_toon_smaller_than_json {
+                assert!(
+                    toon_str.len() < json_buf.len(),
+                    "{name}: expected TOON ({} B) < JSON ({} B)",
+                    toon_str.len(),
+                    json_buf.len()
+                );
+            }
+        }
+    }
+
     #[test]
     fn resolve_output_flag_wins() {
         assert_eq!(

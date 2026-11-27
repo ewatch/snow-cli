@@ -2690,23 +2690,58 @@ async fn test_table_list_display_value_both_uniform_in_toon_auto_and_truncated_i
 }
 
 #[tokio::test]
-async fn test_table_list_bare_display_value_sends_true_and_default_sends_nothing() {
+async fn test_table_list_excludes_reference_links_by_default_and_honours_opt_in() {
     let server = MockServer::start().await;
+    // 1. Bare --display-value sends sysparm_display_value=true + sysparm_exclude_reference_link=true.
     Mock::given(method("GET"))
         .and(path("/api/now/table/incident"))
         .and(query_param("sysparm_display_value", "true"))
+        .and(query_param("sysparm_exclude_reference_link", "true"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": [{"number": "INC1", "priority": "4 - Low"}]
         })))
         .expect(1)
         .mount(&server)
         .await;
+    // 2. Default omits sysparm_display_value but still sends sysparm_exclude_reference_link=true.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param_is_missing("sysparm_display_value"))
+        .and(query_param("sysparm_exclude_reference_link", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"number": "INC1", "priority": "4", "assigned_to": "u1"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // 3. --reference-links omits sysparm_exclude_reference_link so ServiceNow returns {"link","value"}.
     Mock::given(method("GET"))
         .and(path("/api/now/table/incident"))
         .and(query_param_is_missing("sysparm_display_value"))
         .and(query_param_is_missing("sysparm_exclude_reference_link"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": [{"number": "INC1", "priority": "4"}]
+            "result": [{
+                "number": "INC1",
+                "assigned_to": {"link": "https://example.test/api/now/table/sys_user/u1", "value": "u1"}
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // 4. --display-value both --reference-links preserves link alongside value and display.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_display_value", "all"))
+        .and(query_param_is_missing("sysparm_exclude_reference_link"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{
+                "number": {"display_value": "INC1", "value": "INC1"},
+                "assigned_to": {
+                    "display_value": "Abel Tuter",
+                    "value": "u1",
+                    "link": "https://example.test/api/now/table/sys_user/u1"
+                }
+            }]
         })))
         .expect(1)
         .mount(&server)
@@ -2734,10 +2769,64 @@ async fn test_table_list_bare_display_value_sends_true_and_default_sends_nothing
         "snow-cli",
         &server,
         &config,
-        &["table", "list", "incident", "--fields", "number,priority"],
+        &[
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            "number,priority,assigned_to",
+        ],
     );
+    assert!(output.status.success(), "{output:?}");
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["records"][0]["priority"], "4");
+    assert_eq!(value["records"][0]["assigned_to"], "u1");
+
+    let output = run_ok(
+        "snow-cli-ro",
+        &server,
+        &config,
+        &[
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            "number,assigned_to",
+            "--reference-links",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["records"][0]["assigned_to"]["link"],
+        "https://example.test/api/now/table/sys_user/u1"
+    );
+
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &[
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            "number,assigned_to",
+            "--display-value",
+            "both",
+            "--reference-links",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["records"][0]["assigned_to"],
+        serde_json::json!({
+            "value": "u1",
+            "display": "Abel Tuter",
+            "link": "https://example.test/api/now/table/sys_user/u1"
+        })
+    );
 }
 
 #[tokio::test]
@@ -3078,6 +3167,191 @@ async fn test_table_get_by_sys_id_display_value_and_field_warning() {
     let warning: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(warning["warning"]["field"], "bogus");
     assert_eq!(warning["warning"]["in"], "fields");
+}
+
+#[tokio::test]
+async fn test_table_get_excludes_reference_links_by_default_and_honours_opt_in() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/api/now/table/incident/6816f79cc0a8016401c5a33be04be441",
+        ))
+        .and(query_param_is_missing("sysparm_display_value"))
+        .and(query_param("sysparm_exclude_reference_link", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"number": "INC1", "assigned_to": "u1"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/api/now/table/incident/6816f79cc0a8016401c5a33be04be441",
+        ))
+        .and(query_param_is_missing("sysparm_display_value"))
+        .and(query_param_is_missing("sysparm_exclude_reference_link"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "number": "INC1",
+                "assigned_to": {"link": "https://example.test/api/now/table/sys_user/u1", "value": "u1"}
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &[
+            "table",
+            "get",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--fields",
+            "number,assigned_to",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["assigned_to"], "u1");
+
+    let output = run_ok(
+        "snow-cli-ro",
+        &server,
+        &config,
+        &[
+            "table",
+            "get",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--fields",
+            "number,assigned_to",
+            "--reference-links",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["assigned_to"]["link"],
+        "https://example.test/api/now/table/sys_user/u1"
+    );
+}
+
+#[tokio::test]
+async fn test_table_stats_display_value_modes_across_formats() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/stats/incident"))
+        .and(query_param("sysparm_count", "true"))
+        .and(query_param("sysparm_group_by", "state"))
+        .and(query_param("sysparm_display_value", "true"))
+        .and(query_param_is_missing("sysparm_exclude_reference_link"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"stats": {"count": "5"}, "groupby_fields": [{"field": "state", "value": "In Progress"}]},
+                {"stats": {"count": "2"}, "groupby_fields": [{"field": "state", "value": "New"}]}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/stats/incident"))
+        .and(query_param("sysparm_count", "true"))
+        .and(query_param("sysparm_group_by", "state"))
+        .and(query_param("sysparm_display_value", "all"))
+        .and(query_param_is_missing("sysparm_exclude_reference_link"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"stats": {"count": "5"}, "groupby_fields": [{"field": "state", "value": "2", "display_value": "In Progress"}]},
+                {"stats": {"count": "2"}, "groupby_fields": [{"field": "state", "value": "1", "display_value": "New"}]}
+            ]
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    // 1. Bare --display-value sends sysparm_display_value=true and prints labels.
+    let output = run_ok(
+        "snow-cli-ro",
+        &server,
+        &config,
+        &[
+            "table",
+            "stats",
+            "incident",
+            "--group-by",
+            "state",
+            "--display-value",
+            "--check-fields",
+            "off",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!([
+            {"count": 5, "state": "In Progress"},
+            {"count": 2, "state": "New"}
+        ])
+    );
+
+    // 2. --display-value both in JSON compacts to {"value","display"}.
+    let output = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &[
+            "table",
+            "stats",
+            "incident",
+            "--group-by",
+            "state",
+            "--display-value",
+            "both",
+            "--check-fields",
+            "off",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!([
+            {"count": 5, "state": {"value": "2", "display": "In Progress"}},
+            {"count": 2, "state": {"value": "1", "display": "New"}}
+        ])
+    );
+
+    // 3. --display-value both in CSV splits into state + state.display columns.
+    let output = run_ok(
+        "snow-cli-ro",
+        &server,
+        &config,
+        &[
+            "--output",
+            "csv",
+            "table",
+            "stats",
+            "incident",
+            "--group-by",
+            "state",
+            "--display-value",
+            "both",
+            "--check-fields",
+            "off",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let csv = String::from_utf8(output.stdout).unwrap();
+    assert!(csv.starts_with("count,state,state.display\n"), "{csv}");
+    assert!(csv.contains("5,2,In Progress\n"), "{csv}");
+    assert!(csv.contains("2,1,New\n"), "{csv}");
 }
 
 #[tokio::test]

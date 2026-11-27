@@ -29,7 +29,7 @@ pub use core::{
 pub use identity::CurrentUser;
 pub use native_session::NativeSessionSwitchError;
 pub use script_response::BackgroundScriptResponse;
-pub use table::{TablePageSummary, TableReadOptions, display_value_params};
+pub use table::{TablePageSummary, TableReadOptions};
 pub use transport::{fetch_skill_resource, post_oauth_token_form};
 
 pub(crate) use debug::{

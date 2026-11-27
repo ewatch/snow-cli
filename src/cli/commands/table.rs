@@ -90,6 +90,7 @@ pub async fn handle(
             let options = TableReadOptions {
                 query_no_domain: domain_read.query_no_domain,
                 display_value: read.display_value,
+                exclude_reference_link: !read.reference_links,
             };
 
             if all
@@ -290,6 +291,7 @@ pub async fn handle(
             let options = TableReadOptions {
                 query_no_domain: domain_read.query_no_domain,
                 display_value: read.display_value,
+                exclude_reference_link: !read.reference_links,
             };
             let mut response = match &record {
                 RecordKey::SysId(sys_id) => {
@@ -514,6 +516,7 @@ pub async fn handle(
             max,
             sum,
             having,
+            display_value,
             check_fields,
         }) => {
             tracing::info!("Fetching aggregate stats for table: {}", table);
@@ -570,12 +573,21 @@ pub async fn handle(
                     params.push((key, v.as_str()));
                 }
             }
+            if let Some(mode) = display_value {
+                params.push(("sysparm_display_value", mode.sysparm_value()));
+            }
 
             let response = client.aggregate(&table, &params).await?;
             field_check::emit_stderr(&warnings);
-            match flatten_stats_response(response) {
-                StatsOutput::Single(record) => output::print_record(&record, format)?,
-                StatsOutput::Grouped(records) => output::print_records(&records, format)?,
+            match flatten_stats_response(response, display_value) {
+                StatsOutput::Single(mut record) => {
+                    apply_display_mode(std::slice::from_mut(&mut record), display_value, format);
+                    output::print_record(&record, format)?;
+                }
+                StatsOutput::Grouped(mut records) => {
+                    apply_display_mode(&mut records, display_value, format);
+                    output::print_records(&records, format)?;
+                }
             }
             Ok(())
         }
@@ -644,13 +656,10 @@ async fn get_record_by_sys_id(
 ) -> anyhow::Result<Record> {
     let path = format!("/api/now/table/{table}/{sys_id}");
     let mut params = Vec::new();
-    if options.query_no_domain {
-        params.push(("sysparm_query_no_domain", "true"));
-    }
     if let Some(fields) = projection {
         params.push(("sysparm_fields", fields));
     }
-    params.extend(crate::client::display_value_params(options.display_value));
+    params.extend(options.query_params());
 
     let response: SingleRecordResponse = if params.is_empty() {
         client.get_json(&path).await?
@@ -834,43 +843,93 @@ enum StatsOutput {
 /// and per-field aggregates become `avg_<field>`, `min_<field>`, `max_<field>`,
 /// and `sum_<field>`. Numeric strings are converted to JSON numbers where they
 /// parse cleanly.
-fn flatten_stats_response(result: AggregateResult) -> StatsOutput {
+fn flatten_stats_response(
+    result: AggregateResult,
+    display_value: Option<DisplayValue>,
+) -> StatsOutput {
     match result {
-        AggregateResult::Single(entry) => StatsOutput::Single(flatten_stats_entry(&entry)),
-        AggregateResult::Grouped(entries) => {
-            StatsOutput::Grouped(entries.iter().map(flatten_stats_entry).collect())
+        AggregateResult::Single(entry) => {
+            StatsOutput::Single(flatten_stats_entry(&entry, display_value))
         }
+        AggregateResult::Grouped(entries) => StatsOutput::Grouped(
+            entries
+                .iter()
+                .map(|entry| flatten_stats_entry(entry, display_value))
+                .collect(),
+        ),
     }
 }
 
+/// Returns `true` when `value` is a ServiceNow `{"value": .., "display_value": ..}`
+/// object returned under `sysparm_display_value=all`.
+fn is_sn_display_pair(value: &serde_json::Value) -> bool {
+    matches!(
+        value,
+        serde_json::Value::Object(obj)
+            if obj.contains_key("value") && obj.contains_key("display_value")
+    )
+}
+
+/// Flatten one Aggregate API stat scalar or `{"value", "display_value"}` pair.
+fn flatten_stat_value(
+    value: &serde_json::Value,
+    display_value: Option<DisplayValue>,
+) -> serde_json::Value {
+    if let serde_json::Value::Object(obj) = value
+        && let (Some(raw), Some(disp)) = (obj.get("value"), obj.get("display_value"))
+    {
+        return match display_value {
+            Some(DisplayValue::Display) => numify(disp),
+            Some(DisplayValue::Raw) => numify(raw),
+            _ if raw == disp => numify(raw),
+            _ => serde_json::json!({ "value": numify(raw), "display_value": disp }),
+        };
+    }
+    numify(value)
+}
+
 /// Flatten one Aggregate API result entry into a flat row.
-fn flatten_stats_entry(entry: &serde_json::Value) -> crate::models::record::Record {
+fn flatten_stats_entry(
+    entry: &serde_json::Value,
+    display_value: Option<DisplayValue>,
+) -> crate::models::record::Record {
     let mut fields = std::collections::BTreeMap::new();
 
-    // Groupby field values keep their raw string values (they are categorical,
-    // e.g. state "1"), so they are inserted as-is.
+    // Groupby field values keep their categorical string form (e.g. state "1"
+    // or "In Progress"). Under `sysparm_display_value=all`, ServiceNow emits
+    // both `value` and `display_value` on each groupby item.
     if let Some(groupby) = entry.get("groupby_fields").and_then(|v| v.as_array()) {
         for pair in groupby {
-            if let (Some(field), Some(value)) = (
-                pair.get("field").and_then(|v| v.as_str()),
-                pair.get("value"),
-            ) {
-                fields.insert(field.to_string(), value.clone());
-            }
+            let Some(field) = pair.get("field").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let cell = match (pair.get("value"), pair.get("display_value")) {
+                (Some(raw), Some(disp)) => match display_value {
+                    Some(DisplayValue::Display) => disp.clone(),
+                    Some(DisplayValue::Raw) => raw.clone(),
+                    _ => serde_json::json!({ "value": raw, "display_value": disp }),
+                },
+                (None, Some(disp)) => disp.clone(),
+                (Some(raw), None) => raw.clone(),
+                (None, None) => continue,
+            };
+            fields.insert(field.to_string(), cell);
         }
     }
 
     if let Some(stats) = entry.get("stats").and_then(|v| v.as_object()) {
         for (stat, value) in stats {
-            match value {
-                serde_json::Value::Object(per_field) => {
-                    for (field, field_value) in per_field {
-                        fields.insert(format!("{stat}_{field}"), numify(field_value));
-                    }
+            if is_sn_display_pair(value) {
+                fields.insert(stat.clone(), flatten_stat_value(value, display_value));
+            } else if let serde_json::Value::Object(per_field) = value {
+                for (field, field_value) in per_field {
+                    fields.insert(
+                        format!("{stat}_{field}"),
+                        flatten_stat_value(field_value, display_value),
+                    );
                 }
-                other => {
-                    fields.insert(stat.clone(), numify(other));
-                }
+            } else {
+                fields.insert(stat.clone(), numify(value));
             }
         }
     }
@@ -1346,7 +1405,7 @@ mod tests {
             }
         });
 
-        match flatten_stats_response(AggregateResult::from_envelope(response).unwrap()) {
+        match flatten_stats_response(AggregateResult::from_envelope(response).unwrap(), None) {
             StatsOutput::Single(record) => {
                 assert_eq!(
                     serde_json::to_value(&record).unwrap(),
@@ -1380,7 +1439,7 @@ mod tests {
             ]
         });
 
-        match flatten_stats_response(AggregateResult::from_envelope(response).unwrap()) {
+        match flatten_stats_response(AggregateResult::from_envelope(response).unwrap(), None) {
             StatsOutput::Grouped(records) => {
                 assert_eq!(records.len(), 2);
                 assert_eq!(
@@ -1420,7 +1479,7 @@ mod tests {
             ]
         });
 
-        match flatten_stats_response(AggregateResult::from_envelope(response).unwrap()) {
+        match flatten_stats_response(AggregateResult::from_envelope(response).unwrap(), None) {
             StatsOutput::Grouped(records) => {
                 assert_eq!(
                     serde_json::to_value(&records[0]).unwrap(),
@@ -1429,6 +1488,69 @@ mod tests {
             }
             StatsOutput::Single(_) => panic!("Expected grouped stats rows"),
         }
+    }
+
+    #[test]
+    fn test_flatten_stats_response_display_value_both_compacts_and_splits() {
+        let response = serde_json::json!({
+            "result": [
+                {
+                    "stats": {
+                        "count": {"value": "5", "display_value": "5"},
+                        "avg": {
+                            "priority": {"value": "2.5", "display_value": "2.5"},
+                            "calendar_duration": {"value": "1970-01-01 01:00:00", "display_value": "1 Hour"}
+                        }
+                    },
+                    "groupby_fields": [
+                        {"field": "state", "value": "2", "display_value": "In Progress"},
+                        {"field": "assignment_group", "value": "", "display_value": ""}
+                    ]
+                }
+            ]
+        });
+
+        let StatsOutput::Grouped(mut json_rows) = flatten_stats_response(
+            AggregateResult::from_envelope(response.clone()).unwrap(),
+            Some(DisplayValue::Both),
+        ) else {
+            panic!("Expected grouped stats rows");
+        };
+        apply_display_mode(
+            &mut json_rows,
+            Some(DisplayValue::Both),
+            &OutputFormat::Json,
+        );
+        assert_eq!(
+            serde_json::to_value(&json_rows[0]).unwrap(),
+            serde_json::json!({
+                "assignment_group": "",
+                "avg_calendar_duration": {"value": "1970-01-01 01:00:00", "display": "1 Hour"},
+                "avg_priority": 2.5,
+                "count": 5,
+                "state": {"value": "2", "display": "In Progress"}
+            })
+        );
+
+        let StatsOutput::Grouped(mut csv_rows) = flatten_stats_response(
+            AggregateResult::from_envelope(response).unwrap(),
+            Some(DisplayValue::Both),
+        ) else {
+            panic!("Expected grouped stats rows");
+        };
+        apply_display_mode(&mut csv_rows, Some(DisplayValue::Both), &OutputFormat::Csv);
+        assert_eq!(
+            serde_json::to_value(&csv_rows[0]).unwrap(),
+            serde_json::json!({
+                "assignment_group": "",
+                "avg_calendar_duration": "1970-01-01 01:00:00",
+                "avg_calendar_duration.display": "1 Hour",
+                "avg_priority": 2.5,
+                "count": 5,
+                "state": "2",
+                "state.display": "In Progress"
+            })
+        );
     }
 
     #[test]
