@@ -409,8 +409,18 @@ pub async fn handle(
             Ok(())
         }
 
-        TableCommands::Delete { table, sys_id, yes } => {
-            tracing::info!("Deleting record {} from table: {}", sys_id, table);
+        TableCommands::Delete {
+            table,
+            sys_id,
+            yes,
+            ignore_not_found,
+        } => {
+            tracing::info!(
+                table = %table,
+                sys_id = %sys_id,
+                ignore_not_found,
+                "Deleting record from table"
+            );
 
             if !yes {
                 let stdin = std::io::stdin();
@@ -434,9 +444,21 @@ pub async fn handle(
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
             let path = format!("/api/now/table/{table}/{sys_id}");
-            client.delete(&path).await?;
+            let outcome = match client.delete(&path).await {
+                Ok(_) => DeleteOutcome::Deleted,
+                Err(error) if ignore_not_found && is_convergent_delete_not_found(&error) => {
+                    tracing::info!(
+                        table = %table,
+                        sys_id = %sys_id,
+                        "Record already absent; converging delete because --ignore-not-found is set"
+                    );
+                    DeleteOutcome::AlreadyAbsent
+                }
+                Err(error) => return Err(error),
+            };
 
-            output::print_status(&format!("Record {sys_id} deleted from {table}"), format)?;
+            let result = TableDeleteResult::new(&table, &sys_id, outcome);
+            output::print_output(&result, format)?;
             Ok(())
         }
 
@@ -558,6 +580,58 @@ pub async fn handle(
             Ok(())
         }
     }
+}
+
+/// Outcome of a `table delete` command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DeleteOutcome {
+    Deleted,
+    AlreadyAbsent,
+}
+
+/// Structured output emitted by `table delete`.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+struct TableDeleteResult {
+    status: &'static str,
+    outcome: DeleteOutcome,
+    table: String,
+    sys_id: String,
+    message: String,
+}
+
+impl TableDeleteResult {
+    fn new(table: &TableName, sys_id: &SysId, outcome: DeleteOutcome) -> Self {
+        let message = match outcome {
+            DeleteOutcome::Deleted => format!("Record {sys_id} deleted from {table}"),
+            DeleteOutcome::AlreadyAbsent => format!("Record {sys_id} already absent in {table}"),
+        };
+        Self {
+            status: "success",
+            outcome,
+            table: table.as_str().to_string(),
+            sys_id: sys_id.as_str().to_string(),
+            message,
+        }
+    }
+}
+
+/// Returns `true` only when `error` is a direct Table API 404 `RECORD_NOT_FOUND`
+/// error (verified ServiceNow `"No Record found"` envelope).
+///
+/// Auth errors, wrong tables (`INVALID_TABLE`), generic 404s (`NOT_FOUND`),
+/// ACL denials (`ACL_DENIED`/`FORBIDDEN`), server errors, and transport errors
+/// always return `false`.
+fn is_convergent_delete_not_found(error: &anyhow::Error) -> bool {
+    if error
+        .downcast_ref::<crate::auth::AuthenticationError>()
+        .is_some()
+    {
+        return false;
+    }
+    error
+        .downcast_ref::<crate::client::error::ApiError>()
+        .is_some_and(crate::client::error::ApiError::is_record_not_found)
 }
 
 /// Fetch one record by sys_id (`GET /api/now/table/{table}/{sys_id}`).
@@ -1399,6 +1473,102 @@ mod tests {
         assert_eq!(
             field_value_as_text(&object_record, "internal_type"),
             Some("reference".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_convergent_delete_not_found_strict_classification() {
+        use crate::client::error::{ApiError, TransportError};
+
+        let record_not_found = anyhow::Error::new(ApiError::from_status(
+            404,
+            "https://dev.service-now.com",
+            Some(
+                r#"{"error":{"message":"No Record found","detail":"Record doesn't exist or ACL restricts the record retrieval"},"status":"failure"}"#
+                    .into(),
+            ),
+        ));
+        assert!(is_convergent_delete_not_found(&record_not_found));
+
+        let generic_404 = anyhow::Error::new(ApiError::from_status(
+            404,
+            "https://dev.service-now.com",
+            Some("<html>404 Not Found</html>".into()),
+        ));
+        assert!(!is_convergent_delete_not_found(&generic_404));
+
+        let invalid_table = anyhow::Error::new(ApiError::from_status(
+            400,
+            "https://dev.service-now.com",
+            Some(r#"{"error":{"message":"Invalid table u_missing"},"status":"failure"}"#.into()),
+        ));
+        assert!(!is_convergent_delete_not_found(&invalid_table));
+
+        let acl_denied = anyhow::Error::new(ApiError::from_status(
+            403,
+            "https://dev.service-now.com",
+            Some(
+                r#"{"error":{"message":"Operation Failed","detail":"ACL Exception Delete Failed"}}"#
+                    .into(),
+            ),
+        ));
+        assert!(!is_convergent_delete_not_found(&acl_denied));
+
+        let unauthorized = anyhow::Error::new(ApiError::from_status(
+            401,
+            "https://dev.service-now.com",
+            None,
+        ));
+        assert!(!is_convergent_delete_not_found(&unauthorized));
+
+        let server_error = anyhow::Error::new(ApiError::from_status(
+            500,
+            "https://dev.service-now.com",
+            None,
+        ));
+        assert!(!is_convergent_delete_not_found(&server_error));
+
+        let transport_error = anyhow::Error::new(TransportError::Timeout);
+        assert!(!is_convergent_delete_not_found(&transport_error));
+    }
+
+    #[test]
+    fn test_table_delete_result_serialization() {
+        let table: TableName = "incident".parse().unwrap();
+        let sys_id: SysId = "6816f79cc0a8016401c5a33be04be441".parse().unwrap();
+
+        let deleted = serde_json::to_value(TableDeleteResult::new(
+            &table,
+            &sys_id,
+            DeleteOutcome::Deleted,
+        ))
+        .unwrap();
+        assert_eq!(
+            deleted,
+            serde_json::json!({
+                "status": "success",
+                "outcome": "deleted",
+                "table": "incident",
+                "sys_id": "6816f79cc0a8016401c5a33be04be441",
+                "message": "Record 6816f79cc0a8016401c5a33be04be441 deleted from incident"
+            })
+        );
+
+        let absent = serde_json::to_value(TableDeleteResult::new(
+            &table,
+            &sys_id,
+            DeleteOutcome::AlreadyAbsent,
+        ))
+        .unwrap();
+        assert_eq!(
+            absent,
+            serde_json::json!({
+                "status": "success",
+                "outcome": "already_absent",
+                "table": "incident",
+                "sys_id": "6816f79cc0a8016401c5a33be04be441",
+                "message": "Record 6816f79cc0a8016401c5a33be04be441 already absent in incident"
+            })
         );
     }
 }

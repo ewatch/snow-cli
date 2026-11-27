@@ -4,7 +4,7 @@ use crate::models::display_value::DisplayValue;
 use crate::models::identifiers::{EncodedQueryValue, RecordKey, SysId, TableName};
 use crate::models::order_by::OrderBy;
 
-const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table schema incident --extended\n  snow-cli table find flow\n  snow-cli table choices incident priority\n  snow-cli table stats incident --group-by state\n\nRecipes for agents:\n  Labels, not codes:   snow-cli table list incident --fields number,priority,state --display-value\n  Newest first, paged: snow-cli table list incident --order-by -sys_created_on --limit 10 --offset 10\n  Verify a filter:     unknown --query/--fields names appear under \"warnings\" (ServiceNow ignores them);\n                       add --check-fields error to fail instead, or compare table stats counts\n  Script by name:      snow-cli include show <name> --chain --source-of canMoveTo\n  Flow steps:          snow-cli flow show '<flow name>'\n  One field verbatim:  snow-cli table get sys_script_include <name> --fields script --raw";
+const TABLE_AFTER_HELP: &str = "Examples:\n  snow-cli table list incident --query 'active=true' --limit 10\n  snow-cli table get incident <sys_id>\n  snow-cli table create incident --data '{\"short_description\":\"Disk alert\"}'\n  snow-cli table update incident <sys_id> --data '{\"state\":\"2\"}'\n  snow-cli table delete incident <sys_id> --yes --ignore-not-found\n  snow-cli table schema incident --extended\n  snow-cli table find flow\n  snow-cli table choices incident priority\n  snow-cli table stats incident --group-by state\n\nRecipes for agents:\n  Labels, not codes:   snow-cli table list incident --fields number,priority,state --display-value\n  Newest first, paged: snow-cli table list incident --order-by -sys_created_on --limit 10 --offset 10\n  Verify a filter:     unknown --query/--fields names appear under \"warnings\" (ServiceNow ignores them);\n                       add --check-fields error to fail instead, or compare table stats counts\n  Convergent delete:   snow-cli table delete incident <sys_id> --yes --ignore-not-found\n  Script by name:      snow-cli include show <name> --chain --source-of canMoveTo\n  Flow steps:          snow-cli flow show '<flow name>'\n  One field verbatim:  snow-cli table get sys_script_include <name> --fields script --raw";
 
 /// `table --help` recipes for `snow-cli-ro` (read-only commands only).
 pub(crate) const READ_ONLY_TABLE_AFTER_HELP: &str = "Recipes for agents:\n  Labels, not codes:   snow-cli-ro table list incident --fields number,priority,state --display-value\n  Newest first, paged: snow-cli-ro table list incident --order-by -sys_created_on --limit 10 --offset 10\n  Verify a filter:     unknown --query/--fields names appear under \"warnings\" (ServiceNow ignores them);\n                       add --check-fields error to fail instead, or compare table stats counts\n  Script by name:      snow-cli-ro include show <name> --chain --source-of canMoveTo\n  Flow steps:          snow-cli-ro flow show '<flow name>'\n  One field verbatim:  snow-cli-ro table get sys_script_include <name> --fields script --raw";
@@ -14,6 +14,8 @@ pub(crate) const TABLE_LIST_AFTER_HELP: &str = "Examples:\n  snow-cli table list
 pub(crate) const TABLE_GET_AFTER_HELP: &str = "Examples:\n  snow-cli table get incident <sys_id> --display-value both\n  snow-cli table get sys_script_include ChangeRequestStateHandler --fields name,api_name,script\n  snow-cli table get sys_script_include ChangeRequestStateHandler --fields script --raw | grep -n canMoveTo\n  snow-cli table get incident INC0010001 --key-field number\n\nNotes:\n  - A record that is not a 32-hex sys_id is looked up by --key-field (default: number for values like INC0010001, otherwise name); several matches fail with the candidates' sys_ids.\n  - --raw prints the single --fields value verbatim (no JSON escaping).";
 
 const TABLE_CREATE_AFTER_HELP: &str = "Examples:\n  snow-cli table create incident --data '{\"short_description\":\"VPN down\"}'\n  echo '{\"short_description\":\"From stdin\"}' | snow-cli table create incident";
+
+const TABLE_DELETE_AFTER_HELP: &str = "Examples:\n  snow-cli table delete incident <sys_id> --yes\n  snow-cli table delete incident <sys_id> --yes --ignore-not-found\n\nNotes:\n  - Sends a single DELETE /api/now/table/<table>/<sys_id> request (no preflight GET).\n  - By default, deleting an absent record fails with RECORD_NOT_FOUND (exit 4).\n  - With --ignore-not-found, succeeds (exit 0) with outcome \"already_absent\" only when ServiceNow returns HTTP 404 RECORD_NOT_FOUND (\"No Record found\").\n  - Wrong table (400 INVALID_TABLE), generic HTTP 404 (NOT_FOUND), ACL/permission errors (403), auth failures (401), and 5xx/transport errors still fail non-zero.\n  - ServiceNow returns \"No Record found\" for both absent records and records hidden by ACLs or domain separation, so --ignore-not-found is opt-in.\n  - Create, update, data import, and script mutations are not blindly idempotent; convergent --ignore-not-found applies only to table delete.";
 
 pub(crate) const TABLE_STATS_AFTER_HELP: &str = "Examples:\n  snow-cli table stats incident\n  snow-cli table stats incident --query 'active=true'\n  snow-cli table stats incident --group-by state,priority\n  snow-cli table stats incident --group-by state --avg priority --having 'count>5'";
 pub(crate) const TABLE_FIND_AFTER_HELP: &str = "Examples:\n  snow-cli table find flow\n  snow-cli table find 'service catalog' --limit 50\n\nNotes:\n  - Matches name or label (case-insensitive contains), sorted by name.\n  - Each row has name, label, extends (parent table), and scope.\n  - Output is bounded to 20 tables; use --limit, --offset, or --all.";
@@ -241,6 +243,7 @@ pub enum TableCommands {
     },
 
     /// Delete a record
+    #[command(after_help = TABLE_DELETE_AFTER_HELP)]
     Delete {
         /// Table name
         table: TableName,
@@ -251,6 +254,11 @@ pub enum TableCommands {
         /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
+
+        /// Succeed with outcome "already_absent" when ServiceNow confirms no
+        /// record was found (HTTP 404 RECORD_NOT_FOUND)
+        #[arg(long)]
+        ignore_not_found: bool,
     },
 
     /// Show table schema (columns, types, labels) from sys_dictionary
@@ -556,6 +564,59 @@ mod tests {
                     assert_eq!(having, Some("count>5".to_string()));
                 }
                 _ => panic!("Expected Table Stats command"),
+            },
+            _ => panic!("Expected Table command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_table_delete_ignore_not_found() {
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "table",
+            "delete",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--yes",
+        ]);
+        match cli.command {
+            Commands::Table(args) => match args.command {
+                TableCommands::Delete {
+                    table,
+                    sys_id,
+                    yes,
+                    ignore_not_found,
+                } => {
+                    assert_eq!(table.as_str(), "incident");
+                    assert_eq!(sys_id.as_str(), "6816f79cc0a8016401c5a33be04be441");
+                    assert!(yes);
+                    assert!(!ignore_not_found);
+                }
+                _ => panic!("Expected Table Delete command"),
+            },
+            _ => panic!("Expected Table command"),
+        }
+
+        let cli = Cli::parse_from([
+            "snow-cli",
+            "table",
+            "delete",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--yes",
+            "--ignore-not-found",
+        ]);
+        match cli.command {
+            Commands::Table(args) => match args.command {
+                TableCommands::Delete {
+                    yes,
+                    ignore_not_found,
+                    ..
+                } => {
+                    assert!(yes);
+                    assert!(ignore_not_found);
+                }
+                _ => panic!("Expected Table Delete command"),
             },
             _ => panic!("Expected Table command"),
         }

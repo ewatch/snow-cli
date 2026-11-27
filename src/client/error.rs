@@ -125,6 +125,16 @@ impl ApiError {
             instance: instance.to_string(),
         }
     }
+
+    /// Returns `true` only when ServiceNow returned HTTP 404 with a verified
+    /// `RECORD_NOT_FOUND` (`"No Record found"`) error envelope.
+    ///
+    /// Generic HTTP 404s (`NOT_FOUND` from wrong paths or proxies), invalid
+    /// table errors (`INVALID_TABLE`), ACL denials (`ACL_DENIED`/`FORBIDDEN`),
+    /// auth failures, and server errors return `false`.
+    pub fn is_record_not_found(&self) -> bool {
+        self.status == 404 && self.code == "RECORD_NOT_FOUND"
+    }
 }
 
 /// OAuth 2.0 error names from RFC 6749 sections 4.1.2.1 and 5.2.
@@ -645,6 +655,59 @@ mod tests {
         let forbidden = r#"{"error":{"message":"Forbidden","detail":null}}"#;
         let err = ApiError::from_status(403, "https://x", Some(forbidden.into()));
         assert_eq!(err.code, "FORBIDDEN");
+    }
+
+    #[test]
+    fn test_is_record_not_found_matches_only_verified_404_record_not_found() {
+        let absent = ApiError::from_status(
+            404,
+            "https://x",
+            Some(
+                r#"{"error":{"message":"No Record found","detail":"Record doesn't exist or ACL restricts the record retrieval"},"status":"failure"}"#
+                    .into(),
+            ),
+        );
+        assert!(absent.is_record_not_found());
+
+        let generic_404_empty = ApiError::from_status(404, "https://x", None);
+        assert!(!generic_404_empty.is_record_not_found());
+
+        let generic_404_html = ApiError::from_status(
+            404,
+            "https://x",
+            Some("<html><body>404 Not Found</body></html>".into()),
+        );
+        assert!(!generic_404_html.is_record_not_found());
+
+        let generic_404_json = ApiError::from_status(
+            404,
+            "https://x",
+            Some(r#"{"error":{"message":"Not Found","detail":"Unknown endpoint"}}"#.into()),
+        );
+        assert!(!generic_404_json.is_record_not_found());
+
+        let invalid_table = ApiError::from_status(
+            400,
+            "https://x",
+            Some(r#"{"error":{"message":"Invalid table u_missing"},"status":"failure"}"#.into()),
+        );
+        assert!(!invalid_table.is_record_not_found());
+
+        let acl_denied = ApiError::from_status(
+            403,
+            "https://x",
+            Some(r#"{"error":{"message":"Operation Failed","detail":"ACL Exception Delete Failed"}}"#.into()),
+        );
+        assert!(!acl_denied.is_record_not_found());
+
+        let wrong_status = ApiError {
+            code: "RECORD_NOT_FOUND".to_string(),
+            message: "No Record found".to_string(),
+            status: 400,
+            detail: None,
+            instance: "https://x".to_string(),
+        };
+        assert!(!wrong_status.is_record_not_found());
     }
 
     #[test]
