@@ -4,26 +4,33 @@ use super::{SnowClient, pagination};
 use crate::models::display_value::DisplayValue;
 use crate::models::validation::ValidationError;
 
-/// Optional Table API read modifiers. The default sends neither parameter.
+/// Optional Table API read modifiers. The default sends none of these parameters.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TableReadOptions {
     /// Request `sysparm_query_no_domain=true` (authorized by ServiceNow).
     pub query_no_domain: bool,
-    /// Request display values; `None` leaves ServiceNow's default (raw values
-    /// with reference links) untouched.
+    /// Request display values; `None` leaves ServiceNow's default (stored
+    /// values) untouched.
     pub display_value: Option<DisplayValue>,
+    /// Request `sysparm_exclude_reference_link=true` so reference fields return
+    /// plain strings instead of `{"link": ..., "value": ...}` objects.
+    pub exclude_reference_link: bool,
 }
 
-/// `sysparm_display_value` plus `sysparm_exclude_reference_link=true` for an
-/// explicit display-value mode, or nothing when the mode is unset. Reference
-/// links are excluded so every mode yields uniform, compact field values.
-pub fn display_value_params(mode: Option<DisplayValue>) -> Vec<(&'static str, &'static str)> {
-    match mode {
-        Some(mode) => vec![
-            ("sysparm_display_value", mode.sysparm_value()),
-            ("sysparm_exclude_reference_link", "true"),
-        ],
-        None => Vec::new(),
+impl TableReadOptions {
+    /// Table API `sysparm_*` query parameters enabled by these options.
+    pub fn query_params(&self) -> Vec<(&'static str, &'static str)> {
+        let mut params = Vec::new();
+        if self.query_no_domain {
+            params.push(("sysparm_query_no_domain", "true"));
+        }
+        if let Some(mode) = self.display_value {
+            params.push(("sysparm_display_value", mode.sysparm_value()));
+        }
+        if self.exclude_reference_link {
+            params.push(("sysparm_exclude_reference_link", "true"));
+        }
+        params
     }
 }
 
@@ -150,16 +157,13 @@ impl SnowClient {
         let ordered_query = order_by.map(|order| order.apply_to_query(query));
         let query = ordered_query.as_deref().or(query);
         let mut params: Vec<(&str, &str)> = Vec::new();
-        if options.query_no_domain {
-            params.push(("sysparm_query_no_domain", "true"));
-        }
         if let Some(q) = query {
             params.push(("sysparm_query", q));
         }
         if let Some(f) = fields {
             params.push(("sysparm_fields", f));
         }
-        params.extend(display_value_params(options.display_value));
+        params.extend(options.query_params());
         self.for_each_paged_records(&path, &params, pagination, on_page)
             .await
     }
@@ -549,6 +553,41 @@ mod tests {
         let mut client = test_client(&server.uri(), MockAuth::new("token"));
         let options = TableReadOptions {
             display_value: Some(DisplayValue::Both),
+            exclude_reference_link: true,
+            ..TableReadOptions::default()
+        };
+        let result = client
+            .get_table_records_with_options(
+                &incident_table(),
+                None,
+                None,
+                &pagination::PaginationConfig::default(),
+                None,
+                &options,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.returned(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_table_records_with_options_excludes_reference_link_independently() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/now/table/incident"))
+            .and(query_param_is_missing("sysparm_display_value"))
+            .and(query_param("sysparm_exclude_reference_link", "true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [{"assigned_to": "62826bf03710200044e0bfc8bcbe5df1"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = test_client(&server.uri(), MockAuth::new("token"));
+        let options = TableReadOptions {
+            exclude_reference_link: true,
             ..TableReadOptions::default()
         };
         let result = client

@@ -70,9 +70,11 @@ impl FromStr for DisplayValue {
 
 /// Compact the `sysparm_display_value=all` shape of every field in `record`.
 ///
-/// ServiceNow returns `{"display_value": d, "value": v}` per field. A field
-/// whose label equals its value becomes the plain value; otherwise it becomes
-/// `{"value": v, "display": d}`. Any other value is left unchanged.
+/// ServiceNow returns `{"display_value": d, "value": v}` per field (plus
+/// `"link"` when `--reference-links` is requested). A field whose label equals
+/// its value becomes the plain value; otherwise it becomes
+/// `{"value": v, "display": d}`. When `"link"` is present it is preserved in
+/// the compacted object. Any other value is left unchanged.
 pub fn compact_both(record: &mut Record) {
     for value in record.fields.values_mut() {
         let Value::Object(object) = value else {
@@ -81,10 +83,12 @@ pub fn compact_both(record: &mut Record) {
         let (Some(raw), Some(display)) = (object.get("value"), object.get("display_value")) else {
             continue;
         };
-        let compact = if raw == display {
-            raw.clone()
-        } else {
-            serde_json::json!({ "value": raw, "display": display })
+        let link = object.get("link");
+        let compact = match link {
+            Some(link) if raw == display => serde_json::json!({ "value": raw, "link": link }),
+            Some(link) => serde_json::json!({ "value": raw, "display": display, "link": link }),
+            None if raw == display => raw.clone(),
+            None => serde_json::json!({ "value": raw, "display": display }),
         };
         *value = compact;
     }
@@ -189,6 +193,37 @@ mod tests {
                 "number": "INC0010025",
                 "plain": "x",
                 "priority": {"value": "4", "display": "4 - Low"}
+            })
+        );
+    }
+
+    #[test]
+    fn compact_both_preserves_reference_link_when_present() {
+        let mut r = record(serde_json::json!({
+            "assigned_to": {
+                "display_value": "Abel Tuter",
+                "value": "62826bf03710200044e0bfc8bcbe5df1",
+                "link": "https://dev.service-now.com/api/now/table/sys_user/62826bf03710200044e0bfc8bcbe5df1"
+            },
+            "self_ref": {
+                "display_value": "same",
+                "value": "same",
+                "link": "https://dev.service-now.com/api/now/table/x/same"
+            }
+        }));
+        compact_both(&mut r);
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            serde_json::json!({
+                "assigned_to": {
+                    "value": "62826bf03710200044e0bfc8bcbe5df1",
+                    "display": "Abel Tuter",
+                    "link": "https://dev.service-now.com/api/now/table/sys_user/62826bf03710200044e0bfc8bcbe5df1"
+                },
+                "self_ref": {
+                    "value": "same",
+                    "link": "https://dev.service-now.com/api/now/table/x/same"
+                }
             })
         );
     }

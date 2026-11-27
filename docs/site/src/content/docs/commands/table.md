@@ -25,6 +25,7 @@ Important options:
 - `--all`: fetch every matching record instead of the bounded default
 - `--order-by <spec>`: sort results. `field` sorts ascending, `-field` or `field:desc` descending; comma-separate several keys (`-priority,number`). Sent as `ORDERBY`/`ORDERBYDESC` clauses appended to `--query`, because the Table API has no separate sort parameter
 - `--display-value [raw|display|both]`: return labels instead of stored codes. A bare `--display-value` means `display`; `false`, `true`, and `all` are accepted as aliases. See [Display values](#display-values)
+- `--reference-links`: include ServiceNow reference link URLs (`{"link","value"}`) on reference fields. By default `table list` and `table get` send `sysparm_exclude_reference_link=true` so references return plain values
 - `--check-fields warn|error|off`: how to treat names in `--fields`, `--query`, and `--order-by` that ServiceNow does not return (default `warn`, or `SNOW_CLI_CHECK_FIELDS`). See [Unknown-field warnings](#unknown-field-warnings)
 - `--preview`: opt in to shortening oversized string fields and emitting separate preview metadata (JSON, JSONL, TOON, text, and auto output only)
 - `--full`: explicit lossless escape hatch for commands copied from preview workflows; conflicts with `--preview`
@@ -68,7 +69,7 @@ Important options:
 - `--fields <a,b,c>`: restrict the returned fields
 - `--key-field <field>`: field matched when the record is not a 32-character hex `sys_id`. The default is `number` for task-style numbers such as `INC0010001`, and `name` otherwise
 - `--raw`: print the single `--fields` value verbatim, without JSON escaping, followed by a newline. Requires exactly one field
-- `--display-value [raw|display|both]` and `--check-fields warn|error|off`: as on `table list`. Unknown `--fields` names are reported on stderr only, because `table get` prints the bare record
+- `--display-value [raw|display|both]`, `--reference-links`, and `--check-fields warn|error|off`: as on `table list`. Unknown `--fields` names are reported on stderr only, because `table get` prints the bare record
 - `--preview`: opt in to shortening oversized string fields and wrapping the record as `{ "preview": ..., "record": ... }` (JSON, JSONL, TOON, text, and auto output only)
 - `--full`: explicit lossless escape hatch for commands copied from preview workflows; conflicts with `--preview`
 
@@ -96,23 +97,25 @@ For script includes, [`include show`](/commands/include/) adds the parsed
 ## Display values
 
 By default the Table API returns stored values: `priority` is `"4"`, `state`
-is `"1"`, and references are sys_ids. `--display-value` on `table list` and
-`table get` asks ServiceNow for labels instead:
+is `"1"`, and references are plain `sys_id` strings (`table list` and
+`table get` send `sysparm_exclude_reference_link=true` by default; pass
+`--reference-links` to opt back in to ServiceNow's `{"link","value"}` objects).
+`--display-value` on `table list`, `table get`, and `table stats` asks
+ServiceNow for labels instead:
 
 | Mode | Sent | Field value |
 |---|---|---|
-| (flag absent) | nothing | stored value; references as `{"link","value"}` objects (unchanged behaviour) |
+| (flag absent) | `sysparm_exclude_reference_link=true` (on `list`/`get`) | stored value; plain string references |
 | `raw` | `sysparm_display_value=false` | stored value |
 | `display` (bare flag) | `sysparm_display_value=true` | label, such as `"4 - Low"` |
 | `both` | `sysparm_display_value=all` | `{"value":"4","display":"4 - Low"}` where they differ; a plain string where they are equal |
 
-Every mode also sends `sysparm_exclude_reference_link=true`, so references
-never carry `link` URLs. `display` renders dates in the session user's timezone
-and format (`sys_created_on` may differ by hours from the stored UTC value);
-use `both` when you need raw values as well. In CSV and TOON output, `both`
-adds a `<field>.display` column next to `<field>` instead of a nested object.
-The list envelope (`total`, `returned`, `offset`, `next_offset`, `truncated`,
-`records`) is the same in every mode.
+`display` renders dates in the session user's timezone and format
+(`sys_created_on` may differ by hours from the stored UTC value); use `both`
+when you need raw values as well. In CSV and TOON output, `both` adds a
+`<field>.display` column next to `<field>` instead of a nested object. The list
+envelope (`total`, `returned`, `offset`, `next_offset`, `truncated`, `records`)
+is the same in every mode.
 
 ## Unknown-field warnings
 
@@ -306,6 +309,7 @@ Important options:
 - `--avg <a,b>` / `--min <a,b>` / `--max <a,b>` / `--sum <a,b>`: per-field aggregates
 - `--having <clause>`: keep only groups whose aggregate matches, such as `count>5` or
   `avg(priority)>=2`. Separate clauses with commas to require all of them.
+- `--display-value [raw|display|both]`: return labels instead of stored codes/sys_ids for grouped fields (bare flag means `display`). See [Display values](#display-values)
 - `--check-fields warn|error|off`: verify `--query` and `--group-by` field names with one extra row read (see [Unknown-field warnings](#unknown-field-warnings)); warnings go to stderr
 
 Without aggregate flags, the command returns the matching record count — a
