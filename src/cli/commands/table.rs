@@ -60,7 +60,7 @@ pub async fn handle(
                     fields: fields.as_deref(),
                     query: query.as_deref(),
                     order_by: order_by.as_ref(),
-                    group_by: None,
+                    ..CheckInputs::default()
                 },
             );
 
@@ -92,6 +92,109 @@ pub async fn handle(
                 display_value: read.display_value,
             };
 
+            if all
+                && !preview
+                && !domain_read.with_domain
+                && read.display_value != Some(DisplayValue::Both)
+                && matches!(format, OutputFormat::Jsonl | OutputFormat::Csv)
+            {
+                if matches!(format, OutputFormat::Csv) && !all_fields {
+                    let stdout = std::io::stdout();
+                    let mut stream =
+                        output::CsvRecordStream::new(std::io::BufWriter::new(stdout.lock()));
+                    let mut warnings = None;
+                    let summary = client
+                        .for_each_table_records_with_options(
+                            &table,
+                            query.as_deref(),
+                            projection.as_deref(),
+                            &pagination,
+                            order_by.as_ref(),
+                            &options,
+                            |mut page| {
+                                if check_mode == CheckFields::Warn
+                                    && !checks.is_empty()
+                                    && warnings.is_none()
+                                {
+                                    warnings = Some(checks.missing(&table, &page, false));
+                                }
+                                field_check::strip_injected(&mut page, &injected);
+                                stream.write_page(&page)
+                            },
+                        )
+                        .await?;
+                    stream.finish()?;
+                    let warnings = match warnings {
+                        Some(warnings) => warnings,
+                        None if check_mode == CheckFields::Warn
+                            && summary.returned == 0
+                            && checks.needs_probe_on_empty() =>
+                        {
+                            checks
+                                .probe(&mut client, &table, domain_read.query_no_domain)
+                                .await
+                                .unwrap_or_default()
+                        }
+                        None => Vec::new(),
+                    };
+                    field_check::emit_stderr(&warnings);
+                    return Ok(());
+                }
+
+                if matches!(format, OutputFormat::Jsonl) {
+                    let mut jsonl_buf = Vec::new();
+                    let mut warnings = None;
+                    let mut first_record_sample: Option<Record> = None;
+                    let summary = client
+                        .for_each_table_records_with_options(
+                            &table,
+                            query.as_deref(),
+                            projection.as_deref(),
+                            &pagination,
+                            order_by.as_ref(),
+                            &options,
+                            |mut page| {
+                                if check_mode == CheckFields::Warn && !checks.is_empty() {
+                                    if !all_fields && warnings.is_none() {
+                                        warnings = Some(checks.missing(&table, &page, false));
+                                    } else if all_fields
+                                        && first_record_sample.is_none()
+                                        && let Some(first) = page.first()
+                                    {
+                                        first_record_sample = Some(first.clone());
+                                    }
+                                }
+                                field_check::strip_injected(&mut page, &injected);
+                                output::write_jsonl_slice(&page, &mut jsonl_buf)
+                            },
+                        )
+                        .await?;
+                    let warnings = if let Some(warnings) = warnings {
+                        warnings
+                    } else if check_mode == CheckFields::Warn && !checks.is_empty() {
+                        let sample = first_record_sample.as_slice();
+                        checks
+                            .check_records(
+                                &mut client,
+                                &table,
+                                sample,
+                                all_fields,
+                                domain_read.query_no_domain,
+                            )
+                            .await
+                    } else {
+                        Vec::new()
+                    };
+                    field_check::emit_stderr(&warnings);
+                    let stdout = std::io::stdout();
+                    let mut writer = std::io::BufWriter::new(stdout.lock());
+                    output::write_table_list_jsonl_meta(summary, &warnings, &mut writer)?;
+                    std::io::Write::write_all(&mut writer, &jsonl_buf)?;
+                    std::io::Write::flush(&mut writer)?;
+                    return Ok(());
+                }
+            }
+
             let mut result = client
                 .get_table_records_with_options(
                     &table,
@@ -102,15 +205,16 @@ pub async fn handle(
                     &options,
                 )
                 .await?;
-            let warnings = if check_mode == CheckFields::Warn && !checks.is_empty() {
-                if result.records.is_empty() && checks.needs_probe_on_empty() {
-                    checks
-                        .probe(&mut client, &table, domain_read.query_no_domain)
-                        .await
-                        .unwrap_or_default()
-                } else {
-                    checks.missing(&table, &result.records, all_fields)
-                }
+            let warnings = if check_mode == CheckFields::Warn {
+                checks
+                    .check_records(
+                        &mut client,
+                        &table,
+                        &result.records,
+                        all_fields,
+                        domain_read.query_no_domain,
+                    )
+                    .await
             } else {
                 Vec::new()
             };
@@ -177,7 +281,12 @@ pub async fn handle(
 
             domain::warn_if_query_no_domain_ignored(&mut client, domain_read.query_no_domain).await;
             // Without --fields every field is returned, including the domain ones.
-            let projection = sysparm_fields(fields.as_deref(), fields.clone(), false, domain_read);
+            let projection = sysparm_fields(
+                fields.as_deref(),
+                resolve_get_fields(fields.as_deref()),
+                false,
+                domain_read,
+            );
             let options = TableReadOptions {
                 query_no_domain: domain_read.query_no_domain,
                 display_value: read.display_value,
@@ -300,8 +409,18 @@ pub async fn handle(
             Ok(())
         }
 
-        TableCommands::Delete { table, sys_id, yes } => {
-            tracing::info!("Deleting record {} from table: {}", sys_id, table);
+        TableCommands::Delete {
+            table,
+            sys_id,
+            yes,
+            ignore_not_found,
+        } => {
+            tracing::info!(
+                table = %table,
+                sys_id = %sys_id,
+                ignore_not_found,
+                "Deleting record from table"
+            );
 
             if !yes {
                 let stdin = std::io::stdin();
@@ -325,9 +444,21 @@ pub async fn handle(
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
 
             let path = format!("/api/now/table/{table}/{sys_id}");
-            client.delete(&path).await?;
+            let outcome = match client.delete(&path).await {
+                Ok(_) => DeleteOutcome::Deleted,
+                Err(error) if ignore_not_found && is_convergent_delete_not_found(&error) => {
+                    tracing::info!(
+                        table = %table,
+                        sys_id = %sys_id,
+                        "Record already absent; converging delete because --ignore-not-found is set"
+                    );
+                    DeleteOutcome::AlreadyAbsent
+                }
+                Err(error) => return Err(error),
+            };
 
-            output::print_status(&format!("Record {sys_id} deleted from {table}"), format)?;
+            let result = TableDeleteResult::new(&table, &sys_id, outcome);
+            output::print_output(&result, format)?;
             Ok(())
         }
 
@@ -390,12 +521,21 @@ pub async fn handle(
                 .as_deref()
                 .map(having::to_sysparm_having)
                 .transpose()?;
+            let having_fields = having
+                .as_deref()
+                .map(having::field_names)
+                .unwrap_or_default();
             let check_mode = CheckFields::resolve(check_fields);
             let checks = FieldChecks::collect(
                 check_mode,
                 CheckInputs {
                     query: query.as_deref(),
                     group_by: group_by.as_deref(),
+                    avg: avg.as_deref(),
+                    min: min.as_deref(),
+                    max: max.as_deref(),
+                    sum: sum.as_deref(),
+                    having: &having_fields,
                     ..CheckInputs::default()
                 },
             );
@@ -403,8 +543,11 @@ pub async fn handle(
             let mut client =
                 crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
             // The Aggregate API returns no field names, so one row read verifies them.
+            // Pass query_no_domain when --domain targets records outside the session's
+            // default domain (the Aggregate API itself ignores sysparm_query_no_domain,
+            // so table stats exposes --domain rather than --query-no-domain).
             let warnings = checks
-                .probe(&mut client, &table, false)
+                .probe(&mut client, &table, domain.is_some())
                 .await
                 .unwrap_or_default();
             if !warnings.is_empty() && check_mode == CheckFields::Error {
@@ -437,6 +580,58 @@ pub async fn handle(
             Ok(())
         }
     }
+}
+
+/// Outcome of a `table delete` command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DeleteOutcome {
+    Deleted,
+    AlreadyAbsent,
+}
+
+/// Structured output emitted by `table delete`.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+struct TableDeleteResult {
+    status: &'static str,
+    outcome: DeleteOutcome,
+    table: String,
+    sys_id: String,
+    message: String,
+}
+
+impl TableDeleteResult {
+    fn new(table: &TableName, sys_id: &SysId, outcome: DeleteOutcome) -> Self {
+        let message = match outcome {
+            DeleteOutcome::Deleted => format!("Record {sys_id} deleted from {table}"),
+            DeleteOutcome::AlreadyAbsent => format!("Record {sys_id} already absent in {table}"),
+        };
+        Self {
+            status: "success",
+            outcome,
+            table: table.as_str().to_string(),
+            sys_id: sys_id.as_str().to_string(),
+            message,
+        }
+    }
+}
+
+/// Returns `true` only when `error` is a direct Table API 404 `RECORD_NOT_FOUND`
+/// error (verified ServiceNow `"No Record found"` envelope).
+///
+/// Auth errors, wrong tables (`INVALID_TABLE`), generic 404s (`NOT_FOUND`),
+/// ACL denials (`ACL_DENIED`/`FORBIDDEN`), server errors, and transport errors
+/// always return `false`.
+fn is_convergent_delete_not_found(error: &anyhow::Error) -> bool {
+    if error
+        .downcast_ref::<crate::auth::AuthenticationError>()
+        .is_some()
+    {
+        return false;
+    }
+    error
+        .downcast_ref::<crate::client::error::ApiError>()
+        .is_some_and(crate::client::error::ApiError::is_record_not_found)
 }
 
 /// Fetch one record by sys_id (`GET /api/now/table/{table}/{sys_id}`).
@@ -524,17 +719,53 @@ fn default_list_fields(table: &str) -> &'static str {
     }
 }
 
+/// Append a single field to a comma-separated projection if it is not already
+/// present, avoiding a leading comma when `projection` is empty.
+fn push_projection_field(projection: &mut String, field: &str) {
+    if !projection
+        .split(',')
+        .any(|existing| existing.trim() == field)
+    {
+        if !projection.is_empty() {
+            projection.push(',');
+        }
+        projection.push_str(field);
+    }
+}
+
 /// Append the domain fields `--with-domain` reports, skipping ones already
 /// requested.
 fn add_domain_fields(projection: &mut String) {
     for field in ["sys_domain", "sys_domain_path"] {
-        if !projection
-            .split(',')
-            .any(|existing| existing.trim() == field)
-        {
-            projection.push(',');
-            projection.push_str(field);
+        push_projection_field(projection, field);
+    }
+}
+
+/// Normalized form of a caller-supplied `--fields` value.
+#[derive(Debug, PartialEq, Eq)]
+enum NormalizedFields {
+    /// `*` (with optional surrounding whitespace) requests all fields.
+    All,
+    /// Blank or comma/whitespace-only input specifies no explicit fields.
+    Empty,
+    /// One or more trimmed, non-empty field names joined with commas.
+    Explicit(String),
+}
+
+fn normalize_fields(raw: &str) -> NormalizedFields {
+    let mut names = Vec::new();
+    for segment in raw.split(',').map(str::trim) {
+        if segment == "*" {
+            return NormalizedFields::All;
         }
+        if !segment.is_empty() {
+            names.push(segment);
+        }
+    }
+    if names.is_empty() {
+        NormalizedFields::Empty
+    } else {
+        NormalizedFields::Explicit(names.join(","))
     }
 }
 
@@ -553,23 +784,39 @@ fn sysparm_fields(
     domain_read: DomainReadArgs,
 ) -> Option<String> {
     let mut projection = resolved?;
+    let has_explicit_user_fields = matches!(
+        user_fields.map(normalize_fields),
+        Some(NormalizedFields::Explicit(_))
+    );
     if domain_read.with_domain {
         add_domain_fields(&mut projection);
-    } else if user_fields.is_none() && (domain_filter || domain_read.query_no_domain) {
-        projection.push_str(",sys_domain");
+    } else if !has_explicit_user_fields && (domain_filter || domain_read.query_no_domain) {
+        push_projection_field(&mut projection, "sys_domain");
     }
     Some(projection)
 }
 
 /// Resolve the effective `sysparm_fields` for `table list`.
 ///
-/// Caller-supplied `--fields` is authoritative; `"*"` requests every field
-/// (no projection); omission falls back to the compact default set.
+/// Caller-supplied `--fields` is authoritative; `"*"` (trimmed) requests every
+/// field (no projection); omission or blank input falls back to the compact
+/// default set.
 fn resolve_list_fields(table: &str, fields: Option<&str>) -> Option<String> {
-    match fields {
-        Some("*") => None,
-        Some(f) => Some(f.to_string()),
-        None => Some(default_list_fields(table).to_string()),
+    match fields.map(normalize_fields) {
+        Some(NormalizedFields::All) => None,
+        Some(NormalizedFields::Explicit(f)) => Some(f),
+        Some(NormalizedFields::Empty) | None => Some(default_list_fields(table).to_string()),
+    }
+}
+
+/// Resolve the effective `sysparm_fields` for `table get`.
+///
+/// `"*"` or blank input omits `sysparm_fields` (returning all fields); explicit
+/// comma-separated names are trimmed and stripped of empty segments.
+fn resolve_get_fields(fields: Option<&str>) -> Option<String> {
+    match fields.map(normalize_fields) {
+        Some(NormalizedFields::Explicit(f)) => Some(f),
+        Some(NormalizedFields::All | NormalizedFields::Empty) | None => None,
     }
 }
 
@@ -1041,6 +1288,34 @@ mod tests {
     #[test]
     fn test_resolve_list_fields_star_requests_all_fields() {
         assert_eq!(resolve_list_fields("incident", Some("*")), None);
+        assert_eq!(resolve_list_fields("incident", Some(" * ")), None);
+        assert_eq!(resolve_list_fields("incident", Some("number, *")), None);
+    }
+
+    #[test]
+    fn test_resolve_fields_trims_and_skips_empty_segments() {
+        assert_eq!(
+            resolve_list_fields("incident", Some(" sys_id , , number , ")),
+            Some("sys_id,number".to_string())
+        );
+        assert_eq!(
+            resolve_list_fields("incident", Some("")),
+            Some(default_list_fields("incident").to_string())
+        );
+        assert_eq!(
+            resolve_list_fields("incident", Some(" , , ")),
+            Some(default_list_fields("incident").to_string())
+        );
+        assert_eq!(resolve_get_fields(Some(" * ")), None);
+        assert_eq!(resolve_get_fields(Some("")), None);
+        assert_eq!(
+            resolve_get_fields(Some(" number , , state ")),
+            Some("number,state".to_string())
+        );
+
+        let mut empty = String::new();
+        add_domain_fields(&mut empty);
+        assert_eq!(empty, "sys_domain,sys_domain_path");
     }
 
     #[test]
@@ -1198,6 +1473,102 @@ mod tests {
         assert_eq!(
             field_value_as_text(&object_record, "internal_type"),
             Some("reference".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_convergent_delete_not_found_strict_classification() {
+        use crate::client::error::{ApiError, TransportError};
+
+        let record_not_found = anyhow::Error::new(ApiError::from_status(
+            404,
+            "https://dev.service-now.com",
+            Some(
+                r#"{"error":{"message":"No Record found","detail":"Record doesn't exist or ACL restricts the record retrieval"},"status":"failure"}"#
+                    .into(),
+            ),
+        ));
+        assert!(is_convergent_delete_not_found(&record_not_found));
+
+        let generic_404 = anyhow::Error::new(ApiError::from_status(
+            404,
+            "https://dev.service-now.com",
+            Some("<html>404 Not Found</html>".into()),
+        ));
+        assert!(!is_convergent_delete_not_found(&generic_404));
+
+        let invalid_table = anyhow::Error::new(ApiError::from_status(
+            400,
+            "https://dev.service-now.com",
+            Some(r#"{"error":{"message":"Invalid table u_missing"},"status":"failure"}"#.into()),
+        ));
+        assert!(!is_convergent_delete_not_found(&invalid_table));
+
+        let acl_denied = anyhow::Error::new(ApiError::from_status(
+            403,
+            "https://dev.service-now.com",
+            Some(
+                r#"{"error":{"message":"Operation Failed","detail":"ACL Exception Delete Failed"}}"#
+                    .into(),
+            ),
+        ));
+        assert!(!is_convergent_delete_not_found(&acl_denied));
+
+        let unauthorized = anyhow::Error::new(ApiError::from_status(
+            401,
+            "https://dev.service-now.com",
+            None,
+        ));
+        assert!(!is_convergent_delete_not_found(&unauthorized));
+
+        let server_error = anyhow::Error::new(ApiError::from_status(
+            500,
+            "https://dev.service-now.com",
+            None,
+        ));
+        assert!(!is_convergent_delete_not_found(&server_error));
+
+        let transport_error = anyhow::Error::new(TransportError::Timeout);
+        assert!(!is_convergent_delete_not_found(&transport_error));
+    }
+
+    #[test]
+    fn test_table_delete_result_serialization() {
+        let table: TableName = "incident".parse().unwrap();
+        let sys_id: SysId = "6816f79cc0a8016401c5a33be04be441".parse().unwrap();
+
+        let deleted = serde_json::to_value(TableDeleteResult::new(
+            &table,
+            &sys_id,
+            DeleteOutcome::Deleted,
+        ))
+        .unwrap();
+        assert_eq!(
+            deleted,
+            serde_json::json!({
+                "status": "success",
+                "outcome": "deleted",
+                "table": "incident",
+                "sys_id": "6816f79cc0a8016401c5a33be04be441",
+                "message": "Record 6816f79cc0a8016401c5a33be04be441 deleted from incident"
+            })
+        );
+
+        let absent = serde_json::to_value(TableDeleteResult::new(
+            &table,
+            &sys_id,
+            DeleteOutcome::AlreadyAbsent,
+        ))
+        .unwrap();
+        assert_eq!(
+            absent,
+            serde_json::json!({
+                "status": "success",
+                "outcome": "already_absent",
+                "table": "incident",
+                "sys_id": "6816f79cc0a8016401c5a33be04be441",
+                "message": "Record 6816f79cc0a8016401c5a33be04be441 already absent in incident"
+            })
         );
     }
 }

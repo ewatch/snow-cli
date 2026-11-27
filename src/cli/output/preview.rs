@@ -99,13 +99,11 @@ pub(crate) fn ensure_preview_supported(preview: bool, format: &OutputFormat) -> 
 }
 
 pub fn print_table_list(result: &TableListResult, format: &OutputFormat) -> anyhow::Result<()> {
-    write_table_list_with_preview(
-        result,
-        format,
-        &PreviewReport::default(),
-        None,
-        &mut std::io::stdout(),
-    )
+    let stdout = std::io::stdout();
+    let mut writer = std::io::BufWriter::new(stdout.lock());
+    write_table_list_with_preview(result, format, &PreviewReport::default(), None, &mut writer)?;
+    writer.flush()?;
+    Ok(())
 }
 
 /// Print a `table list` page with its preview report and extra metadata
@@ -116,7 +114,42 @@ pub(crate) fn print_table_list_preview(
     preview: &PreviewReport,
     extras: &TableListExtras<'_>,
 ) -> anyhow::Result<()> {
-    write_table_list_page(result, format, preview, extras, &mut std::io::stdout())
+    let stdout = std::io::stdout();
+    let mut writer = std::io::BufWriter::new(stdout.lock());
+    write_table_list_page(result, format, preview, extras, &mut writer)?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// Write the JSONL leading `{"meta": ...}` line for a streamed `table list --all` result.
+pub(crate) fn write_table_list_jsonl_meta<W: Write>(
+    summary: crate::client::TablePageSummary,
+    warnings: &[FieldWarning],
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    let next_offset = if summary.truncated {
+        Some(summary.offset.saturating_add(summary.returned))
+    } else {
+        None
+    };
+    let meta_line = JsonlMetaLine {
+        meta: JsonlMetaBody {
+            meta: TableListMeta {
+                total: summary.total,
+                returned: summary.returned,
+                offset: summary.offset,
+                next_offset,
+                truncated: summary.truncated,
+                fields_truncated: false,
+                domains_in_page: None,
+                warnings,
+            },
+            preview: &PreviewReport::default(),
+        },
+    };
+    serde_json::to_writer(&mut *writer, &meta_line)?;
+    writer.write_all(b"\n")?;
+    Ok(())
 }
 
 /// Print a single record, wrapping in `RecordPreviewEnvelope` whenever
@@ -186,9 +219,11 @@ pub(crate) fn write_table_list_page<W: Write>(
                     preview,
                 },
             };
-            writeln!(writer, "{}", serde_json::to_string(&meta_line)?)?;
+            serde_json::to_writer(&mut *writer, &meta_line)?;
+            writer.write_all(b"\n")?;
             for record in &result.records {
-                writeln!(writer, "{}", serde_json::to_string(record)?)?;
+                serde_json::to_writer(&mut *writer, record)?;
+                writer.write_all(b"\n")?;
             }
         }
         _ => write_output(&envelope, format, writer)?,

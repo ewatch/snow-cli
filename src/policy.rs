@@ -1015,6 +1015,14 @@ mod tests {
                 data: Some("{}".to_string()),
             },
         }));
+        assert_denied(Commands::Table(TableArgs {
+            command: TableCommands::Delete {
+                table: "incident".parse().unwrap(),
+                sys_id: "6816f79cc0a8016401c5a33be04be441".parse().unwrap(),
+                yes: true,
+                ignore_not_found: true,
+            },
+        }));
         assert_denied(Commands::Api(ApiArgs {
             command: ApiCommands::Post {
                 path: "/api/x/do".to_string(),

@@ -1222,9 +1222,16 @@ async fn test_table_delete_with_yes() {
         .mount(&server)
         .await;
 
+    // Ensure no preflight GET is issued before DELETE.
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
     let (_dir, config_path) = api_key_config(&server.uri());
 
-    cargo_bin_cmd!("snow-cli")
+    let assert = cargo_bin_cmd!("snow-cli")
         .env("SNOW_CLI_CONFIG", &config_path)
         .env("SNOW_CLI_API_TOKEN", "test-api-token")
         .args([
@@ -1237,8 +1244,481 @@ async fn test_table_delete_with_yes() {
             "--yes",
         ])
         .assert()
+        .success();
+
+    let payload: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(payload["status"], "success");
+    assert_eq!(payload["outcome"], "deleted");
+    assert_eq!(payload["table"], "incident");
+    assert_eq!(payload["sys_id"], "6816f79cc0a8016401c5a33be04be441");
+    assert_eq!(
+        payload["message"],
+        "Record 6816f79cc0a8016401c5a33be04be441 deleted from incident"
+    );
+}
+
+#[tokio::test]
+async fn test_table_delete_absent_record_fails_by_default() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/api/now/table/incident/6816f79cc0a8016401c5a33be04be441",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": {
+                "message": "No Record found",
+                "detail": "Record doesn't exist or ACL restricts the record retrieval"
+            },
+            "status": "failure"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config(&server.uri());
+
+    let assert = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "delete",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--yes",
+        ])
+        .assert()
+        .code(4)
+        .stdout("");
+
+    let error: serde_json::Value = serde_json::from_slice(&assert.get_output().stderr).unwrap();
+    assert_eq!(error["error"]["code"], "RECORD_NOT_FOUND");
+    assert_eq!(error["error"]["status"], 404);
+}
+
+#[tokio::test]
+async fn test_table_delete_ignore_not_found_converges_on_record_not_found() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/api/now/table/incident/6816f79cc0a8016401c5a33be04be441",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": {
+                "message": "No Record found",
+                "detail": "Record doesn't exist or ACL restricts the record retrieval"
+            },
+            "status": "failure"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Convergent delete must never issue a preflight GET.
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config(&server.uri());
+
+    let assert = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "delete",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--yes",
+            "--ignore-not-found",
+        ])
+        .assert()
         .success()
-        .stdout(predicate::str::contains("deleted"));
+        .stderr("");
+
+    let payload: serde_json::Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+    assert_eq!(payload["status"], "success");
+    assert_eq!(payload["outcome"], "already_absent");
+    assert_eq!(payload["table"], "incident");
+    assert_eq!(payload["sys_id"], "6816f79cc0a8016401c5a33be04be441");
+    assert_eq!(
+        payload["message"],
+        "Record 6816f79cc0a8016401c5a33be04be441 already absent in incident"
+    );
+}
+
+#[tokio::test]
+async fn test_table_delete_ignore_not_found_does_not_mask_invalid_table() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/api/now/table/u_missing/6816f79cc0a8016401c5a33be04be441",
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {
+                "message": "Invalid table u_missing",
+                "detail": null
+            },
+            "status": "failure"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config(&server.uri());
+
+    let assert = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "delete",
+            "u_missing",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--yes",
+            "--ignore-not-found",
+        ])
+        .assert()
+        .code(5)
+        .stdout("");
+
+    let error: serde_json::Value = serde_json::from_slice(&assert.get_output().stderr).unwrap();
+    assert_eq!(error["error"]["code"], "INVALID_TABLE");
+    assert_eq!(error["error"]["status"], 400);
+}
+
+#[tokio::test]
+async fn test_table_delete_ignore_not_found_does_not_mask_generic_404() {
+    for (label, response) in [
+        (
+            "html proxy 404",
+            ResponseTemplate::new(404).set_body_string("<html><body>404 Not Found</body></html>"),
+        ),
+        ("empty 404", ResponseTemplate::new(404)),
+        (
+            "non-record JSON 404",
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": {"message": "Not Found", "detail": "Unknown resource"},
+                "status": "failure"
+            })),
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path(
+                "/api/now/table/incident/6816f79cc0a8016401c5a33be04be441",
+            ))
+            .respond_with(response)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_dir, config_path) = api_key_config(&server.uri());
+
+        let assert = cargo_bin_cmd!("snow-cli")
+            .env("SNOW_CLI_CONFIG", &config_path)
+            .env("SNOW_CLI_API_TOKEN", "test-api-token")
+            .args([
+                "--instance",
+                &server.uri(),
+                "table",
+                "delete",
+                "incident",
+                "6816f79cc0a8016401c5a33be04be441",
+                "--yes",
+                "--ignore-not-found",
+            ])
+            .assert()
+            .code(4)
+            .stdout("");
+
+        let error: serde_json::Value = serde_json::from_slice(&assert.get_output().stderr).unwrap();
+        assert_eq!(error["error"]["code"], "NOT_FOUND", "case: {label}");
+        assert_eq!(error["error"]["status"], 404, "case: {label}");
+    }
+}
+
+#[tokio::test]
+async fn test_table_delete_ignore_not_found_does_not_mask_acl_auth_or_server_errors() {
+    for (status, body, expected_code, expected_exit) in [
+        (
+            403,
+            serde_json::json!({
+                "error": {
+                    "message": "Operation Failed",
+                    "detail": "ACL Exception Delete Failed due to security constraints"
+                },
+                "status": "failure"
+            }),
+            "ACL_DENIED",
+            5,
+        ),
+        (
+            403,
+            serde_json::json!({
+                "error": {"message": "Forbidden", "detail": null},
+                "status": "failure"
+            }),
+            "FORBIDDEN",
+            5,
+        ),
+        (
+            401,
+            serde_json::json!({
+                "error": {"message": "User is not authenticated"},
+                "status": "failure"
+            }),
+            "UNAUTHORIZED",
+            5,
+        ),
+        (
+            500,
+            serde_json::json!({
+                "error": {"message": "Internal error"},
+                "status": "failure"
+            }),
+            "SERVER_ERROR",
+            5,
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path(
+                "/api/now/table/incident/6816f79cc0a8016401c5a33be04be441",
+            ))
+            .respond_with(ResponseTemplate::new(status).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let (_dir, config_path) = api_key_config(&server.uri());
+
+        let assert = cargo_bin_cmd!("snow-cli")
+            .env("SNOW_CLI_CONFIG", &config_path)
+            .env("SNOW_CLI_API_TOKEN", "test-api-token")
+            .args([
+                "--instance",
+                &server.uri(),
+                "table",
+                "delete",
+                "incident",
+                "6816f79cc0a8016401c5a33be04be441",
+                "--yes",
+                "--ignore-not-found",
+            ])
+            .assert()
+            .code(expected_exit)
+            .stdout("");
+
+        let error: serde_json::Value = serde_json::from_slice(&assert.get_output().stderr).unwrap();
+        assert_eq!(error["error"]["code"], expected_code);
+        assert_eq!(error["error"]["status"], status);
+    }
+}
+
+#[tokio::test]
+async fn test_table_delete_requires_yes_even_with_ignore_not_found() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(204))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config(&server.uri());
+
+    let assert = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "delete",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--ignore-not-found",
+        ])
+        .assert()
+        .code(2)
+        .stdout("");
+
+    let error: serde_json::Value = serde_json::from_slice(&assert.get_output().stderr).unwrap();
+    assert_eq!(error["error"]["code"], "VALIDATION_ERROR");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--yes")
+    );
+}
+
+#[tokio::test]
+async fn test_table_delete_read_only_blocks_ignore_not_found_before_network() {
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(204))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let (_dir, config_path) = api_key_config(&server.uri());
+
+    let assert = cargo_bin_cmd!("snow-cli")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--read-only",
+            "--instance",
+            &server.uri(),
+            "table",
+            "delete",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--yes",
+            "--ignore-not-found",
+        ])
+        .assert()
+        .code(7)
+        .stdout("");
+
+    let error: serde_json::Value = serde_json::from_slice(&assert.get_output().stderr).unwrap();
+    assert_eq!(error["error"]["code"], "POLICY_DENIED");
+
+    cargo_bin_cmd!("snow-cli-ro")
+        .env("SNOW_CLI_CONFIG", &config_path)
+        .env("SNOW_CLI_API_TOKEN", "test-api-token")
+        .args([
+            "--instance",
+            &server.uri(),
+            "table",
+            "delete",
+            "incident",
+            "6816f79cc0a8016401c5a33be04be441",
+            "--yes",
+            "--ignore-not-found",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "'delete' is not a `snow-cli-ro table` subcommand",
+        ));
+}
+
+#[tokio::test]
+async fn test_table_delete_output_formats() {
+    let sys_id = "6816f79cc0a8016401c5a33be04be441";
+
+    for (expected_outcome, response) in [
+        ("deleted", ResponseTemplate::new(204)),
+        (
+            "already_absent",
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": {
+                    "message": "No Record found",
+                    "detail": "Record doesn't exist or ACL restricts the record retrieval"
+                },
+                "status": "failure"
+            })),
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path(format!("/api/now/table/incident/{sys_id}")))
+            .respond_with(response)
+            .expect(5)
+            .mount(&server)
+            .await;
+
+        let (_dir, config_path) = api_key_config(&server.uri());
+        let server_uri = server.uri();
+
+        for format in ["json", "text", "csv", "jsonl", "auto"] {
+            let mut args = vec![
+                "--output",
+                format,
+                "--instance",
+                server_uri.as_str(),
+                "table",
+                "delete",
+                "incident",
+                sys_id,
+                "--yes",
+            ];
+            if expected_outcome == "already_absent" {
+                args.push("--ignore-not-found");
+            }
+            let output = cargo_bin_cmd!("snow-cli")
+                .env("SNOW_CLI_CONFIG", &config_path)
+                .env("SNOW_CLI_API_TOKEN", "test-api-token")
+                .args(&args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "format={format}, outcome={expected_outcome}, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            match format {
+                "json" | "jsonl" | "text" => {
+                    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+                    assert_eq!(parsed["status"], "success", "format={format}");
+                    assert_eq!(parsed["outcome"], expected_outcome, "format={format}");
+                    assert_eq!(parsed["table"], "incident", "format={format}");
+                    assert_eq!(parsed["sys_id"], sys_id, "format={format}");
+                    if format == "jsonl" {
+                        assert_eq!(stdout.trim().lines().count(), 1);
+                    }
+                    if format == "text" {
+                        assert!(stdout.trim().lines().count() > 1);
+                    }
+                }
+                "csv" => {
+                    let lines: Vec<&str> = stdout.trim().lines().collect();
+                    assert_eq!(lines.len(), 2, "{stdout}");
+                    assert_eq!(lines[0], "status,outcome,table,sys_id,message");
+                    assert!(
+                        lines[1]
+                            .starts_with(&format!("success,{expected_outcome},incident,{sys_id},")),
+                        "{stdout}"
+                    );
+                }
+                "auto" => {
+                    assert!(stdout.contains("success"), "{stdout}");
+                    assert!(stdout.contains(expected_outcome), "{stdout}");
+                    assert!(stdout.contains("incident"), "{stdout}");
+                    assert!(stdout.contains(sys_id), "{stdout}");
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+#[test]
+fn test_table_delete_help_documents_convergent_semantics() {
+    let output = cargo_bin_cmd!("snow-cli")
+        .args(["table", "delete", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+    assert!(help.contains("--ignore-not-found"), "{help}");
+    assert!(help.contains("already_absent"), "{help}");
+    assert!(help.contains("RECORD_NOT_FOUND"), "{help}");
+    assert!(help.contains("not blindly idempotent"), "{help}");
 }
 
 // --- error cases ---
@@ -2640,6 +3120,165 @@ async fn test_table_stats_warns_on_unknown_group_by() {
     let warning: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(warning["warning"]["field"], "stat");
     assert_eq!(warning["warning"]["in"], "group_by");
+}
+
+#[tokio::test]
+async fn test_table_list_star_fields_checks_dot_walked_query_fields() {
+    let server = MockServer::start().await;
+    // Main query with --fields '*' sends no sysparm_fields and returns top-level fields.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_query", "assigned_to.bogus=x"))
+        .and(query_param_is_missing("sysparm_fields"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "11111111111111111111111111111111", "assigned_to": "abc"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Warn mode probes only the dot-walked path so assigned_to.bogus is caught.
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param_is_missing("sysparm_query"))
+        .and(query_param("sysparm_limit", "1"))
+        .and(query_param("sysparm_fields", "assigned_to.bogus"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli-ro",
+        &server,
+        &config,
+        &[
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            " * ",
+            "--query",
+            "assigned_to.bogus=x",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["warnings"][0]["field"], "assigned_to.bogus");
+    assert_eq!(value["warnings"][0]["in"], "query");
+}
+
+#[tokio::test]
+async fn test_table_list_escaped_caret_query_passes_check_fields_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param_is_missing("sysparm_query"))
+        .and(query_param("sysparm_limit", "1"))
+        .and(query_param("sysparm_fields", "short_description"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"short_description": "a^b"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_query", "short_descriptionLIKEa^^b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"sys_id": "11111111111111111111111111111111", "short_description": "a^b"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli-ro",
+        &server,
+        &config,
+        &[
+            "table",
+            "list",
+            "incident",
+            "--query",
+            "short_descriptionLIKEa^^b",
+            "--check-fields",
+            "error",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[tokio::test]
+async fn test_table_stats_checks_aggregate_and_having_fields_with_domain_probe() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/incident"))
+        .and(query_param("sysparm_fields", "bogus_avg,bogus_having"))
+        .and(query_param("sysparm_query_no_domain", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_db_object"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"name": "incident", "super_class": ""}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/table/sys_dictionary"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                {"name": "incident", "element": "sys_id"},
+                {"name": "incident", "element": "sys_domain"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/now/stats/incident"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"stats": {"count": "12"}}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let (_dir, config) = api_key_config(&server.uri());
+
+    let output = run_ok(
+        "snow-cli-ro",
+        &server,
+        &config,
+        &[
+            "table",
+            "stats",
+            "incident",
+            "--domain",
+            "global",
+            "--avg",
+            "bogus_avg",
+            "--having",
+            "sum(bogus_having)>1",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let lines: Vec<serde_json::Value> = stderr
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    assert_eq!(lines[0]["warning"]["field"], "bogus_avg");
+    assert_eq!(lines[0]["warning"]["in"], "avg");
+    assert_eq!(lines[1]["warning"]["field"], "bogus_having");
+    assert_eq!(lines[1]["warning"]["in"], "having");
 }
 
 #[test]

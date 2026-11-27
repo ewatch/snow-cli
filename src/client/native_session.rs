@@ -188,6 +188,13 @@ impl SnowClient {
 
     pub async fn inspect_native_session(&mut self) -> anyhow::Result<SessionInspection> {
         let bootstrap = self.refresh_native_csrf().await?;
+        self.inspect_native_session_with_bootstrap(&bootstrap).await
+    }
+
+    async fn inspect_native_session_with_bootstrap(
+        &mut self,
+        bootstrap: &Value,
+    ) -> anyhow::Result<SessionInspection> {
         let credentials = self.native_credentials().await?;
         let effective_user = self.native_current_user().await?;
         let response: Value = self.get_json(PICKERS).await?;
@@ -301,6 +308,13 @@ impl SnowClient {
         kind: SessionSwitchType,
     ) -> anyhow::Result<Vec<SessionSelection>> {
         self.refresh_native_csrf().await?;
+        self.native_session_options_without_refresh(kind).await
+    }
+
+    async fn native_session_options_without_refresh(
+        &mut self,
+        kind: SessionSwitchType,
+    ) -> anyhow::Result<Vec<SessionSelection>> {
         let response: Value = self
             .get_json(&format!("/api/now/ui/concoursepicker/{}", kind.endpoint()))
             .await?;
@@ -328,7 +342,12 @@ impl SnowClient {
         value: &str,
     ) -> anyhow::Result<(SessionInspection, SessionInspection)> {
         self.authorize_instance_request(&Method::PUT, "/api/now/ui/concoursepicker/current")?;
-        let before = self.inspect_native_session().await?;
+        // Refresh CSRF and session bootstrap metadata once per switch instead of
+        // re-fetching /navpage.do before options and again during verification.
+        let bootstrap = self.refresh_native_csrf().await?;
+        let before = self
+            .inspect_native_session_with_bootstrap(&bootstrap)
+            .await?;
         anyhow::ensure!(
             has_complete_context(&before),
             ValidationError::new(
@@ -345,7 +364,7 @@ impl SnowClient {
         {
             return Ok((before.clone(), before));
         }
-        let options = self.native_session_options(kind).await?;
+        let options = self.native_session_options_without_refresh(kind).await?;
         // Resolve application scope names only through the actual accessible picker.
         let candidates = options
             .iter()
@@ -378,7 +397,7 @@ impl SnowClient {
             .await
             .map_err(NativeSessionSwitchError::RequestFailed)?;
         let after = self
-            .inspect_native_session()
+            .inspect_native_session_with_bootstrap(&bootstrap)
             .await
             .map_err(NativeSessionSwitchError::VerificationFailed)?;
         if !has_complete_context(&after) {

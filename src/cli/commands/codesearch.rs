@@ -96,23 +96,21 @@ fn render_response(body: &str, format: &OutputFormat, preview_enabled: bool) -> 
 
     let preview = preview_codesearch_output(&mut json, preview_enabled);
 
-    if let Ok(table_resp) =
-        serde_json::from_value::<crate::models::record::TableResponse>(json.clone())
+    if !preview_enabled
+        && preview.is_empty()
+        && json
+            .get("result")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|rows| rows.iter().all(serde_json::Value::is_object))
     {
-        if !preview_enabled && preview.is_empty() {
-            output::print_records(&table_resp.result, format)
-        } else {
-            if let Some(object) = json.as_object_mut() {
-                insert_preview(object, preview_enabled, &preview)?;
-            }
-            output::print_output(&json, format)
-        }
-    } else {
-        if let Some(object) = json.as_object_mut() {
-            insert_preview(object, preview_enabled, &preview)?;
-        }
-        output::print_output(&json, format)
+        let table_resp: crate::models::record::TableResponse = serde_json::from_value(json)?;
+        return output::print_records(&table_resp.result, format);
     }
+
+    if let Some(object) = json.as_object_mut() {
+        insert_preview(object, preview_enabled, &preview)?;
+    }
+    output::print_output(&json, format)
 }
 
 fn preview_codesearch_output(json: &mut serde_json::Value, preview_enabled: bool) -> PreviewReport {

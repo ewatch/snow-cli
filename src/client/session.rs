@@ -162,11 +162,8 @@ pub(crate) fn extract_g_ck_from_body(body: &str) -> Option<String> {
 
 impl SnowClient {
     pub(super) fn is_same_origin_url(&self, url: &reqwest::Url) -> bool {
-        reqwest::Url::parse(&self.base_url)
-            .map(|base| {
-                super::core::is_safe_authenticated_url(url) && super::core::same_origin(&base, url)
-            })
-            .unwrap_or(false)
+        super::core::is_safe_authenticated_url(url)
+            && super::core::same_origin(&self.parsed_base_url, url)
     }
 
     pub(super) fn invalidate_form_session(&mut self) {
@@ -865,8 +862,9 @@ mod tests {
             .await;
 
         let client = test_client(&self_redirect_server.uri(), MockAuth::new("token"));
+        let test_pw = uuid::Uuid::new_v4().to_string();
         let err = client
-            .form_login_cookie_header("user", "pw")
+            .form_login_cookie_header("user", &test_pw)
             .await
             .expect_err("self-redirect to /login.do must fail immediately");
         assert!(err.to_string().contains("/login.do"), "{err}");
@@ -892,7 +890,7 @@ mod tests {
 
         let client = test_client(&loop_server.uri(), MockAuth::new("token"));
         let err = client
-            .form_login_cookie_header("user", "pw")
+            .form_login_cookie_header("user", &test_pw)
             .await
             .expect_err("exhausted redirects must error");
         assert!(err.to_string().contains("redirect limit"), "{err}");

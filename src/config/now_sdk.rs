@@ -361,6 +361,8 @@ mod tests {
 
     #[test]
     fn test_upsert_basic_alias_preserves_default_without_flag() {
+        let existing_pw = uuid::Uuid::new_v4().to_string();
+        let dev_pw = uuid::Uuid::new_v4().to_string();
         let mut store = BTreeMap::from([(
             "default".to_string(),
             StoredAlias {
@@ -369,7 +371,7 @@ mod tests {
                 creds: NowSdkCredentials::Basic {
                     instance_url: "https://default.service-now.com".to_string(),
                     username: "admin".to_string(),
-                    password: Secret::new("secret".to_string()),
+                    password: Secret::new(existing_pw),
                 },
             },
         )]);
@@ -379,7 +381,7 @@ mod tests {
             "dev",
             "https://dev.service-now.com",
             "devuser",
-            "password",
+            &dev_pw,
             false,
         );
 
@@ -389,6 +391,8 @@ mod tests {
 
     #[test]
     fn test_upsert_basic_alias_sets_default_when_requested() {
+        let existing_pw = uuid::Uuid::new_v4().to_string();
+        let dev_pw = uuid::Uuid::new_v4().to_string();
         let mut store = BTreeMap::from([(
             "default".to_string(),
             StoredAlias {
@@ -397,7 +401,7 @@ mod tests {
                 creds: NowSdkCredentials::Basic {
                     instance_url: "https://default.service-now.com".to_string(),
                     username: "admin".to_string(),
-                    password: Secret::new("secret".to_string()),
+                    password: Secret::new(existing_pw),
                 },
             },
         )]);
@@ -407,7 +411,7 @@ mod tests {
             "dev",
             "https://dev.service-now.com",
             "devuser",
-            "password",
+            &dev_pw,
             true,
         );
 

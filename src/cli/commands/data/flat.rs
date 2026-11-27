@@ -29,6 +29,112 @@ pub(super) async fn handle_export(
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
     let pagination = PaginationConfig::default().with_limit(export.limit);
 
+    // Stream page-by-page for archival JSON and CSV exports so large tables do
+    // not buffer every page in memory at once.
+    if !export.import_ready && matches!(format, OutputFormat::Json | OutputFormat::Csv) {
+        let fields = split_csv_fields(export.fields.as_deref());
+        let instance_url = client.base_url().to_string();
+        let exported_at = current_unix_timestamp();
+        let read_options = crate::client::TableReadOptions::default();
+
+        if matches!(format, OutputFormat::Csv) {
+            let record_count = if let Some(ref out_path) = export.out_path {
+                let mut stream =
+                    output::CsvRecordStream::new(std::io::BufWriter::new(File::create(out_path)?));
+                let summary = client
+                    .for_each_table_records_with_options(
+                        &export.table,
+                        export.query.as_deref(),
+                        export.fields.as_deref(),
+                        &pagination,
+                        export.order_by.as_ref(),
+                        &read_options,
+                        |page| stream.write_page(&page),
+                    )
+                    .await?;
+                stream.finish()?;
+                summary.returned
+            } else {
+                let stdout = std::io::stdout();
+                let mut stream =
+                    output::CsvRecordStream::new(std::io::BufWriter::new(stdout.lock()));
+                let summary = client
+                    .for_each_table_records_with_options(
+                        &export.table,
+                        export.query.as_deref(),
+                        export.fields.as_deref(),
+                        &pagination,
+                        export.order_by.as_ref(),
+                        &read_options,
+                        |page| stream.write_page(&page),
+                    )
+                    .await?;
+                stream.finish()?;
+                summary.returned
+            };
+
+            if let Some(out_path) = export.out_path {
+                let summary = ExportSummary {
+                    kind: "export-result",
+                    command: "data export",
+                    output_format: output_format_name(format),
+                    instance: instance_url,
+                    table: export.table.to_string(),
+                    record_count,
+                    out_path,
+                    preparation: None,
+                };
+                return output::print_output(&summary, format);
+            }
+            return Ok(());
+        }
+
+        // Streaming JSON export (either to `--out` or stdout).
+        let record_count = if let Some(ref out_path) = export.out_path {
+            let mut writer = std::io::BufWriter::new(File::create(out_path)?);
+            stream_json_export_artifact(
+                &mut client,
+                &export,
+                &pagination,
+                &read_options,
+                &instance_url,
+                fields.as_deref(),
+                exported_at,
+                &mut writer,
+            )
+            .await?
+        } else {
+            let stdout = std::io::stdout();
+            let mut writer = std::io::BufWriter::new(stdout.lock());
+            stream_json_export_artifact(
+                &mut client,
+                &export,
+                &pagination,
+                &read_options,
+                &instance_url,
+                fields.as_deref(),
+                exported_at,
+                &mut writer,
+            )
+            .await?
+        };
+
+        if let Some(out_path) = export.out_path {
+            let summary = ExportSummary {
+                kind: "export-result",
+                command: "data export",
+                output_format: output_format_name(format),
+                instance: instance_url,
+                table: export.table.to_string(),
+                record_count,
+                out_path,
+                preparation: None,
+            };
+            return output::print_output(&summary, format);
+        }
+        return Ok(());
+    }
+
     let mut records = client
         .get_table_records(
             &export.table,
@@ -89,6 +195,66 @@ pub(super) async fn handle_export(
         OutputFormat::Jsonl | OutputFormat::Toon => output::print_output(&artifact, format),
         OutputFormat::Text => output::print_output(&artifact, format),
     }
+}
+
+/// Stream a `TableExportArtifact` JSON object directly to `writer` page by
+/// page without buffering all records in memory.
+#[allow(clippy::too_many_arguments)]
+async fn stream_json_export_artifact<W: Write>(
+    client: &mut crate::client::SnowClient,
+    export: &ExportRequest,
+    pagination: &PaginationConfig,
+    read_options: &crate::client::TableReadOptions,
+    instance: &str,
+    fields: Option<&[String]>,
+    exported_at_unix_s: u64,
+    writer: &mut W,
+) -> anyhow::Result<usize> {
+    writer.write_all(b"{\"version\":1,\"kind\":\"table-export\",\"command\":")?;
+    serde_json::to_writer(&mut *writer, &default_export_command())?;
+    writer.write_all(b",\"instance\":")?;
+    serde_json::to_writer(&mut *writer, instance)?;
+    writer.write_all(b",\"table\":")?;
+    serde_json::to_writer(&mut *writer, export.table.as_str())?;
+    if let Some(query) = export.query.as_deref() {
+        writer.write_all(b",\"query\":")?;
+        serde_json::to_writer(&mut *writer, query)?;
+    }
+    if let Some(fields) = fields {
+        writer.write_all(b",\"fields\":")?;
+        serde_json::to_writer(&mut *writer, fields)?;
+    }
+    writer.write_all(b",\"exported_at_unix_s\":")?;
+    serde_json::to_writer(&mut *writer, &exported_at_unix_s)?;
+    writer.write_all(b",\"records\":[")?;
+
+    let mut first = true;
+    let summary = client
+        .for_each_table_records_with_options(
+            &export.table,
+            export.query.as_deref(),
+            export.fields.as_deref(),
+            pagination,
+            export.order_by.as_ref(),
+            read_options,
+            |page| {
+                for record in &page {
+                    if !first {
+                        writer.write_all(b",")?;
+                    }
+                    first = false;
+                    serde_json::to_writer(&mut *writer, record)?;
+                }
+                Ok(())
+            },
+        )
+        .await?;
+
+    writer.write_all(b"],\"record_count\":")?;
+    serde_json::to_writer(&mut *writer, &summary.returned)?;
+    writer.write_all(b"}\n")?;
+    writer.flush()?;
+    Ok(summary.returned)
 }
 
 /// Remove fields conservatively using the same source metadata as validation.
@@ -224,14 +390,14 @@ pub(super) async fn build_flat_validation_report(
     .await
 }
 
-pub(super) async fn build_table_validation_report(
+pub(super) async fn build_table_validation_report<R: AsRef<Record>>(
     profile: &str,
     instance: Option<&str>,
     timeout_secs: Option<u64>,
     dataset_kind: &str,
     table: &str,
     fields: Option<&[String]>,
-    records: &[Record],
+    records: &[R],
 ) -> anyhow::Result<ValidationReport> {
     let schema_fields = fetch_table_schema(profile, instance, timeout_secs, table).await?;
     let mut errors = Vec::new();
@@ -307,7 +473,7 @@ pub(super) async fn build_table_validation_report(
             && field.default_value.as_deref().unwrap_or("").is_empty()
     }) {
         for (record_index, record) in records.iter().enumerate() {
-            if !record.fields.contains_key(&required_field.name) {
+            if !record.as_ref().fields.contains_key(&required_field.name) {
                 errors.push(ValidationIssue {
                     kind: "missing_required_field",
                     field: Some(required_field.name.clone()),

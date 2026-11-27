@@ -13,6 +13,11 @@ pub enum FieldSource {
     Query,
     OrderBy,
     GroupBy,
+    Avg,
+    Min,
+    Max,
+    Sum,
+    Having,
 }
 
 impl FieldSource {
@@ -23,6 +28,11 @@ impl FieldSource {
             Self::Query => "--query",
             Self::OrderBy => "--order-by",
             Self::GroupBy => "--group-by",
+            Self::Avg => "--avg",
+            Self::Min => "--min",
+            Self::Max => "--max",
+            Self::Sum => "--sum",
+            Self::Having => "--having",
         }
     }
 
@@ -33,6 +43,11 @@ impl FieldSource {
             Self::Query => "ServiceNow ignores that term, so the result is NOT filtered by it",
             Self::OrderBy => "ServiceNow ignores it, so the result is NOT sorted by it",
             Self::GroupBy => "ServiceNow ignores it, so groups are NOT split by it",
+            Self::Avg => "ServiceNow ignores it or omits the average for that field",
+            Self::Min => "ServiceNow ignores it or omits the minimum for that field",
+            Self::Max => "ServiceNow ignores it or omits the maximum for that field",
+            Self::Sum => "ServiceNow ignores it or omits the sum for that field",
+            Self::Having => "ServiceNow ignores or rejects the HAVING filter on that field",
         }
     }
 }

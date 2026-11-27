@@ -4,18 +4,22 @@ use indexmap::{IndexMap, IndexSet};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 
 mod preview;
 pub use preview::print_table_list;
 pub(crate) use preview::{
     DomainSummary, TableListExtras, ensure_preview_supported, print_raw_value,
-    print_record_preview, print_table_list_preview,
+    print_record_preview, print_table_list_preview, write_table_list_jsonl_meta,
 };
 
 /// Write a value to stdout in the requested output format.
 pub fn print_output<T: Serialize>(value: &T, format: &OutputFormat) -> anyhow::Result<()> {
-    write_output(value, format, &mut std::io::stdout())
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
+    write_output(value, format, &mut writer)?;
+    writer.flush()?;
+    Ok(())
 }
 
 /// Canonical serializer shared by stdout entry points and framed envelopes.
@@ -26,8 +30,8 @@ pub(crate) fn write_output<T: Serialize + ?Sized, W: Write>(
 ) -> anyhow::Result<()> {
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string(value)?;
-            writeln!(writer, "{json}")?;
+            serde_json::to_writer(&mut *writer, value)?;
+            writer.write_all(b"\n")?;
         }
         OutputFormat::Csv => write_serializable_csv(value, writer)?,
         OutputFormat::Jsonl => {
@@ -37,8 +41,8 @@ pub(crate) fn write_output<T: Serialize + ?Sized, W: Write>(
             write_toon(value, writer)?;
         }
         OutputFormat::Text => {
-            let json = serde_json::to_string_pretty(value)?;
-            writeln!(writer, "{json}")?;
+            serde_json::to_writer_pretty(&mut *writer, value)?;
+            writer.write_all(b"\n")?;
         }
         OutputFormat::Auto => {
             emit_auto(&serde_json::to_value(value)?, writer)?;
@@ -155,28 +159,31 @@ pub(crate) fn write_list_csv<T: Serialize, W: Write>(
 
 /// Write a list of values to stdout in the requested output format.
 pub fn print_list<T: Serialize>(values: &[T], format: &OutputFormat) -> anyhow::Result<()> {
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string(values)?;
-            println!("{json}");
+            serde_json::to_writer(&mut writer, values)?;
+            writer.write_all(b"\n")?;
         }
         OutputFormat::Csv => {
-            write_list_csv(values, &mut std::io::stdout())?;
+            write_list_csv(values, &mut writer)?;
         }
         OutputFormat::Jsonl => {
-            write_jsonl_value(&serde_json::to_value(values)?, &mut std::io::stdout())?;
+            write_jsonl_slice(values, &mut writer)?;
         }
         OutputFormat::Toon => {
-            write_toon(values, &mut std::io::stdout())?;
+            write_toon(values, &mut writer)?;
         }
         OutputFormat::Text => {
-            let json = serde_json::to_string_pretty(values)?;
-            println!("{json}");
+            serde_json::to_writer_pretty(&mut writer, values)?;
+            writer.write_all(b"\n")?;
         }
         OutputFormat::Auto => {
-            emit_auto(&serde_json::to_value(values)?, &mut std::io::stdout())?;
+            emit_auto(&serde_json::to_value(values)?, &mut writer)?;
         }
     }
+    writer.flush()?;
     Ok(())
 }
 
@@ -192,12 +199,41 @@ pub fn print_passthrough(body: &str, format: &OutputFormat) -> anyhow::Result<()
         _ => serde_json::from_str::<Value>(body).ok(),
     };
     match json {
-        Some(json) => print_output(&json, format),
+        Some(json) => {
+            let stdout = std::io::stdout();
+            let mut writer = BufWriter::new(stdout.lock());
+            write_json_value(&json, format, &mut writer)?;
+            writer.flush()?;
+            Ok(())
+        }
         None => {
             println!("{body}");
             Ok(())
         }
     }
+}
+
+/// Serialize an already-parsed `serde_json::Value` without re-cloning it into a second `Value`.
+fn write_json_value<W: Write>(
+    value: &Value,
+    format: &OutputFormat,
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    match format {
+        OutputFormat::Json => {
+            serde_json::to_writer(&mut *writer, value)?;
+            writer.write_all(b"\n")?;
+        }
+        OutputFormat::Csv => write_serializable_csv(value, writer)?,
+        OutputFormat::Jsonl => write_jsonl_value(value, writer)?,
+        OutputFormat::Toon => write_toon_value(value, writer)?,
+        OutputFormat::Text => {
+            serde_json::to_writer_pretty(&mut *writer, value)?;
+            writer.write_all(b"\n")?;
+        }
+        OutputFormat::Auto => emit_auto(value, writer)?,
+    }
+    Ok(())
 }
 
 /// Write a single Record to stdout.
@@ -206,28 +242,28 @@ pub fn print_passthrough(body: &str, format: &OutputFormat) -> anyhow::Result<()
 /// serialize directly. This function handles both JSON and CSV output for
 /// the dynamic field layout.
 pub fn print_record(record: &Record, format: &OutputFormat) -> anyhow::Result<()> {
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
     match format {
-        OutputFormat::Json => {
-            let json = serde_json::to_string(record)?;
-            println!("{json}");
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            serde_json::to_writer(&mut writer, record)?;
+            writer.write_all(b"\n")?;
         }
         OutputFormat::Csv => {
-            write_records_csv(std::slice::from_ref(record), &mut std::io::stdout())?;
-        }
-        OutputFormat::Jsonl => {
-            write_jsonl_value(&serde_json::to_value(record)?, &mut std::io::stdout())?;
+            write_records_csv(std::slice::from_ref(record), &mut writer)?;
         }
         OutputFormat::Toon => {
-            write_toon(record, &mut std::io::stdout())?;
+            write_toon(record, &mut writer)?;
         }
         OutputFormat::Text => {
-            let json = serde_json::to_string_pretty(record)?;
-            println!("{json}");
+            serde_json::to_writer_pretty(&mut writer, record)?;
+            writer.write_all(b"\n")?;
         }
         OutputFormat::Auto => {
-            emit_auto(&serde_json::to_value(record)?, &mut std::io::stdout())?;
+            emit_auto(&serde_json::to_value(record)?, &mut writer)?;
         }
     }
+    writer.flush()?;
     Ok(())
 }
 
@@ -236,27 +272,43 @@ pub fn print_record(record: &Record, format: &OutputFormat) -> anyhow::Result<()
 /// Collects all unique field names across all records to build the CSV header
 /// row, then writes each record's values in that column order.
 pub fn print_records(records: &[Record], format: &OutputFormat) -> anyhow::Result<()> {
+    let stdout = std::io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string(records)?;
-            println!("{json}");
+            serde_json::to_writer(&mut writer, records)?;
+            writer.write_all(b"\n")?;
         }
         OutputFormat::Csv => {
-            write_records_csv(records, &mut std::io::stdout())?;
+            write_records_csv(records, &mut writer)?;
         }
         OutputFormat::Jsonl => {
-            write_jsonl_value(&serde_json::to_value(records)?, &mut std::io::stdout())?;
+            write_jsonl_slice(records, &mut writer)?;
         }
         OutputFormat::Toon => {
-            write_toon(records, &mut std::io::stdout())?;
+            write_toon(records, &mut writer)?;
         }
         OutputFormat::Text => {
-            let json = serde_json::to_string_pretty(records)?;
-            println!("{json}");
+            serde_json::to_writer_pretty(&mut writer, records)?;
+            writer.write_all(b"\n")?;
         }
         OutputFormat::Auto => {
-            emit_auto(&serde_json::to_value(records)?, &mut std::io::stdout())?;
+            emit_auto(&serde_json::to_value(records)?, &mut writer)?;
         }
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+/// Stream a slice of items as JSON Lines directly to `writer` without cloning
+/// into an intermediate `serde_json::Value`.
+pub(crate) fn write_jsonl_slice<T: Serialize, W: Write>(
+    items: &[T],
+    writer: &mut W,
+) -> anyhow::Result<()> {
+    for item in items {
+        serde_json::to_writer(&mut *writer, item)?;
+        writer.write_all(b"\n")?;
     }
     Ok(())
 }
@@ -269,14 +321,24 @@ pub(crate) fn write_jsonl_value<W: Write>(value: &Value, writer: &mut W) -> anyh
     match value {
         Value::Array(items) => {
             for item in items {
-                writeln!(writer, "{}", serde_json::to_string(item)?)?;
+                serde_json::to_writer(&mut *writer, item)?;
+                writer.write_all(b"\n")?;
             }
         }
         _ => {
-            writeln!(writer, "{}", serde_json::to_string(value)?)?;
+            serde_json::to_writer(&mut *writer, value)?;
+            writer.write_all(b"\n")?;
         }
     }
 
+    Ok(())
+}
+
+/// Write an already-constructed `serde_json::Value` as TOON without cloning it.
+pub(crate) fn write_toon_value<W: Write>(value: &Value, writer: &mut W) -> anyhow::Result<()> {
+    let toon = toon_format::encode_default(value)?;
+    writer.write_all(toon.as_bytes())?;
+    writer.write_all(b"\n")?;
     Ok(())
 }
 
@@ -290,9 +352,7 @@ pub(crate) fn write_toon<T: Serialize + ?Sized, W: Write>(
     writer: &mut W,
 ) -> anyhow::Result<()> {
     let json = serde_json::to_value(value)?;
-    let toon = toon_format::encode_default(&json)?;
-    writeln!(writer, "{toon}")?;
-    Ok(())
+    write_toon_value(&json, writer)
 }
 
 /// Emit `value` in whichever lossless format encodes to the fewest bytes.
@@ -308,65 +368,57 @@ pub(crate) fn write_toon<T: Serialize + ?Sized, W: Write>(
 /// `auto` only ever leaves the most widely-parseable format to actually save
 /// bytes.
 ///
-/// To keep peak memory at roughly one encoded copy (not three), each candidate
-/// is encoded into a scratch buffer, measured, and dropped; only the winner is
-/// re-encoded to `writer`. TOON is skipped for scalar/null values, where it
+/// Each candidate is encoded at most once without cloning `value`, and losing
+/// buffers are dropped immediately so only the winning payload is retained and
+/// written to `writer`. TOON is skipped for scalar/null values, where it
 /// offers no structural benefit and a bare unquoted scalar would be ambiguous.
 pub(crate) fn emit_auto<W: Write>(value: &Value, writer: &mut W) -> anyhow::Result<()> {
-    // Compact JSON is both the fallback and a candidate; keep it around so the
-    // winner-is-json case needs no re-encode. Lengths are measured as the actual
-    // emitted bytes (every writer path appends a trailing newline) so the three
-    // candidates are compared apples-to-apples.
-    let json_string = serde_json::to_string(value)?;
-    let json_len = json_string.len() + 1;
+    // Compact JSON is both the fallback and the baseline candidate.
+    let mut best_buf = serde_json::to_vec(value)?;
+    best_buf.push(b'\n');
+    let json_len = best_buf.len();
+    let mut chosen = OutputFormat::Json;
 
-    let jsonl_len = {
-        let mut buf = Vec::new();
-        write_jsonl_value(value, &mut buf)?;
-        buf.len()
+    // For non-arrays, JSONL emits the exact same compact JSON line as JSON, so
+    // it can never be strictly smaller than `json_len`.
+    let jsonl_len = if value.is_array() {
+        let mut jsonl_buf = Vec::with_capacity(json_len);
+        write_jsonl_value(value, &mut jsonl_buf)?;
+        let len = jsonl_buf.len();
+        if len < best_buf.len() {
+            best_buf = jsonl_buf;
+            chosen = OutputFormat::Jsonl;
+        }
+        len
+    } else {
+        json_len
     };
 
     // TOON only meaningfully competes for structured data (objects/arrays);
     // skipping scalars avoids emitting an ambiguous bare unquoted value.
     let toon_len = if value.is_object() || value.is_array() {
-        let mut buf = Vec::new();
-        write_toon(value, &mut buf)?;
-        Some(buf.len())
+        let mut toon = toon_format::encode_default(value)?;
+        toon.push('\n');
+        let len = toon.len();
+        if len < best_buf.len() {
+            best_buf = toon.into_bytes();
+            chosen = OutputFormat::Toon;
+        }
+        Some(len)
     } else {
         None
     };
 
-    // Strict-improvement with ties -> json > jsonl > toon: stay on the most
-    // widely-parseable format unless another is strictly smaller.
-    let mut chosen = OutputFormat::Json;
-    let mut best = json_len;
-    if jsonl_len < best {
-        chosen = OutputFormat::Jsonl;
-        best = jsonl_len;
-    }
-    if let Some(toon_len) = toon_len
-        && toon_len < best
-    {
-        chosen = OutputFormat::Toon;
-        best = toon_len;
-    }
-
     tracing::info!(
         "auto output -> {} ({} B; json={} jsonl={} toon={})",
         chosen.as_str(),
-        best,
+        best_buf.len(),
         json_len,
         jsonl_len,
         toon_len.map_or_else(|| "n/a".to_string(), |len| len.to_string()),
     );
 
-    match chosen {
-        OutputFormat::Jsonl => write_jsonl_value(value, writer)?,
-        OutputFormat::Toon => write_toon(value, writer)?,
-        // Json (and any non-candidate) fall back to compact JSON.
-        _ => writeln!(writer, "{json_string}")?,
-    }
-
+    writer.write_all(&best_buf)?;
     Ok(())
 }
 
@@ -438,39 +490,66 @@ pub(crate) fn neutralize_csv_formula(value: &str) -> String {
     }
 }
 
+/// Streaming CSV writer for paginated record reads with a stable column schema.
+///
+/// The column header is derived from the first non-empty page (sorted via
+/// `BTreeSet` to match [`write_records_csv`]) and written once; each subsequent
+/// page streams its rows immediately without buffering all records in memory.
+pub(crate) struct CsvRecordStream<W: Write> {
+    csv_writer: csv::Writer<W>,
+    columns: Option<Vec<String>>,
+}
+
+impl<W: Write> CsvRecordStream<W> {
+    pub(crate) fn new(writer: W) -> Self {
+        Self {
+            csv_writer: csv::Writer::from_writer(writer),
+            columns: None,
+        }
+    }
+
+    pub(crate) fn write_page(&mut self, records: &[Record]) -> anyhow::Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let columns = match &self.columns {
+            Some(columns) => columns,
+            None => {
+                let mut set = BTreeSet::new();
+                for record in records {
+                    for key in record.fields.keys() {
+                        set.insert(key.clone());
+                    }
+                }
+                let cols: Vec<String> = set.into_iter().collect();
+                self.csv_writer.write_record(&cols)?;
+                self.columns.insert(cols)
+            }
+        };
+        let mut row = Vec::with_capacity(columns.len());
+        for record in records {
+            row.clear();
+            for col in columns {
+                row.push(format_csv_cell(record.fields.get(col)));
+            }
+            self.csv_writer.write_record(&row)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(mut self) -> anyhow::Result<()> {
+        self.csv_writer.flush()?;
+        Ok(())
+    }
+}
+
 pub(crate) fn write_records_csv<W: Write>(
     records: &[Record],
     writer: &mut W,
 ) -> anyhow::Result<()> {
-    if records.is_empty() {
-        return Ok(());
-    }
-
-    // Collect all unique field names in sorted order
-    let mut columns = BTreeSet::new();
-    for record in records {
-        for key in record.fields.keys() {
-            columns.insert(key.clone());
-        }
-    }
-    let columns: Vec<String> = columns.into_iter().collect();
-
-    let mut csv_writer = csv::Writer::from_writer(writer);
-
-    // Write header
-    csv_writer.write_record(&columns)?;
-
-    // Write data rows
-    for record in records {
-        let row: Vec<String> = columns
-            .iter()
-            .map(|col| format_csv_cell(record.fields.get(col)))
-            .collect();
-        csv_writer.write_record(&row)?;
-    }
-
-    csv_writer.flush()?;
-    Ok(())
+    let mut stream = CsvRecordStream::new(writer);
+    stream.write_page(records)?;
+    stream.finish()
 }
 
 /// Write a simple success/status message to stdout as JSON.

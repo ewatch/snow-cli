@@ -301,7 +301,24 @@ async fn switch_verifies_all_contexts_and_resolves_scope_name() {
         atomic::{AtomicBool, Ordering},
     };
     let server = MockServer::start().await;
-    base(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/navpage.do"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(bootstrap()))
+        // Switch should fetch /navpage.do only once instead of 3 times.
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET")).and(path("/api/now/ui/user/current_user"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":{"user_sys_id":USER,"user_name":"admin","user_display_name":"Administrator"}})))
+        .mount(&server).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/now/table/sys_user/{USER}")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"result":{"sys_domain":{"value":"global"}}})),
+        )
+        .mount(&server)
+        .await;
     let switched = Arc::new(AtomicBool::new(false));
     let read = switched.clone();
     Mock::given(method("GET"))

@@ -16,7 +16,8 @@ fn test_help_flag() {
         .success()
         .stdout(predicate::str::contains("ServiceNow"))
         .stdout(predicate::str::contains("❄️ snow-cli"))
-        .stdout(predicate::str::contains("Common workflows"));
+        .stdout(predicate::str::contains("For agents:"))
+        .stdout(predicate::str::contains("First-time setup (human):"));
 }
 
 #[test]
@@ -109,7 +110,63 @@ fn test_table_list_help() {
         .args(["table", "list", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("List records"));
+        .stdout(predicate::str::contains("List records"))
+        .stdout(predicate::str::contains(
+            "Global options: --profile, --instance, --output, --timeout-secs, --read-only, -v (see snow-cli --help)",
+        ))
+        .stdout(predicate::str::contains("--profile <PROFILE>").not())
+        .stdout(predicate::str::contains("--output <OUTPUT>").not());
+}
+
+#[test]
+fn test_snow_cli_ro_table_list_help_hides_global_block() {
+    cargo_bin_cmd!("snow-cli-ro")
+        .args(["table", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("List records"))
+        .stdout(predicate::str::contains(
+            "Global options: --profile, --instance, --output, --timeout-secs, -v (see snow-cli-ro --help)",
+        ))
+        .stdout(predicate::str::contains("--profile <PROFILE>").not())
+        .stdout(predicate::str::contains("--output <OUTPUT>").not());
+}
+
+#[test]
+fn test_root_help_places_agent_section_before_human_setup() {
+    for (bin, mut cmd, setup_heading, expects_read_only_flag) in [
+        (
+            "snow-cli",
+            cargo_bin_cmd!("snow-cli"),
+            "First-time setup (human):",
+            true,
+        ),
+        (
+            "snow-cli-ro",
+            cargo_bin_cmd!("snow-cli-ro"),
+            "First-time setup (human, standalone):",
+            false,
+        ),
+    ] {
+        let output = cmd
+            .arg("--help")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let help = String::from_utf8(output).unwrap();
+        let agents = help.find("For agents:").unwrap();
+        let setup = help.find(setup_heading).unwrap();
+        assert!(agents < setup, "{bin}: For agents must precede human setup");
+        assert!(help.contains("--output auto"), "{bin}");
+        assert!(help.contains("--order-by -sys_created_on"), "{bin}");
+        assert!(help.contains("--offset"), "{bin}");
+        assert!(!help.contains("Possible values:"), "{bin}");
+        if expects_read_only_flag {
+            assert!(help.contains("--read-only"), "{bin}");
+        }
+    }
 }
 
 #[test]

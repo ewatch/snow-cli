@@ -67,13 +67,25 @@ fn record_path(root: RecordPreviewRoot, record_index: usize, field: &str) -> Str
     }
 }
 
-fn preview_string(value: &str, limit: usize) -> Option<(String, usize)> {
-    let total = value.chars().count();
-    if total <= limit {
+/// Truncate `value` in place to at most `limit` Unicode scalar values in a
+/// single pass, returning the original character count if truncation occurred.
+fn preview_string_in_place(value: &mut String, limit: usize) -> Option<usize> {
+    // UTF-8 byte length is always >= char count, so strings whose byte length
+    // is within `limit` never need scanning.
+    if value.len() <= limit {
         return None;
     }
-    let shortened = value.chars().take(limit).collect::<String>();
-    Some((shortened, total))
+    let (cut_byte, _) = value.char_indices().nth(limit)?;
+    let total = limit + value[cut_byte..].chars().count();
+    value.truncate(cut_byte);
+    Some(total)
+}
+
+#[cfg(test)]
+fn preview_string(value: &str, limit: usize) -> Option<(String, usize)> {
+    let mut owned = value.to_string();
+    let total = preview_string_in_place(&mut owned, limit)?;
+    Some((owned, total))
 }
 
 fn preview_object_strings(
@@ -83,17 +95,17 @@ fn preview_object_strings(
     escape_hatch: &str,
 ) -> PreviewReport {
     let mut report = PreviewReport::default();
-    let mut keys = object.keys().cloned().collect::<Vec<_>>();
-    keys.sort();
 
-    for key in keys {
-        let Some(serde_json::Value::String(text)) = object.get_mut(&key) else {
+    // `serde_json::Map` is BTreeMap-backed (preserve_order is disabled), so
+    // iterating directly visits keys in deterministic sorted order without
+    // cloning or sorting key strings.
+    for (key, value) in object.iter_mut() {
+        let serde_json::Value::String(text) = value else {
             continue;
         };
-        if let Some((shortened, total)) = preview_string(text, limit) {
-            *text = shortened;
+        if let Some(total) = preview_string_in_place(text, limit) {
             report.push(
-                format!("{path_prefix}/{}", escape_json_pointer_segment(&key)),
+                format!("{path_prefix}/{}", escape_json_pointer_segment(key)),
                 total,
                 limit,
                 escape_hatch,
@@ -116,30 +128,26 @@ pub(crate) fn preview_record_fields(
     let mut report = PreviewReport::default();
 
     for (record_index, record) in records.iter_mut().enumerate() {
-        let mut keys = record.fields.keys().cloned().collect::<Vec<_>>();
-        keys.sort();
-
-        for key in keys {
-            match record.fields.get_mut(&key) {
-                Some(serde_json::Value::String(text)) => {
-                    if let Some((shortened, total)) = preview_string(text, limit) {
-                        *text = shortened;
+        // `record.fields` is a BTreeMap, so keys are already in sorted order.
+        for (key, value) in &mut record.fields {
+            match value {
+                serde_json::Value::String(text) => {
+                    if let Some(total) = preview_string_in_place(text, limit) {
                         report.push(
-                            record_path(root, record_index, &key),
+                            record_path(root, record_index, key),
                             total,
                             limit,
                             escape_hatch,
                         );
                     }
                 }
-                Some(value) if crate::models::display_value::is_compact_pair(value) => {
-                    let base = record_path(root, record_index, &key);
+                value if crate::models::display_value::is_compact_pair(value) => {
+                    let base = record_path(root, record_index, key);
                     if let Some(object) = value.as_object_mut() {
                         for subkey in ["display", "value"] {
                             if let Some(serde_json::Value::String(text)) = object.get_mut(subkey)
-                                && let Some((shortened, total)) = preview_string(text, limit)
+                                && let Some(total) = preview_string_in_place(text, limit)
                             {
-                                *text = shortened;
                                 report.push(format!("{base}/{subkey}"), total, limit, escape_hatch);
                             }
                         }

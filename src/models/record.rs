@@ -25,6 +25,12 @@ pub struct SingleRecordResponse {
     pub result: Record,
 }
 
+impl AsRef<Record> for Record {
+    fn as_ref(&self) -> &Record {
+        self
+    }
+}
+
 impl Record {
     /// Get a field value as a string.
     pub fn get_str(&self, field: &str) -> Option<&str> {

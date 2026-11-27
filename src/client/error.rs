@@ -82,10 +82,14 @@ impl ApiError {
             _ => ("UNKNOWN_ERROR", "Unexpected error"),
         };
 
+        let parsed_body = body
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+
         // OAuth descriptions may echo credentials or arbitrary request data.
         // Retain only recognized protocol error names, never descriptions or
         // extra fields (even when sensitive HTTP diagnostics are enabled).
-        if let Some(oauth_error) = body.as_deref().and_then(oauth_error_name) {
+        if let Some(oauth_error) = parsed_body.as_ref().and_then(oauth_error_name_from_value) {
             return Self {
                 code: code.to_string(),
                 message: format!("OAuth2 token request failed: {oauth_error}"),
@@ -95,7 +99,10 @@ impl ApiError {
             };
         }
 
-        if let Some(envelope) = body.as_deref().and_then(ServiceNowErrorEnvelope::parse) {
+        if let Some(envelope) = parsed_body
+            .as_ref()
+            .and_then(ServiceNowErrorEnvelope::from_value)
+        {
             let message = bound_chars(&scrub_secrets(&envelope.message), Self::MAX_ENVELOPE_CHARS);
             let detail = envelope
                 .detail
@@ -118,12 +125,27 @@ impl ApiError {
             instance: instance.to_string(),
         }
     }
+
+    /// Returns `true` only when ServiceNow returned HTTP 404 with a verified
+    /// `RECORD_NOT_FOUND` (`"No Record found"`) error envelope.
+    ///
+    /// Generic HTTP 404s (`NOT_FOUND` from wrong paths or proxies), invalid
+    /// table errors (`INVALID_TABLE`), ACL denials (`ACL_DENIED`/`FORBIDDEN`),
+    /// auth failures, and server errors return `false`.
+    pub fn is_record_not_found(&self) -> bool {
+        self.status == 404 && self.code == "RECORD_NOT_FOUND"
+    }
 }
 
 /// OAuth 2.0 error names from RFC 6749 sections 4.1.2.1 and 5.2.
 /// An allow-list prevents a server-controlled `error` string echoing secrets.
+#[cfg(test)]
 fn oauth_error_name(body: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    oauth_error_name_from_value(&value)
+}
+
+fn oauth_error_name_from_value(value: &serde_json::Value) -> Option<String> {
     let name = value.get("error")?.as_str()?;
     match name {
         "invalid_request"
@@ -148,10 +170,8 @@ pub(crate) struct ServiceNowErrorEnvelope {
 }
 
 impl ServiceNowErrorEnvelope {
-    /// Parse `{"error":{"message":"..","detail":".."|null}}`. Returns `None`
-    /// for non-JSON bodies, other JSON shapes, or an empty message.
-    pub(crate) fn parse(body: &str) -> Option<Self> {
-        let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    /// Extract a ServiceNow error envelope from an already-parsed JSON value.
+    pub(crate) fn from_value(value: &serde_json::Value) -> Option<Self> {
         let error = value.get("error")?;
         let message = error.get("message")?.as_str()?.trim();
         if message.is_empty() {
@@ -635,6 +655,59 @@ mod tests {
         let forbidden = r#"{"error":{"message":"Forbidden","detail":null}}"#;
         let err = ApiError::from_status(403, "https://x", Some(forbidden.into()));
         assert_eq!(err.code, "FORBIDDEN");
+    }
+
+    #[test]
+    fn test_is_record_not_found_matches_only_verified_404_record_not_found() {
+        let absent = ApiError::from_status(
+            404,
+            "https://x",
+            Some(
+                r#"{"error":{"message":"No Record found","detail":"Record doesn't exist or ACL restricts the record retrieval"},"status":"failure"}"#
+                    .into(),
+            ),
+        );
+        assert!(absent.is_record_not_found());
+
+        let generic_404_empty = ApiError::from_status(404, "https://x", None);
+        assert!(!generic_404_empty.is_record_not_found());
+
+        let generic_404_html = ApiError::from_status(
+            404,
+            "https://x",
+            Some("<html><body>404 Not Found</body></html>".into()),
+        );
+        assert!(!generic_404_html.is_record_not_found());
+
+        let generic_404_json = ApiError::from_status(
+            404,
+            "https://x",
+            Some(r#"{"error":{"message":"Not Found","detail":"Unknown endpoint"}}"#.into()),
+        );
+        assert!(!generic_404_json.is_record_not_found());
+
+        let invalid_table = ApiError::from_status(
+            400,
+            "https://x",
+            Some(r#"{"error":{"message":"Invalid table u_missing"},"status":"failure"}"#.into()),
+        );
+        assert!(!invalid_table.is_record_not_found());
+
+        let acl_denied = ApiError::from_status(
+            403,
+            "https://x",
+            Some(r#"{"error":{"message":"Operation Failed","detail":"ACL Exception Delete Failed"}}"#.into()),
+        );
+        assert!(!acl_denied.is_record_not_found());
+
+        let wrong_status = ApiError {
+            code: "RECORD_NOT_FOUND".to_string(),
+            message: "No Record found".to_string(),
+            status: 400,
+            detail: None,
+            instance: "https://x".to_string(),
+        };
+        assert!(!wrong_status.is_record_not_found());
     }
 
     #[test]

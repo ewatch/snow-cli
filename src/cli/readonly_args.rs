@@ -11,32 +11,48 @@ use crate::cli::args::{
     ProfileStorageArgs, ProfileStorageCommands, ProfileUpsertArgs, ProfileUseArgs,
     READ_ONLY_API_AFTER_HELP, READ_ONLY_AUTH_AFTER_HELP, READ_ONLY_DATA_AFTER_HELP,
     READ_ONLY_DATA_EXPORT_PACKAGE_AFTER_HELP, READ_ONLY_DOMAIN_AFTER_HELP,
-    READ_ONLY_PROFILE_AFTER_HELP, READ_ONLY_SCOPE_AFTER_HELP, READ_ONLY_SEED_AFTER_HELP,
-    READ_ONLY_SNU_AFTER_HELP, READ_ONLY_TABLE_AFTER_HELP, ReadOnlyDomainCountScope,
-    SESSION_AFTER_HELP, ScopeArgs, ScopeCommands, ScopeInspectArgs, ScopeInventoryArgs,
-    ScopeListArgs, SeedArgs, SeedCommands, SeedPlanArgs, SessionArgs, SessionAttachArgs,
-    SessionCommands, SessionOptionsArgs, SkillArgs, SnuAppMetaArgs, SnuArgs, SnuBrokerArgs,
-    SnuBrokerCommands, SnuCheckConnectionArgs, SnuCommands, SnuContextArgs, SnuContextCommands,
-    SnuGetRecordArgs, SnuPageArgs, SnuPageCommands, SnuPageFormStateArgs, SnuQueryArgs,
-    SnuRecordsArgs, SnuRestArgs, SnuRestCommands, SnuRestReadArgs, SnuSchemaArgs,
+    READ_ONLY_GLOBAL_OPTIONS_FOOTER, READ_ONLY_PROFILE_AFTER_HELP, READ_ONLY_SCOPE_AFTER_HELP,
+    READ_ONLY_SEED_AFTER_HELP, READ_ONLY_SNU_AFTER_HELP, READ_ONLY_TABLE_AFTER_HELP,
+    ReadOnlyDomainCountScope, SESSION_AFTER_HELP, ScopeArgs, ScopeCommands, ScopeInspectArgs,
+    ScopeInventoryArgs, ScopeListArgs, SeedArgs, SeedCommands, SeedPlanArgs, SessionArgs,
+    SessionAttachArgs, SessionCommands, SessionOptionsArgs, SkillArgs, SnuAppMetaArgs, SnuArgs,
+    SnuBrokerArgs, SnuBrokerCommands, SnuCheckConnectionArgs, SnuCommands, SnuContextArgs,
+    SnuContextCommands, SnuGetRecordArgs, SnuPageArgs, SnuPageCommands, SnuPageFormStateArgs,
+    SnuQueryArgs, SnuRecordsArgs, SnuRestArgs, SnuRestCommands, SnuRestReadArgs, SnuSchemaArgs,
     SnuScreenshotArgs, SnuTimeoutArgs, TABLE_CHOICES_AFTER_HELP, TABLE_FIND_AFTER_HELP,
     TABLE_GET_AFTER_HELP, TABLE_LIST_AFTER_HELP, TABLE_STATS_AFTER_HELP, TableArgs,
     TableChoicesArgs, TableCommands, TableFindArgs, TableGetArgs, TableListArgs, TableSchemaArgs,
-    TableStatsArgs,
+    TableStatsArgs, hide_global_options_on_subcommands,
 };
 use crate::models::identifiers::TableName;
 
-const READ_ONLY_AFTER_HELP: &str = "First-time setup (standalone):\n  1) Create a profile\n     snow-cli-ro profile add default --instance https://dev123.service-now.com --auth-method basic --username admin\n\n  2) Store credentials\n     snow-cli-ro auth login --password '<password>'\n\n  3) Verify credentials and connectivity\n     snow-cli-ro auth status --verify\n\nRead-only workflows:\n  1) List recent incidents\n     snow-cli-ro table list incident --query 'active=true' --limit 20\n\n  2) Fetch a record\n     snow-cli-ro table get incident <sys_id>\n\n  3) Inspect schema or app metadata\n     snow-cli-ro table schema incident --extended\n     snow-cli-ro scope inspect x_my_app\n\n  4) Call a read-oriented custom API\n     snow-cli-ro api get /api/x_myapp/status\n\nNotes:\n  - snow-cli-ro runs with a locked read-only policy for remote access.\n  - Local profile and credential management is allowed so it can be used standalone.\n  - Remote write commands and `auth token` (credential export) are blocked.\n  - Raw API access is limited to GET.\n  - GET is allowed by HTTP convention; use read-only ServiceNow credentials for stronger guarantees.";
+const READ_ONLY_AFTER_HELP: &str = "\
+For agents:
+  Reads default to 20 rows, compact fields, and truncation metadata (total/returned/offset/next_offset).
+  Use --output auto (or SNOW_CLI_OUTPUT=auto) for token-efficient lossless output (default: json).
+  Locked read-only remote policy: writes, `auth token`, and non-GET API calls are blocked.
+
+  Newest first:   snow-cli-ro table list incident --query 'active=true' --order-by -sys_created_on --limit 20 --output auto
+  Page + labels:  snow-cli-ro table list incident --order-by -sys_created_on --limit 20 --offset 20 --display-value
+  Fetch record:   snow-cli-ro table get incident <sys_id>
+  Discovery:      snow-cli-ro table find flow
+                  snow-cli-ro table schema incident --extended
+                  snow-cli-ro table choices incident priority
+  Code & flows:   snow-cli-ro include show <name> --chain
+                  snow-cli-ro flow show '<flow name>'
+  Custom GET:     snow-cli-ro api get /api/x_myapp/status
+
+First-time setup (human, standalone):
+  snow-cli-ro profile add default --instance https://dev123.service-now.com --auth-method basic --username admin
+  snow-cli-ro auth login --password '<password>'
+  snow-cli-ro auth status --verify
+
+Notes:
+  - Local profile and credential management is allowed so snow-cli-ro can be used standalone.
+  - GET is allowed by HTTP convention; use read-only ServiceNow credentials for stronger guarantees.";
 
 /// ❄️ snow-cli-ro — read-only ServiceNow CLI for agents
-#[derive(Parser, Debug)]
-#[command(
-    name = "snow-cli-ro",
-    version,
-    about = "❄️ snow-cli-ro — read-only ServiceNow CLI for humans and coding agents",
-    long_about = None,
-    after_help = READ_ONLY_AFTER_HELP
-)]
+#[derive(Args, Debug)]
 pub struct ReadOnlyCli {
     /// ServiceNow profile to use
     #[arg(long, global = true)]
@@ -46,9 +62,8 @@ pub struct ReadOnlyCli {
     #[arg(long, global = true)]
     pub instance: Option<String>,
 
-    /// Output format. When omitted, resolves via SNOW_CLI_OUTPUT, then the
-    /// configured default (`config output`), then falls back to json.
-    #[arg(long, alias = "format", global = true)]
+    /// Output format: json (default), csv, jsonl, toon, text, or auto (token-efficient lossless; resolves via SNOW_CLI_OUTPUT, then `config output`)
+    #[arg(long, alias = "format", global = true, hide_possible_values = true)]
     pub output: Option<OutputFormat>,
 
     /// Override the HTTP request timeout in seconds
@@ -62,6 +77,28 @@ pub struct ReadOnlyCli {
     #[command(subcommand)]
     pub command: ReadOnlyCommands,
 }
+
+impl CommandFactory for ReadOnlyCli {
+    fn command() -> clap::Command {
+        let cmd = <Self as Args>::augment_args(clap::Command::new("snow-cli-ro"))
+            .version(env!("CARGO_PKG_VERSION"))
+            .about("❄️ snow-cli-ro — read-only ServiceNow CLI for humans and coding agents")
+            .long_about(None)
+            .after_help(READ_ONLY_AFTER_HELP);
+        hide_global_options_on_subcommands(cmd, READ_ONLY_GLOBAL_OPTIONS_FOOTER)
+    }
+
+    fn command_for_update() -> clap::Command {
+        let cmd = <Self as Args>::augment_args_for_update(clap::Command::new("snow-cli-ro"))
+            .version(env!("CARGO_PKG_VERSION"))
+            .about("❄️ snow-cli-ro — read-only ServiceNow CLI for humans and coding agents")
+            .long_about(None)
+            .after_help(READ_ONLY_AFTER_HELP);
+        hide_global_options_on_subcommands(cmd, READ_ONLY_GLOBAL_OPTIONS_FOOTER)
+    }
+}
+
+impl Parser for ReadOnlyCli {}
 
 #[derive(Subcommand, Debug)]
 pub enum ReadOnlyCommands {
@@ -1029,16 +1066,23 @@ mod tests {
             );
 
             // Every ReadOnlyCli command must keep doc comments (`about`) and
-            // `after_help` whenever the corresponding full command has them.
+            // its own `after_help` (beyond the injected global-options footer)
+            // whenever the corresponding full command has them.
             if !path.is_empty() {
                 assert!(
                     ro_cmd.get_about().is_some(),
                     "ReadOnlyCli command `{path:?}` is missing doc comment (`about`)"
                 );
             }
-            if full_cmd.get_after_help().is_some() {
+            let has_custom_after_help = |cmd: &clap::Command, footer: &str| {
+                cmd.get_after_help().is_some_and(|help| {
+                    let text = help.to_string();
+                    !text.trim().is_empty() && text.trim() != footer
+                })
+            };
+            if has_custom_after_help(full_cmd, crate::cli::args::GLOBAL_OPTIONS_FOOTER) {
                 assert!(
-                    ro_cmd.get_after_help().is_some(),
+                    has_custom_after_help(ro_cmd, READ_ONLY_GLOBAL_OPTIONS_FOOTER),
                     "ReadOnlyCli command `{path:?}` dropped `after_help` present on Cli"
                 );
             }
@@ -1178,5 +1222,100 @@ mod tests {
                 "denied command `{argv:?}` must be rejected by ReadOnlyCli"
             );
         }
+    }
+
+    #[test]
+    fn read_only_global_options_parse_after_subcommands() {
+        let cli = ReadOnlyCli::parse_from([
+            "snow-cli-ro",
+            "table",
+            "list",
+            "incident",
+            "--output",
+            "auto",
+            "--profile",
+            "prod",
+            "--instance",
+            "https://prod.service-now.com",
+            "--timeout-secs",
+            "30",
+            "-vv",
+        ]);
+        assert_eq!(cli.profile.as_deref(), Some("prod"));
+        assert_eq!(
+            cli.instance.as_deref(),
+            Some("https://prod.service-now.com")
+        );
+        assert!(matches!(cli.output, Some(OutputFormat::Auto)));
+        assert_eq!(cli.timeout_secs, Some(30));
+        assert_eq!(cli.verbose, 2);
+
+        let cli = ReadOnlyCli::parse_from([
+            "snow-cli-ro",
+            "table",
+            "list",
+            "incident",
+            "--format",
+            "toon",
+            "-v",
+        ]);
+        assert!(matches!(cli.output, Some(OutputFormat::Toon)));
+        assert_eq!(cli.verbose, 1);
+    }
+
+    #[test]
+    fn read_only_root_help_is_agent_first_and_subcommands_hide_globals() {
+        let mut root = ReadOnlyCli::command();
+        let root_help = root.render_long_help().to_string();
+        for expected in [
+            "--profile <PROFILE>",
+            "--instance <INSTANCE>",
+            "--output <OUTPUT>",
+            "--timeout-secs <TIMEOUT_SECS>",
+            "-v, --verbose",
+            "--output auto",
+            "SNOW_CLI_OUTPUT=auto",
+            "--order-by -sys_created_on",
+            "--offset",
+            "--display-value",
+            "table schema",
+            "table choices",
+            "table find",
+            "include show",
+            "flow show",
+        ] {
+            assert!(
+                root_help.contains(expected),
+                "read-only root help missing `{expected}`"
+            );
+        }
+        assert!(!root_help.contains("Possible values:"));
+        assert!(!root_help.contains(READ_ONLY_GLOBAL_OPTIONS_FOOTER));
+        let agents_pos = root_help
+            .find("For agents:")
+            .expect("missing For agents header");
+        let setup_pos = root_help
+            .find("First-time setup (human, standalone):")
+            .expect("missing human setup header");
+        assert!(agents_pos < setup_pos);
+        assert!(
+            root_help.len() < 4_000,
+            "read-only root help unexpectedly large: {} bytes",
+            root_help.len()
+        );
+
+        root.build();
+        let table_list_help = root
+            .find_subcommand("table")
+            .and_then(|t| t.find_subcommand("list"))
+            .expect("table list exists")
+            .clone()
+            .render_long_help()
+            .to_string();
+        assert!(table_list_help.contains(READ_ONLY_GLOBAL_OPTIONS_FOOTER));
+        assert!(!table_list_help.contains("--profile <PROFILE>"));
+        assert!(!table_list_help.contains("--output <OUTPUT>"));
+        assert!(!table_list_help.contains("--timeout-secs <TIMEOUT_SECS>"));
+        assert!(!table_list_help.contains("-v, --verbose"));
     }
 }

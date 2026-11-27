@@ -189,22 +189,44 @@ snow-cli table update incident 46d44a4b2f13000044e0bfc8fb99b6fd --data '{"state"
 Delete a record.
 
 ```bash
-snow-cli table delete <table> <sys_id> [--yes]
+snow-cli table delete <table> <sys_id> [--yes] [--ignore-not-found]
 ```
 
 Important options:
 
 - `--yes`: skip the confirmation prompt
+- `--ignore-not-found`: converge to exit `0` with `"outcome": "already_absent"` when ServiceNow returns a verified HTTP `404` `RECORD_NOT_FOUND` (`"No Record found"`) error envelope
+
+Output:
+
+`table delete` emits a structured result through the configured `--output` format (`json`, `text`, `csv`, `jsonl`, `toon`, or `auto`):
+
+```json
+{"status":"success","outcome":"deleted","table":"incident","sys_id":"46d44a4b2f13000044e0bfc8fb99b6fd","message":"Record 46d44a4b2f13000044e0bfc8fb99b6fd deleted from incident"}
+```
+
+When `--ignore-not-found` converges on an already-absent record:
+
+```json
+{"status":"success","outcome":"already_absent","table":"incident","sys_id":"46d44a4b2f13000044e0bfc8fb99b6fd","message":"Record 46d44a4b2f13000044e0bfc8fb99b6fd already absent in incident"}
+```
 
 Notes:
 
 - In an interactive shell, the command asks for confirmation unless `--yes` is used.
-- In non-interactive environments, use `--yes` explicitly.
+- In non-interactive environments, use `--yes` explicitly (including when `--ignore-not-found` is set).
+- Read-only enforcement (`snow-cli --read-only` and `snow-cli-ro`) always rejects `table delete`, even when `--ignore-not-found` is passed.
+- The command sends a single `DELETE /api/now/table/{table}/{sys_id}` request without a preflight `GET`.
+- By default (`--ignore-not-found` omitted), deleting an absent record fails with exit `4` (`RECORD_NOT_FOUND`).
+- With `--ignore-not-found`, only a verified ServiceNow HTTP `404` `RECORD_NOT_FOUND` (`"No Record found"`) response converges to exit `0`. Wrong tables (`400 INVALID_TABLE`), generic proxy or wrong-path `404`s (`404 NOT_FOUND`), ACL/permission denials (`403 ACL_DENIED` / `FORBIDDEN`), authentication errors (`401`), and `5xx` or transport failures still fail non-zero.
+- ServiceNow returns `"No Record found"` both when a record does not exist and when ACLs or domain separation hide it, which is why `--ignore-not-found` is strictly opt-in.
+- Convergent `--ignore-not-found` semantics apply only to `table delete`. Create (`table create`), update (`table update`), import (`data import`, `import-set`), and script (`script run`) mutations are **not** made blindly idempotent.
 
-Example:
+Examples:
 
 ```bash
 snow-cli table delete incident 46d44a4b2f13000044e0bfc8fb99b6fd --yes
+snow-cli table delete incident 46d44a4b2f13000044e0bfc8fb99b6fd --yes --ignore-not-found
 ```
 
 ## `table schema <table>`
