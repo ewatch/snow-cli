@@ -19,14 +19,14 @@ use super::*;
 const MAX_AUTH_RETRIES: u32 = 1;
 const MAX_EXTERNAL_REDIRECT_HOPS: usize = 10;
 
-/// Shared HTTP client for unauthenticated OAuth token form posts (no redirects).
-static OAUTH_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+/// Shared HTTP client for unauthenticated external requests that forbid redirects.
+static NO_REDIRECT_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
 
 /// Shared HTTP client for unauthenticated skill resource fetches (HTTPS/loopback redirects only).
 static SKILL_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
 
-fn oauth_http_client() -> anyhow::Result<&'static Client> {
-    if let Some(client) = OAUTH_HTTP_CLIENT.get() {
+fn no_redirect_http_client() -> anyhow::Result<&'static Client> {
+    if let Some(client) = NO_REDIRECT_HTTP_CLIENT.get() {
         return Ok(client);
     }
     let client = Client::builder()
@@ -34,7 +34,7 @@ fn oauth_http_client() -> anyhow::Result<&'static Client> {
         .user_agent(format!("snow-cli/{}", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         .build()?;
-    Ok(OAUTH_HTTP_CLIENT.get_or_init(|| client))
+    Ok(NO_REDIRECT_HTTP_CLIENT.get_or_init(|| client))
 }
 
 fn skill_http_client() -> anyhow::Result<&'static Client> {
@@ -79,7 +79,7 @@ async fn buffered_external_response(
 pub async fn post_oauth_token_form(url: &str, body: &str) -> anyhow::Result<ExternalResponse> {
     let url = Url::parse(url)?;
     validate_external_url(&url, "request OAuth tokens")?;
-    let http = oauth_http_client()?;
+    let http = no_redirect_http_client()?;
     let request = http
         .post(url)
         .header("Content-Type", "application/x-www-form-urlencoded")
