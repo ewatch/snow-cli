@@ -121,6 +121,7 @@ def cmd_resolve_step(path, phase, index, captured_json):
         "description": step.get("description", ""),
         "allow_failure": bool(step.get("allow_failure", phase == "cleanup")),
         "capture": step.get("capture", {}),
+        "binary": step.get("binary", data.get("binary", "snow-cli")),
     }
     if step.get("shell") is not None:
         resolved["kind"] = "shell"

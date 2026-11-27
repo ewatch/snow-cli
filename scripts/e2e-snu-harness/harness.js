@@ -49,12 +49,106 @@
 // "attempted+approved" on success.
 
 const { chromium } = require("playwright");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { spawnSync } = require("child_process");
 
 const EXTENSION_ID = "jgaodbdddndbaijmcljdbglhpdhnjobg"; // "SN Utils - Tools for ServiceNow"
+
+function readVarint(buf, offset) {
+  let value = 0n;
+  let shift = 0n;
+  let pos = offset;
+  while (pos < buf.length) {
+    const byte = BigInt(buf[pos++]);
+    value |= (byte & 0x7fn) << shift;
+    if ((byte & 0x80n) === 0n) {
+      return { value: Number(value), offset: pos };
+    }
+    shift += 7n;
+  }
+  throw new Error("truncated protobuf varint in CRX header");
+}
+
+function skipProtoField(buf, offset, wireType) {
+  if (wireType === 0) return readVarint(buf, offset).offset;
+  if (wireType === 1) return offset + 8;
+  if (wireType === 2) {
+    const len = readVarint(buf, offset);
+    return len.offset + len.value;
+  }
+  if (wireType === 5) return offset + 4;
+  throw new Error(`unsupported protobuf wire type ${wireType} in CRX header`);
+}
+
+function extensionIdFromPublicKey(pubKeyBuf) {
+  const hash = crypto.createHash("sha256").update(pubKeyBuf).digest();
+  let id = "";
+  for (let i = 0; i < 16; i++) {
+    id += String.fromCharCode(97 + ((hash[i] >> 4) & 0x0f));
+    id += String.fromCharCode(97 + (hash[i] & 0x0f));
+  }
+  return id;
+}
+
+/// Extracts the SubjectPublicKeyInfo DER bytes matching `expectedId` from a
+/// Chrome CRX2 or CRX3 package so the unpacked manifest can carry `"key"` and
+/// Chromium assigns the exact official Chrome Web Store extension ID (needed
+/// to pass snow-cli's WebSocket Origin allowlist).
+function extractCrxPublicKey(crxBuf, expectedId) {
+  if (crxBuf.length < 16 || crxBuf.subarray(0, 4).toString("ascii") !== "Cr24") {
+    fail("downloaded extension is not a valid Cr24 package");
+  }
+  const version = crxBuf.readUInt32LE(4);
+  if (version === 2) {
+    const pubKeyLen = crxBuf.readUInt32LE(8);
+    const key = crxBuf.subarray(16, 16 + pubKeyLen);
+    if (extensionIdFromPublicKey(key) !== expectedId) {
+      fail("CRX2 public key did not match expected SN-Utils extension ID");
+    }
+    return key;
+  }
+  if (version !== 3) {
+    fail(`unsupported CRX version ${version}`);
+  }
+  const headerLen = crxBuf.readUInt32LE(8);
+  const header = crxBuf.subarray(12, 12 + headerLen);
+  let pos = 0;
+  while (pos < header.length) {
+    const tag = readVarint(header, pos);
+    const fieldNum = tag.value >> 3;
+    const wireType = tag.value & 0x7;
+    pos = tag.offset;
+    // CrxFileHeader.sha256_with_rsa (2) / sha256_with_ecdsa (3) -> AsymmetricKeyProof
+    if ((fieldNum === 2 || fieldNum === 3) && wireType === 2) {
+      const len = readVarint(header, pos);
+      const proof = header.subarray(len.offset, len.offset + len.value);
+      pos = len.offset + len.value;
+      let p = 0;
+      while (p < proof.length) {
+        const pTag = readVarint(proof, p);
+        const pField = pTag.value >> 3;
+        const pWire = pTag.value & 0x7;
+        p = pTag.offset;
+        if (pField === 1 && pWire === 2) {
+          const kLen = readVarint(proof, p);
+          const candidate = proof.subarray(kLen.offset, kLen.offset + kLen.value);
+          if (extensionIdFromPublicKey(candidate) === expectedId) {
+            return candidate;
+          }
+          p = kLen.offset + kLen.value;
+        } else {
+          p = skipProtoField(proof, p, pWire);
+        }
+      }
+    } else {
+      pos = skipProtoField(header, pos, wireType);
+    }
+  }
+  fail(`could not extract matching CRX3 public key for extension ${expectedId}`);
+}
 
 function log(msg) {
   console.error(`[snu-harness] ${msg}`);
@@ -97,6 +191,15 @@ async function downloadExtension(scratchDir) {
     // that every CRX produces; only treat other exit codes as fatal.
     fail(`unzip of downloaded extension failed: ${result.stderr}`);
   }
+
+  // Embed the CRX's public key in manifest.json so Chromium assigns the exact
+  // Chrome Web Store extension ID (`EXTENSION_ID`) when loading unpacked.
+  const pubKey = extractCrxPublicKey(buf, EXTENSION_ID);
+  const manifestPath = path.join(extDir, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.key = pubKey.toString("base64");
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+  log(`embedded CRX public key in manifest.json (expected id=${EXTENSION_ID})`);
   return extDir;
 }
 
@@ -204,6 +307,12 @@ async function launchBrowser(extDir) {
   }
   const extensionId = new URL(sw.url()).host;
   log(`extension loaded, id=${extensionId}`);
+  if (extensionId !== EXTENSION_ID) {
+    fail(
+      `loaded extension id ${extensionId} did not match expected ${EXTENSION_ID}; ` +
+        "snow-cli's WebSocket Origin allowlist will reject this origin",
+    );
+  }
   return { context, extensionId, userDataDir };
 }
 
@@ -327,13 +436,19 @@ async function attemptTokenCapture(page) {
   const debugDir = process.env.SNU_HARNESS_DEBUG_DIR;
   try {
     await page.bringToFront();
-    // window.snuSlashCommandShow is set up asynchronously after inject.js
-    // loads (chrome.storage-backed settings, etc.) — checking for it
-    // immediately after login is a race that sometimes loses.
+    // Both `window.snuSlashCommandShow` and `window.g_ck` initialize
+    // asynchronously after login; wait for both so cold PDI startups do not
+    // invoke `/token` before `g_ck` is populated.
     await page
-      .waitForFunction(() => typeof window.snuSlashCommandShow === "function", {
-        timeout: 15_000,
-      })
+      .waitForFunction(
+        () =>
+          typeof window.snuSlashCommandShow === "function" &&
+          typeof window.g_ck !== "undefined" &&
+          !!window.g_ck,
+        {
+          timeout: 20_000,
+        },
+      )
       .catch(() => {});
     if (debugDir) {
       await page.screenshot({ path: path.join(debugDir, "before-token.png") }).catch(() => {});

@@ -344,18 +344,16 @@ holds a live `g_ck` for, with the active one flagged.
 
 ### Broker lifecycle
 
-The broker starts automatically on the first `snu` command that needs it. It
-owns the port hard-coded by SN-Utils (`127.0.0.1:1978`) and accepts foreground
-CLI requests on a local broker IPC port. When no clients or requests are active,
-it exits after the idle timeout (default 1800 seconds, override with
-`SNOW_CLI_SNU_BROKER_IDLE_SECS`).
+The broker starts automatically on the first `snu` command that needs it (including read-only commands via `snow-cli-ro`). It owns the WebSocket port hard-coded by SN-Utils (`127.0.0.1:1978`, override with `SNOW_CLI_SNU_WS_ADDR`) and accepts foreground CLI requests over a local IPC transport:
 
-The `g_ck` token is treated as live browser-session metadata only. The broker
-keeps it in memory per instance and, by default, also caches it in a `0600`
-file under `~/.servicenow/` so a single `/token` survives across commands and
-broker restarts (set `SNOW_CLI_SNU_BROKER_PERSIST=0` to keep it memory-only).
-It is never stored in the OS keychain or used as a standalone reusable
-credential.
+- **Unix (macOS / Linux):** defaults to a `0600` Unix domain socket at `~/.servicenow/run/snu.sock` inside a `0700` directory, verifying peer UID on every connection. Override the socket path with `SNOW_CLI_SNU_BROKER_SOCKET`, or select loopback TCP with `SNOW_CLI_SNU_BROKER_ADDR`.
+- **Windows (and TCP override):** uses loopback TCP (`127.0.0.1:1979` by default) authenticated with a per-user random secret token in `snu-broker-token` next to `config.toml` (override with `SNOW_CLI_SNU_BROKER_TOKEN_FILE`).
+- **Extension origin allowlist:** the bridge WebSocket accepts only the official Chrome Web Store SN-Utils extension origins by default. For Firefox (`moz-extension://...`), Safari (`safari-web-extension://...`), Edge Add-ons, or unpacked developer builds, set `SNOW_CLI_SNU_ALLOWED_ORIGINS` to a comma-separated list of allowed extension origins.
+- **Upgrading from `v0.11.0` on Unix:** if an older TCP broker is still running on `127.0.0.1:1979`, stop it before running `v0.12.0` commands (`SNOW_CLI_SNU_BROKER_ADDR=127.0.0.1:1979 snow-cli snu broker stop`).
+
+When no clients or requests are active, the broker exits after the idle timeout (default 1800 seconds, override with `SNOW_CLI_SNU_BROKER_IDLE_SECS`).
+
+The `g_ck` token is treated as live browser-session metadata only. The broker keeps it in memory per instance and, by default, also caches it in a `0600` file (`snu-broker-sessions.json`) co-located with `config.toml` (override with `SNOW_CLI_SNU_SESSIONS_FILE`, or set `SNOW_CLI_SNU_BROKER_PERSIST=0` to keep it memory-only). It is never stored in the OS keychain or used as a standalone reusable credential.
 
 Usually you do not need to manage it. For debugging:
 

@@ -549,6 +549,10 @@ pub struct ReadOnlySnuBrokerArgs {
 pub enum ReadOnlySnuBrokerCommands {
     /// Show broker status
     Status,
+
+    /// Run the broker server process (internal auto-start relay)
+    #[command(hide = true)]
+    Serve,
 }
 
 // --- Conversions into full CLI ---
@@ -768,6 +772,7 @@ impl ReadOnlySnuCommands {
             Self::Broker(broker) => SnuCommands::Broker(SnuBrokerArgs {
                 command: match broker.command {
                     ReadOnlySnuBrokerCommands::Status => SnuBrokerCommands::Status,
+                    ReadOnlySnuBrokerCommands::Serve => SnuBrokerCommands::Serve,
                 },
             }),
         }

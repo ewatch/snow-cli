@@ -677,23 +677,21 @@ fn instant_after_secs(secs: u64) -> Instant {
     now.checked_add(clamped).unwrap_or(now)
 }
 
+/// Maximum wait time when acquiring the per-profile OAuth refresh lock so a
+/// stalled sibling process cannot block token refreshes indefinitely.
+const OAUTH_REFRESH_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn acquire_oauth_profile_lock(profile: &str) -> anyhow::Result<Option<std::fs::File>> {
-    let config_path = crate::config::profile::AppConfig::config_path();
-    let Some(dir) = config_path.parent() else {
-        return Ok(None);
-    };
-    let lock_dir = dir.join(".locks");
-    std::fs::create_dir_all(&lock_dir)?;
+    let lock_dir = crate::config::profile::AppConfig::config_dir().join(".locks");
     let digest = Sha256::digest(profile.as_bytes());
     let hash: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
     let lock_path = lock_dir.join(format!("oauth-refresh-{hash}.lock"));
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)?;
-    file.lock()?;
+    let file = crate::config::encrypted_store::acquire_exclusive_lock(
+        &lock_path,
+        "OAuth refresh lock",
+        Some(OAUTH_REFRESH_LOCK_TIMEOUT),
+    )
+    .map_err(|error| crate::auth::AuthenticationError::new(error.to_string()))?;
     Ok(Some(file))
 }
 

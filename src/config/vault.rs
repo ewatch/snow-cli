@@ -18,7 +18,7 @@
 //! - `legacy-keychain`: legacy per-profile OS keychain entries (`<profile>:<type>`).
 
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -427,30 +427,8 @@ fn persist_key(mode: CredentialStoreMode, config_dir: &Path, key: &FileKey) -> a
 
 /// Acquire an exclusive advisory lock around vault read-modify-write operations.
 fn acquire_vault_lock(config_dir: &Path) -> anyhow::Result<File> {
-    let existed = config_dir.exists();
-    std::fs::create_dir_all(config_dir)?;
-    #[cfg(unix)]
-    if !existed {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(error) =
-            std::fs::set_permissions(config_dir, std::fs::Permissions::from_mode(0o700))
-        {
-            tracing::debug!(%error, "could not restrict snow-cli config directory");
-        }
-    }
-
     let lock_path = lock_path_for(config_dir);
-    ensure_not_symlink(&lock_path, "credential vault lock")?;
-    let mut options = OpenOptions::new();
-    options.create(true).read(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let file = options.open(&lock_path)?;
-    file.lock()?;
-    Ok(file)
+    encrypted_store::acquire_exclusive_lock(&lock_path, "credential vault lock", None)
 }
 
 fn unreadable_error(path: &Path, detail: &str) -> anyhow::Error {
@@ -562,7 +540,7 @@ fn load_or_create_for_write(
 }
 
 fn save_payload(key: &FileKey, payload: &VaultPayload, path: &Path) -> anyhow::Result<()> {
-    let json = serde_json::to_string(payload)?;
+    let json = zeroize::Zeroizing::new(serde_json::to_string(payload)?);
     let encrypted = encrypted_store::encrypt_envelope(key, &json)?;
     encrypted_store::write_atomic(path, &encrypted, VAULT_FILE_NAME)
 }
@@ -831,9 +809,10 @@ pub fn switch_mode(
         std::fs::remove_file(&vault_path)?;
     }
 
-    // Never delete the old key when switching to `env` (an ephemeral shell variable
-    // should not become the sole copy of the key) or when `--keep-old-key` was requested
-    // or when `credentials.enc` still relies on it.
+    // Keep the previous key when switching to `env` (the vault is now
+    // re-encrypted under SNOW_CLI_ENCRYPTION_KEY, so the old key cannot decrypt
+    // the new vault directly, but keeping it preserves any pre-switch backups),
+    // when `--keep-old-key` was requested, or when `credentials.enc` still relies on it.
     let should_remove_old_key = !keep_old_key
         && target != CredentialStoreMode::Env
         && (target != CredentialStoreMode::LegacyKeychain || !vault_path.exists());

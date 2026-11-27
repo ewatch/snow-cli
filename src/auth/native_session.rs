@@ -75,7 +75,11 @@ impl Authenticator for NativeSessionAuth {
     fn auth_type(&self) -> AuthMethod {
         AuthMethod::NativeSession
     }
-    async fn observe_response_headers(&mut self, headers: &HeaderMap) -> anyhow::Result<()> {
+    async fn observe_response_headers(
+        &mut self,
+        headers: &HeaderMap,
+        request_url: Option<&url::Url>,
+    ) -> anyhow::Result<()> {
         if let Some(profile) = &self.profile_name {
             if headers.get(http::header::SET_COOKIE).is_none() {
                 return Ok(());
@@ -83,9 +87,10 @@ impl Authenticator for NativeSessionAuth {
             let profile = profile.clone();
             let current = self.session.clone();
             let headers = headers.clone();
+            let request_url = request_url.cloned();
             let updated = tokio::task::spawn_blocking(move || {
                 native_session::update_locked(&profile, &current, |stored| {
-                    stored.merge_response_cookies(&headers)
+                    stored.merge_response_cookies_for_url(&headers, request_url.as_ref())
                 })
             })
             .await
@@ -94,7 +99,8 @@ impl Authenticator for NativeSessionAuth {
             })??;
             self.session = updated;
         } else {
-            self.session.merge_response_cookies(headers);
+            self.session
+                .merge_response_cookies_for_url(headers, request_url);
         }
         Ok(())
     }

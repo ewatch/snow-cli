@@ -133,7 +133,7 @@ impl SnowClient {
             );
             if self.is_same_origin_url(response.url()) {
                 self.authenticator
-                    .observe_response_headers(response.headers())
+                    .observe_response_headers(response.headers(), Some(response.url()))
                     .await?;
             }
             anyhow::ensure!(

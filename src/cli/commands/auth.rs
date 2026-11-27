@@ -548,6 +548,26 @@ async fn wait_for_oauth_redirect_with_timeout(
     expected_state: &str,
     total_timeout: Duration,
 ) -> anyhow::Result<String> {
+    // Bound each accepted socket's header read so an idle speculative browser
+    // pre-connect cannot starve the real OAuth callback until the full login deadline.
+    const PER_CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(10);
+    wait_for_oauth_redirect_with_timeouts(
+        listener,
+        expected_path,
+        expected_state,
+        total_timeout,
+        PER_CONNECTION_READ_TIMEOUT,
+    )
+    .await
+}
+
+async fn wait_for_oauth_redirect_with_timeouts(
+    listener: TcpListener,
+    expected_path: &str,
+    expected_state: &str,
+    total_timeout: Duration,
+    per_connection_read_timeout: Duration,
+) -> anyhow::Result<String> {
     // Bound the local HTTP header block; TCP reads may split even the request line.
     const MAX_CALLBACK_HEADER_BYTES: usize = 8192;
     let deadline = tokio::time::Instant::now() + total_timeout;
@@ -568,7 +588,9 @@ async fn wait_for_oauth_redirect_with_timeout(
             )
         })??;
 
-        let read_remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let read_remaining = deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .min(per_connection_read_timeout);
         let request = match timeout(read_remaining, async {
             let mut buffer = vec![0_u8; MAX_CALLBACK_HEADER_BYTES];
             let mut used = 0;
@@ -603,10 +625,17 @@ async fn wait_for_oauth_redirect_with_timeout(
                 continue;
             }
             Err(_) => {
-                anyhow::bail!(
-                    "Timed out waiting for ServiceNow OAuth redirect after {} seconds.",
-                    total_timeout.as_secs()
-                );
+                if deadline
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .is_zero()
+                {
+                    anyhow::bail!(
+                        "Timed out waiting for ServiceNow OAuth redirect after {} seconds.",
+                        total_timeout.as_secs()
+                    );
+                }
+                tracing::debug!("Ignoring idle preconnect socket on OAuth callback listener");
+                continue;
             }
         };
 
@@ -621,27 +650,38 @@ async fn wait_for_oauth_redirect_with_timeout(
             continue;
         }
 
-        let result = parse_oauth_callback_request(first_line, expected_path, expected_state);
-        match &result {
-            Ok(_) => {
+        match parse_oauth_callback_request_classified(first_line, expected_path, expected_state) {
+            Ok(code) => {
                 write_oauth_http_response(
                     &mut stream,
                     200,
                     "OAuth login complete. You can close this browser window and return to snow-cli.",
                 )
                 .await?;
+                return Ok(code);
             }
-            Err(error) => {
+            Err(OAuthCallbackError::InvalidState(message)) => {
+                // Reject unauthenticated/forged probes with HTTP 400 and keep
+                // waiting so they cannot abort the real browser login flow.
+                tracing::debug!(reason = %message, "Ignoring OAuth callback with invalid state");
+                let _ = write_oauth_http_response(
+                    &mut stream,
+                    400,
+                    &format!("OAuth login rejected: {message}"),
+                )
+                .await;
+                continue;
+            }
+            Err(OAuthCallbackError::Fatal(error)) => {
                 write_oauth_http_response(
                     &mut stream,
                     400,
                     &format!("OAuth login failed: {error}"),
                 )
                 .await?;
+                return Err(error);
             }
         }
-
-        return result;
     }
 }
 
@@ -682,32 +722,46 @@ async fn write_oauth_http_response(
     Ok(())
 }
 
-fn parse_oauth_callback_request(
+enum OAuthCallbackError {
+    InvalidState(String),
+    Fatal(anyhow::Error),
+}
+
+fn parse_oauth_callback_request_classified(
     request_line: &str,
     expected_path: &str,
     expected_state: &str,
-) -> anyhow::Result<String> {
+) -> Result<String, OAuthCallbackError> {
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or_default();
     let target = parts.next().unwrap_or_default();
 
     if method != "GET" || target.is_empty() {
-        anyhow::bail!("Expected an HTTP GET OAuth callback request.");
+        return Err(OAuthCallbackError::InvalidState(
+            "Expected an HTTP GET OAuth callback request.".to_string(),
+        ));
     }
 
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != expected_path {
-        anyhow::bail!("Unexpected OAuth callback path '{path}', expected '{expected_path}'.");
+        return Err(OAuthCallbackError::InvalidState(format!(
+            "Unexpected OAuth callback path '{path}', expected '{expected_path}'."
+        )));
     }
 
-    let params = parse_query_params(query)?;
+    let params = parse_query_params(query)
+        .map_err(|error| OAuthCallbackError::InvalidState(error.to_string()))?;
     // Always validate state before acting on error or code parameters so
     // an unauthenticated local probe cannot abort login with a forged error.
-    let state = params
-        .get("state")
-        .ok_or_else(|| anyhow::anyhow!("OAuth callback did not include a state parameter."))?;
+    let state = params.get("state").ok_or_else(|| {
+        OAuthCallbackError::InvalidState(
+            "OAuth callback did not include a state parameter.".to_string(),
+        )
+    })?;
     if state != expected_state {
-        anyhow::bail!("OAuth callback state did not match the login request.");
+        return Err(OAuthCallbackError::InvalidState(
+            "OAuth callback state did not match the login request.".to_string(),
+        ));
     }
 
     if let Some(error) = params.get("error") {
@@ -715,13 +769,30 @@ fn parse_oauth_callback_request(
             .get("error_description")
             .map(String::as_str)
             .unwrap_or("");
-        anyhow::bail!("ServiceNow returned OAuth error '{error}': {description}");
+        return Err(OAuthCallbackError::Fatal(anyhow::anyhow!(
+            "ServiceNow returned OAuth error '{error}': {description}"
+        )));
     }
 
-    params
-        .get("code")
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("OAuth callback did not include an authorization code."))
+    params.get("code").cloned().ok_or_else(|| {
+        OAuthCallbackError::Fatal(anyhow::anyhow!(
+            "OAuth callback did not include an authorization code."
+        ))
+    })
+}
+
+#[cfg(test)]
+fn parse_oauth_callback_request(
+    request_line: &str,
+    expected_path: &str,
+    expected_state: &str,
+) -> anyhow::Result<String> {
+    parse_oauth_callback_request_classified(request_line, expected_path, expected_state).map_err(
+        |error| match error {
+            OAuthCallbackError::InvalidState(message) => anyhow::anyhow!(message),
+            OAuthCallbackError::Fatal(error) => error,
+        },
+    )
 }
 
 fn parse_query_params(query: &str) -> anyhow::Result<HashMap<String, String>> {
@@ -1502,5 +1573,58 @@ mod tests {
 
         let code = server.await.unwrap().unwrap();
         assert_eq!(code, "auth-code-xyz");
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_oauth_redirect_ignores_idle_socket_and_forged_state() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            wait_for_oauth_redirect_with_timeouts(
+                listener,
+                "/oauth/callback",
+                "state-good",
+                Duration::from_secs(5),
+                Duration::from_millis(120),
+            )
+            .await
+        });
+
+        // 1. Idle speculative browser pre-connect stays open without sending bytes.
+        let _idle_socket = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+        // 2. Forged/wrong state probe must receive 400 and NOT abort the login.
+        let mut forged_client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        forged_client
+            .write_all(
+                b"GET /oauth/callback?error=access_denied&state=wrong HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut forged_resp = String::new();
+        forged_client
+            .read_to_string(&mut forged_resp)
+            .await
+            .unwrap();
+        assert!(
+            forged_resp.starts_with("HTTP/1.1 400 Bad Request"),
+            "{forged_resp}"
+        );
+
+        // 3. Genuine callback with matching state arrives next and succeeds.
+        let mut good_client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        good_client
+            .write_all(
+                b"GET /oauth/callback?code=real-code&state=state-good HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut good_resp = String::new();
+        good_client.read_to_string(&mut good_resp).await.unwrap();
+        assert!(good_resp.starts_with("HTTP/1.1 200 OK"), "{good_resp}");
+
+        let code = server.await.unwrap().unwrap();
+        assert_eq!(code, "real-code");
     }
 }

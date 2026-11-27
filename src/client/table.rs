@@ -228,6 +228,7 @@ impl SnowClient {
         let mut total: Option<usize> = None;
         // Set when we stop at the limit and the server may hold more rows.
         let mut maybe_more = false;
+        let mut server_exhausted = false;
         let mut next_link_url: Option<String> = None;
         let mut visited_next_urls: HashSet<String> = HashSet::new();
 
@@ -314,10 +315,15 @@ impl SnowClient {
             }
             if link_info.has_any_link {
                 // Server emitted Link headers without rel="next": definitive final page.
+                server_exhausted = true;
                 break;
             }
 
-            if count == 0 || count < request_size {
+            if count == 0 {
+                server_exhausted = true;
+                break;
+            }
+            if count < request_size {
                 break;
             }
 
@@ -326,15 +332,19 @@ impl SnowClient {
                 .ok_or_else(|| anyhow::anyhow!("Table pagination offset overflow"))?;
         }
 
-        let truncated = match total {
-            Some(t) => {
-                if limit.is_some() {
-                    returned > 0 && pagination.offset.saturating_add(returned) < t
-                } else {
-                    maybe_more
+        let truncated = if server_exhausted {
+            false
+        } else {
+            match total {
+                Some(t) => {
+                    if limit.is_some() {
+                        returned > 0 && pagination.offset.saturating_add(returned) < t
+                    } else {
+                        maybe_more
+                    }
                 }
+                None => maybe_more,
             }
-            None => maybe_more,
         };
 
         Ok(TablePageSummary {

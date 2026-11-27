@@ -183,7 +183,9 @@ impl SnowClient {
             );
             return Ok(());
         }
-        self.authenticator.observe_response_headers(headers).await?;
+        self.authenticator
+            .observe_response_headers(headers, Some(response_url))
+            .await?;
         if self.authenticator.native_session_credentials().is_none()
             && headers.get(http::header::SET_COOKIE).is_some()
         {
@@ -520,9 +522,11 @@ impl SnowClient {
             )
         })?;
 
-        let cookie_header = crate::config::native_session::merge_cookie_header(
+        let bootstrap_url = url::Url::parse(&url).ok();
+        let cookie_header = crate::config::native_session::merge_cookie_header_for_url(
             login_cookie_header,
             &response_headers,
+            bootstrap_url.as_ref(),
         );
 
         let Some(jsessionid) = read_cookie_value(&cookie_header, "JSESSIONID") else {

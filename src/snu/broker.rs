@@ -103,11 +103,7 @@ fn broker_endpoint() -> anyhow::Result<BrokerEndpoint> {
 }
 
 fn broker_config_dir() -> PathBuf {
-    let config_path = crate::config::profile::AppConfig::config_path();
-    config_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from(".servicenow"))
+    crate::config::profile::AppConfig::config_dir()
 }
 
 #[cfg(unix)]
@@ -139,7 +135,7 @@ fn default_unix_socket_path() -> PathBuf {
 }
 
 #[cfg(unix)]
-#[allow(
+#[expect(
     unsafe_code,
     reason = "geteuid is a standard POSIX query with no preconditions"
 )]
@@ -183,23 +179,30 @@ fn ensure_private_socket_dir(dir: &Path) -> anyhow::Result<()> {
                 dir.display()
             ));
         }
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("failed to set 0o700 permissions on {}", dir.display()))?;
+        if (meta.mode() & 0o077) != 0 {
+            return Err(anyhow!(
+                "SN-Utils broker socket directory {} is accessible to group or other users (mode {:04o}); use a 0700 directory",
+                dir.display(),
+                meta.mode() & 0o7777
+            ));
+        }
         return Ok(());
     }
 
-    if let Some(parent) = dir.parent() {
+    if let Some(parent) = dir.parent()
+        && !parent.as_os_str().is_empty()
+    {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+    let created = match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(error) => {
             return Err(error)
                 .with_context(|| format!("failed to create socket directory {}", dir.display()));
         }
-    }
+    };
     let meta = std::fs::symlink_metadata(dir)
         .with_context(|| format!("failed to stat socket directory {}", dir.display()))?;
     if meta.file_type().is_symlink() || !meta.is_dir() || meta.uid() != current_euid() {
@@ -208,8 +211,16 @@ fn ensure_private_socket_dir(dir: &Path) -> anyhow::Result<()> {
             dir.display()
         ));
     }
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("failed to set 0o700 permissions on {}", dir.display()))?;
+    if created {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("failed to set 0o700 permissions on {}", dir.display()))?;
+    } else if (meta.mode() & 0o077) != 0 {
+        return Err(anyhow!(
+            "SN-Utils broker socket directory {} is accessible to group or other users (mode {:04o}); use a 0700 directory",
+            dir.display(),
+            meta.mode() & 0o7777
+        ));
+    }
     Ok(())
 }
 
@@ -731,14 +742,22 @@ impl BrokerBridge {
             #[cfg(unix)]
             BrokerEndpoint::Unix(_) => None,
         };
-        if connect_once(&endpoint, auth_token.as_ref()).await.is_err() {
-            // Serialize concurrent CLI invocations trying to auto-spawn the
-            // broker simultaneously so only one child is launched.
-            let _start_lock = acquire_broker_start_lock().await?;
-            if connect_once(&endpoint, auth_token.as_ref()).await.is_err() {
-                BridgeConfig::from_env()?;
-                spawn_broker()?;
-                wait_until_ready(&endpoint, auth_token.as_ref()).await?;
+        match connect_once(&endpoint, auth_token.as_ref()).await {
+            Ok(()) => {}
+            Err(ConnectOnceError::Fatal(error)) => return Err(error),
+            Err(ConnectOnceError::NotRunning(_)) => {
+                // Serialize concurrent CLI invocations trying to auto-spawn the
+                // broker simultaneously so only one child is launched.
+                let _start_lock = acquire_broker_start_lock().await?;
+                match connect_once(&endpoint, auth_token.as_ref()).await {
+                    Ok(()) => {}
+                    Err(ConnectOnceError::Fatal(error)) => return Err(error),
+                    Err(ConnectOnceError::NotRunning(_)) => {
+                        BridgeConfig::from_env()?;
+                        spawn_broker()?;
+                        wait_until_ready(&endpoint, auth_token.as_ref()).await?;
+                    }
+                }
             }
         }
 
@@ -755,7 +774,9 @@ impl BrokerBridge {
             #[cfg(unix)]
             BrokerEndpoint::Unix(_) => None,
         };
-        connect_once(&endpoint, auth_token.as_ref()).await?;
+        connect_once(&endpoint, auth_token.as_ref())
+            .await
+            .map_err(ConnectOnceError::into_anyhow)?;
         Ok(Self {
             endpoint,
             auth_token,
@@ -2093,12 +2114,28 @@ fn message_response(message: SnuMessage) -> BrokerResponse {
     }
 }
 
+enum ConnectOnceError {
+    /// No broker is listening yet on the configured endpoint.
+    NotRunning(anyhow::Error),
+    /// A live broker responded with an auth/version/protocol error; do not spawn
+    /// a duplicate broker or mask the diagnostic with a 5-second timeout.
+    Fatal(anyhow::Error),
+}
+
+impl ConnectOnceError {
+    fn into_anyhow(self) -> anyhow::Error {
+        match self {
+            Self::NotRunning(error) | Self::Fatal(error) => error,
+        }
+    }
+}
+
 /// Probe the broker IPC with a full Ping round-trip and check broker version
 /// compatibility when reported.
 async fn connect_once(
     endpoint: &BrokerEndpoint,
     auth_token: Option<&Secret>,
-) -> anyhow::Result<()> {
+) -> Result<(), ConnectOnceError> {
     let envelope = BrokerEnvelope {
         auth_token: auth_token.map(|secret| secret.expose_secret().to_string()),
         request: BrokerRequest::Ping,
@@ -2108,33 +2145,33 @@ async fn connect_once(
         send_ipc_envelope(endpoint, &envelope),
     )
     .await
-    .map_err(|_| anyhow!("SN-Utils broker did not answer ping"))??;
+    .map_err(|_| ConnectOnceError::NotRunning(anyhow!("SN-Utils broker did not answer ping")))?
+    .map_err(ConnectOnceError::NotRunning)?;
     if !response.ok {
-        return Err(anyhow!("SN-Utils broker rejected ping"));
+        let detail = response
+            .error
+            .unwrap_or_else(|| "SN-Utils broker rejected ping".to_string());
+        return Err(ConnectOnceError::Fatal(anyhow!(detail)));
     }
     if let Some(ref running_version) = response.version
         && running_version != env!("CARGO_PKG_VERSION")
     {
-        return Err(anyhow!(
+        return Err(ConnectOnceError::Fatal(anyhow!(
             "SN-Utils broker version mismatch (running {running_version}, CLI is {}); run `snow-cli snu broker stop` to restart it",
             env!("CARGO_PKG_VERSION")
-        ));
+        )));
     }
     Ok(())
 }
 
 async fn acquire_broker_start_lock() -> anyhow::Result<Option<std::fs::File>> {
-    let lock_dir = broker_config_dir();
+    let lock_path = broker_config_dir().join(BROKER_START_LOCK_FILE_NAME);
     tokio::task::spawn_blocking(move || -> anyhow::Result<Option<std::fs::File>> {
-        std::fs::create_dir_all(&lock_dir)?;
-        let lock_path = lock_dir.join(BROKER_START_LOCK_FILE_NAME);
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)?;
-        file.lock()?;
+        let file = crate::config::encrypted_store::acquire_exclusive_lock(
+            &lock_path,
+            "SN-Utils broker start lock",
+            None,
+        )?;
         Ok(Some(file))
     })
     .await
@@ -2159,7 +2196,7 @@ fn spawn_broker() -> anyhow::Result<()> {
 /// close, or a command runner that reaps its child group), forcing a fresh
 /// `/token` on the next command.
 #[cfg(unix)]
-#[allow(
+#[expect(
     unsafe_code,
     reason = "pre_exec requires unsafe; the closure only calls async-signal-safe setsid"
 )]
@@ -2216,10 +2253,28 @@ async fn wait_until_ready(
 ) -> anyhow::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(BROKER_READY_TIMEOUT_SECS);
     loop {
-        if connect_once(endpoint, auth_token).await.is_ok() {
-            return Ok(());
+        match connect_once(endpoint, auth_token).await {
+            Ok(()) => return Ok(()),
+            Err(ConnectOnceError::Fatal(error)) => return Err(error),
+            Err(ConnectOnceError::NotRunning(_)) => {}
         }
         if Instant::now() >= deadline {
+            #[cfg(unix)]
+            if matches!(endpoint, BrokerEndpoint::Unix(_))
+                && timeout(
+                    Duration::from_millis(200),
+                    TcpStream::connect(DEFAULT_SNU_BROKER_ADDR),
+                )
+                .await
+                .is_ok_and(|res| res.is_ok())
+            {
+                return Err(anyhow!(
+                    "timed out waiting for SN-Utils broker on {}: a legacy TCP broker (v0.11.0 or earlier) appears to be running on {}; stop it before restarting or run `SNOW_CLI_SNU_BROKER_ADDR={} snow-cli snu broker stop`",
+                    endpoint.display_addr(),
+                    DEFAULT_SNU_BROKER_ADDR,
+                    DEFAULT_SNU_BROKER_ADDR,
+                ));
+            }
             return Err(anyhow!(
                 "timed out waiting for SN-Utils broker on {}",
                 endpoint.display_addr()
@@ -2257,30 +2312,16 @@ fn persistence_enabled() -> bool {
     )
 }
 
-/// Path to the on-disk session cache, mirroring the `~/.servicenow/` convention
-/// in `config::profile`. `SNOW_CLI_SNU_SESSIONS_FILE` overrides it (used by tests).
+/// Path to the on-disk session cache, co-located with `SNOW_CLI_CONFIG`'s
+/// directory (defaulting to `~/.servicenow/`). `SNOW_CLI_SNU_SESSIONS_FILE`
+/// overrides it (used by tests and isolated harnesses).
 fn sessions_file_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("SNOW_CLI_SNU_SESSIONS_FILE")
         && !path.is_empty()
     {
         return Some(PathBuf::from(path));
     }
-    Some(
-        sessions_home_dir()?
-            .join(".servicenow")
-            .join(SESSIONS_FILE_NAME),
-    )
-}
-
-fn sessions_home_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
+    Some(broker_config_dir().join(SESSIONS_FILE_NAME))
 }
 
 fn now_epoch_secs() -> u64 {
@@ -3866,5 +3907,27 @@ mod tests {
         let cleared_rest = clear_persisted_sessions_at(&cache, None).unwrap();
         assert_eq!(cleared_rest, vec!["https://b.service-now.com:443"]);
         assert!(!cache.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_private_socket_dir_refuses_broad_existing_dir_without_chmod() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let broad = dir.path().join("broad");
+        std::fs::create_dir(&broad).unwrap();
+        std::fs::set_permissions(&broad, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let err = ensure_private_socket_dir(&broad).unwrap_err().to_string();
+        assert!(err.contains("accessible to group or other users"), "{err}");
+
+        // Must NOT have mutated permissions on the pre-existing directory.
+        let mode = std::fs::symlink_metadata(&broad)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
     }
 }

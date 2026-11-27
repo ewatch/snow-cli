@@ -388,10 +388,11 @@ fn read_only_command_decision(command: &Commands) -> PolicyDecision {
                 "read-only policy does not allow browser tab manipulation through SN-Utils",
             ),
             SnuCommands::Broker(broker_args) => match &broker_args.command {
-                SnuBrokerCommands::Status => PolicyDecision::Allow,
-                SnuBrokerCommands::Stop
-                | SnuBrokerCommands::Clear { .. }
-                | SnuBrokerCommands::Serve => deny(
+                // `serve` is an internal hidden relay spawned on cold start so
+                // read-only `snow-cli-ro snu ...` commands work without a
+                // pre-existing broker; write enforcement stays in this policy.
+                SnuBrokerCommands::Status | SnuBrokerCommands::Serve => PolicyDecision::Allow,
+                SnuBrokerCommands::Stop | SnuBrokerCommands::Clear { .. } => deny(
                     "snu broker mutation",
                     CommandCapability::LocalConfigWrite,
                     "read-only policy allows SN-Utils broker status only",
@@ -544,12 +545,10 @@ pub fn read_only_denial_for_path(path: &[&str]) -> Option<(CommandCapability, &'
             CommandCapability::RemoteWrite,
             "manipulates browser tabs through SN-Utils",
         )),
-        ["snu", "broker", "stop"] | ["snu", "broker", "clear"] | ["snu", "broker", "serve"] => {
-            Some((
-                CommandCapability::LocalConfigWrite,
-                "mutates or controls the local SN-Utils broker",
-            ))
-        }
+        ["snu", "broker", "stop"] | ["snu", "broker", "clear"] => Some((
+            CommandCapability::LocalConfigWrite,
+            "mutates or controls the local SN-Utils broker",
+        )),
         ["snu", "rest", "post"]
         | ["snu", "rest", "put"]
         | ["snu", "rest", "patch"]
@@ -878,7 +877,7 @@ mod tests {
                 command: SnuBrokerCommands::Clear { instance: None },
             }),
         }));
-        assert_denied(Commands::Snu(SnuArgs {
+        assert_allowed(Commands::Snu(SnuArgs {
             command: SnuCommands::Broker(SnuBrokerArgs {
                 command: SnuBrokerCommands::Serve,
             }),

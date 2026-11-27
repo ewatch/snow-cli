@@ -83,9 +83,14 @@ lib="$script_dir/lib/e2e_scenario.py"
 scenarios_root="tests/e2e/scenarios"
 
 export SNOW_CLI_BIN=${SNOW_CLI_BIN:-"$repo_root/target/release/snow-cli"}
+export SNOW_CLI_RO_BIN=${SNOW_CLI_RO_BIN:-"$(dirname "$SNOW_CLI_BIN")/snow-cli-ro"}
 if [[ ! -x $SNOW_CLI_BIN ]]; then
   echo "Release binary not found at $SNOW_CLI_BIN — building..." >&2
   cargo build --release --bin snow-cli
+fi
+if [[ ! -x $SNOW_CLI_RO_BIN && $SNOW_CLI_RO_BIN == "$repo_root/target/release/snow-cli-ro" ]]; then
+  echo "Read-only release binary not found at $SNOW_CLI_RO_BIN — building..." >&2
+  cargo build --release --bin snow-cli-ro
 fi
 
 harness=${SNOW_E2E_HARNESS:-"scripts/e2e-run"}
@@ -95,13 +100,16 @@ version=$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' Cargo.toml)
 artifacts_dir=${SNOW_E2E_ARTIFACTS_DIR:-"$repo_root/artifacts/e2e/$version"}
 mkdir -p "$artifacts_dir"
 
-# Isolate every run from the caller's real profiles and keychain. The scratch
-# dir is removed on exit. By default snow-cli's file keychain lives in it too,
-# so credentials and the shared now-sdk alias store (keychain service
-# "ServiceNow", account "now-sdk") are never written to the OS keychain and no
-# keychain prompt can stall the run. SNOW_E2E_REAL_KEYCHAIN=1 opts back in.
+# Isolate every run from the caller's real profiles, vault, broker, and keychain.
+# The scratch dir is removed on exit. By default snow-cli's file keychain lives
+# in it too, so vault master keys, legacy credentials, and the shared now-sdk
+# alias store are never written to the OS keychain and no keychain prompt can
+# stall the run. SNOW_E2E_REAL_KEYCHAIN=1 opts back in to the real OS keychain.
 scratch_dir=$(mktemp -d "${TMPDIR:-/tmp}/snow-cli-e2e.XXXXXX")
 export SNOW_CLI_CONFIG="$scratch_dir/config.toml"
+export SNOW_CLI_SNU_SESSIONS_FILE="$scratch_dir/snu-broker-sessions.json"
+unset SNOW_CLI_CREDENTIAL_STORE SNOW_CLI_ENCRYPTION_KEY
+unset SNOW_CLI_SNU_BROKER_SOCKET SNOW_CLI_SNU_BROKER_TOKEN_FILE SNOW_CLI_SNU_ALLOWED_ORIGINS
 if [[ ${SNOW_E2E_REAL_KEYCHAIN:-0} == "1" ]]; then
   unset SNOW_CLI_TEST_KEYCHAIN_STORE SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN
 else
@@ -133,6 +141,11 @@ cleanup() {
   fi
   if [[ ${SNOW_E2E_SN_UTILS:-0} == "1" ]]; then
     SNOW_CLI_SNU_BROKER_ADDR=$snu_harness_broker_addr "$SNOW_CLI_BIN" snu broker stop >/dev/null 2>&1 || true
+  fi
+  if [[ ${SNOW_E2E_REAL_KEYCHAIN:-0} == "1" && -f "$scratch_dir/credentials.enc" ]]; then
+    # Migrate the scratch vault's master key out of the real OS keychain into
+    # the scratch dir before removing scratch_dir so runs leave no orphan item.
+    "$SNOW_CLI_BIN" profile storage set file >/dev/null 2>&1 || true
   fi
   rm -rf "$scratch_dir"
   return "$exit_status"
@@ -367,11 +380,18 @@ run_resolved_step() {
     shell_cmd=$(jq -r '.shell' <<<"$step_json")
     bash -c "$shell_cmd" >"$out_file" 2>"$err_file" || STEP_EXIT=$?
   else
+    local bin_key bin_path
+    bin_key=$(jq -r '.binary // "snow-cli"' <<<"$step_json")
+    if [[ $bin_key == "snow-cli-ro" || $bin_key == "ro" ]]; then
+      bin_path=$SNOW_CLI_RO_BIN
+    else
+      bin_path=$SNOW_CLI_BIN
+    fi
     local argv=()
     while IFS= read -r line; do
       argv+=("$line")
     done < <(jq -r '.argv[]?' <<<"$step_json")
-    "$SNOW_CLI_BIN" "${argv[@]}" >"$out_file" 2>"$err_file" || STEP_EXIT=$?
+    "$bin_path" "${argv[@]}" >"$out_file" 2>"$err_file" || STEP_EXIT=$?
   fi
 
   STEP_STDOUT=$(cat "$out_file")

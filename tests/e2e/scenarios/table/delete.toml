@@ -16,19 +16,19 @@ args = ["table", "create", "incident", "--profile", "e2e-scenario", "--output", 
 capture = { sys_id = ".sys_id" }
 
 [command]
-args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes"]
+args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes", "--output", "json"]
 
 [expect]
 exit_code = 0
-stdout_contains = ["success", "deleted"]
-json_field_present = [".status", ".message"]
+stdout_contains = ['"status":"success"', '"outcome":"deleted"', '"table":"incident"']
+json_field_present = [".status", ".outcome", ".table", ".sys_id", ".message"]
 
 [[fuzzy]]
-expectation = "A subsequent `table get incident {{sys_id}}` fails or returns no record, confirming the delete took effect on the instance."
+expectation = "The delete returns `outcome: deleted`; re-running with `--ignore-not-found` succeeds with `outcome: already_absent` and exit code 0."
 
 [[cleanup]]
-description = "Best-effort re-delete in case the command step failed before deleting"
-args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes"]
+description = "Verify convergent --ignore-not-found delete on the already-deleted record"
+args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes", "--ignore-not-found", "--output", "json"]
 allow_failure = true
 
 [[cleanup]]

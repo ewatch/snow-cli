@@ -509,3 +509,48 @@ exit_code = 0
     let log = fs::read_to_string(fixture.path().join("keychain-env.log")).unwrap();
     assert_eq!(log, "|\n");
 }
+
+#[test]
+fn runner_supports_read_only_binary_selection_and_isolates_vault_env() {
+    let fixture = tempfile::tempdir().unwrap();
+    write_executable(
+        &fixture.path().join("fake-snow-cli"),
+        "#!/usr/bin/env bash\nprintf '{\"bin\":\"full\"}\\n'\n",
+    );
+    let fake_ro = fixture.path().join("fake-snow-cli-ro");
+    write_executable(
+        &fake_ro,
+        r#"#!/usr/bin/env bash
+printf '{"bin":"ro","store":"%s","sessions_isolated":%s}\n' \
+  "${SNOW_CLI_CREDENTIAL_STORE:-}" \
+  "$([[ ${SNOW_CLI_SNU_SESSIONS_FILE:-} == */snu-broker-sessions.json ]] && echo true || echo false)"
+"#,
+    );
+
+    let scenario = fixture.path().join("ro-check.toml");
+    fs::write(
+        &scenario,
+        r#"name = "ro-check"
+requires = ["none"]
+binary = "snow-cli-ro"
+
+[command]
+args = ["status"]
+
+[expect]
+exit_code = 0
+stdout_contains = ['"bin":"ro"', '"store":""', '"sessions_isolated":true']
+"#,
+    )
+    .unwrap();
+
+    let output = run_runner(
+        fixture.path(),
+        &[scenario],
+        &[
+            ("SNOW_CLI_RO_BIN", fake_ro.to_str().unwrap()),
+            ("SNOW_CLI_CREDENTIAL_STORE", "env"),
+        ],
+    );
+    assert_success(&output);
+}

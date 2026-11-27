@@ -195,7 +195,11 @@ async fn install_skill(options: InstallOptions) -> anyhow::Result<InstallResult>
     let target_root = match (&options.target_dir, &options.target) {
         (Some(path), None) => path.clone(),
         (None, Some(target)) => target_root(target)?,
-        _ => unreachable!("target options were validated above"),
+        _ => {
+            return Err(
+                ValidationError::new("Pass either --target or --target-dir, not both.").into(),
+            );
+        }
     };
     let install_dir = target_root.join(&install_name);
 
@@ -207,7 +211,7 @@ async fn install_skill(options: InstallOptions) -> anyhow::Result<InstallResult>
     let selected_packs = select_packs(&bundle, &options.packs, options.all_packs)?;
     let selected_files = selected_files(&bundle, &selected_packs, options.all_packs)?;
 
-    let mut staged: Vec<(String, Vec<u8>, String, &'static str)> = Vec::new();
+    let mut staged: Vec<(String, Vec<u8>, String, &'static str, bool)> = Vec::new();
     let mut modified_conflicts: Vec<String> = Vec::new();
 
     let manifest_bytes = bundle.manifest_text.as_bytes().to_vec();
@@ -227,6 +231,7 @@ async fn install_skill(options: InstallOptions) -> anyhow::Result<InstallResult>
         manifest_bytes,
         manifest_digest,
         manifest_action,
+        false,
     ));
 
     for file in selected_files {
@@ -259,12 +264,15 @@ async fn install_skill(options: InstallOptions) -> anyhow::Result<InstallResult>
         if action == "conflict" {
             modified_conflicts.push(safe_path.clone());
         }
-        staged.push((safe_path, bytes, digest, action));
+        staged.push((safe_path, bytes, digest, action, file.executable));
     }
 
     staged.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let staged_paths: BTreeSet<&str> = staged.iter().map(|(path, _, _, _)| path.as_str()).collect();
+    let staged_paths: BTreeSet<&str> = staged
+        .iter()
+        .map(|(path, _, _, _, _)| path.as_str())
+        .collect();
     let stale_entries =
         plan_stale_removals(&install_dir, &prev_locked, &staged_paths, options.force)?;
 
@@ -284,8 +292,8 @@ async fn install_skill(options: InstallOptions) -> anyhow::Result<InstallResult>
                 install_dir.display()
             )
         })?;
-        for (path, bytes, _, _) in &staged {
-            write_install_file(&install_dir, path, bytes)?;
+        for (path, bytes, _, _, executable) in &staged {
+            write_install_file(&install_dir, path, bytes, *executable)?;
         }
         for stale in &stale_entries {
             if stale.delete {
@@ -296,7 +304,7 @@ async fn install_skill(options: InstallOptions) -> anyhow::Result<InstallResult>
 
     let locked_files: Vec<LockedFile> = staged
         .iter()
-        .map(|(path, _, sha256, _)| LockedFile {
+        .map(|(path, _, sha256, _, _)| LockedFile {
             path: path.clone(),
             sha256: sha256.clone(),
         })
@@ -304,7 +312,7 @@ async fn install_skill(options: InstallOptions) -> anyhow::Result<InstallResult>
 
     let mut reported_files: Vec<InstalledFile> = staged
         .iter()
-        .map(|(path, _, sha256, action)| InstalledFile {
+        .map(|(path, _, sha256, action, _)| InstalledFile {
             path: path.clone(),
             sha256: sha256.clone(),
             action: Some(*action),
@@ -328,7 +336,7 @@ async fn install_skill(options: InstallOptions) -> anyhow::Result<InstallResult>
             files: locked_files,
         };
         let lock_text = toml::to_string_pretty(&lock)?;
-        write_install_file(&install_dir, LOCK_FILE, lock_text.as_bytes())?;
+        write_install_file(&install_dir, LOCK_FILE, lock_text.as_bytes(), false)?;
     }
 
     Ok(InstallResult {
@@ -610,9 +618,12 @@ async fn load_remote_bundle(source: &str, manifest_url: url::Url) -> anyhow::Res
         bail!("Remote skill manifests must declare [[files]] entries.");
     }
     validate_manifest(&manifest)?;
+    let resolved_manifest_url = url::Url::parse(&response.final_url).unwrap_or(manifest_url);
     Ok(LoadedBundle {
         source: source.to_string(),
-        base: SourceBase::Remote { manifest_url },
+        base: SourceBase::Remote {
+            manifest_url: resolved_manifest_url,
+        },
         manifest_text,
         files: manifest.files.clone(),
         manifest,
@@ -863,7 +874,12 @@ async fn read_remote_file(manifest_url: &url::Url, file: &SkillFile) -> anyhow::
     Ok(response.body)
 }
 
-fn write_install_file(install_dir: &Path, relative: &str, bytes: &[u8]) -> anyhow::Result<()> {
+fn write_install_file(
+    install_dir: &Path,
+    relative: &str,
+    bytes: &[u8],
+    executable: bool,
+) -> anyhow::Result<()> {
     let safe_path = validate_safe_path(relative)?;
     ensure_no_symlink_components(install_dir, Some(&safe_path))?;
     let out_path = install_dir.join(&safe_path);
@@ -871,7 +887,21 @@ fn write_install_file(install_dir: &Path, relative: &str, bytes: &[u8]) -> anyho
         fs::create_dir_all(parent)?;
     }
     ensure_no_symlink_components(install_dir, Some(&safe_path))?;
-    fs::write(&out_path, bytes).with_context(|| format!("Failed to write {}", out_path.display()))
+    fs::write(&out_path, bytes)
+        .with_context(|| format!("Failed to write {}", out_path.display()))?;
+    #[cfg(unix)]
+    if executable {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&out_path, fs::Permissions::from_mode(0o755)).with_context(|| {
+            format!(
+                "Failed to set executable permissions on {}",
+                out_path.display()
+            )
+        })?;
+    }
+    #[cfg(not(unix))]
+    let _ = executable;
+    Ok(())
 }
 
 fn validate_safe_path(path: &str) -> anyhow::Result<String> {

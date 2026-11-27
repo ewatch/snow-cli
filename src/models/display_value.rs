@@ -105,36 +105,63 @@ pub fn split_both_columns(record: &mut Record) {
 /// Split compacted `both` fields uniformly across every record in a page.
 ///
 /// If *any* record in `records` has a differing `{"value": v, "display": d}`
-/// pair for `field`, every record that has `field` receives `<field>.display`
-/// (repeating its plain value when value == display) so all rows share a
-/// uniform key set and TOON/Auto can use compact `[N]{cols}` tabular encoding.
+/// (or `{"value": v, "display": d, "link": l}` / `{"value": v, "link": l}`)
+/// object for `field`, every record that has `field` receives matching flat
+/// `<field>.display` and/or `<field>.link` columns so all rows share a uniform
+/// key set and CSV/TOON/Auto stay one value per cell.
 pub fn split_both_columns_uniform(records: &mut [Record]) {
-    let mut split_keys = std::collections::BTreeSet::new();
+    let mut display_keys = std::collections::BTreeSet::new();
+    let mut link_keys = std::collections::BTreeSet::new();
     for record in records.iter() {
         for (key, value) in &record.fields {
-            if is_compact_pair(value) {
-                split_keys.insert(key.clone());
+            if is_compact_pair(value)
+                && let Some(object) = value.as_object()
+            {
+                if object.contains_key("display") {
+                    display_keys.insert(key.clone());
+                }
+                if object.contains_key("link") {
+                    link_keys.insert(key.clone());
+                }
             }
         }
     }
-    if split_keys.is_empty() {
+    if display_keys.is_empty() && link_keys.is_empty() {
         return;
     }
+    let all_keys: std::collections::BTreeSet<String> =
+        display_keys.union(&link_keys).cloned().collect();
     for record in records {
-        for key in &split_keys {
+        for key in &all_keys {
+            let needs_display = display_keys.contains(key);
+            let needs_link = link_keys.contains(key);
             let display_key = format!("{key}.display");
+            let link_key = format!("{key}.link");
             match record.fields.get(key) {
                 Some(value) if is_compact_pair(value) => {
                     if let Some(Value::Object(mut object)) = record.fields.remove(key) {
                         let raw = object.remove("value").unwrap_or(Value::Null);
-                        let display = object.remove("display").unwrap_or(Value::Null);
-                        record.fields.insert(display_key, display);
+                        let display = object.remove("display");
+                        let link = object.remove("link");
+                        if needs_display {
+                            record
+                                .fields
+                                .insert(display_key, display.unwrap_or_else(|| raw.clone()));
+                        }
+                        if needs_link {
+                            record.fields.insert(link_key, link.unwrap_or(Value::Null));
+                        }
                         record.fields.insert(key.clone(), raw);
                     }
                 }
                 Some(plain) => {
-                    let display = plain.clone();
-                    record.fields.entry(display_key).or_insert(display);
+                    let plain_clone = plain.clone();
+                    if needs_display {
+                        record.fields.entry(display_key).or_insert(plain_clone);
+                    }
+                    if needs_link {
+                        record.fields.entry(link_key).or_insert(Value::Null);
+                    }
                 }
                 None => {}
             }
@@ -143,8 +170,17 @@ pub fn split_both_columns_uniform(records: &mut [Record]) {
 }
 
 pub(crate) fn is_compact_pair(value: &Value) -> bool {
-    matches!(value, Value::Object(object)
-        if object.len() == 2 && object.contains_key("value") && object.contains_key("display"))
+    let Value::Object(object) = value else {
+        return false;
+    };
+    if !object.contains_key("value") {
+        return false;
+    }
+    let has_extra = object.contains_key("display") || object.contains_key("link");
+    has_extra
+        && object
+            .keys()
+            .all(|k| matches!(k.as_str(), "value" | "display" | "link"))
 }
 
 #[cfg(test)]
@@ -233,16 +269,66 @@ mod tests {
         let mut r = record(serde_json::json!({
             "number": "INC1",
             "priority": {"value": "4", "display": "4 - Low"},
-            "other": {"value": "1", "link": "x"}
+            "caller_id": {"value": "u1", "display": "Abel Tuter", "link": "https://dev.service-now.com/api/now/table/sys_user/u1"},
+            "self_ref": {"value": "same", "link": "https://dev.service-now.com/api/now/table/x/same"},
+            "other": {"value": "1", "extra": "x"}
         }));
         split_both_columns(&mut r);
         assert_eq!(
             serde_json::to_value(&r).unwrap(),
             serde_json::json!({
+                "caller_id": "u1",
+                "caller_id.display": "Abel Tuter",
+                "caller_id.link": "https://dev.service-now.com/api/now/table/sys_user/u1",
                 "number": "INC1",
-                "other": {"value": "1", "link": "x"},
+                "other": {"value": "1", "extra": "x"},
                 "priority": "4",
-                "priority.display": "4 - Low"
+                "priority.display": "4 - Low",
+                "self_ref": "same",
+                "self_ref.link": "https://dev.service-now.com/api/now/table/x/same"
+            })
+        );
+    }
+
+    #[test]
+    fn split_both_columns_uniform_handles_reference_links_across_rows() {
+        let mut records = vec![
+            record(serde_json::json!({
+                "number": {"display_value": "INC1", "value": "INC1"},
+                "caller_id": {
+                    "display_value": "Abel Tuter",
+                    "value": "u1",
+                    "link": "https://dev.service-now.com/api/now/table/sys_user/u1"
+                }
+            })),
+            record(serde_json::json!({
+                "number": {"display_value": "INC2", "value": "INC2"},
+                "caller_id": {"display_value": "", "value": ""}
+            })),
+        ];
+        for r in &mut records {
+            compact_both(r);
+        }
+        split_both_columns_uniform(&mut records);
+        let keys0: Vec<&String> = records[0].fields.keys().collect();
+        let keys1: Vec<&String> = records[1].fields.keys().collect();
+        assert_eq!(keys0, keys1);
+        assert_eq!(
+            serde_json::to_value(&records[0]).unwrap(),
+            serde_json::json!({
+                "caller_id": "u1",
+                "caller_id.display": "Abel Tuter",
+                "caller_id.link": "https://dev.service-now.com/api/now/table/sys_user/u1",
+                "number": "INC1"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&records[1]).unwrap(),
+            serde_json::json!({
+                "caller_id": "",
+                "caller_id.display": "",
+                "caller_id.link": null,
+                "number": "INC2"
             })
         );
     }

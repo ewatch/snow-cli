@@ -1,13 +1,12 @@
 name = "auth-login"
-description = "Store credentials in the OS keychain and verify them against the instance"
+description = "Store credentials in the encrypted credential vault and verify them against the instance"
 requires = ["credentials"]
 
 # NOTE: unlike other scenarios, the command under test is itself the login. It
 # runs as a `shell` step so the password can be piped via stdin (never passed as
-# an argv value). By default this writes to the per-run file keychain; with
-# SNOW_E2E_REAL_KEYCHAIN=1 it writes a real OS keychain entry under the
-# `e2e-scenario` profile name. Cleanup logs out and removes the profile either
-# way (see tests/e2e/README.md "Isolation").
+# an argv value). By default the vault master key lives in the per-run file
+# keychain; with SNOW_E2E_REAL_KEYCHAIN=1 it uses the real OS keychain and the
+# runner cleans up the scoped master key on exit (see tests/e2e/README.md).
 
 [[setup]]
 description = "Create the scenario profile (no credentials stored yet)"

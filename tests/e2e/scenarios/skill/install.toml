@@ -1,0 +1,28 @@
+name = "skill-install"
+description = "Install the embedded ServiceNow platform skill offline with --bundled (no instance required)"
+requires = ["none"]
+
+[[setup]]
+description = "Create a disposable target directory for the skill install"
+shell = "mktemp -d \"${TMPDIR:-/tmp}/snow-cli-e2e-skill.XXXXXX\""
+capture = { target_dir = "raw" }
+
+[[setup]]
+description = "Verify --dry-run plans the bundled install without writing files"
+args = ["skill", "install", "--bundled", "--target-dir", "{{target_dir}}", "--dry-run", "--output", "json"]
+
+[command]
+args = ["skill", "install", "--bundled", "--target-dir", "{{target_dir}}", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["SKILL.md", "snow-cli", '"dry_run":false']
+json_field_present = [".status", ".name", ".install_dir", ".lockfile", ".files[0].path"]
+
+[[fuzzy]]
+expectation = "Installs the bundled `snow-cli` skill offline into `{{target_dir}}/snow-cli`, writes `SKILL.md`, `skill.toml`, `references/`, and `.skill-lock.toml`, and a repeat install reports all files `unchanged`."
+
+[[cleanup]]
+description = "Remove the disposable skill target directory"
+shell = "rm -rf \"{{target_dir}}\""
+allow_failure = true

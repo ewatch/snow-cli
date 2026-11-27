@@ -19,7 +19,7 @@ stdout_contains = ["\"returned\":1", "records", "\"domains_in_page\":"]
 json_field_present = [".returned", ".records[0].sys_id", ".records[0].sys_domain_name", ".records[0].sys_domain_path"]
 
 [[fuzzy]]
-expectation = "`.records` has at most 1 entry, each entry looks like a real incident record (sys_id is a 32-char hex string, number matches INCxxxxxxx), `.returned` matches the array length, and `.domains_in_page` counts that record under its `sys_domain_name`."
+expectation = "`.records` has at most 1 entry, each entry looks like a real incident record (sys_id is a 32-char hex string, number matches INCxxxxxxx), reference fields such as `caller_id` or `sys_domain` are plain strings by default (not `{\"link\":...}` objects unless `--reference-links` is passed), `.returned` matches the array length, and `.domains_in_page` counts that record under its `sys_domain_name`."
 
 [[cleanup]]
 description = "Remove the scenario profile"

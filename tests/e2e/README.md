@@ -194,25 +194,31 @@ scenario, and the runner's exit trap terminates the browser harness and the
 isolated broker. This ordering is intentional: auto-starting a stopped broker
 does not recreate the `/token` captured at harness startup.
 
-The keychain is isolated too. By default the runner points snow-cli's file
-keychain (`SNOW_CLI_TEST_KEYCHAIN_STORE` with
-`SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN=1`) at a file in the same scratch
-directory. Credentials from `auth login`, OAuth tokens, and the now-sdk alias
-store (keychain service `ServiceNow`, account `now-sdk`, which also holds the
-user's own now-sdk aliases) are written there and deleted with it. No OS
-keychain prompt can stall a run. The file holds plaintext credentials only for
-the length of the run, inside a `mktemp -d` directory readable only by you. now-sdk
-4.14+ keeps its aliases in an encrypted `credentials.enc` instead of the keychain
-blob; the runner sets `SN_SDK_CREDENTIALS_DIR` to the same scratch directory
-(and clears `SN_SDK_KEY_SOURCE` / `SN_SDK_ENCRYPTION_KEY`), so your real
-`~/.now-sdk` is never read or written.
+The vault and keychain are isolated too. Every run unsets ambient
+`SNOW_CLI_CREDENTIAL_STORE`, `SNOW_CLI_ENCRYPTION_KEY`,
+`SNOW_CLI_SNU_BROKER_SOCKET`, `SNOW_CLI_SNU_BROKER_TOKEN_FILE`, and
+`SNOW_CLI_SNU_ALLOWED_ORIGINS`, and points `SNOW_CLI_SNU_SESSIONS_FILE` into the
+scratch directory so real `~/.servicenow/` state is never read or overwritten.
+By default the runner points snow-cli's file keychain
+(`SNOW_CLI_TEST_KEYCHAIN_STORE` with `SNOW_CLI_ALLOW_PLAINTEXT_TEST_KEYCHAIN=1`)
+at a file in the same scratch directory. The encrypted vault
+(`credentials.enc`) lives beside the scratch `config.toml`, and its master key,
+legacy keychain entries, and the now-sdk alias store are written inside the
+scratch directory and deleted with it. No OS keychain prompt can stall a run.
+now-sdk 4.14+ keeps its aliases in an encrypted `credentials.enc` instead of
+the keychain blob; the runner sets `SN_SDK_CREDENTIALS_DIR` to the same scratch
+directory (and clears `SN_SDK_KEY_SOURCE` / `SN_SDK_ENCRYPTION_KEY`), so your
+real `~/.now-sdk` is never read or written.
 
 Set `SNOW_E2E_REAL_KEYCHAIN=1` to exercise the real OS keychain instead. In
-that mode `auth login` writes real keychain entries under the scenario's
-profile name (cleanup removes them via `profile remove`), and scenarios tagged
-`requires = ["isolated-keychain"]` are skipped. Those are `profile sdk export`
-and `profile sdk import`: their aliases would land in the user's real now-sdk
-store, and snow-cli has no command to remove an alias again.
+that mode the scratch vault's master key is stored in the real OS keychain
+during the run and migrated out to the scratch directory on exit (removing the
+scoped OS keychain item before deleting the scratch directory). Scenarios tagged
+`requires = ["isolated-keychain"]` are skipped when `SNOW_E2E_REAL_KEYCHAIN=1`.
+
+The runner also exports `SNOW_CLI_RO_BIN` alongside `SNOW_CLI_BIN` (and
+supports `binary = "snow-cli-ro"` on scenario or step tables) so read-only
+binary behavior can be exercised in E2E scenarios.
 
 ## Known gaps
 
@@ -266,9 +272,10 @@ store, and snow-cli has no command to remove an alias again.
   `'"credentials_present":false'`) and reserve `json_field_present` for
   always-truthy fields.
 - **Hidden commands are invisible to the coverage gate.** Subcommands marked
-  `#[command(hide = true)]` in `src/cli/args.rs` (currently `skill install`)
-  don't appear in `--help` output, so the gate can't require a scenario for
-  them. Unhide + add a scenario together when a hidden command ships.
+  `#[command(hide = true)]` in `src/cli/args.rs` (for example internal
+  `snu broker serve` or legacy hidden aliases) don't appear in `--help` output,
+  so the gate can't require a scenario for them. Unhide + add a scenario
+  together when a hidden command ships.
 - **Artifact redaction is structural and conservative, but not a publication
   guarantee.** `scripts/e2e-run` redacts the `SNOW_E2E_PASSWORD` value, the
   derived HTTP Basic auth token

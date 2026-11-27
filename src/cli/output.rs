@@ -528,6 +528,14 @@ impl<W: Write> CsvRecordStream<W> {
         };
         let mut row = Vec::with_capacity(columns.len());
         for record in records {
+            for key in record.fields.keys() {
+                if !columns.iter().any(|col| col == key) {
+                    tracing::warn!(
+                        column = %key,
+                        "Streaming CSV omitted a column that did not appear on the first page"
+                    );
+                }
+            }
             row.clear();
             for col in columns {
                 row.push(format_csv_cell(record.fields.get(col)));

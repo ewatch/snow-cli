@@ -1,6 +1,6 @@
 # Configuration and authentication
 
-`snow-cli` keeps connection metadata in a config file and stores secrets in the operating system keychain where possible.
+`snow-cli` keeps connection metadata in a config file and stores secrets outside it in an AES-256-GCM encrypted credential vault (`~/.servicenow/credentials.enc`).
 
 ## Where configuration lives
 
