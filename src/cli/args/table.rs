@@ -204,7 +204,7 @@ pub struct TableStatsArgs {
     /// Check --query/--group-by/--avg/--min/--max/--sum/--having field names:
     /// warn (default), error, or off (env SNOW_CLI_CHECK_FIELDS). Costs one
     /// row read when any of those flags is set.
-    #[arg(long, value_enum, value_name = "MODE")]
+    #[arg(long, value_enum, value_name = "MODE", hide_possible_values = true)]
     pub check_fields: Option<CheckFields>,
 }
 
@@ -333,7 +333,7 @@ pub struct RecordReadArgs {
 
     /// Check field names in --fields/--query/--order-by: warn (default),
     /// error, or off (env SNOW_CLI_CHECK_FIELDS)
-    #[arg(long, value_enum, value_name = "MODE")]
+    #[arg(long, value_enum, value_name = "MODE", hide_possible_values = true)]
     pub check_fields: Option<CheckFields>,
 }
 
