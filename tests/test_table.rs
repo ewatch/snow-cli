@@ -2743,7 +2743,7 @@ async fn test_table_list_excludes_reference_links_by_default_and_honours_opt_in(
                 }
             }]
         })))
-        .expect(1)
+        .expect(3)
         .mount(&server)
         .await;
     let (_dir, config) = api_key_config(&server.uri());
@@ -2826,6 +2826,67 @@ async fn test_table_list_excludes_reference_links_by_default_and_honours_opt_in(
             "display": "Abel Tuter",
             "link": "https://example.test/api/now/table/sys_user/u1"
         })
+    );
+
+    // CSV and TOON must flatten {value, display, link} into dedicated columns
+    // instead of dumping raw JSON into cells.
+    let csv_out = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &[
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            "number,assigned_to",
+            "--display-value",
+            "both",
+            "--reference-links",
+            "--output",
+            "csv",
+        ],
+    );
+    assert!(csv_out.status.success(), "{csv_out:?}");
+    let csv_text = String::from_utf8(csv_out.stdout).unwrap();
+    let mut csv_lines = csv_text.lines();
+    assert_eq!(
+        csv_lines.next(),
+        Some("assigned_to,assigned_to.display,assigned_to.link,number")
+    );
+    assert_eq!(
+        csv_lines.next(),
+        Some("u1,Abel Tuter,https://example.test/api/now/table/sys_user/u1,INC1")
+    );
+
+    let toon_out = run_ok(
+        "snow-cli",
+        &server,
+        &config,
+        &[
+            "table",
+            "list",
+            "incident",
+            "--fields",
+            "number,assigned_to",
+            "--display-value",
+            "both",
+            "--reference-links",
+            "--output",
+            "toon",
+        ],
+    );
+    assert!(toon_out.status.success(), "{toon_out:?}");
+    let toon_text = String::from_utf8(toon_out.stdout).unwrap();
+    assert!(
+        toon_text.contains("assigned_to,assigned_to.display,assigned_to.link,number"),
+        "{toon_text}"
+    );
+    assert!(
+        toon_text.contains("u1,Abel Tuter,\"https://example.test/api/now/table/sys_user/u1\",INC1")
+            || toon_text
+                .contains("u1,Abel Tuter,https://example.test/api/now/table/sys_user/u1,INC1"),
+        "{toon_text}"
     );
 }
 

@@ -48,9 +48,23 @@ impl NativeSession {
 
     /// Apply rotations/deletions without retaining Set-Cookie attributes.
     pub fn merge_response_cookies(&mut self, headers: &HeaderMap) -> bool {
-        let request_url = url::Url::parse(&self.instance).ok();
+        self.merge_response_cookies_for_url(headers, None)
+    }
+
+    /// Apply rotations/deletions scoped against the actual response URL
+    /// (falling back to the session's instance URL when `request_url` is `None`).
+    pub fn merge_response_cookies_for_url(
+        &mut self,
+        headers: &HeaderMap,
+        request_url: Option<&url::Url>,
+    ) -> bool {
+        let fallback = request_url
+            .is_none()
+            .then(|| url::Url::parse(&self.instance).ok())
+            .flatten();
+        let effective_url = request_url.or(fallback.as_ref());
         let before = self.cookie_header.expose_secret().to_string();
-        let merged = merge_cookie_header_for_url(&before, headers, request_url.as_ref());
+        let merged = merge_cookie_header_for_url(&before, headers, effective_url);
         if merged == before {
             return false;
         }
@@ -222,24 +236,17 @@ where
 }
 
 fn acquire_profile_lock(profile: &str) -> anyhow::Result<Option<std::fs::File>> {
-    let config_path = crate::config::profile::AppConfig::config_path();
-    let Some(dir) = config_path.parent() else {
-        return Ok(None);
-    };
-    let lock_dir = dir.join(".locks");
-    std::fs::create_dir_all(&lock_dir)?;
+    let lock_dir = crate::config::profile::AppConfig::config_dir().join(".locks");
     let mut hasher = Sha256::new();
     hasher.update(profile.as_bytes());
     let digest = hasher.finalize();
     let hash: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
     let lock_path = lock_dir.join(format!("native-session-{hash}.lock"));
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)?;
-    file.lock()?;
+    let file = crate::config::encrypted_store::acquire_exclusive_lock(
+        &lock_path,
+        "native session lock",
+        None,
+    )?;
     Ok(Some(file))
 }
 

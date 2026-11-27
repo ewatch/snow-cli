@@ -19,7 +19,7 @@ stdout_contains = ["\"count\":"]
 json_field_present = [".[0].priority", ".[0].count"]
 
 [[fuzzy]]
-expectation = "The output reports a per-priority count of incident records; each group has a numeric count greater than 0 (the --having count>0 filter was accepted, not rejected with HTTP 400)."
+expectation = "The output reports a per-priority count of incident records as plain scalar values (no raw `{value, display_value}` objects when `--display-value` is omitted), and each group has a numeric count greater than 0 (the --having count>0 filter was accepted, not rejected with HTTP 400)."
 
 [[cleanup]]
 description = "Remove the scenario profile"

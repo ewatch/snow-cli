@@ -1,0 +1,32 @@
+name = "flow-show"
+description = "Inspect a Flow Designer flow tree via sys_hub_flow tables (read-only)"
+requires = ["credentials"]
+
+[[setup]]
+description = "Create the scenario profile"
+args = ["profile", "add", "e2e-scenario", "--instance", "$SNOW_E2E_INSTANCE_URL", "--auth-method", "basic", "--username", "$SNOW_E2E_USERNAME"]
+
+[[setup]]
+description = "Store credentials for the scenario profile"
+shell = "printf '%s' \"$SNOW_E2E_PASSWORD\" | \"$SNOW_CLI_BIN\" auth login --profile e2e-scenario --password-stdin"
+
+[[setup]]
+description = "Discover one Flow Designer flow sys_id on the instance"
+args = ["table", "list", "sys_hub_flow", "--limit", "1", "--fields", "sys_id", "--profile", "e2e-scenario", "--output", "json"]
+capture = { flow_id = ".records[0].sys_id" }
+
+[command]
+args = ["flow", "show", "{{flow_id}}", "--profile", "e2e-scenario", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["\"flow\":", "\"structure\":"]
+json_field_present = [".flow.sys_id", ".flow.name", ".structure", ".source"]
+
+[[fuzzy]]
+expectation = "Prints the flow metadata, trigger summary (if any), top-level structure (`sequential` or `parallel`), and ordered step list for `{{flow_id}}`."
+
+[[cleanup]]
+description = "Remove the scenario profile"
+args = ["profile", "remove", "e2e-scenario", "--yes"]
+allow_failure = true

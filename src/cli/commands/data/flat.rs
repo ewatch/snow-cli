@@ -29,15 +29,21 @@ pub(super) async fn handle_export(
     let mut client = crate::client::build_client_with_timeout(profile, instance, timeout_secs)?;
     let pagination = PaginationConfig::default().with_limit(export.limit);
 
-    // Stream page-by-page for archival JSON and CSV exports so large tables do
-    // not buffer every page in memory at once.
-    if !export.import_ready && matches!(format, OutputFormat::Json | OutputFormat::Csv) {
-        let fields = split_csv_fields(export.fields.as_deref());
+    // Stream page-by-page for archival JSON exports, and for CSV exports when
+    // explicit fields are requested (unprojected CSV buffers all pages so
+    // columns that first appear on page 2+ are never dropped).
+    let explicit_fields = split_csv_fields(export.fields.as_deref());
+    let can_stream_csv = matches!(format, OutputFormat::Csv)
+        && explicit_fields
+            .as_ref()
+            .is_some_and(|list| !list.iter().any(|name| name == "*"));
+    if !export.import_ready && (matches!(format, OutputFormat::Json) || can_stream_csv) {
+        let fields = explicit_fields;
         let instance_url = client.base_url().to_string();
         let exported_at = current_unix_timestamp();
         let read_options = crate::client::TableReadOptions::default();
 
-        if matches!(format, OutputFormat::Csv) {
+        if can_stream_csv {
             let record_count = if let Some(ref out_path) = export.out_path {
                 let mut stream =
                     output::CsvRecordStream::new(std::io::BufWriter::new(File::create(out_path)?));

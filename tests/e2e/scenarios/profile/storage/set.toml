@@ -1,0 +1,37 @@
+name = "profile-storage-set"
+description = "Switch credential storage mode from keyring to file and migrate the vault key (no instance required)"
+requires = ["none"]
+
+[[setup]]
+description = "Create a disposable profile"
+args = ["profile", "add", "e2e-storage-set", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[[setup]]
+description = "Store a test password in the encrypted vault without contacting a live instance"
+shell = "printf '%s' 'e2e-storage-set-secret' | \"$SNOW_CLI_BIN\" auth login --profile e2e-storage-set --password-stdin --no-verify"
+
+[command]
+args = ["profile", "storage", "set", "file", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ['"mode":"file"', '"key_migrated":true']
+json_field_present = [".status", ".previous_mode", ".mode", ".vault_path"]
+
+[[fuzzy]]
+expectation = "Switches credential storage to `file`, migrates the existing vault master key to a 0600 `credentials.key` file without re-encrypting `credentials.enc`, and `auth status --profile e2e-storage-set` continues to report `credentials_present: true`."
+
+[[cleanup]]
+description = "Restore default keyring storage mode for subsequent scenarios"
+args = ["profile", "storage", "set", "keyring", "--output", "json"]
+allow_failure = true
+
+[[cleanup]]
+description = "Clear stored test credentials"
+args = ["auth", "logout", "--profile", "e2e-storage-set"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the disposable profile"
+args = ["profile", "remove", "e2e-storage-set", "--yes"]
+allow_failure = true

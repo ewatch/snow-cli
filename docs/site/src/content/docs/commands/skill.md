@@ -96,7 +96,7 @@ Example output (`--dry-run`):
   "status": "dry_run",
   "dry_run": true,
   "name": "snow/snow-cli",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "source": "bundled",
   "install_dir": "/Users/you/.claude/skills/snow-cli",
   "packs": ["cmdb", "itsm"],

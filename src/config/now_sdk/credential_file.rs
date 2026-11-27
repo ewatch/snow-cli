@@ -98,8 +98,12 @@ pub(super) fn read_raw(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
     encrypted_store::read_raw(path)
 }
 
-/// Decrypt a `credentials.enc` payload to the alias-store JSON.
-pub(super) fn decrypt(key: &FileKey, file: &[u8], path: &Path) -> anyhow::Result<String> {
+/// Decrypt a `credentials.enc` payload to the zeroized alias-store JSON.
+pub(super) fn decrypt(
+    key: &FileKey,
+    file: &[u8],
+    path: &Path,
+) -> anyhow::Result<zeroize::Zeroizing<String>> {
     encrypted_store::decrypt_envelope(key, file).map_err(|error| match error {
         EnvelopeError::TruncatedOrCorrupted => ConfigError::new(
             UNREADABLE_CODE,
@@ -160,7 +164,7 @@ mod tests {
         let path = Path::new("credentials.enc");
         let json = r#"{"dev":{"isDefault":true,"alias":"dev"}}"#;
         let file = encrypt(&KEY, json).unwrap();
-        assert_eq!(decrypt(&KEY, &file, path).unwrap(), json);
+        assert_eq!(decrypt(&KEY, &file, path).unwrap().as_str(), json);
         // Fresh IV per write.
         assert_ne!(encrypt(&KEY, json).unwrap(), file);
     }

@@ -10,8 +10,8 @@ args = ["profile", "add", "e2e-scenario", "--instance", "https://e2e-offline.exa
 args = ["seed", "cleanup", "run-e2e-placeholder", "--dry-run", "--profile", "e2e-scenario"]
 
 [expect]
-exit_code = 1
-stderr_contains = ["was not found"]
+exit_code = 2
+stderr_contains = ["VALIDATION_ERROR", "was not found"]
 
 [[cleanup]]
 description = "Remove the offline profile"

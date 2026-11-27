@@ -113,7 +113,8 @@ ServiceNow for labels instead:
 `display` renders dates in the session user's timezone and format
 (`sys_created_on` may differ by hours from the stored UTC value); use `both`
 when you need raw values as well. In CSV and TOON output, `both` adds a
-`<field>.display` column next to `<field>` instead of a nested object. The list
+`<field>.display` column (and `<field>.link` when `--reference-links` is also
+set) next to `<field>` instead of a nested object. The list
 envelope (`total`, `returned`, `offset`, `next_offset`, `truncated`, `records`)
 is the same in every mode.
 
@@ -231,6 +232,8 @@ Examples:
 snow-cli table delete incident 46d44a4b2f13000044e0bfc8fb99b6fd --yes
 snow-cli table delete incident 46d44a4b2f13000044e0bfc8fb99b6fd --yes --ignore-not-found
 ```
+
+> **Note:** ServiceNow returns HTTP `404` (`No Record found`) both when a record does not exist and when read ACLs or query business rules hide it from the caller. Use `--ignore-not-found` only when a `404` should be treated as converged.
 
 ## `table schema <table>`
 

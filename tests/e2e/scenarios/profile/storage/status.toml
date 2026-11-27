@@ -1,0 +1,14 @@
+name = "profile-storage-status"
+description = "Inspect active credential storage mode and vault paths (no instance required)"
+requires = ["none"]
+
+[command]
+args = ["profile", "storage", "status", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ['"mode":"keyring"', "credentials.enc"]
+json_field_present = [".mode", ".source", ".vault_path", ".key_file_path"]
+
+[[fuzzy]]
+expectation = "Reports the active credential storage mode (`keyring`), its origin (`default` or `config`), and paths to `credentials.enc` and `credentials.key` without prompting the OS keychain."

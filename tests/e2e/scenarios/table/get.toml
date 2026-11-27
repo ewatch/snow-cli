@@ -24,11 +24,11 @@ stdout_contains = ["sys_id", "snow-cli e2e scenario: table-get"]
 json_field_present = ['.sys_id']
 
 [[fuzzy]]
-expectation = "The returned record's sys_id matches the one we created and short_description matches what we sent."
+expectation = "The returned record's sys_id matches the one we created, short_description matches what we sent, and reference fields default to plain values without link objects."
 
 [[cleanup]]
 description = "Delete the record this scenario created"
-args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes"]
+args = ["table", "delete", "incident", "{{sys_id}}", "--profile", "e2e-scenario", "--yes", "--ignore-not-found"]
 allow_failure = true
 
 [[cleanup]]

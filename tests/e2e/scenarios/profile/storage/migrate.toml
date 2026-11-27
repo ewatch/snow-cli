@@ -1,0 +1,32 @@
+name = "profile-storage-migrate"
+description = "Migrate legacy per-profile keychain entries into the encrypted vault (isolated keychain)"
+requires = ["isolated-keychain"]
+
+[[setup]]
+description = "Create a disposable profile"
+args = ["profile", "add", "e2e-storage-migrate", "--instance", "https://e2e-offline.example.service-now.com", "--auth-method", "basic", "--username", "e2e-user"]
+
+[[setup]]
+description = "Seed a legacy per-profile credential entry in the isolated keychain store"
+shell = "printf '%s' 'e2e-legacy-migrate-secret' | SNOW_CLI_CREDENTIAL_STORE=legacy-keychain \"$SNOW_CLI_BIN\" auth login --profile e2e-storage-migrate --password-stdin --no-verify"
+
+[command]
+args = ["profile", "storage", "migrate", "--delete-legacy", "--output", "json"]
+
+[expect]
+exit_code = 0
+stdout_contains = ["e2e-storage-migrate:password"]
+json_field_present = [".status", ".mode", ".vault_path", ".migrated[0]", ".deleted_legacy[0]"]
+
+[[fuzzy]]
+expectation = "Copies `e2e-storage-migrate:password` from legacy keychain storage into `credentials.enc`, deletes the legacy entry, and keeps the credential readable via `auth status`."
+
+[[cleanup]]
+description = "Clear migrated credentials"
+args = ["auth", "logout", "--profile", "e2e-storage-migrate"]
+allow_failure = true
+
+[[cleanup]]
+description = "Remove the disposable profile"
+args = ["profile", "remove", "e2e-storage-migrate", "--yes"]
+allow_failure = true

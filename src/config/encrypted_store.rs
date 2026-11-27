@@ -124,15 +124,20 @@ pub(crate) fn encrypt_envelope(key: &FileKey, plaintext: &str) -> anyhow::Result
     encode_envelope(&iv, &data)
 }
 
-/// Decrypt a CBOR `{version: 1, iv, data}` envelope into UTF-8 plaintext.
-pub(crate) fn decrypt_envelope(key: &FileKey, file: &[u8]) -> Result<String, EnvelopeError> {
+/// Decrypt a CBOR `{version: 1, iv, data}` envelope into zeroized UTF-8 plaintext.
+pub(crate) fn decrypt_envelope(
+    key: &FileKey,
+    file: &[u8],
+) -> Result<zeroize::Zeroizing<String>, EnvelopeError> {
     let (iv, mut data) = decode_envelope(file)?;
     let nonce = Nonce::try_assume_unique_for_key(&iv).map_err(|_| EnvelopeError::DecryptFailed)?;
     let cipher = cipher(key).map_err(|_| EnvelopeError::DecryptFailed)?;
     let plaintext = cipher
         .open_in_place(nonce, Aad::empty(), &mut data)
         .map_err(|_| EnvelopeError::DecryptFailed)?;
-    String::from_utf8(plaintext.to_vec()).map_err(|_| EnvelopeError::DecryptFailed)
+    let decoded = String::from_utf8(plaintext.to_vec()).map_err(|_| EnvelopeError::DecryptFailed);
+    data.zeroize();
+    decoded.map(zeroize::Zeroizing::new)
 }
 
 fn cipher(key: &FileKey) -> anyhow::Result<LessSafeKey> {
@@ -179,13 +184,84 @@ fn encode_envelope(iv: &[u8], data: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Normalize a file's parent directory so relative paths without a directory
+/// component (e.g. `SNOW_CLI_CONFIG=config.toml`) resolve to `.` instead of `""`.
+pub(crate) fn normalized_parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
+/// Acquire an exclusive advisory lock file with hardened directory/file
+/// permissions (`0o700` for newly created parent dirs, `0o600` for the lock
+/// file, symlink rejection + `O_NOFOLLOW` on Unix) and an optional timeout.
+pub(crate) fn acquire_exclusive_lock(
+    lock_path: &Path,
+    label: &str,
+    timeout: Option<std::time::Duration>,
+) -> anyhow::Result<std::fs::File> {
+    let dir = normalized_parent_dir(lock_path);
+    let existed = dir.exists();
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    if !existed {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)) {
+            tracing::debug!(%error, path = %dir.display(), "could not restrict lock directory");
+        }
+    }
+
+    if let Ok(meta) = std::fs::symlink_metadata(lock_path)
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!(
+            "Refusing to follow symlink for {label} at {}.",
+            lock_path.display()
+        );
+    }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).read(true).write(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(lock_path)?;
+
+    match timeout {
+        None => {
+            file.lock()?;
+            Ok(file)
+        }
+        Some(limit) => {
+            let deadline = std::time::Instant::now() + limit;
+            loop {
+                match file.try_lock() {
+                    Ok(()) => return Ok(file),
+                    Err(std::fs::TryLockError::WouldBlock) => {
+                        if std::time::Instant::now() >= deadline {
+                            anyhow::bail!(
+                                "Timed out waiting for {label} after {} seconds.",
+                                limit.as_secs()
+                            );
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+                }
+            }
+        }
+    }
+}
+
 /// Replace `path` atomically with `bytes`: owner-only file in an owner-only
 /// directory (when created here), written to an exclusive unpredictable temp
 /// file, synced, and renamed.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8], file_name: &str) -> anyhow::Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("invalid credential file path"))?;
+    let dir = normalized_parent_dir(path);
     // Restrict only a directory created here: an existing one (possibly a
     // symlink to a shared directory) keeps the permissions its owner chose.
     let existed = dir.exists();
@@ -239,7 +315,7 @@ mod tests {
         let json = r#"{"dev:password":"secret"}"#;
         let first = encrypt_envelope(&KEY, json).unwrap();
         let second = encrypt_envelope(&KEY, json).unwrap();
-        assert_eq!(decrypt_envelope(&KEY, &first).unwrap(), json);
+        assert_eq!(decrypt_envelope(&KEY, &first).unwrap().as_str(), json);
         assert_ne!(first, second);
     }
 
@@ -281,6 +357,34 @@ mod tests {
         assert!(FileKey::decode_base64(&encoded[..40]).is_none());
         assert!(FileKey::decode_base64(&format!("{encoded}x")).is_none());
         assert!(FileKey::decode_base64(&BASE64.encode([9u8; 16])).is_none());
+    }
+
+    #[test]
+    fn normalized_parent_dir_handles_bare_filename() {
+        assert_eq!(
+            normalized_parent_dir(Path::new("config.toml")),
+            Path::new(".")
+        );
+        assert_eq!(
+            normalized_parent_dir(Path::new("/tmp/snow/config.toml")),
+            Path::new("/tmp/snow")
+        );
+    }
+
+    #[test]
+    fn acquire_exclusive_lock_times_out_when_already_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("test.lock");
+        let _held = acquire_exclusive_lock(&lock_path, "test lock", None).unwrap();
+
+        let err = acquire_exclusive_lock(
+            &lock_path,
+            "test lock",
+            Some(std::time::Duration::from_millis(80)),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("Timed out waiting for test lock"), "{err}");
     }
 
     #[test]

@@ -880,9 +880,11 @@ fn flatten_stat_value(
     {
         return match display_value {
             Some(DisplayValue::Display) => numify(disp),
-            Some(DisplayValue::Raw) => numify(raw),
-            _ if raw == disp => numify(raw),
-            _ => serde_json::json!({ "value": numify(raw), "display_value": disp }),
+            Some(DisplayValue::Raw) | None => numify(raw),
+            Some(DisplayValue::Both) if raw == disp => numify(raw),
+            Some(DisplayValue::Both) => {
+                serde_json::json!({ "value": numify(raw), "display_value": disp })
+            }
         };
     }
     numify(value)
@@ -906,8 +908,10 @@ fn flatten_stats_entry(
             let cell = match (pair.get("value"), pair.get("display_value")) {
                 (Some(raw), Some(disp)) => match display_value {
                     Some(DisplayValue::Display) => disp.clone(),
-                    Some(DisplayValue::Raw) => raw.clone(),
-                    _ => serde_json::json!({ "value": raw, "display_value": disp }),
+                    Some(DisplayValue::Raw) | None => raw.clone(),
+                    Some(DisplayValue::Both) => {
+                        serde_json::json!({ "value": raw, "display_value": disp })
+                    }
                 },
                 (None, Some(disp)) => disp.clone(),
                 (Some(raw), None) => raw.clone(),
@@ -1690,6 +1694,33 @@ mod tests {
                 "table": "incident",
                 "sys_id": "6816f79cc0a8016401c5a33be04be441",
                 "message": "Record 6816f79cc0a8016401c5a33be04be441 already absent in incident"
+            })
+        );
+    }
+
+    #[test]
+    fn test_flatten_stats_entry_without_display_value_extracts_raw_scalars() {
+        let entry = serde_json::json!({
+            "groupby_fields": [
+                {"field": "priority", "value": "1", "display_value": "1 - Critical"}
+            ],
+            "stats": {
+                "count": {"value": "7", "display_value": "7 records"}
+            }
+        });
+
+        let default_row = flatten_stats_entry(&entry, None);
+        assert_eq!(
+            serde_json::to_value(&default_row).unwrap(),
+            serde_json::json!({"count": 7, "priority": "1"})
+        );
+
+        let both_row = flatten_stats_entry(&entry, Some(DisplayValue::Both));
+        assert_eq!(
+            serde_json::to_value(&both_row).unwrap(),
+            serde_json::json!({
+                "count": {"value": 7, "display_value": "7 records"},
+                "priority": {"value": "1", "display_value": "1 - Critical"}
             })
         );
     }

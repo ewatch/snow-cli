@@ -50,7 +50,11 @@ pub trait Authenticator: Send + Sync {
     async fn refresh(&mut self) -> anyhow::Result<bool>;
 
     /// Observe session-cookie rotation after a same-instance response.
-    async fn observe_response_headers(&mut self, _headers: &HeaderMap) -> anyhow::Result<()> {
+    async fn observe_response_headers(
+        &mut self,
+        _headers: &HeaderMap,
+        _request_url: Option<&url::Url>,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 
